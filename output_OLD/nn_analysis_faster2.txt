@@ -1,0 +1,309 @@
+Getting work details for Natural Language Processing Techniques - article...
+Loading cached work details from output/api_data/Natural Language Processing Techniques/article/work_details.json
+Retrieved 91432 work details.
+Getting work details for Natural Language Processing Techniques - book...
+Loading cached work details from output/api_data/Natural Language Processing Techniques/book/work_details.json
+Retrieved 1614 work details.
+Getting work details for Robotics and Sensor-Based Localization - article...
+Loading cached work details from output/api_data/Robotics and Sensor-Based Localization/article/work_details.json
+Retrieved 43878 work details.
+Getting work details for Robotics and Sensor-Based Localization - book...
+Loading cached work details from output/api_data/Robotics and Sensor-Based Localization/book/work_details.json
+Retrieved 95 work details.
+Getting work details for Folklore, Mythology, and Literature Studies - article...
+Loading cached work details from output/api_data/Folklore Mythology and Literature Studies/article/work_details.json
+Retrieved 31793 work details.
+Getting work details for Folklore, Mythology, and Literature Studies - book...
+Loading cached work details from output/api_data/Folklore Mythology and Literature Studies/book/work_details.json
+Retrieved 2922 work details.
+Getting work details for Algebraic Geometry and Number Theory - article...
+Loading cached work details from output/api_data/Algebraic Geometry and Number Theory/article/work_details.json
+Retrieved 27991 work details.
+Getting work details for Algebraic Geometry and Number Theory - book...
+Loading cached work details from output/api_data/Algebraic Geometry and Number Theory/book/work_details.json
+Retrieved 413 work details.
+Loaded 91432 embeddings from cache.
+Initializing SentenceTransformer model for online duplicate detection...
+Logging potential semantic duplicates (distance < 0.45) to output/duplicates_Natural Language Processing Techniques_article.log
+
+Skipping duplicate (cached, semantic, dist=0.2425): 'Moses: Open Source Toolkit for Statistical Machine Translation'
+  Current ID: https://openalex.org/W2595715041, Neighbor ID: https://openalex.org/W2124807415
+
+Skipping duplicate (cached, semantic, dist=0.4345): 'A hierarchical phrase-based model for statistical machine translation'
+  Current ID: https://openalex.org/W2152263452, Neighbor ID: https://openalex.org/W2437005631
+
+Skipping duplicate (cached, semantic, dist=0.2855): 'Word association norms, mutual information, and lexicography'
+  Current ID: https://openalex.org/W2159637323, Neighbor ID: https://openalex.org/W1593045043
+
+Skipping duplicate (cached, semantic, dist=0.2183): 'WordNet::Similarity'
+  Current ID: https://openalex.org/W2142120379, Neighbor ID: https://openalex.org/W2613678836
+
+Skipping duplicate (cached, semantic, dist=0.4443): 'Improving machine learning approaches to coreference resolution'
+  Current ID: https://openalex.org/W2149956050, Neighbor ID: https://openalex.org/W2164455818
+
+Skipping duplicate (cached, semantic, dist=0.3822): 'SemEval-2014 Task 10: Multilingual Semantic Textual Similarity'
+  Current ID: https://openalex.org/W2126400076, Neighbor ID: https://openalex.org/W2462305634
+
+Skipping duplicate (cached, semantic, dist=0.2900): 'Findings of the 2019 Conference on Machine Translation (WMT19)'
+  Current ID: https://openalex.org/W2970279348, Neighbor ID: https://openalex.org/W2512924740
+
+Skipping duplicate (cached, semantic, dist=0.3180): 'Findings of the 2017 Conference on Machine Translation (WMT17)'
+  Current ID: https://openalex.org/W2760656271, Neighbor ID: https://openalex.org/W2512924740
+
+Skipping duplicate (cached, semantic, dist=0.2319): 'Introduction to the CoNLL-2004 Shared Task: Semantic Role Labeling'
+  Current ID: https://openalex.org/W2915816387, Neighbor ID: https://openalex.org/W2126851059
+
+Skipping duplicate (cached, semantic, dist=0.3377): 'The CoNLL-2009 shared task'
+  Current ID: https://openalex.org/W2142222368, Neighbor ID: https://openalex.org/W1970849810
+
+Skipping duplicate (cached, semantic, dist=0.3834): 'Findings of the 2009 workshop on statistical machine translation'
+  Current ID: https://openalex.org/W2115081467, Neighbor ID: https://openalex.org/W2087735403
+
+Skipping duplicate (cached, semantic, dist=0.1936): 'Findings of the 2015 Workshop on Statistical Machine Translation'
+  Current ID: https://openalex.org/W2251994258, Neighbor ID: https://openalex.org/W2257408573
+
+Skipping duplicate (cached, semantic, dist=0.3722): 'Findings of the 2013 Workshop on Statistical Machine Translation'
+  Current ID: https://openalex.org/W2270190199, Neighbor ID: https://openalex.org/W2087735403
+
+Skipping duplicate (cached, semantic, dist=0.2678): 'An algorithm for suffix stripping'
+  Current ID: https://openalex.org/W4213221013, Neighbor ID: https://openalex.org/W2098162425
+
+Skipping duplicate (cached, semantic, dist=0.3054): 'Further meta-evaluation of machine translation'
+  Current ID: https://openalex.org/W2169279899, Neighbor ID: https://openalex.org/W2147192413
+
+Skipping duplicate (cached, semantic, dist=0.3136): 'Structure-Mapping: A Theoretical Framework for Analogy''
+  Current ID: https://openalex.org/W3150562944, Neighbor ID: https://openalex.org/W4229954498
+
+Skipping duplicate (cached, semantic, dist=0.3631): 'Knowledge Derived From Wikipedia For Computing Semantic Relatedness'
+  Current ID: https://openalex.org/W2105313627, Neighbor ID: https://openalex.org/W158057341
+
+Skipping duplicate (cached, semantic, dist=0.4374): 'INDUCING THE MORPHOLOGICAL LEXICON OF A NATURAL LANGUAGE FROM UNANNOTATED TEXT'
+  Current ID: https://openalex.org/W201532657, Neighbor ID: https://openalex.org/W2053306448
+
+Skipping duplicate (cached, semantic, dist=0.4389): 'The Arabic Online Commentary Dataset: an Annotated Dataset of Informal Arabic with High Dialectal Content'
+  Current ID: https://openalex.org/W2109704865, Neighbor ID: https://openalex.org/W2160802179
+
+Skipping duplicate (cached, semantic, dist=0.3942): 'Rule-based translation with statistical phrase-based post-editing'
+  Current ID: https://openalex.org/W2022433169, Neighbor ID: https://openalex.org/W2141971526
+
+Skipping duplicate (cached, semantic, dist=0.1603): 'Overview for the First Shared Task on Language Identification in Code-Switched Data'
+  Current ID: https://openalex.org/W4237155282, Neighbor ID: https://openalex.org/W2251149908
+
+Skipping duplicate (cached, semantic, dist=0.3191): 'Graph connectivity measures for unsupervised word sense disambiguation'
+  Current ID: https://openalex.org/W1563163909, Neighbor ID: https://openalex.org/W2166021673
+
+Skipping duplicate (cached, semantic, dist=0.2952): 'Results of the WMT15 Metrics Shared Task'
+  Current ID: https://openalex.org/W2916548775, Neighbor ID: https://openalex.org/W2251610689
+
+Skipping duplicate (cached, semantic, dist=0.3323): 'Findings of the WMT 2018 Shared Task on Quality Estimation'
+  Current ID: https://openalex.org/W2902463012, Neighbor ID: https://openalex.org/W2971120958
+
+Skipping duplicate (cached, semantic, dist=0.4061): 'Findings of the WMT 2019 Shared Task on Parallel Corpus Filtering for Low-Resource Conditions'
+  Current ID: https://openalex.org/W2970858854, Neighbor ID: https://openalex.org/W2902918014
+
+Skipping duplicate (cached, semantic, dist=0.2429): 'FINDINGS OF THE IWSLT 2021 EVALUATION CAMPAIGN'
+  Current ID: https://openalex.org/W3186200218, Neighbor ID: https://openalex.org/W3037465386
+
+Skipping duplicate (cached, semantic, dist=0.4311): 'Arabic Natural Language Processing'
+  Current ID: https://openalex.org/W2294764339, Neighbor ID: https://openalex.org/W4211260480
+
+Skipping duplicate (cached, semantic, dist=0.3276): 'Findings of the VarDial Evaluation Campaign 2023'
+  Current ID: https://openalex.org/W3155756977, Neighbor ID: https://openalex.org/W2620806258
+
+Skipping duplicate (cached, semantic, dist=0.1970): 'Machine transliteration'
+  Current ID: https://openalex.org/W2338181011, Neighbor ID: https://openalex.org/W2913739034
+
+Skipping duplicate (cached, semantic, dist=0.0596): 'Local type inference'
+  Current ID: https://openalex.org/W2025407135, Neighbor ID: https://openalex.org/W2036676170
+
+Skipping duplicate (cached, semantic, dist=0.4197): 'A New Model of Information Content for Semantic Similarity in WordNet'
+  Current ID: https://openalex.org/W2537776804, Neighbor ID: https://openalex.org/W1668989518
+
+Skipping duplicate (cached, semantic, dist=0.3860): 'The necessity of syntactic parsing for semantic role labeling'
+  Current ID: https://openalex.org/W1531859941, Neighbor ID: https://openalex.org/W2038324640
+
+Skipping duplicate (cached, semantic, dist=0.4353): 'Inside-outside reestimation from partially bracketed corpora'
+  Current ID: https://openalex.org/W2089951031, Neighbor ID: https://openalex.org/W2439178139
+
+Skipping duplicate (cached, semantic, dist=0.4334): 'Exploring syntactic features for relation extraction using a convolution tree kernel'
+  Current ID: https://openalex.org/W2091582906, Neighbor ID: https://openalex.org/W2042972234
+
+Skipping duplicate (cached, semantic, dist=0.1430): 'A Report on the Preposition and Determiner Error Correction Shared Task'
+  Current ID: https://openalex.org/W2551336373, Neighbor ID: https://openalex.org/W2171043109
+
+Skipping duplicate (cached, semantic, dist=0.4376): 'Chinese Spelling Check Evaluation at SIGHAN Bake-off 2013'
+  Current ID: https://openalex.org/W2251157340, Neighbor ID: https://openalex.org/W2251568283
+
+Skipping duplicate (cached, semantic, dist=0.4264): 'Compositionality II: Arguments and Problems'
+  Current ID: https://openalex.org/W2016954686, Neighbor ID: https://openalex.org/W2045335691
+
+Skipping duplicate (cached, semantic, dist=0.3324): 'Overview of SIGHAN 2014 Bake-off for Chinese Spelling Check'
+  Current ID: https://openalex.org/W2251873470, Neighbor ID: https://openalex.org/W2251568283
+
+Skipping duplicate (cached, semantic, dist=0.3861): 'The Zero Resource Speech Challenge 2015: Proposed Approaches and Results'
+  Current ID: https://openalex.org/W2346964103, Neighbor ID: https://openalex.org/W2963620343
+
+Skipping duplicate (cached, semantic, dist=0.4412): 'SemEval-2016 Task 13: Taxonomy Extraction Evaluation (TExEval-2)'
+  Current ID: https://openalex.org/W2465611764, Neighbor ID: https://openalex.org/W2164480198
+
+Skipping duplicate (cached, semantic, dist=0.3255): 'OpenNMT: Neural Machine Translation Toolkit'
+  Current ID: https://openalex.org/W2964098600, Neighbor ID: https://openalex.org/W2963212250
+
+Skipping duplicate (cached, semantic, dist=0.3563): 'Argumentation Quality Assessment: Theory vs. Practice'
+  Current ID: https://openalex.org/W2740947917, Neighbor ID: https://openalex.org/W2741686183
+
+Skipping duplicate (cached, semantic, dist=0.2942): 'Automatic term recognition based on statistics of compound nouns and their components'
+  Current ID: https://openalex.org/W2031203571, Neighbor ID: https://openalex.org/W2046045616
+
+Skipping duplicate (cached, semantic, dist=0.2847): 'Criterion SM Online Essay Evaluation: An Application for Automated Evaluation of Student Essays'
+  Current ID: https://openalex.org/W2147982578, Neighbor ID: https://openalex.org/W2154446588
+
+Skipping duplicate (cached, semantic, dist=0.4161): 'A Perspective on Word Sense Disambiguation Methods and Their Evaluation'
+  Current ID: https://openalex.org/W91190427, Neighbor ID: https://openalex.org/W2250369422
+
+Skipping duplicate (cached, semantic, dist=0.3497): 'Looking for a Few Good Metrics: ROUGE and its Evaluation'
+  Current ID: https://openalex.org/W2117010802, Neighbor ID: https://openalex.org/W2154652894
+
+Skipping duplicate (cached, semantic, dist=0.3977): 'Improving data driven wordclass tagging by system combination'
+  Current ID: https://openalex.org/W2130636661, Neighbor ID: https://openalex.org/W2154210598
+
+Skipping duplicate (cached, semantic, dist=0.3704): 'Using the web to overcome data sparseness'
+  Current ID: https://openalex.org/W2132024321, Neighbor ID: https://openalex.org/W2124416056
+
+Skipping duplicate (cached, semantic, dist=0.0304): 'Generation that exploits corpus-based statistical knowledge'
+  Current ID: https://openalex.org/W4292763141, Neighbor ID: https://openalex.org/W2108239140
+
+Skipping duplicate (cached, semantic, dist=0.4220): 'The Web as a Baseline: Evaluating the Performance of Unsupervised Web-based Models for a Range of NLP Tasks'
+  Current ID: https://openalex.org/W2102967855, Neighbor ID: https://openalex.org/W2000577984
+
+Skipping duplicate (cached, semantic, dist=0.0894): 'Towards history-based grammars'
+  Current ID: https://openalex.org/W2039240651, Neighbor ID: https://openalex.org/W2167434254
+
+Skipping duplicate (cached, semantic, dist=0.3637): 'Automatic semantic role labeling for Chinese verbs'
+  Current ID: https://openalex.org/W73658759, Neighbor ID: https://openalex.org/W2103017773
+
+Skipping duplicate (cached, semantic, dist=0.3791): 'Looking for a Few Good Metrics: Automatic Summarization Evaluation — How Many Samples Are Enough?'
+  Current ID: https://openalex.org/W2182959134, Neighbor ID: https://openalex.org/W2154652894
+
+Skipping duplicate (cached, semantic, dist=0.3254): 'A statistical approach to sense disambiguation in machine translation'
+  Current ID: https://openalex.org/W2035301451, Neighbor ID: https://openalex.org/W2129139611
+
+Skipping duplicate (cached, semantic, dist=0.0523): 'An incremental procedural grammar for sentence formulation'
+  Current ID: https://openalex.org/W4230051074, Neighbor ID: https://openalex.org/W2002161948
+
+Skipping duplicate (cached, semantic, dist=0.4426): 'Overview of the Patent Translation Task at the NTCIR-7 Workshop'
+  Current ID: https://openalex.org/W2152803722, Neighbor ID: https://openalex.org/W2293111166
+
+Skipping duplicate (cached, semantic, dist=0.3758): 'Post-editing time as a measure of cognitive effort'
+  Current ID: https://openalex.org/W1897658145, Neighbor ID: https://openalex.org/W2116089997
+
+Skipping duplicate (cached, semantic, dist=0.1623): 'A high-performance syntactic and semantic dependency parser'
+  Current ID: https://openalex.org/W2413158316, Neighbor ID: https://openalex.org/W2099162170
+
+Skipping duplicate (cached, semantic, dist=0.1455): 'One Billion Word Benchmark for Measuring Progress in Statistical Language Modeling'
+  Current ID: https://openalex.org/W1539309091, Neighbor ID: https://openalex.org/W2611669587
+
+Skipping duplicate (cached, semantic, dist=0.3720): 'Results of the WMT13 Metrics Shared Task'
+  Current ID: https://openalex.org/W2917452219, Neighbor ID: https://openalex.org/W2251610689
+
+Skipping duplicate (cached, semantic, dist=0.1509): 'BabyAI: A Platform to Study the Sample Efficiency of Grounded Language Learning'
+  Current ID: https://openalex.org/W2907923173, Neighbor ID: https://openalex.org/W2897513296
+
+Skipping duplicate (cached, semantic, dist=0.4429): 'Towards Unifying Multi-Lingual and Cross-Lingual Summarization'
+  Current ID: https://openalex.org/W4385572559, Neighbor ID: https://openalex.org/W4385570171
+
+Skipping duplicate (cached, semantic, dist=0.1839): 'From Sentence Processing to Information Access on the World Wide Web'
+  Current ID: https://openalex.org/W2157321653, Neighbor ID: https://openalex.org/W164524185
+
+Skipping duplicate (cached, semantic, dist=0.4201): 'International standard for a linguistic annotation framework'
+  Current ID: https://openalex.org/W2180034260, Neighbor ID: https://openalex.org/W2133149548
+
+Skipping duplicate (cached, semantic, dist=0.2601): 'Dimensions of meaning'
+  Current ID: https://openalex.org/W3149550307, Neighbor ID: https://openalex.org/W2149671658
+
+Skipping duplicate (cached, semantic, dist=0.3117): 'Tagging text with a probabilistic model'
+  Current ID: https://openalex.org/W1976241232, Neighbor ID: https://openalex.org/W2112861996
+
+Skipping duplicate (cached, semantic, dist=0.2444): 'Stochastic inversion transduction grammars with application to segmentation, bracketing, and alignment of parallel corpora'
+  Current ID: https://openalex.org/W74075037, Neighbor ID: https://openalex.org/W2158388102
+
+Skipping duplicate (cached, semantic, dist=0.3617): 'Improved discriminative bilingual word alignment'
+  Current ID: https://openalex.org/W2119388680, Neighbor ID: https://openalex.org/W2124810114
+
+Skipping duplicate (cached, semantic, dist=0.3684): 'A weighted finite state transducer translation template model for statistical machine translation'
+  Current ID: https://openalex.org/W2103237065, Neighbor ID: https://openalex.org/W2139424692
+
+Skipping duplicate (cached, semantic, dist=0.4154): 'Some computational properties of tree adjoining grammars'
+  Current ID: https://openalex.org/W1981743645, Neighbor ID: https://openalex.org/W2610522837
+
+Skipping duplicate (cached, semantic, dist=0.3622): 'Word alignment for languages with scarce resources'
+  Current ID: https://openalex.org/W2024060665, Neighbor ID: https://openalex.org/W2141532438
+
+Skipping duplicate (cached, semantic, dist=0.1382): 'Modelling Compression with Discourse Constraints'
+  Current ID: https://openalex.org/W2164618588, Neighbor ID: https://openalex.org/W2026191715
+
+Skipping duplicate (cached, semantic, dist=0.0677): 'Massively parallel parsing: A strongly interactive model of natural language interpretation'
+  Current ID: https://openalex.org/W2409145188, Neighbor ID: https://openalex.org/W2142131598
+
+Skipping duplicate (cached, semantic, dist=0.4399): 'Binarization of Synchronous Context-Free Grammars'
+  Current ID: https://openalex.org/W2099851297, Neighbor ID: https://openalex.org/W1964388487
+
+Skipping duplicate (cached, semantic, dist=0.3841): 'Improving Statistical Machine Translation for a Resource-Poor Language Using Related Resource-Rich Languages'
+  Current ID: https://openalex.org/W2163108352, Neighbor ID: https://openalex.org/W1994581546
+
+Skipping duplicate (cached, semantic, dist=0.3815): 'Latent Trees for Coreference Resolution'
+  Current ID: https://openalex.org/W2164632894, Neighbor ID: https://openalex.org/W1612381393
+
+Skipping duplicate (cached, semantic, dist=0.2613): 'The Second QALB Shared Task on Automatic Text Correction for Arabic'
+  Current ID: https://openalex.org/W3089057597, Neighbor ID: https://openalex.org/W2251851155
+
+Skipping duplicate (cached, semantic, dist=0.4499): 'The Second Cross-Lingual Challenge on Recognition, Normalization, Classification, and Linking of Named Entities across Slavic Languages'
+  Current ID: https://openalex.org/W2972710875, Neighbor ID: https://openalex.org/W2739922228
+
+Skipping duplicate (cached, semantic, dist=0.4486): 'Combining Word Embeddings and Feature Embeddings for Fine-grained Relation Extraction'
+  Current ID: https://openalex.org/W2295528990, Neighbor ID: https://openalex.org/W2964349647
+
+Skipping duplicate (cached, semantic, dist=0.4235): 'Overview of NLPTEA-2018 Share Task Chinese Grammatical Error Diagnosis'
+  Current ID: https://openalex.org/W2884226814, Neighbor ID: https://openalex.org/W2250952509
+
+Skipping duplicate (cached, semantic, dist=0.2291): 'Overview of the 6th Workshop on Asian Translation'
+  Current ID: https://openalex.org/W2982924472, Neighbor ID: https://openalex.org/W2759088880
+
+Skipping duplicate (cached, semantic, dist=0.0341): 'Toward a connectionist model of recursion in human linguistic performance'
+  Current ID: https://openalex.org/W4229741674, Neighbor ID: https://openalex.org/W2076332735
+
+Skipping duplicate (cached, semantic, dist=0.3767): 'A dependency-based method for evaluating broad-coverage parsers'
+  Current ID: https://openalex.org/W1984454122, Neighbor ID: https://openalex.org/W310720726
+
+Skipping duplicate (cached, semantic, dist=0.3944): 'Log-linear models for wide-coverage CCG parsing'
+  Current ID: https://openalex.org/W1998235220, Neighbor ID: https://openalex.org/W2149660837
+
+Skipping duplicate (cached, semantic, dist=0.4388): 'Applied text generation'
+  Current ID: https://openalex.org/W2010812227, Neighbor ID: https://openalex.org/W2085702226
+
+Skipping duplicate (cached, semantic, dist=0.0659): 'The Proper Treatment of Optimality in Computational Phonology'
+  Current ID: https://openalex.org/W1517834047, Neighbor ID: https://openalex.org/W1980907635
+
+Skipping duplicate (cached, semantic, dist=0.2272): 'Morphological analysis and generation for Arabic dialects'
+  Current ID: https://openalex.org/W2139813717, Neighbor ID: https://openalex.org/W2168576900
+
+Skipping duplicate (cached, semantic, dist=0.3283): 'Automatic generation of concise summaries of spoken dialogues in unrestricted domains'
+  Current ID: https://openalex.org/W2015895495, Neighbor ID: https://openalex.org/W2011950632
+
+Skipping duplicate (cached, semantic, dist=0.3144): 'GATE: an environment to support research and development in natural language engineering'
+  Current ID: https://openalex.org/W1547463271, Neighbor ID: https://openalex.org/W2008112715
+
+Skipping duplicate (cached, semantic, dist=0.3848): 'Learning noun phrase anaphoricity to improve coreference resolution'
+  Current ID: https://openalex.org/W2171828761, Neighbor ID: https://openalex.org/W2075011505
+
+Skipping duplicate (cached, semantic, dist=0.3621): 'Cross-linguistic projection of role-semantic information'
+  Current ID: https://openalex.org/W2106604217, Neighbor ID: https://openalex.org/W2115057736
+
+Skipping duplicate (cached, semantic, dist=0.4245): 'System Combination for Machine Translation of Spoken and Written Language'
+  Current ID: https://openalex.org/W2113287090, Neighbor ID: https://openalex.org/W201231365
+
+Skipping duplicate (cached, semantic, dist=0.3623): 'A Rule Based Persons Names Arabic Extraction System'
+  Current ID: https://openalex.org/W1505506221, Neighbor ID: https://openalex.org/W2100115003
+
+Skipping duplicate (cached, semantic, dist=0.0788): 'The Case-Slot Identity Theory*'
+  Current ID: https://openalex.org/W4256140186, Neighbor ID: https://openalex.org/W1982024857

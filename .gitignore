@@ -1,4 +1,5 @@
 /.venv
+/.conda
 /misc
 /nextbook.egg-info
 /output
