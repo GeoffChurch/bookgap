@@ -2,4 +2,7 @@
 /.conda
 /misc
 /nextbook.egg-info
-/output
+/cache
+/logs
+/nextbook/__pycache__
+/artifacts
