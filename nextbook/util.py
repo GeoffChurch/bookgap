@@ -1,12 +1,115 @@
+from collections.abc import Callable
+import logging
+from functools import wraps
+import inspect
+import joblib
 from math import gcd
+import warnings
 import numpy as np
+from pathlib import Path
 from scipy._lib._bunch import _make_tuple_bunch
 from scipy.stats import distributions
+from time import time
+from typing import Any
 
-KstestResult = _make_tuple_bunch('KstestResult', ['statistic', 'pvalue'],
-                                 ['statistic_location', 'statistic_sign'])
+class Timer:
+    def __init__(self, print=print):
+        self.print = print
+    def time(self, formatters=None):
+        if formatters is None:
+            formatters = {}
+        def decorator(f):
+            @wraps(f)
+            def wrap(*args, **kw):
+                bound = inspect.signature(f).bind(*args, **kw)
+                bound.apply_defaults()
+                filtered = {k: (formatters[k](v) if k in formatters else v) for k, v in bound.arguments.items()}
+                filtered_s = ', '.join(f'{k}={v!r}' for k, v in filtered.items())
+                self.print(f'Starting func:{f.__name__}({filtered_s})')
+                start_time = time()
+                result = f(*args, **kw)
+                elapsed_time = time() - start_time
+                self.print(f'func:{f.__name__}({filtered_s}) took {elapsed_time:.2f} seconds')
+                return result
+            return wrap
+        return decorator
 
-def ks_2samp(data1, data2, alternative='two-sided', method='auto'):
+
+logger = logging.getLogger("nextbook")
+
+TIMER = Timer(print=logger.info)
+
+CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+MEMORY = joblib.Memory(CACHE_DIR / "joblib", verbose=1)
+
+@TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", A=lambda A: f"<shape={A.shape}>"))
+def symmetrized_gpca(X: np.matrix, A: np.matrix, n_components: int):
+    """
+    Denoises X via "Symmetrized" Generalized Principal Component Analysis.
+
+    Whereas regular GPCA computes the eigenvectors of X†AX, given Hermitian
+    (self-adjoint) A, SGPCA computes the eigenvectors of X†BX, where
+    B = (A + A†) / 2 is the "Hermitian part" of any operator A.
+
+    This function centers X, projects it onto the top n_components of X†BX,
+    and then rotates the data back to the original basis and adds back the mean.
+
+    Args:
+        X (np.matrix): The content data matrix, shape (n_samples, d_features).
+        A (np.matrix): The operator matrix. Shape (n_samples, n_samples).
+        n_components (int): The maximum number of dimensions for the output subspace.
+
+    Returns:
+        np.matrix: The data X projected onto the top n_components of the
+                    Symmetrized GPCA basis, shape (n_samples, n_components).
+        np.matrix: The eigenvalues of X†BX in ascending order, shape (d_features,).
+    """
+    # Center X
+    X_mean = X.mean(axis=0)
+    X = np.asmatrix(X - X_mean)
+
+    # B is the Hermitian part of A.
+    B = (A + A.H) / 2
+
+    # Form the d x d matrix for Generalized PCA: X†BX
+    M = X.H @ B @ X
+
+    # Find the real eigenvalues and complex eigenvectors of M.
+    res = np.linalg.eigh(M) # eigh is for Hermitian matrices.
+
+    # Make sure eigenvalues are in ascending order
+    assert np.all(np.diff(res.eigenvalues) >= 0)
+
+    # Truncate the basis
+    P = np.asmatrix(res.eigenvectors[:, -n_components:])  # Take the last n_components eigenvectors.
+
+    # Project X onto the truncated basis
+    X_projected = X @ P
+
+    # Rotate back to the original d-dimensional space
+    X_centered_denoised = X_projected @ P.H
+
+    # Add back the original mean
+    X_denoised = X_centered_denoised + X_mean
+    
+    return X_denoised, res.eigenvalues
+
+
+class KstestResult:
+    def __init__(self, statistic, pvalue, statistic_location, statistic_sign):
+        self.statistic = statistic
+        self.pvalue = pvalue
+        self.statistic_location = statistic_location
+        self.statistic_sign = statistic_sign
+
+    def __repr__(self):
+        return (f"KstestResult(statistic={self.statistic}, "
+                f"pvalue={self.pvalue}, "
+                f"statistic_location={self.statistic_location}, "
+                f"statistic_sign={self.statistic_sign})")
+
+def ks_2samp(data1, data2, alternative='two-sided', method='auto') -> KstestResult:
     """
     Performs the two-sample Kolmogorov-Smirnov test for goodness of fit.
 
@@ -252,7 +355,6 @@ def ks_2samp(data1, data2, alternative='two-sided', method='auto'):
                         statistic_sign=np.int8(d_sign))
 
 
-
 def _attempt_exact_2kssamp(n1, n2, g, d, alternative):
     """Attempts to compute the exact 2sample probability.
 
@@ -267,35 +369,16 @@ def _attempt_exact_2kssamp(n1, n2, g, d, alternative):
     d = h * 1.0 / lcm
     if h == 0:
         return True, d, 1.0
-    saw_fp_error, prob = False, np.nan
-    try:
-        with np.errstate(invalid="raise", over="raise"):
-            if alternative == 'two-sided':
-                if n1 == n2:
-                    prob = _compute_prob_outside_square(n1, h)
-                else:
-                    prob = _compute_outer_prob_inside_method(n1, n2, g, h)
-            else:
-                if n1 == n2:
-                    # prob = binom(2n, n-h) / binom(2n, n)
-                    # Evaluating in that form incurs roundoff errors
-                    # from special.binom. Instead calculate directly
-                    jrange = np.arange(h)
-                    prob = np.prod((n1 - jrange) / (n1 + jrange + 1.0))
-                else:
-                    with np.errstate(over='raise'):
-                        num_paths = _count_paths_outside_method(n1, n2, g, h)
-                    bin = special.binom(n1 + n2, n1)
-                    if num_paths > bin or np.isinf(bin):
-                        saw_fp_error = True
-                    else:
-                        prob = num_paths / bin
+    if alternative == 'two-sided':
+        if n1 == n2:
+            prob = _compute_prob_outside_square(n1, h)
+        else:
+            # prob = _compute_outer_prob_inside_method(n1, n2, g, h)
+            raise NotImplementedError("Import from scipy")
+    else:
+        raise NotImplementedError("Import from scipy")
 
-    except (FloatingPointError, OverflowError):
-        saw_fp_error = True
 
-    if saw_fp_error:
-        return False, d, np.nan
     if not (0 <= prob <= 1):
         return False, d, prob
     return True, d, prob

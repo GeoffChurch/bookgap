@@ -7,11 +7,14 @@ name = "nextbook"
 version = "0.1"
 description = "Finding the next textbook to write"
 dependencies = [
+    "accelerate",
+    "bitsandbytes",
     "faiss-cpu",
     "matplotlib",
     "plotly",
     "pyalex",
     "sentence-transformers",
+    "transformers",
 ]
 
 [tool.setuptools]
