@@ -29,13 +29,12 @@ import torch
 import tqdm
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from typing import Any, Collection, Dict, Iterable, List, Optional, Literal, Union#, override (Python 3.12+)
-from util import CACHE_DIR, ks_2samp, logger, TIMER, MEMORY, symmetrized_gpca
+from util import CACHE_DIR, ks_2samp, logger, TIMER, MEMORY
 import pandas as pd
-
+from nextbook.denoisers import Denoiser
 
 ARTIFACTS_DIR = Path("artifacts")
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-
 
 FIGSIZE = (10, 6)
 DPI = 150
@@ -64,10 +63,10 @@ def from_flat_with_lims(flat_with_lims: FlatWithLims) -> list[NDArray]:
 
 class Topic(enum.Enum):
     ROBOTICS = ("Robotics and Sensor-Based Localization",      "T10191")
-    MYTHS    = ("Folklore, Mythology, and Literature Studies", "T12586")
-    MEDIEVAL = ("Medieval Literature and History",             "T10595")
-    ALG_GEOM = ("Algebraic Geometry and Number Theory",        "T10061")
-    NLP      = ("Natural Language Processing Techniques",      "T10181")
+    # MYTHS    = ("Folklore, Mythology, and Literature Studies", "T12586")
+    # MEDIEVAL = ("Medieval Literature and History",             "T10595")
+    # ALG_GEOM = ("Algebraic Geometry and Number Theory",        "T10061")
+    # NLP      = ("Natural Language Processing Techniques",      "T10181")
 
     def __init__(self, display_name: str, topic_id: str):
         self._display_name = display_name
@@ -201,14 +200,18 @@ class Cloud:
     max_works: int
     duplicate_expectation: float
     normalize_embeddings: bool
-    drop_k_largest_components: int
-    drop_k_ref_gpca: int
+    denoiser: Denoiser
+    drop_k: int
 
     def __post_init__(self):
         object.__setattr__(self, "name", f"{self.topic} {self.work_type}")
-        assert self.drop_k_largest_components >= 0
-        assert self.drop_k_ref_gpca >= 0
+        assert self.drop_k >= 0
+        assert isinstance(self.denoiser, Denoiser)
         assert 0 <= self.duplicate_expectation <= 1, f"duplicate_expectation must be in [0, 1], got {self.duplicate_expectation}"
+        if self.denoiser is Denoiser.NONE:
+            assert self.drop_k == 0, f"If denoiser is NONE, drop_k must be 0 (got {self.drop_k})"
+        else:
+            assert self.drop_k > 0, f"If denoiser is not NONE, drop_k must be > 0 (got {self.drop_k})"
 
     def works(self) -> List[Dict[str, Any]]:
         return self._data().works
@@ -247,6 +250,27 @@ def build_index_from_clouds(index_info: IndexInfo, clouds: Sequence[Cloud]) -> f
     index = build_index(index_info, all_embeddings)
     return index
 
+def build_citation_graph(works):
+    id_to_idx = {work["id"]: i for i, work in enumerate(works)}
+    n = len(works)
+    citation_graph = np.eye(n, dtype=np.float32)  # add self-loops for well-defined normalization
+    for i, work in enumerate(works):
+        for ref_id in work["referenced_works"]:
+            if ref_id in id_to_idx:
+                citation_graph[i, id_to_idx[ref_id]] = 1.0
+    citation_graph = citation_graph / citation_graph.sum(axis=1, keepdims=True)
+    return citation_graph
+
+def plot_eigenvalues(eigvals, n_components, out_path, title):
+    fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
+    ax.scatter(range(eigvals.shape[0] - n_components), eigvals[:-n_components], s=1, color='red', alpha=0.5, label='Discarded components')
+    ax.scatter(range(eigvals.shape[0] - n_components, eigvals.shape[0]), eigvals[-n_components:], s=1, color='blue', alpha=0.5, label='Retained components')
+    ax.set_yscale('log')
+    ax.set_title(title)
+    fig.legend()
+    fig.savefig(out_path)
+    plt.close(fig)
+
 @lru_cache(maxsize=16)
 @MEMORY.cache
 def get_cloud_data(cloud: "Cloud") -> "Cloud.CloudData":
@@ -257,6 +281,7 @@ def get_cloud_data(cloud: "Cloud") -> "Cloud.CloudData":
         return embeddings
     logger.info(f"Getting cloud data for {cloud.name}")
     cloud_dir = ARTIFACTS_DIR / str(cloud.topic) / str(cloud.work_type)
+    cloud_dir.mkdir(parents=True, exist_ok=True)
     expected = get_query(cloud.work_type, cloud.topic).count()
     max_works = cloud.max_works
     expected = min(max_works, expected) if max_works is not None else expected
@@ -280,70 +305,38 @@ def get_cloud_data(cloud: "Cloud") -> "Cloud.CloudData":
         undeduped_embeddings[i] = work["embedding"]
         del work["embedding"]
 
-    # Project out top k singular vectors
-    if cloud.drop_k_largest_components > 0:
-        logger.info(f"Cloud {cloud.name} -- Projecting out top {cloud.drop_k_largest_components} singular vectors from embeddings (centered)")
-        X = undeduped_embeddings
-        X_centered = X - X.mean(axis=0)
-        U, S, Vt = np.linalg.svd(X_centered, full_matrices=False)
-
-        # Plot singular values
-        fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
-        ax.scatter(range(len(S)), S, s=1, color='blue', alpha=0.5)
-        ax.set_title(f"Singular values for {cloud.name} embeddings")
-        fig.savefig(cloud_dir / "singular_values.png")
-        plt.close(fig)
-
-        # Remove top k right singular vectors
-        Vt_k = Vt[:cloud.drop_k_largest_components]
-        # Project out the top k components
-        X_proj = X_centered - X_centered @ Vt_k.T @ Vt_k
-        undeduped_embeddings = X_proj
-        logger.info(f"Cloud {cloud.name} -- Embeddings projected, new shape: {undeduped_embeddings.shape}")
+    # Dimensionality reduction/cleaning
+    if cloud.drop_k > 0:
+        logger.info(f"Cloud {cloud.name} -- Running {cloud.denoiser.name} with drop_k={cloud.drop_k}")
+        # n_components = min(undeduped_embeddings.shape[0], undeduped_embeddings.shape[1] - cloud.drop_k)
+        n_components = undeduped_embeddings.shape[1] - cloud.drop_k
+        if cloud.denoiser is Denoiser.PCA:
+            X_cleaned, S = cloud.denoiser(undeduped_embeddings, np.empty(0), n_components)
+            assert S is not None
+            undeduped_embeddings = X_cleaned
+            # Plot singular values
+            fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
+            ax.scatter(range(len(S)), S, s=1, color='blue', alpha=0.5)
+            ax.set_title(f"Singular values for {cloud.name} embeddings")
+            fig.savefig(cloud_dir / "singular_values.png")
+            plt.close(fig)
+            logger.info(f"Cloud {cloud.name} -- Embeddings projected, new shape: {undeduped_embeddings.shape}")
+        else:
+            citation_graph = build_citation_graph(works)
+            X_cleaned, eigvals = cloud.denoiser(undeduped_embeddings, citation_graph, n_components)
+            undeduped_embeddings = X_cleaned
+            if eigvals is not None:
+                plot_eigenvalues(
+                    eigvals,
+                    n_components,
+                    cloud_dir / f"{cloud.denoiser.name.lower()}_eigenvalues.png",
+                    f"Eigenvalues for {cloud.denoiser.name} on {cloud.name} embeddings"
+                )
+            undeduped_embeddings = maybe_normalize(undeduped_embeddings)
+    # else: no cleaning
 
     # Maybe normalize embeddings
     undeduped_embeddings = maybe_normalize(undeduped_embeddings)
-
-    # Maybe run symmetrized GPCA wrt citation graph
-    # if cloud.drop_k_ref_gpca > 0:
-    if True:
-        spca_dists_to_centroid_before = np.linalg.norm(undeduped_embeddings - undeduped_embeddings.mean(axis=0), axis=1)
-        logger.info(f"Cloud {cloud.name} -- Running GPCA with avgrefs, dropping top {cloud.drop_k_ref_gpca} components")
-        id_to_idx = {work["id"]: i for i, work in enumerate(works)}
-        n = len(works)
-        citation_graph = np.eye(n, dtype=np.float32) # add self-loops for well-defined normalization
-        for i, work in enumerate(works):
-            for ref_id in work["referenced_works"]:
-                if ref_id in id_to_idx:
-                    citation_graph[i, id_to_idx[ref_id]] = 1.0
-        # Normalize C to be stochastic
-        citation_graph = citation_graph / citation_graph.sum(axis=1, keepdims=True)
-        # "Clean" out directions that are irrelevant to the citation graph
-        n_components = undeduped_embeddings.shape[1] - cloud.drop_k_ref_gpca
-        undeduped_embeddings, eigvals = symmetrized_gpca(X=np.asmatrix(undeduped_embeddings), A=np.asmatrix(citation_graph), n_components=n_components,)
-
-        # Plot eigenvalues
-        fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
-        ax.scatter(range(eigvals.shape[0] - n_components), eigvals[:-n_components], s=1, color='red', alpha=0.5, label='Discarded components')
-        ax.scatter(range(eigvals.shape[0] - n_components, eigvals.shape[0]), eigvals[-n_components:], s=1, color='blue', alpha=0.5, label='Retained components')
-        ax.set_yscale('log')
-        ax.set_title(f"Eigenvalues for symmetrized GPCA on {cloud.name} embeddings")
-        fig.legend()
-        fig.savefig(cloud_dir / "gpca_eigenvalues.png")
-        plt.close(fig)
-
-        # Maybe re-normalize embeddings
-        undeduped_embeddings = maybe_normalize(undeduped_embeddings)
-        
-        spca_dists_to_centroid_after = np.linalg.norm(undeduped_embeddings - undeduped_embeddings.mean(axis=0), axis=1)
-        # Plot sorted distances to centroid before and after symmetrized PCA
-        fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
-        ax.scatter(range(len(spca_dists_to_centroid_before)), np.sort(spca_dists_to_centroid_before), s=1, color='red', alpha=0.5, label='Before symmetrized PCA')
-        ax.scatter(range(len(spca_dists_to_centroid_after)), np.sort(spca_dists_to_centroid_after), s=1, color='blue', alpha=0.5, label='After symmetrized PCA')
-        ax.set_title(f"Distances to centroid before and after symmetrized PCA for {cloud.name}")
-        fig.legend()
-        fig.savefig(cloud_dir / "sorted_dists_to_centroid_ref_gpca.png")
-        plt.close(fig)
 
     # Save for plotting
     dists_to_centroid = np.linalg.norm(undeduped_embeddings - undeduped_embeddings.mean(axis=0), axis=1)
@@ -436,7 +429,7 @@ def range_search_radii_(index: faiss.Index, query: NDArray, radii: NDArray) -> R
     dists = []
     ids = []
     for i in tqdm.tqdm(range(len(query)), desc="Range search radii"):
-        batch = query[i][np.newaxis]
+        batch = query[i:i+1]
         lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore
         if i > 0:
             lims_ = lims_[1:]
@@ -1039,7 +1032,9 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     if query_cloud.normalize_embeddings:
         logger.info(f"{query_cloud.name} -- Normalizing avgref embeddings")
         # Avoid division by zero for zero-norm vectors
-        non_zero_mask = avgref_norms.squeeze() > 1e-6 # Use a small epsilon for floating point
+        non_zero_mask = (avgref_norms > 1e-6).squeeze(1) # Use a small epsilon for floating point
+        logger.info(f"{avgref_embeddings.shape=}, {avgref_norms.shape=}, {non_zero_mask.shape=}")
+        logger.info(f"{avgref_embeddings.dtype=}, {avgref_norms.dtype=}, {non_zero_mask.dtype=}")
         avgref_embeddings[non_zero_mask] /= avgref_norms[non_zero_mask]
 
     logger.info(f"{query_cloud.name} -- Found {len(avgref_embeddings)} avgrefs for {len(query_cloud.works())} query works ({len(avgref_embeddings) / len(query_cloud.works()) * 100:.2f}%)")
@@ -1097,7 +1092,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     # # ORIGINAL
     # # res = range_search_radii_(index_cloud.index(), embeddings_with_avgrefs, dists)
     # # SUBSET
-    # res = range_search_radii_(subset_index, embeddings_with_avgrefs, sq_dists)
+    # res = range_search_radii_(subset_index, embeddings_with_avgrefs, random_sq_dists)
 
     # Build index on the full index cloud
     index_info = index_clouds[0].index_info
@@ -1121,55 +1116,58 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     key_columns = [
         'topic',
         'work_type',
-        'randomized',
         'index_info',
         'duplicate_expectation',
         'normalize_embeddings',
-        'drop_k_largest_components',
-        'drop_k_ref_gpca',
+        'drop_k',
+        'denoiser',
     ]
-    # stat_columns = [
-    #     'mean', 'median', 'min', 'max', 'std', 'count',
-    #     'num_avgrefs', 'num_query_works',
-    # ]
     csv_path = Path("artifacts") / "avgref_rank_stats.csv"
     try:
         df = pd.read_csv(csv_path)
     except FileNotFoundError:
         df = pd.DataFrame()
     existing_keys = set(tuple(row) for row in df[key_columns].to_numpy()) if not df.empty else set()
-    new_rows = []
-    for is_random, stat_arr in [(False, ranks), (True, random_ranks)]:
-        stats = get_stats(stat_arr)
-        row = {
-            'topic': str(query_cloud.topic),
-            'work_type': str(query_cloud.work_type),
-            'randomized': is_random,
-            'index_info': str(index_info),
-            'duplicate_expectation': query_cloud.duplicate_expectation,
-            'normalize_embeddings': query_cloud.normalize_embeddings,
-            'drop_k_largest_components': query_cloud.drop_k_largest_components,
-            'drop_k_ref_gpca': query_cloud.drop_k_ref_gpca,
-            'mean': stats['mean'],
-            'median': stats['median'],
-            'min': stats['min'],
-            'max': stats['max'],
-            'std': stats['std'],
-            'count': stats['count'],
-            'num_avgrefs': len(avgref_embeddings),
-            'num_query_works': len(query_cloud.works()),
-        }
-        key_tuple = tuple(row[k] for k in key_columns)
-        if key_tuple not in existing_keys:
-            new_rows.append(row)
-        else:
-            logger.info(f"Skipping existing row for {' '.join(f'{k}={row[k]}' for k in key_columns)}")
-    if new_rows:
-        new_df = pd.DataFrame(new_rows)
+
+    # Compute stats for both nonrandom and random
+    stats_nonrand = get_stats(ranks)
+    stats_rand = get_stats(random_ranks)
+    ks = ks_2samp(ranks, random_ranks)
+    row = {
+        'topic': str(query_cloud.topic),
+        'work_type': str(query_cloud.work_type),
+        'index_info': str(index_info),
+        'duplicate_expectation': query_cloud.duplicate_expectation,
+        'normalize_embeddings': query_cloud.normalize_embeddings,
+        'drop_k': query_cloud.drop_k,
+        'denoiser': str(query_cloud.denoiser),
+        'mean_nonrand': stats_nonrand['mean'],
+        'median_nonrand': stats_nonrand['median'],
+        'min_nonrand': stats_nonrand['min'],
+        'max_nonrand': stats_nonrand['max'],
+        'std_nonrand': stats_nonrand['std'],
+        'count_nonrand': stats_nonrand['count'],
+        'num_avgrefs': len(avgref_embeddings),
+        'num_query_works': len(query_cloud.works()),
+        'mean_rand': stats_rand['mean'],
+        'median_rand': stats_rand['median'],
+        'min_rand': stats_rand['min'],
+        'max_rand': stats_rand['max'],
+        'std_rand': stats_rand['std'],
+        'count_rand': stats_rand['count'],
+        'ks_pvalue': ks.pvalue,
+    }
+    key_tuple = tuple(row[k] for k in key_columns)
+    if key_tuple not in existing_keys:
+        new_df = pd.DataFrame([row])
         if not df.empty:
             assert list(df.columns) == list(new_df.columns), f"Column mismatch between existing and new DataFrame: {list(df.columns)=} != {list(new_df.columns)=}"
-        df = pd.concat([df, new_df], ignore_index=True)
+            df = pd.concat([df, new_df], ignore_index=True)
+        else:
+            df = new_df
         df.to_csv(csv_path, index=False, float_format='%.5f')
+    else:
+        logger.info(f"Skipping existing row for {' '.join(f'{k}={row[k]}' for k in key_columns)}")
     # --- End CSV output ---
 
     # CDF of ranks
@@ -1185,7 +1183,6 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
 
     # Overlay the ks statistic
     # ks = kstest(ranks, random_ranks)
-    ks = ks_2samp(ranks, random_ranks)
     logger.info(f"{query_cloud.name} -- KS test between ranks of avgref and random avgref: {ks}")
     lower, higher = (cumsum_random, cumsum) if ks.statistic_sign == 1 else (cumsum, cumsum_random)
     ymin = lower[ks.statistic_location].item()
@@ -1327,7 +1324,7 @@ def get_ball_coverage(index_cloud: Cloud, query_cloud: Cloud, radius_fraction: f
 #     Ip1[I] += 1 # Each index work is counted once for itself
 #     _idxs, index_works_per_query_work_p1 = np.unique(Ip1, return_counts=True)
 #     index_works_per_query_work = index_works_per_query_work_p1 - 1 # Decrement back to original counts, leaving 0 for empty cells
-#     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type} (radius fraction: {radius_fraction})"
+#     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type}"
 #     logger.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
 #     # Now get stats for the balls
 #     D_scaled = D * radius_fraction
@@ -1401,9 +1398,9 @@ def loadPipeline():
     return pipe
 
 @TIMER.time(formatters=dict(index_info=lambda _: "<...>"))
-def get_points_by_coverage_ball(topic: Topic, index_work_type: WorkType, query_work_type: WorkType, radius_fraction: float, index_info: IndexInfo, max_works: int, duplicate_expectation: float, normalize_embeddings: bool, drop_k_largest_components: int, drop_k_ref_gpca: int):
-    index_cloud = Cloud(topic=topic, work_type=index_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, drop_k_largest_components=drop_k_largest_components, drop_k_ref_gpca=drop_k_ref_gpca)
-    query_cloud = Cloud(topic=topic, work_type=query_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, drop_k_largest_components=drop_k_largest_components, drop_k_ref_gpca=drop_k_ref_gpca)
+def get_points_by_coverage_ball(topic: Topic, index_work_type: WorkType, query_work_type: WorkType, radius_fraction: float, index_info: IndexInfo, max_works: int, duplicate_expectation: float, normalize_embeddings: bool, denoiser: Denoiser, drop_k: int):
+    index_cloud = Cloud(topic=topic, work_type=index_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, denoiser=denoiser, drop_k=drop_k)
+    query_cloud = Cloud(topic=topic, work_type=query_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, denoiser=denoiser, drop_k=drop_k)
     assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
     topic = index_cloud.topic
     index_work_type = index_cloud.work_type
@@ -1509,7 +1506,7 @@ def get_points_by_coverage_ball(topic: Topic, index_work_type: WorkType, query_w
     # for rank, point in enumerate(argsort[:10]):
     #     index_point = index_cloud.items[point]
     #     covered = []
-    #     for covered_i in covered_points[point][:10]:
+    #     for covered_i in covered_ids[:10]:
     #         covered_point = index_cloud.items[covered_i]
     #         covered.append(f"{covered_point['display_name']} -- {covered_point['abstract']}")
     #     top10_dir = ARTIFACTS_DIR / "top10"
@@ -1792,17 +1789,17 @@ def do_embedding_plots(config, clouds):
     for work_type, topic in itertools.product(WorkType, Topic):
         cloud = clouds[(topic, work_type)]
         plot_embeddings([cloud], "language", method="pca", dimensions=2, color_f=color_f, **vars(config))
-        plot_embeddings([cloud], "language", method="pca", dimensions=3, color_f=color_f, **vars(config))
-        plot_embeddings([cloud], "language", method="tsne", color_f=color_f, **vars(config))
+        # plot_embeddings([cloud], "language", method="pca", dimensions=3, color_f=color_f, **vars(config))
+        plot_embeddings([cloud], "language", method="tsne", dimensions=2, color_f=color_f, **vars(config))
 
-    for work_type in WorkType:
-        topic_clouds = [clouds[(topic, work_type)] for topic in Topic]
-        plot_embeddings(topic_clouds, "topic", method="pca", dimensions=2, **vars(config))
-        plot_embeddings(topic_clouds, "topic", method="pca", dimensions=3, **vars(config))
-        plot_embeddings(topic_clouds, "topic", method="tsne", **vars(config))
-        plot_embeddings(topic_clouds, "language", method="pca", dimensions=2, color_f=color_f, **vars(config))
-        plot_embeddings(topic_clouds, "language", method="pca", dimensions=3, color_f=color_f, **vars(config))
-        plot_embeddings(topic_clouds, "language", method="tsne", color_f=color_f, **vars(config))
+    # for work_type in WorkType:
+    #     topic_clouds = [clouds[(topic, work_type)] for topic in Topic]
+    #     plot_embeddings(topic_clouds, "topic", method="pca", dimensions=2, **vars(config))
+    #     plot_embeddings(topic_clouds, "topic", method="pca", dimensions=3, **vars(config))
+    #     plot_embeddings(topic_clouds, "topic", method="tsne", **vars(config))
+    #     plot_embeddings(topic_clouds, "language", method="pca", dimensions=2, color_f=color_f, **vars(config))
+    #     plot_embeddings(topic_clouds, "language", method="pca", dimensions=3, color_f=color_f, **vars(config))
+    #     plot_embeddings(topic_clouds, "language", method="tsne", color_f=color_f, **vars(config))
 
 
 def do_inference():
@@ -1839,20 +1836,20 @@ class Config:
     duplicate_expectation: float
     radius_fraction: float
     index_info: IndexInfo
-    drop_k_largest_components: int
-    drop_k_ref_gpca: int
+    denoiser: Denoiser
+    drop_k: int
     normalize_embeddings: bool = field(repr=False)
 
 @TIMER.time()
 def main():
     parser = argparse.ArgumentParser(description="Fetch, deduplicate, embed, and analyze OpenAlex works.")
-    parser.add_argument("--drop_k_largest_components", type=int, default=0, help="Number of top principal components to drop from embeddings")
+    parser.add_argument("--drop_k", type=int, default=0, help="Number of top components to drop from embeddings")
     # Arguments for Config fields
     parser.add_argument("--log_level", type=str, default=logging._levelToName[logging.DEBUG], choices=sorted(logging._nameToLevel.keys(), key=lambda x: logging._nameToLevel[x]))
     parser.add_argument("--max_works", type=int, default=None, help="Maximum number of works to fetch")
     parser.add_argument("--duplicate_expectation", type=float, default=.05, help="Belief value in [0, 1] for expected fraction of duplicates (removed by semantic distance percentile)")
     parser.add_argument("--radius_fraction", type=float, default=0.75, help="Radius fraction for ball coverage")
-    parser.add_argument("--drop_k_ref_gpca", type=int, default=0, help="Number of top symmetrized PCA components to drop from embeddings (0 = keep all)")
+    parser.add_argument("--denoiser", type=Denoiser._member_map_.__getitem__, choices=list(Denoiser), default=Denoiser.NONE, help=f"Denoiser method. Choices: {', '.join(map(str, Denoiser))}")
     
     # Arguments for IndexInfo fields (and its subtypes)
     parser.add_argument("--index_type", type=IndexType._member_map_.__getitem__, choices=list(IndexType), default=IndexType.HNSW, help=f"Faiss index type. Choices: {', '.join(map(str, IndexType))}")
@@ -1919,8 +1916,8 @@ def main():
         duplicate_expectation=parsed_args.duplicate_expectation,
         radius_fraction=parsed_args.radius_fraction,
         index_info=index_info_obj,
-        drop_k_largest_components=parsed_args.drop_k_largest_components,
-        drop_k_ref_gpca=parsed_args.drop_k_ref_gpca,
+        denoiser=parsed_args.denoiser,
+        drop_k=parsed_args.drop_k,
         # normalize_embeddings=parsed_args.normalize_embeddings
         normalize_embeddings=True,
     )
@@ -1942,14 +1939,16 @@ def main():
             max_works=config.max_works,
             duplicate_expectation=config.duplicate_expectation,
             normalize_embeddings=config.normalize_embeddings,
-            drop_k_largest_components=parsed_args.drop_k_largest_components,
-            drop_k_ref_gpca=parsed_args.drop_k_ref_gpca,
+            denoiser=config.denoiser,
+            drop_k=config.drop_k,
         )
         for topic, work_type in itertools.product(Topic, WorkType)
     }
 
     # Log the closest pairs of works in each cloud
-    for work_type, topic in itertools.product(WorkType, Topic):
+    # for work_type, topic in itertools.product(WorkType, Topic):
+    for topic in Topic:
+        work_type = WorkType.ARTICLE
         fname = ARTIFACTS_DIR / f"{topic}" / f"{work_type}" / "closest_pairs.txt"
         fname.parent.mkdir(parents=True, exist_ok=True)
         with open(fname, "w") as f:
@@ -1976,13 +1975,17 @@ def main():
                         f"{otherwork['id']} | {otherwork['publication_date']} | {otherwork['display_name']} | {' '.join(otherwork['abstract'].split())}\n\n")
 
     for topic in Topic:
-        get_points_by_coverage_ball(topic, WorkType.ARTICLE, WorkType.BOOK, config.radius_fraction, config.index_info, config.max_works, config.duplicate_expectation, config.normalize_embeddings, config.drop_k_largest_components, config.drop_k_ref_gpca)
+        get_points_by_coverage_ball(topic, WorkType.ARTICLE, WorkType.BOOK, config.radius_fraction, config.index_info, config.max_works, config.duplicate_expectation, config.normalize_embeddings, config.denoiser, config.drop_k)
 
-    for work_type, topic in itertools.product(WorkType, Topic):
+    # for work_type, topic in itertools.product(WorkType, Topic):
+    for topic in Topic:
+        work_type = WorkType.ARTICLE
         cloud = clouds[(topic, work_type)]
         do_avgref_analysis([cloud], cloud)
 
-    for work_type, topic in itertools.product(WorkType, Topic):
+    # for work_type, topic in itertools.product(WorkType, Topic):
+    for topic in Topic:
+        work_type = WorkType.ARTICLE
         # Compute distribution of number of referenced_works
         cloud = clouds[(topic, work_type)]
         referenced_work_counts = np.array([len(work["referenced_works"]) for work in cloud.works()])
@@ -1999,7 +2002,7 @@ def main():
         plt.close(fig)
 
 
-    # do_embedding_plots(config, clouds)
+    do_embedding_plots(config, clouds)
 
     # do_inference()
 

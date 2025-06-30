@@ -1,4 +1,3 @@
-from collections.abc import Callable
 import logging
 from functools import wraps
 import inspect
@@ -6,11 +5,11 @@ import joblib
 from math import gcd
 import warnings
 import numpy as np
+from numpy.typing import NDArray
 from pathlib import Path
-from scipy._lib._bunch import _make_tuple_bunch
+import scipy.linalg
 from scipy.stats import distributions
 from time import time
-from typing import Any
 
 class Timer:
     def __init__(self, print=print):
@@ -42,59 +41,6 @@ TIMER = Timer(print=logger.info)
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY = joblib.Memory(CACHE_DIR / "joblib", verbose=1)
-
-@TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", A=lambda A: f"<shape={A.shape}>"))
-def symmetrized_gpca(X: np.matrix, A: np.matrix, n_components: int):
-    """
-    Denoises X via "Symmetrized" Generalized Principal Component Analysis.
-
-    Whereas regular GPCA computes the eigenvectors of X†AX, given Hermitian
-    (self-adjoint) A, SGPCA computes the eigenvectors of X†BX, where
-    B = (A + A†) / 2 is the "Hermitian part" of any operator A.
-
-    This function centers X, projects it onto the top n_components of X†BX,
-    and then rotates the data back to the original basis and adds back the mean.
-
-    Args:
-        X (np.matrix): The content data matrix, shape (n_samples, d_features).
-        A (np.matrix): The operator matrix. Shape (n_samples, n_samples).
-        n_components (int): The maximum number of dimensions for the output subspace.
-
-    Returns:
-        np.matrix: The data X projected onto the top n_components of the
-                    Symmetrized GPCA basis, shape (n_samples, n_components).
-        np.matrix: The eigenvalues of X†BX in ascending order, shape (d_features,).
-    """
-    # Center X
-    X_mean = X.mean(axis=0)
-    X = np.asmatrix(X - X_mean)
-
-    # B is the Hermitian part of A.
-    B = (A + A.H) / 2
-
-    # Form the d x d matrix for Generalized PCA: X†BX
-    M = X.H @ B @ X
-
-    # Find the real eigenvalues and complex eigenvectors of M.
-    res = np.linalg.eigh(M) # eigh is for Hermitian matrices.
-
-    # Make sure eigenvalues are in ascending order
-    assert np.all(np.diff(res.eigenvalues) >= 0)
-
-    # Truncate the basis
-    P = np.asmatrix(res.eigenvectors[:, -n_components:])  # Take the last n_components eigenvectors.
-
-    # Project X onto the truncated basis
-    X_projected = X @ P
-
-    # Rotate back to the original d-dimensional space
-    X_centered_denoised = X_projected @ P.H
-
-    # Add back the original mean
-    X_denoised = X_centered_denoised + X_mean
-    
-    return X_denoised, res.eigenvalues
-
 
 class KstestResult:
     def __init__(self, statistic, pvalue, statistic_location, statistic_sign):
