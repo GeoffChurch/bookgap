@@ -1,15 +1,16 @@
 import logging
 from functools import wraps
 import inspect
+import math
 import joblib
 from math import gcd
-import warnings
 import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
 import scipy.linalg
 from scipy.stats import distributions
 from time import time
+from fractions import Fraction
 
 class Timer:
     def __init__(self, print=print):
@@ -43,19 +44,24 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY = joblib.Memory(CACHE_DIR / "joblib", verbose=1)
 
 class KstestResult:
-    def __init__(self, statistic, pvalue, statistic_location, statistic_sign):
+    def __init__(self, statistic, pvalue: Fraction, statistic_location, statistic_sign):
         self.statistic = statistic
         self.pvalue = pvalue
+        self.log_pvalue = math.log(pvalue.numerator) - math.log(pvalue.denominator)
         self.statistic_location = statistic_location
         self.statistic_sign = statistic_sign
 
+    # def log_pvalue(self) -> float:
+    #     return math.log(self.pvalue.numerator) - math.log(self.pvalue.denominator)
+
     def __repr__(self):
         return (f"KstestResult(statistic={self.statistic}, "
-                f"pvalue={self.pvalue}, "
+                f"pvalue={self.log_pvalue}, "
                 f"statistic_location={self.statistic_location}, "
                 f"statistic_sign={self.statistic_sign})")
 
-def ks_2samp(data1, data2, alternative='two-sided', method='auto') -> KstestResult:
+@TIMER.time(formatters=dict(data1=lambda x: f"<shape={x.shape}>", data2=lambda x: f"<shape={x.shape}>"))
+def ks_2samp(data1, data2, alternative='two-sided', method='auto'):
     """
     Performs the two-sample Kolmogorov-Smirnov test for goodness of fit.
 
@@ -255,17 +261,18 @@ def ks_2samp(data1, data2, alternative='two-sided', method='auto') -> KstestResu
         d = maxS
         d_location = loc_maxS
         d_sign = 1
-    g = gcd(n1, n2)
+    g = math.gcd(n1, n2)
     n1g = n1 // g
     n2g = n2 // g
-    prob = -np.inf
+    # prob = -np.inf
+    prob = Fraction(-1, 1)  # Use Fraction to handle precision issues
     if mode == 'auto':
         mode = 'exact' if max(n1, n2) <= MAX_AUTO_N else 'asymp'
     elif mode == 'exact':
         # If lcm(n1, n2) is too big, switch from exact to asymp
         if n1g >= np.iinfo(np.int32).max / n2g:
             mode = 'asymp'
-            warnings.warn(
+            logger.warn(
                 f"Exact ks_2samp calculation not possible with samples sizes "
                 f"{n1} and {n2}. Switching to 'asymp'.", RuntimeWarning,
                 stacklevel=3)
@@ -274,11 +281,12 @@ def ks_2samp(data1, data2, alternative='two-sided', method='auto') -> KstestResu
         success, d, prob = _attempt_exact_2kssamp(n1, n2, g, d, alternative)
         if not success:
             mode = 'asymp'
-            warnings.warn(f"ks_2samp: Exact calculation unsuccessful. "
+            logger.warn(f"ks_2samp: Exact calculation unsuccessful. "
                           f"Switching to method={mode}.", RuntimeWarning,
                           stacklevel=3)
 
     if mode == 'asymp':
+        raise NotImplementedError("TODO use mpmath here")
         # The product n1*n2 is large.  Use Smirnov's asymptotic formula.
         # Ensure float to avoid overflow in multiplication
         # sorted because the one-sided formula is not symmetric in n1, n2
@@ -293,7 +301,9 @@ def ks_2samp(data1, data2, alternative='two-sided', method='auto') -> KstestResu
             expt = -2 * z**2 - 2 * z * (m + 2*n)/np.sqrt(m*n*(m+n))/3.0
             prob = np.exp(expt)
 
-    prob = np.clip(prob, 0, 1)
+    # prob = np.clip(prob, 0, 1)
+    # prob = max(Fraction(0, 1), min(Fraction(1, 1), prob))
+
     # Currently, `d` is a Python float. We want it to be a NumPy type, so
     # float64 is appropriate. An enhancement would be for `d` to respect the
     # dtype of the input.
@@ -301,7 +311,7 @@ def ks_2samp(data1, data2, alternative='two-sided', method='auto') -> KstestResu
                         statistic_sign=np.int8(d_sign))
 
 
-def _attempt_exact_2kssamp(n1, n2, g, d, alternative):
+def _attempt_exact_2kssamp(n1: int, n2: int, g: int, d, alternative):
     """Attempts to compute the exact 2sample probability.
 
     n1, n2 are the sample sizes
@@ -312,19 +322,44 @@ def _attempt_exact_2kssamp(n1, n2, g, d, alternative):
     """
     lcm = (n1 // g) * n2
     h = int(np.round(d * lcm))
-    d = h * 1.0 / lcm
+    # d = h * 1.0 / lcm
+    d = Fraction(h, lcm)
     if h == 0:
-        return True, d, 1.0
-    if alternative == 'two-sided':
-        if n1 == n2:
-            prob = _compute_prob_outside_square(n1, h)
+        # return True, d, 1.0
+        return True, d, Fraction(1, 1)
+    # saw_fp_error, prob = False, np.nan
+    saw_fp_error, prob = False, Fraction(-1, 1)
+    # try:
+    with np.errstate(invalid="raise", over="raise"):
+        if alternative == 'two-sided':
+            if n1 == n2:
+                prob = _compute_prob_outside_square(n1, h)
+            else:
+                raise NotImplementedError(f"Need {n1=} == {n2=} for this method")
+                prob = _compute_outer_prob_inside_method(n1, n2, g, h)
         else:
-            # prob = _compute_outer_prob_inside_method(n1, n2, g, h)
-            raise NotImplementedError("Import from scipy")
-    else:
-        raise NotImplementedError("Import from scipy")
+            raise NotImplementedError("Only 'two-sided' alternative for now")
+            if n1 == n2:
+                # prob = binom(2n, n-h) / binom(2n, n)
+                # Evaluating in that form incurs roundoff errors
+                # from special.binom. Instead calculate directly
+                jrange = np.arange(h)
+                prob = np.prod((n1 - jrange) / (n1 + jrange + 1.0))
+            else:
+                with np.errstate(over='raise'):
+                    num_paths = _count_paths_outside_method(n1, n2, g, h)
+                bin = special.binom(n1 + n2, n1)
+                if num_paths > bin or np.isinf(bin):
+                    saw_fp_error = True
+                else:
+                    prob = num_paths / bin
 
+    # except (FloatingPointError, OverflowError):
+    #     saw_fp_error = True
 
+    if saw_fp_error:
+        # return False, d, np.nan
+        return False, d, Fraction(-1, 1)
     if not (0 <= prob <= 1):
         return False, d, prob
     return True, d, prob
@@ -332,7 +367,7 @@ def _attempt_exact_2kssamp(n1, n2, g, d, alternative):
 
 
 
-def _compute_prob_outside_square(n, h):
+def _compute_prob_outside_square(n: int, h: int):
     """
     Compute the proportion of paths that pass outside the two diagonal lines.
 
@@ -345,7 +380,7 @@ def _compute_prob_outside_square(n, h):
 
     Returns
     -------
-    p : float
+    p : Fraction
         The proportion of paths that pass outside the lines x-y = +/-h.
 
     """
@@ -357,14 +392,18 @@ def _compute_prob_outside_square(n, h):
     # and use a Horner-like algorithm
     # P = 2 * A0 * (1 - A1*(1 - A2*(1 - A3*(1 - A4*(...)))))
 
-    P = 0.0
+    # P = 0.0
+    P = Fraction(0, 1)
     k = int(np.floor(n / h))
     while k >= 0:
-        p1 = 1.0
+        # p1 = 1.0
+        p1 = Fraction(1, 1)
         # Each of the Ai terms has numerator and denominator with
         # h simple terms.
         for j in range(h):
-            p1 = (n - k * h - j) * p1 / (n + k * h + j + 1)
-        P = p1 * (1.0 - P)
+            # p1 = (n - k * h - j) * p1 / (n + k * h + j + 1)
+            p1 *= Fraction(n - k * h - j, n + k * h + j + 1)
+        # P = p1 * (1.0 - P)
+        P = p1 * (Fraction(1, 1) - P)
         k -= 1
     return 2 * P

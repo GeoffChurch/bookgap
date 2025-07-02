@@ -5,4 +5,11 @@
 /cache
 /logs
 /nextbook/__pycache__
-/artifacts
+
+# Keep all but plots
+# !/artifacts/*/*
+# /artifacts/*/plots
+
+# Or just keep stats
+/artifacts/*
+!/artifacts/avgref_rank_stats.csv

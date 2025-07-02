@@ -210,8 +210,8 @@ class Cloud:
         assert 0 <= self.duplicate_expectation <= 1, f"duplicate_expectation must be in [0, 1], got {self.duplicate_expectation}"
         if self.denoiser is Denoiser.NONE:
             assert self.drop_k == 0, f"If denoiser is NONE, drop_k must be 0 (got {self.drop_k})"
-        else:
-            assert self.drop_k > 0, f"If denoiser is not NONE, drop_k must be > 0 (got {self.drop_k})"
+        # else:
+        #     assert self.drop_k > 0, f"If denoiser is not NONE, drop_k must be > 0 (got {self.drop_k})"
 
     def works(self) -> List[Dict[str, Any]]:
         return self._data().works
@@ -245,6 +245,10 @@ def build_index_from_clouds(index_info: IndexInfo, clouds: Sequence[Cloud]) -> f
     Build a single index from multiple clouds.
     This is useful for combining multiple topics or work types into a single index.
     """
+    if len(clouds) == 1 and clouds[0].index_info == index_info:
+        # If there's only one cloud and it matches the index_info, return its index directly
+        logger.info(f"Only one cloud provided, returning its index: {clouds[0].name}")
+        return clouds[0].index()
     all_embeddings = np.concatenate([cloud.embeddings() for cloud in clouds], axis=0)
     logger.info(f"Building index from {len(clouds)} clouds with {index_info.index_type} index. Total embeddings shape: {all_embeddings.shape}")
     index = build_index(index_info, all_embeddings)
@@ -263,8 +267,9 @@ def build_citation_graph(works):
 
 def plot_eigenvalues(eigvals, n_components, out_path, title):
     fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
-    ax.scatter(range(eigvals.shape[0] - n_components), eigvals[:-n_components], s=1, color='red', alpha=0.5, label='Discarded components')
-    ax.scatter(range(eigvals.shape[0] - n_components, eigvals.shape[0]), eigvals[-n_components:], s=1, color='blue', alpha=0.5, label='Retained components')
+    # ax.scatter(range(eigvals.shape[0] - n_components), eigvals[:-n_components], s=1, color='red', alpha=0.5, label='Discarded components')
+    # ax.scatter(range(eigvals.shape[0] - n_components, eigvals.shape[0]), eigvals[-n_components:], s=1, color='blue', alpha=0.5, label='Retained components')
+    ax.scatter(range(len(eigvals)), eigvals, s=1, label='Eigenvalues')
     ax.set_yscale('log')
     ax.set_title(title)
     fig.legend()
@@ -306,34 +311,20 @@ def get_cloud_data(cloud: "Cloud") -> "Cloud.CloudData":
         del work["embedding"]
 
     # Dimensionality reduction/cleaning
-    if cloud.drop_k > 0:
-        logger.info(f"Cloud {cloud.name} -- Running {cloud.denoiser.name} with drop_k={cloud.drop_k}")
-        # n_components = min(undeduped_embeddings.shape[0], undeduped_embeddings.shape[1] - cloud.drop_k)
-        n_components = undeduped_embeddings.shape[1] - cloud.drop_k
-        if cloud.denoiser is Denoiser.PCA:
-            X_cleaned, S = cloud.denoiser(undeduped_embeddings, np.empty(0), n_components)
-            assert S is not None
-            undeduped_embeddings = X_cleaned
-            # Plot singular values
-            fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
-            ax.scatter(range(len(S)), S, s=1, color='blue', alpha=0.5)
-            ax.set_title(f"Singular values for {cloud.name} embeddings")
-            fig.savefig(cloud_dir / "singular_values.png")
-            plt.close(fig)
-            logger.info(f"Cloud {cloud.name} -- Embeddings projected, new shape: {undeduped_embeddings.shape}")
-        else:
-            citation_graph = build_citation_graph(works)
-            X_cleaned, eigvals = cloud.denoiser(undeduped_embeddings, citation_graph, n_components)
-            undeduped_embeddings = X_cleaned
-            if eigvals is not None:
-                plot_eigenvalues(
-                    eigvals,
-                    n_components,
-                    cloud_dir / f"{cloud.denoiser.name.lower()}_eigenvalues.png",
-                    f"Eigenvalues for {cloud.denoiser.name} on {cloud.name} embeddings"
-                )
-            undeduped_embeddings = maybe_normalize(undeduped_embeddings)
-    # else: no cleaning
+    n_components = undeduped_embeddings.shape[1] - cloud.drop_k
+    logger.info(f"Cloud {cloud.name} -- Running {cloud.denoiser.name} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(undeduped_embeddings)} embeddings of shape {undeduped_embeddings.shape}")
+    X_cleaned, eigvals = cloud.denoiser(undeduped_embeddings,
+                                        np.empty(0) if cloud.denoiser is Denoiser.PCA else build_citation_graph(works),
+                                        n_components)
+    undeduped_embeddings = X_cleaned
+    if len(eigvals) > 0:
+        plot_eigenvalues(
+            eigvals,
+            n_components,
+            cloud_dir / f"{cloud.denoiser.name.lower()}_eigenvalues.png",
+            f"Eigenvalues for {cloud.denoiser.name} on {cloud.name} embeddings"
+        )
+    undeduped_embeddings = maybe_normalize(undeduped_embeddings)
 
     # Maybe normalize embeddings
     undeduped_embeddings = maybe_normalize(undeduped_embeddings)
@@ -1132,7 +1123,8 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     # Compute stats for both nonrandom and random
     stats_nonrand = get_stats(ranks)
     stats_rand = get_stats(random_ranks)
-    ks = ks_2samp(ranks, random_ranks)
+    ks = ks_2samp(ranks, random_ranks, method='exact')
+    logger.info(f"{query_cloud.name} -- KS test between ranks of avgref and random avgref: {ks}")
     row = {
         'topic': str(query_cloud.topic),
         'work_type': str(query_cloud.work_type),
@@ -1155,7 +1147,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
         'max_rand': stats_rand['max'],
         'std_rand': stats_rand['std'],
         'count_rand': stats_rand['count'],
-        'ks_pvalue': ks.pvalue,
+        'ks_log_pvalue': ks.log_pvalue,
     }
     key_tuple = tuple(row[k] for k in key_columns)
     if key_tuple not in existing_keys:
@@ -1165,6 +1157,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
             df = pd.concat([df, new_df], ignore_index=True)
         else:
             df = new_df
+        df = df.sort_values(by="mean_nonrand", ascending=False)
         df.to_csv(csv_path, index=False, float_format='%.5f')
     else:
         logger.info(f"Skipping existing row for {' '.join(f'{k}={row[k]}' for k in key_columns)}")
@@ -1193,7 +1186,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     ax.vlines(ks.statistic_location,
                ymin=ymin,
                ymax=ymax,
-               color='purple', linestyle='dashed', linewidth=1, label=f"Max diff of {ymax-ymin:.2f} at rank {ks.statistic_location} (KS p-value = {ks.pvalue:.1e})",
+               color='purple', linestyle='dashed', linewidth=1, label=f"Max diff of {ymax-ymin:.2f} at rank {ks.statistic_location} (KS p-value = {ks.log_pvalue:.1e})",
                 zorder=0)
 
     # # Overlay average ranks
