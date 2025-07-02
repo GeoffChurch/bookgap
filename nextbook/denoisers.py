@@ -1,13 +1,61 @@
+from dataclasses import dataclass
 import enum
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import eigh
 from sklearn.decomposition import PCA
+from numpy.linalg import pinv, LinAlgError, lstsq
 from util import TIMER, logger
 from abc import ABC, abstractmethod
 
 def adj(A: NDArray) -> NDArray:
     return A.conj().T
+
+@dataclass(frozen=True)
+class SolveEighRobustlyResult:
+    eigvals: NDArray
+    P_or_U: NDArray
+
+    def __post_init__(self):
+        if self.eigvals.ndim != 1:
+            raise ValueError(f"eigvals must be 1D, got {self.eigvals.ndim}D array.")
+        d, = self.eigvals.shape
+        if self.P_or_U.ndim != 2 or self.P_or_U.shape[1] != d:
+            raise ValueError(f"P_or_U must be 2D with second dimension matching eigvals, got {self.P_or_U.shape}.")
+
+@TIMER.time(formatters=dict(a_matrix=lambda a: f"<shape={a.shape}>", b_matrix=lambda b: f"<shape={b.shape}>" if b is not None else "None"))
+def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: list[int]) -> SolveEighRobustlyResult:
+    """Solves eigh, retrying with regularization upon failure."""
+    try:
+        eigvals, P_or_U = eigh(a=a_matrix, b=b_matrix, subset_by_index=subset)
+    except LinAlgError:
+        logger.warning("eigh failed, likely due to a singular b_matrix. Retrying with regularization.")
+        if b_matrix is not None:
+            # b_matrix += np.eye(b_matrix.shape[0]) * 1e-6
+            ridge_val = np.mean(np.abs(np.diag(b_matrix))) * 1e-4 + 1e-8
+            logger.warning(f"Retrying with adaptive regularization: {ridge_val:.2e}")
+            b_matrix += np.eye(b_matrix.shape[0]) * ridge_val
+            eigvals, P_or_U = eigh(a=a_matrix, b=b_matrix, subset_by_index=subset)
+        else:
+            raise
+    logger.info(f"{eigvals.shape=} {P_or_U.shape=}")
+    return SolveEighRobustlyResult(eigvals=eigvals, P_or_U=P_or_U)
+
+@TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", U=lambda U: f"<shape={U.shape}>"))
+def _recover_projector_from_dual(X: NDArray, U: NDArray) -> NDArray:
+    """Recovers the d-dimensional projector P from the N-dimensional dual eigenvectors U."""
+    P_raw = adj(X) @ U
+    P_norms = np.linalg.norm(P_raw, axis=0)
+
+    logger.info(f"{X.shape=} @ {U.shape=} = {P_raw.shape=}")
+    logger.info(f"np.linalg.norm({P_raw.shape=}, axis=0) = {P_norms.shape=}")
+    
+    # Avoid division by zero for null projectors without adding a ridge.
+    # If a norm is zero, the resulting column will be all zeros, which is correct.
+    P_norms[P_norms == 0] = 1
+    ret = P_raw / P_norms
+    logger.info(f"{P_raw.shape=} {P_norms.shape=} {ret.shape=}")
+    return ret
 
 class DenoiserImpl(ABC):
     def __call__(self, X: NDArray, A: NDArray, n_components: int) -> tuple[NDArray, NDArray]:
@@ -17,10 +65,8 @@ class DenoiserImpl(ABC):
 
         if np.allclose(adj(P) @ P, np.eye(P.shape[1])):
             P_inv = adj(P)
-            logger.info(f"Projector P is orthonormal, using adj(P) as P_inv.")
         else:
-            P_inv = np.linalg.pinv(P)
-            logger.info(f"Projector P is not orthonormal, using np.linalg.pinv(P) as P_inv.")
+            P_inv = pinv(P)
 
         X_denoised = X_centered @ (P @ P_inv) + X_mean
         return X_denoised, extra
@@ -32,163 +78,163 @@ class DenoiserImpl(ABC):
 
 class IdDenoiser(DenoiserImpl):
     def projector(self, X: NDArray, A: NDArray, n_components: int):
-        return np.eye(X.shape[1]), np.array([])
+        d = X.shape[1]
+        if n_components > d: n_components = d
+        return np.eye(d, n_components), np.array([])
 
 class PCADenoiser(DenoiserImpl):
     def projector(self, X: NDArray, A: NDArray, n_components: int):
         min_cs = min(X.shape)
         if n_components > min_cs:
-            logger.warning(f"n_components ({n_components}) is greater than the minimum of the dimensions of X ({min_cs}). Using {min_cs} components instead.")
             n_components = min_cs
         pca = PCA(n_components=n_components)
         pca.fit(X)
-        return pca.components_.T, np.array([])
+        return pca.components_.T, pca.singular_values_
 
 class GPCADenoiser(DenoiserImpl):
     def projector(self, X: NDArray, A: NDArray, n_components: int):
         B = (A + adj(A)) / 2
         M = adj(X) @ B @ X
-        N, d = X.shape
-        eigvals, P = eigh(M, subset_by_index=[d-n_components, d-1])
-        # P = eigvecs[:, -n_components:]
+        d = X.shape[1]
+        subset_size = min(n_components, d - 1) if d > 1 else 0
+        eigvals, P = eigh(M, subset_by_index=[d - 1 - subset_size, d - 1])
         return P, eigvals
 
-class InvariantPCADenoiser(DenoiserImpl):
-    def projector(self, X: NDArray, A: NDArray, n_components: int):
-        B = (A + adj(A)) / 2
-        C = (np.eye(X.shape[0]) - B) @ X
-        M = adj(C) @ C
-        eigvals, P = eigh(M, subset_by_index=[0, n_components-1])
-        # P = eigvecs[:, :n_components]
-        return P, eigvals
-    
-class RelInvariantPCADenoiser(InvariantPCADenoiser):
-    def projector(self, X: NDArray, A: NDArray, n_components: int):
-        B = (A + adj(A)) / 2
-        N, d = X.shape
-        C = (np.eye(N) - B) @ X
-        a_mat = adj(C) @ C
-        b_mat = adj(X) @ X
-        if N < d:
-            nonzero_vals = b_mat[np.nonzero(b_mat)]
-            median = np.median(nonzero_vals) if nonzero_vals.size > 0 else 1.0
-            logger.warning(f"Number of samples ({N}) is less than number of features ({d}). Using median abs({median})={np.abs(median)} for regularization.")
-            b_mat += np.eye(d) * np.abs(median)
-        logger.info(f"Solving generalized eigenvalue problem for RelInvariantPCADenoiser with shapes: {X.shape=}, {A.shape=}, {C.shape=}, {B.shape=}")
-        eigvals, P = eigh(
-            a=a_mat,
-            b=b_mat,
-            subset_by_index=[0, n_components-1])
-        # P = eigvecs[:, :n_components]
-        logger.info(f"RelInvariantPCADenoiser projector shape: {P.shape}, eigvals shape: {eigvals.shape}")
-        return P, eigvals
-
-    
 class RelAmpDenoiser(DenoiserImpl):
     def projector(self, X: NDArray, A: NDArray, n_components: int):
-        B = (A + adj(A)) / 2
         N, d = X.shape
-        if n_components > d:
-            raise ValueError(f"n_components ({n_components}) cannot be greater than the number of features ({d}).")
-        logger.info(f"Computing {n_components} components for RelAmpDenoiser on data with shape {X.shape} and A shape {A.shape}. {N=}, {d=}")
-        b_matrix = adj(X) @ X
+        B = (A + adj(A)) / 2
+        
         if N < d:
-            nonzero_vals = b_matrix[np.nonzero(b_matrix)]
-            median = np.median(nonzero_vals) if nonzero_vals.size > 0 else 1.0
-            logger.warning(f"Number of samples ({N}) is less than number of features ({d}). Using median abs({median})={np.abs(median)} for regularization.")
-            b_matrix += np.eye(d) * np.abs(median)  # Regularization to avoid singularity
-        eigvals, P = eigh(
-            a=adj(X) @ B @ X,
-            b=b_matrix,
-            # driver="gvd",
-            subset_by_index=[d-n_components, d-1])
-        logger.info(f"{P.shape=}, {eigvals.shape=}")
-        # P = P[:, -n_components:]
-        logger.info(f"RelAmpDenoiser truncated projector shape: {P.shape}, eigvals shape: {eigvals.shape}")
-        return P, eigvals
+            logger.info(f"RelAmp: N < d, using dual formulation. N={N}, d={d}")
+            K = X @ adj(X)
+            a_dual = adj(K) @ B @ K
+            b_dual = adj(K) @ K
+            subset_size = min(n_components, N - 1) if N > 1 else 0
+            subset = [N - 1 - subset_size, N - 1]
+            res = _solve_eigh_robustly(a_dual, b_dual, subset)
+            P = _recover_projector_from_dual(X, res.P_or_U)
+            return P, res.eigvals
+        else:
+            a_matrix = adj(X) @ B @ X
+            b_matrix = adj(X) @ X
+            subset_size = min(n_components, d - 1) if d > 1 else 0
+            subset = [d - 1 - subset_size, d - 1]
+            res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
+            return res.P_or_U, res.eigvals
+
+class NeighborDistMinDenoiser(DenoiserImpl):
+    def projector(self, X: NDArray, A: NDArray, n_components: int):
+        N, d = X.shape
+        B = (A + adj(A)) / 2
+        M = np.eye(N) - B
+        a_mat = adj(X) @ adj(M) @ M @ X
+        
+        if N < d:
+            logger.info(f"NeighborDistMin: N < d, using dual formulation. N={N}, d={d}")
+            K = X @ adj(X)
+            a_dual = adj(K) @ adj(M) @ M @ K
+            b_dual = adj(K) @ K
+            subset_size = min(n_components, N - 1) if N > 1 else 0
+            subset = [0, subset_size]
+            res = _solve_eigh_robustly(a_dual, b_dual, subset)
+            P = _recover_projector_from_dual(X, res.P_or_U)
+            return P, res.eigvals
+        else:
+            b_mat = adj(X) @ X
+            subset_size = min(n_components, d - 1) if d > 1 else 0
+            subset = [0, subset_size]
+            res = _solve_eigh_robustly(a_mat, b_mat, subset)
+            return res.P_or_U, res.eigvals
 
 class LPPDenoiser(DenoiserImpl):
+    @TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", A=lambda A: f"<shape={A.shape}>"))
     def projector(self, X: NDArray, A: NDArray, n_components: int):
+        N, d = X.shape
         B = (A + adj(A)) / 2
-        # Define L and D
+
+        # LPP requires non-negative weights for a valid Degree matrix.
+        negatives = B < 0
+        num_negatives = np.sum(negatives)
+        if num_negatives > 0:
+            logger.warning(f"LPPDenoiser received an affinity matrix with {num_negatives} negative weights ({num_negatives / B.size:.2%} of total). Setting negative weights to zero.")
+            B[B < 0] = 0
+
         D = np.diag(np.sum(B, axis=1))
         L = D - B
-        # Compute the generalized eigenvalue problem
-        N, d = X.shape
-        if n_components > d:
-            raise ValueError(f"n_components ({n_components}) cannot be greater than the number of features ({d}).")
-        logger.info(f"Computing {n_components} components for LPPDenoiser on data with shape {X.shape} and A shape {A.shape}. {N=}, {d=}")
-        a_matrix = adj(X) @ L @ X
-        b_matrix = adj(X) @ D @ X
+
         if N < d:
-            nonzero_vals = b_matrix[np.nonzero(b_matrix)]
-            median = np.median(nonzero_vals) if nonzero_vals.size > 0 else 1.0
-            logger.warning(f"Number of samples ({N}) is less than number of features ({d}). Using median abs({median})={np.abs(median)} for regularization.")
-            b_matrix += np.eye(d) * np.abs(median)
-        logger.info(f"Solving generalized eigenvalue problem for LPPDenoiser with shapes: {X.shape=}, {A.shape=}, {D.shape=}, {L.shape=}")
-        eigvals, P = eigh(
-            a=a_matrix,
-            b=b_matrix,
-            subset_by_index=[0, n_components-1])
-        return P, eigvals
+            logger.info(f"LPP: N < d, using dual formulation. N={N}, d={d}")
+            K = X @ adj(X)
+            a_dual = adj(K) @ L @ K
+            b_dual = adj(K) @ D @ K
+            subset_size = min(n_components, N - 1) if N > 1 else 0
+            subset = [0, subset_size]
+            res = _solve_eigh_robustly(a_dual, b_dual, subset)
+            P = _recover_projector_from_dual(X, res.P_or_U)
+            return P, res.eigvals
+        else:
+            a_matrix = adj(X) @ L @ X
+            b_matrix = adj(X) @ D @ X
+            subset_size = min(n_components, d - 1) if d > 1 else 0
+            subset = [0, subset_size]
+            res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
+            return res.P_or_U, res.eigvals
 
 class NormalizedLPPDenoiser(DenoiserImpl):
-    """
-    Denoising using Locality Preserving Projections with a
-    symmetrically normalized graph Laplacian.
-    """
-    def projector(self, X: NDArray, A: NDArray, n_components: int) -> tuple[NDArray, NDArray]:
-        # 1. Ensure a symmetric adjacency matrix with no self-loops
+    def projector(self, X: NDArray, A: NDArray, n_components: int):
         B = (A + adj(A)) / 2
-        np.fill_diagonal(B, 0)
         N, d = X.shape
-
-        # 2. Calculate the inverse square root of the degree matrix D^(-1/2)
-        # This is the key normalization step.
         degrees = np.sum(B, axis=1)
-        assert not any(degrees == 0), "Degrees must be non-zero for normalization."
-        # # Add a small epsilon for numerical stability in case of isolated nodes (degree=0)
-        # inv_sqrt_deg = np.power(degrees + 1e-9, -0.5)
-        inv_sqrt_deg = np.power(degrees, -0.5)
-        D_inv_sqrt = np.diag(inv_sqrt_deg)
-
-        # 3. Compute the symmetrically normalized Laplacian: L_sym = I - D^(-1/2) A D^(-1/2)
-        I = np.eye(N)
-        L_sym = I - (D_inv_sqrt @ B @ D_inv_sqrt)
-
-        # 4. Form the matrix for the standard eigenvalue problem
-        # The objective is to minimize w^T * (X^T * L_sym * X) * w
-        a_matrix = adj(X) @ L_sym @ X
-
-        # 5. Solve the standard eigenvalue problem.
-        # We select eigenvectors with the smallest eigenvalues to preserve locality.
-        eigvals, P = eigh(
-            a=a_matrix,
-            subset_by_index=[0, n_components - 1]
-        )
         
-        # Because this is a standard eigenproblem (b=I), the resulting P is orthonormal
-        # and works correctly with the base DenoiserImpl.__call__ method.
+        # Handle zero-degree nodes robustly without a ridge
+        inv_sqrt_deg = np.zeros_like(degrees, dtype=float)
+        safe_indices = degrees > 0
+        inv_sqrt_deg[safe_indices] = np.power(degrees[safe_indices], -0.5)
+        
+        D_inv_sqrt = np.diag(inv_sqrt_deg)
+        L_sym = np.eye(N) - (D_inv_sqrt @ B @ D_inv_sqrt)
+        a_matrix = adj(X) @ L_sym @ X
+        subset_size = min(n_components, d - 1) if d > 1 else 0
+        eigvals, P = eigh(a_matrix, subset_by_index=[0, subset_size])
         return P, eigvals
+
+class EmbeddedGraphDenoiser(DenoiserImpl):
+    def __init__(self, wrapped_denoiser: DenoiserImpl):
+        self.wrapped_denoiser = wrapped_denoiser
+
+    def projector(self, X: NDArray, A: NDArray, n_components: int) -> tuple[NDArray, NDArray]:
+        N, d = X.shape
+        logger.info(f"Embedding A into embedding space by solving AX ≈ XW.")
+        A_sym = (A + adj(A)) / 2
+        target = A_sym @ X
+        W, residuals, rank, s = lstsq(X, target, rcond=None)
+        
+        X_smoothed = X @ W
+        if N > 5000:
+            logger.warning(f"Graph embedding is creating a dense {N}x{N} affinity matrix. This may be slow or cause memory issues.")
+        A_w = X_smoothed @ adj(X_smoothed)
+        return self.wrapped_denoiser.projector(X, A_w, n_components)
+
+    def __repr__(self):
+        return f"EmbeddedGraph({self.wrapped_denoiser.__class__.__name__})"
 
 class Denoiser(enum.Enum):
     NONE = IdDenoiser()
     PCA = PCADenoiser()
     GPCA = GPCADenoiser()
-    INVAR_PCA = InvariantPCADenoiser()
-    REL_INVAR_PCA = RelInvariantPCADenoiser()
     REL_AMP = RelAmpDenoiser()
+    NEIGHBOR_DIST_MIN = NeighborDistMinDenoiser()
     LPP = LPPDenoiser()
     NORM_LPP = NormalizedLPPDenoiser()
-
-    def __init__(self, func):
-        self._func = func
-
+    W_LPP = EmbeddedGraphDenoiser(LPP)
+    W_NEIGHBOR_DIST_MIN = EmbeddedGraphDenoiser(NEIGHBOR_DIST_MIN)
+    
     def __call__(self, X: NDArray, A: NDArray, n_components: int) -> tuple[NDArray, NDArray]:
-        return self._func(X, A, n_components)
+        return self.value(X, A, n_components)
 
     def __str__(self):
-        return self._func.__class__.__name__
+        return self.name
     
     def __repr__(self):
         return str(self)

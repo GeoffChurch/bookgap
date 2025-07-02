@@ -27,7 +27,7 @@ from sklearn.manifold import TSNE
 import time
 import torch
 import tqdm
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig # type: ignore[reportPrivateImportUsage]
 from typing import Any, Collection, Dict, Iterable, List, Optional, Literal, Union#, override (Python 3.12+)
 from util import CACHE_DIR, ks_2samp, logger, TIMER, MEMORY
 import pandas as pd
@@ -200,15 +200,14 @@ class Cloud:
     max_works: int
     duplicate_expectation: float
     normalize_embeddings: bool
-    denoiser: Denoiser
+    denoiser: str
     drop_k: int
 
     def __post_init__(self):
         object.__setattr__(self, "name", f"{self.topic} {self.work_type}")
         assert self.drop_k >= 0
-        assert isinstance(self.denoiser, Denoiser)
         assert 0 <= self.duplicate_expectation <= 1, f"duplicate_expectation must be in [0, 1], got {self.duplicate_expectation}"
-        if self.denoiser is Denoiser.NONE:
+        if Denoiser[self.denoiser] is Denoiser.NONE:
             assert self.drop_k == 0, f"If denoiser is NONE, drop_k must be 0 (got {self.drop_k})"
         # else:
         #     assert self.drop_k > 0, f"If denoiser is not NONE, drop_k must be > 0 (got {self.drop_k})"
@@ -312,17 +311,18 @@ def get_cloud_data(cloud: "Cloud") -> "Cloud.CloudData":
 
     # Dimensionality reduction/cleaning
     n_components = undeduped_embeddings.shape[1] - cloud.drop_k
-    logger.info(f"Cloud {cloud.name} -- Running {cloud.denoiser.name} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(undeduped_embeddings)} embeddings of shape {undeduped_embeddings.shape}")
-    X_cleaned, eigvals = cloud.denoiser(undeduped_embeddings,
-                                        np.empty(0) if cloud.denoiser is Denoiser.PCA else build_citation_graph(works),
-                                        n_components)
+    logger.info(f"Cloud {cloud.name} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(undeduped_embeddings)} embeddings of shape {undeduped_embeddings.shape}")
+    X_cleaned, eigvals = Denoiser[cloud.denoiser](
+        undeduped_embeddings,
+        np.empty(0) if cloud.denoiser is Denoiser.PCA else build_citation_graph(works),
+        n_components)
     undeduped_embeddings = X_cleaned
     if len(eigvals) > 0:
         plot_eigenvalues(
             eigvals,
             n_components,
-            cloud_dir / f"{cloud.denoiser.name.lower()}_eigenvalues.png",
-            f"Eigenvalues for {cloud.denoiser.name} on {cloud.name} embeddings"
+            cloud_dir / f"{cloud.denoiser.lower()}_eigenvalues.png",
+            f"Eigenvalues for {cloud.denoiser} on {cloud.name} embeddings"
         )
     undeduped_embeddings = maybe_normalize(undeduped_embeddings)
 
@@ -1391,7 +1391,7 @@ def loadPipeline():
     return pipe
 
 @TIMER.time(formatters=dict(index_info=lambda _: "<...>"))
-def get_points_by_coverage_ball(topic: Topic, index_work_type: WorkType, query_work_type: WorkType, radius_fraction: float, index_info: IndexInfo, max_works: int, duplicate_expectation: float, normalize_embeddings: bool, denoiser: Denoiser, drop_k: int):
+def get_points_by_coverage_ball(topic: Topic, index_work_type: WorkType, query_work_type: WorkType, radius_fraction: float, index_info: IndexInfo, max_works: int, duplicate_expectation: float, normalize_embeddings: bool, denoiser: str, drop_k: int):
     index_cloud = Cloud(topic=topic, work_type=index_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, denoiser=denoiser, drop_k=drop_k)
     query_cloud = Cloud(topic=topic, work_type=query_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, denoiser=denoiser, drop_k=drop_k)
     assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
@@ -1829,7 +1829,7 @@ class Config:
     duplicate_expectation: float
     radius_fraction: float
     index_info: IndexInfo
-    denoiser: Denoiser
+    denoiser: str
     drop_k: int
     normalize_embeddings: bool = field(repr=False)
 
@@ -1842,7 +1842,7 @@ def main():
     parser.add_argument("--max_works", type=int, default=None, help="Maximum number of works to fetch")
     parser.add_argument("--duplicate_expectation", type=float, default=.05, help="Belief value in [0, 1] for expected fraction of duplicates (removed by semantic distance percentile)")
     parser.add_argument("--radius_fraction", type=float, default=0.75, help="Radius fraction for ball coverage")
-    parser.add_argument("--denoiser", type=Denoiser._member_map_.__getitem__, choices=list(Denoiser), default=Denoiser.NONE, help=f"Denoiser method. Choices: {', '.join(map(str, Denoiser))}")
+    parser.add_argument("--denoiser", type=str, choices=[d.name for d in Denoiser], default=Denoiser.NONE.name, help=f"Denoiser method.")
     
     # Arguments for IndexInfo fields (and its subtypes)
     parser.add_argument("--index_type", type=IndexType._member_map_.__getitem__, choices=list(IndexType), default=IndexType.HNSW, help=f"Faiss index type. Choices: {', '.join(map(str, IndexType))}")
