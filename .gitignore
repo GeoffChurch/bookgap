@@ -12,4 +12,4 @@
 
 # Or just keep stats
 /artifacts/*
-!/artifacts/avgref_rank_stats.csv
+!/artifacts/avgref_rank_stats/
