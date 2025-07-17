@@ -17,7 +17,7 @@ import plotly.express as px
 import pyalex
 import re
 # from scipy.spatial import ConvexHull
-from scipy.stats import gaussian_kde#, kstest
+from scipy.stats import gaussian_kde
 from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
@@ -29,11 +29,11 @@ from typing import Collection, Dict, Iterable, List, Optional, Literal, Union#, 
 import pandas as pd
 from scipy import sparse
 
-from nextbook.cloud import Cloud
-from nextbook.index import HNSW, FlatL2, IndexInfo, IndexType, build_index
-from nextbook.util import CACHE_DIR, LOGGER, TIMER, MEMORY, Subjects, WorkType, create_unicode_safe_filename
+from nextbook.cloud import Cloud, SubCloud, WorkDenoisers, get_ball_coverage, faiss_search_outside_epsilon
+from nextbook.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
+from nextbook.parse_args import parse_args
+from nextbook.util import CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, setup_logging, get_stats
 from nextbook.mp_ks_test import ks_2samp
-from nextbook.denoisers import Denoiser
 
 ARTIFACTS_DIR = Path("artifacts")
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,26 +42,6 @@ FIGSIZE = (10, 6)
 DPI = 150
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
-
-@dataclass(frozen=True)
-class FlatWithLims:
-    concatenated: NDArray
-    lims: NDArray
-def to_flat_with_lims(arrs: list[NDArray]) -> FlatWithLims:
-    lims = np.array([0] + [len(arr) for arr in arrs], dtype=np.uint32).cumsum()
-    return FlatWithLims(concatenated=np.concatenate(arrs), lims=lims)
-def from_flat_with_lims(flat_with_lims: FlatWithLims) -> list[NDArray]:
-    lims = flat_with_lims.lims
-    arr = flat_with_lims.concatenated
-    return [arr[i:j] for i, j in zip(lims[:-1], lims[1:])]
-
-# class DimensionalityReduction(enum.Enum):
-#     PCA = reduce_dimensions_pca
-#     TSNE = reduce_dimensions_tsne
-#     def __init__(self, func):
-#         self.f = func
-#     def __call__(self, embeddings: NDArray, **kwargs) -> NDArray:
-#         return self.f(embeddings, **kwargs)
 
 @TIMER.time(formatters=dict(index_info=lambda _: "<...>", clouds=lambda clouds: f"<{len(clouds)} clouds, num works={[len(cloud.works()) for cloud in clouds]}>"))
 @MEMORY.cache
@@ -78,155 +58,6 @@ def build_index_from_clouds(index_info: IndexInfo, clouds: Sequence[Cloud]) -> f
     LOGGER.info(f"Building index from {len(clouds)} clouds with {index_info.index_type} index. Total embeddings shape: {all_embeddings.shape}")
     index = build_index(index_info, all_embeddings)
     return index
-
-
-def plot_eigenvalues(eigvals, n_components, out_path, title):
-    fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
-    # ax.scatter(range(eigvals.shape[0] - n_components), eigvals[:-n_components], s=1, color='red', alpha=0.5, label='Discarded components')
-    # ax.scatter(range(eigvals.shape[0] - n_components, eigvals.shape[0]), eigvals[-n_components:], s=1, color='blue', alpha=0.5, label='Retained components')
-    ax.scatter(range(len(eigvals)), eigvals, s=1, label='Eigenvalues')
-    ax.set_yscale('log')
-    ax.set_title(title)
-    fig.legend()
-    fig.savefig(out_path)
-    plt.close(fig)
-
-@dataclass(frozen=True)
-class RangeSearchResult:
-    lims: Optional[NDArray]
-    dists: Optional[NDArray]
-    ids: Optional[NDArray]
-    def __post_init__(self):
-        if self.lims is not None:
-            assert self.lims[0] == 0, f"lims[0] != 0: {self.lims[0]}"
-        if self.dists is not None and self.ids is not None:
-            assert len(self.dists) == len(self.ids), f"len(dists) != len(ids): {len(self.dists)} != {len(self.ids)}"
-        # assert len(self.lims) == len(self.dists) + 1, f"len(lims) != len(dists) + 1: {len(self.lims)} != {len(self.dists)} + 1"
-
-@TIMER.time(formatters=dict(index=lambda index: f"<{index.ntotal} vectors, d={index.d}>", query=lambda q: f"<shape={q.shape}>", radii=lambda r: f"<shape={r.shape}>") )
-def range_search_radii_(
-    index: faiss.Index,
-    query: NDArray,
-    radii: NDArray,
-    return_lims: bool = True,
-    return_dists: bool = True,
-    return_ids: bool = True
-) -> RangeSearchResult:
-    lims = [] if return_lims else None
-    dists = [] if return_dists else None
-    ids = [] if return_ids else None
-    for i in tqdm.tqdm(range(len(query)), desc="Range search radii"):
-        batch = query[i:i+1]
-        lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore
-        if lims is not None:
-            if i > 0:
-                lims_ = lims_[1:]
-                lims_ += lims[-1][-1]
-            lims.append(lims_)
-        if dists is not None:
-            dists.append(dists_)
-        if ids is not None:
-            ids.append(ids_)
-    lims = np.concatenate(lims) if lims is not None else None
-    dists = np.concatenate(dists) if dists is not None else None
-    ids = np.concatenate(ids) if ids is not None else None
-    return RangeSearchResult(lims=lims, dists=dists, ids=ids)
-
-def range_search_(index: faiss.Index, query_embeddings: NDArray, epsilon: float) -> RangeSearchResult:
-    # Need to use small batches to avoid crashing
-    lims = []
-    dists = []
-    ids = []
-
-    batch_size = 48
-    with tqdm.tqdm(desc="Range search", total=len(query_embeddings)) as pbar:
-        for i in range(0, len(query_embeddings), batch_size):
-            batch = query_embeddings[i:i + batch_size]
-            lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore
-            if i > 0:
-                lims_ = lims_[1:]
-                lims_ += lims[-1][-1]
-            lims.append(lims_)
-            dists.append(dists_)
-            ids.append(ids_)
-            pbar.update(len(batch))
-    return RangeSearchResult(lims=np.concatenate(lims), dists=np.concatenate(dists), ids=np.concatenate(ids))
-
-
-
-@dataclass(frozen=True)
-class FaissSearchOutsideEpsilonResult:
-    D_outside: NDArray
-    I_outside: NDArray
-    lims_within: NDArray
-    dists_within: NDArray
-    ids_within: NDArray
-
-@MEMORY.cache
-def faiss_search_outside_epsilon(
-        index: Cloud,
-        query: Cloud,
-        k: int,
-        epsilon: float) -> FaissSearchOutsideEpsilonResult:
-    """
-    Find the k nearest neighbors of query that are not (strictly) within epsilon of the query.
-    """
-    query_embeddings = query.embeddings()
-    if epsilon == 0:
-        LOGGER.info("Epsilon is 0, using k nearest neighbors search instead of range search")
-        start_time = time.time()
-        D, I = index.index().search(query_embeddings, k) # type: ignore
-        LOGGER.info(f"{k}-NN search took {time.time() - start_time:.2f} seconds")
-        if k == 2:
-            Dself, Dnn = D.T
-            for i, idx in enumerate(I[:, 0]):
-                dself, dnn = D[i]
-                if idx != i and not np.allclose(dself, dnn):
-                    LOGGER.warning(f"Index mismatch ({dself=} {dnn=}): {idx} != {i}")
-            assert np.all(Dself <= Dnn), f"Distance to self is greater than distance to nearest neighbor at {np.count_nonzero(Dself > Dnn)} points"
-            argmax_dist_to_self = np.argmax(Dself)
-            max_dist_to_self = Dself[argmax_dist_to_self]
-            atol = 1e-5
-            if not np.isclose(max_dist_to_self, 0, atol=atol):
-                LOGGER.warning(f"{np.sum(~np.isclose(Dself, 0, atol=atol))} points have distance to self not close to 0.")
-        return FaissSearchOutsideEpsilonResult(
-            D_outside=D,
-            I_outside=I,
-            lims_within=np.zeros((len(query_embeddings) + 1,), dtype=np.uint64),
-            dists_within=np.empty((0,), dtype=np.float32),
-            ids_within=np.empty((0,), dtype=np.int64))
-
-    # Range search for all points strictly within epsilon
-    LOGGER.info(f"Range searching for all points strictly within epsilon")
-    start_time = time.time()
-    range_search_result = range_search_(index.index(), query.embeddings(), epsilon)
-    lims_within, dists_within, ids_within = range_search_result.lims, range_search_result.dists, range_search_result.ids
-    assert lims_within is not None
-    assert dists_within is not None
-    assert ids_within is not None
-    LOGGER.info(f"Range searching took {time.time() - start_time:.2f} seconds")
-    assert lims_within[0] == 0
-    num_within = lims_within[1:] - lims_within[:-1]
-    assert len(num_within) == len(query_embeddings)
-    assert np.all(num_within >= 0), f"Negative number of points within epsilon: {num_within}"
-
-    # Batch search all queries with the same number of points "j" within epsilon
-    D_outside = np.empty((len(query_embeddings), k), dtype=np.float32)
-    I_outside = np.empty((len(query_embeddings), k), dtype=np.int64)
-    for j in np.unique(num_within).tolist():
-        query_indices = num_within == j # Could pre-sort, but index.search is the bottleneck
-        D, I = index.index().search(query_embeddings[query_indices], j + k) # type: ignore
-        # Discard the first j points, which are within epsilon
-        D_outside[query_indices] = D[:, j:]
-        I_outside[query_indices] = I[:, j:]
-
-    return FaissSearchOutsideEpsilonResult(
-        D_outside=D_outside,
-        I_outside=I_outside,
-        lims_within=lims_within,
-        dists_within=dists_within,
-        ids_within=ids_within,
-    )
 
 @TIMER.time()
 @MEMORY.cache
@@ -384,14 +215,14 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
     # Build histogram of num_closer
     fig, hist_ax = plt.subplots(figsize=FIGSIZE)
     hist_ax.bar(range(len(counts)), counts)
-    hist_ax.set_xlabel(f"Number of {othercloud.work_type}s between neighboring {selfcloud.work_type}s")
+    hist_ax.set_xlabel(f"Number of {othercloud} works between neighboring {selfcloud} works")
     hist_ax.set_ylabel("Count")
     hist_ax.set_xscale("log")
     hist_ax.set_yscale("log")
-    title = f"{othercloud.work_type}s between neighboring {selfcloud.work_type}s for {selfcloud.topic}"
-    if othercloud.topic != selfcloud.topic:
-        LOGGER.warning(f"{selfcloud.name} -- Topic mismatch: {selfcloud.topic} != {othercloud.topic}")
-        title = f"{othercloud.topic} {title}"
+    title = f"{othercloud} works between neighboring {selfcloud} works"
+    if othercloud.filter_pair != selfcloud.filter_pair:
+        LOGGER.warning(f"{selfcloud.name} -- Topic mismatch: {selfcloud.filter_pair} != {othercloud.filter_pair}")
+        title = f"{othercloud.filter_pair} {title}"
     hist_ax.set_title(title)
     kde_ax = hist_ax.twinx()
     kde = gaussian_kde(num_closer)
@@ -405,16 +236,6 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
     with selfcloud_ids_file.open("w") as sci_f, othercloud_ids_file.open("w") as oci_f:
         json.dump(selfcloud_ids, sci_f)
         json.dump(othercloud_ids, oci_f)
-
-def get_stats(a: NDArray) -> dict:
-    return {
-        "mean": np.mean(a).item(),
-        "median": np.median(a).item(),
-        "min": np.min(a).item(),
-        "max": np.max(a).item(),
-        "std": np.std(a).item(),
-        "count": len(a),
-    }
 
 # def get_points_by_coverage_voronoi(index_cloud: Cloud, query_cloud: Cloud, min_dist: float, output_dir: Path):
 #     if index_cloud.topic != query_cloud.topic:
@@ -471,7 +292,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     assert len(index_clouds) == 1
     LOGGER.info(f"do_avgref_analysis({query_cloud.name=}) for {len(index_clouds)} index clouds")
     
-    artifacts_dir = ARTIFACTS_DIR / str(query_cloud.topic) / create_unicode_safe_filename(query_cloud.work_type) / "avgref_analysis"
+    artifacts_dir = ARTIFACTS_DIR / str(query_cloud.filter_pair) / "avgref_analysis"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     
     avgref_embeddings, avgref_ids = get_avgref(index_clouds, query_cloud)
@@ -480,11 +301,14 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     LOGGER.info(f"{query_cloud.name} -- Avgref norms: {get_stats(avgref_norms)}")
     if query_cloud.normalize_embeddings:
         LOGGER.info(f"{query_cloud.name} -- Normalizing avgref embeddings")
-        # Avoid division by zero for zero-norm vectors
-        non_zero_mask = (avgref_norms > 1e-6).squeeze(1) # Use a small epsilon for floating point
-        LOGGER.info(f"{avgref_embeddings.shape=}, {avgref_norms.shape=}, {non_zero_mask.shape=}")
-        LOGGER.info(f"{avgref_embeddings.dtype=}, {avgref_norms.dtype=}, {non_zero_mask.dtype=}")
-        avgref_embeddings[non_zero_mask] /= avgref_norms[non_zero_mask]
+        if np.any(avgref_norms < 1e-6):
+            LOGGER.warning(f"{query_cloud.name} -- Some avgref embeddings have zero norm, will not normalize those.")
+            non_zero_mask = (avgref_norms > 1e-6).squeeze(1) # Use a small epsilon for floating point
+            LOGGER.info(f"{avgref_embeddings.shape=}, {avgref_norms.shape=}, {non_zero_mask.shape=}")
+            LOGGER.info(f"{avgref_embeddings.dtype=}, {avgref_norms.dtype=}, {non_zero_mask.dtype=}")
+            avgref_embeddings[non_zero_mask] /= avgref_norms[non_zero_mask]
+        else:
+            avgref_embeddings /= avgref_norms
 
     LOGGER.info(f"{query_cloud.name} -- Found {len(avgref_embeddings)} avgrefs for {len(query_cloud.works())} query works ({len(avgref_embeddings) / len(query_cloud.works()) * 100:.2f}%)")
     id_to_idx = {work["id"]: i for i, work in enumerate(query_cloud.works())}
@@ -568,7 +392,6 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     # Prepare stats for both avgref and random avgref
     key_columns = [
         'topic',
-        'work_type',
         'index_info',
         'duplicate_expectation',
         'normalize_embeddings',
@@ -588,8 +411,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     ks = ks_2samp(ranks, random_ranks, method='exact')
     LOGGER.info(f"{query_cloud.name} -- KS test between ranks of avgref and random avgref: {ks}")
     row = {
-        'topic': str(query_cloud.topic),
-        'work_type': str(query_cloud.work_type),
+        'topic': str(query_cloud.filter_pair),
         'index_info': str(index_info),
         'duplicate_expectation': query_cloud.duplicate_expectation,
         'normalize_embeddings': query_cloud.normalize_embeddings,
@@ -730,80 +552,80 @@ class GetBallCoverageResult:
     ball_counts: NDArray # Number of index works within the ball for each query work
     covered_points: list[tuple[NDArray, NDArray]] # List of (dists, ids) tuples
 
-@TIMER.time()
-@MEMORY.cache
-def get_ball_coverage(index_cloud: Cloud, query_cloud: Cloud, radius_fraction: float):
-    assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
-    topic = index_cloud.topic
-    index_work_type = index_cloud.work_type
-    query_work_type = query_cloud.work_type
-    LOGGER.info(f"{topic} -- Finding closest {query_work_type} to each {index_work_type} (each {query_work_type} gets a voronoi cell of {index_work_type}s)")
+# @TIMER.time()
+# @MEMORY.cache
+# def get_ball_coverage(index_cloud: Union[Cloud, SubCloud], query_cloud: Union[Cloud, SubCloud], radius_fraction: float):
+#     assert index_cloud.work_filter == query_cloud.work_filter, f"Topic mismatch: {index_cloud.work_filter} != {query_cloud.work_filter}"
+#     topic = index_cloud.work_filter
+#     index_work_type = index_cloud
+#     query_work_type = query_cloud
+#     LOGGER.info(f"{topic} -- Finding closest {query_work_type} to each {index_work_type} (each {query_workType} gets a voronoi cell of {index_work_type}s)")
     
-    # For each article (index_cloud), find the nearest book (query_cloud).
-    res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
-    D = res.D_outside.squeeze(1) # Distances to nearest book, shape: (num_articles,)
-    I = res.I_outside.squeeze(1) # Indices of nearest book, shape: (num_articles,)
-
-    # Count, for each book, how many articles have it as their nearest neighbor.
-    index_works_per_query_work = np.bincount(I, minlength=query_cloud.index().ntotal)
-    
-    title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type} (radius fraction: {radius_fraction})"
-    LOGGER.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
-
-    # Now, for each article, count how many other articles are within a radius defined by its distance to the nearest book.
-    D_scaled = D * radius_fraction
-    # The query and radii must correspond. We query with articles and use the radii calculated for each article.
-    res = range_search_radii_(index_cloud.index(), index_cloud.embeddings(), D_scaled)
-    assert res.lims is not None and res.dists is not None and res.ids is not None # For type checking
-    ball_counts = res.lims[1:] - res.lims[:-1]
-    LOGGER.info(f"Number of {index_work_type}s covered by each {index_work_type} (ball):\n{get_stats(ball_counts)}")
-
-    # The `range_search_radii_` function already provides all the necessary information.
-    # The manual loop below is redundant and has been replaced by unpacking the result.
-    dists_list = from_flat_with_lims(FlatWithLims(res.dists, res.lims))
-    ids_list = from_flat_with_lims(FlatWithLims(res.ids, res.lims))
-    covered_points = list(zip(dists_list, ids_list))
-
-    return GetBallCoverageResult(
-        index_works_per_query_work=index_works_per_query_work,
-        ball_counts=ball_counts,
-        covered_points=covered_points)
-# def get_ball_coverage(index_cloud: Cloud, query_cloud: Cloud, radius_fraction: float):
-#     assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
-#     topic = index_cloud.topic
-#     index_work_type = index_cloud.work_type
-#     query_work_type = query_cloud.work_type
-#     logger.info(f"{topic} -- Finding closest {query_work_type} to each {index_work_type} (each {query_work_type} gets a voronoi cell of {index_work_type}s)")
+#     # For each article (index_cloud), find the nearest book (query_cloud).
 #     res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
-#     D = res.D_outside.squeeze(1)
-#     I = res.I_outside.squeeze(1)
-#     Ip1 = np.ones(index_cloud.index().ntotal, dtype=np.int32) # Increment each index work by 1 so that np.unique counts even empty cells
-#     Ip1[I] += 1 # Each index work is counted once for itself
-#     _idxs, index_works_per_query_work_p1 = np.unique(Ip1, return_counts=True)
-#     index_works_per_query_work = index_works_per_query_work_p1 - 1 # Decrement back to original counts, leaving 0 for empty cells
-#     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type}"
-#     logger.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
-    
-    
+#     D = res.D_outside.squeeze(1) # Distances to nearest book, shape: (num_articles,)
+#     I = res.I_outside.squeeze(1) # Indices of nearest book, shape: (num_articles,)
 
-#     # Now get stats for the balls
+#     # Count, for each book, how many articles have it as their nearest neighbor.
+#     index_works_per_query_work = np.bincount(I, minlength=query_cloud.index().ntotal)
+    
+#     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type} (radius fraction: {radius_fraction})"
+#     LOGGER.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
+
+#     # Now, for each article, count how many other articles are within a radius defined by its distance to the nearest book.
 #     D_scaled = D * radius_fraction
-#     res = range_search_radii_(index_cloud.index(), query_cloud.embeddings(), D_scaled)
+#     # The query and radii must correspond. We query with articles and use the radii calculated for each article.
+#     res = range_search_radii_(index_cloud.index(), index_cloud.embeddings(), D_scaled)
+#     assert res.lims is not None and res.dists is not None and res.ids is not None # For type checking
 #     ball_counts = res.lims[1:] - res.lims[:-1]
-#     logger.info(f"{title} (ball):\n{get_stats(ball_counts)}")
+#     LOGGER.info(f"Number of {index_work_type}s covered by each {index_work_type} (ball):\n{get_stats(ball_counts)}")
 
-#     covered_points = []
-#     index_cloud_index = index_cloud.index()
-#     for point, embedding in enumerate(tqdm.tqdm(index_cloud.embeddings(), desc=f"Ball coverage (for each {index_work_type}, count the number of {index_work_type}s within {radius_fraction} * distance to nearest {query_work_type})")):
-#         lims, dists, ids = index_cloud_index.range_search(embedding[np.newaxis], D_scaled[point]) # type: ignore
-#         zero, num = lims
-#         assert zero == 0, f"Range search lims[0] != 0: {zero}"
-#         assert num == len(dists) == len(ids), f"Range search: not {num=} == {len(dists)=} == {len(ids)=}"
-#         covered_points.append((dists, ids))
+#     # The `range_search_radii_` function already provides all the necessary information.
+#     # The manual loop below is redundant and has been replaced by unpacking the result.
+#     dists_list = from_flat_with_lims(FlatWithLims(res.dists, res.lims))
+#     ids_list = from_flat_with_lims(FlatWithLims(res.ids, res.lims))
+#     covered_points = list(zip(dists_list, ids_list))
+
 #     return GetBallCoverageResult(
 #         index_works_per_query_work=index_works_per_query_work,
 #         ball_counts=ball_counts,
 #         covered_points=covered_points)
+# # def get_ball_coverage(index_cloud: Cloud, query_cloud: Cloud, radius_fraction: float):
+# #     assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
+# #     topic = index_cloud.topic
+# #     index_work_type = index_cloud.work_type
+# #     query_work_type = query_cloud.work_type
+# #     logger.info(f"{topic} -- Finding closest {query_work_type} to each {index_work_type} (each {query_work_type} gets a voronoi cell of {index_work_type}s)")
+# #     res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
+# #     D = res.D_outside.squeeze(1)
+# #     I = res.I_outside.squeeze(1)
+# #     Ip1 = np.ones(index_cloud.index().ntotal, dtype=np.int32) # Increment each index work by 1 so that np.unique counts even empty cells
+# #     Ip1[I] += 1 # Each index work is counted once for itself
+# #     _idxs, index_works_per_query_work_p1 = np.unique(Ip1, return_counts=True)
+# #     index_works_per_query_work = index_works_per_query_work_p1 - 1 # Decrement back to original counts, leaving 0 for empty cells
+# #     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type}"
+# #     logger.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
+    
+    
+
+# #     # Now get stats for the balls
+# #     D_scaled = D * radius_fraction
+# #     res = range_search_radii_(index_cloud.index(), query_cloud.embeddings(), D_scaled)
+# #     ball_counts = res.lims[1:] - res.lims[:-1]
+# #     logger.info(f"{title} (ball):\n{get_stats(ball_counts)}")
+
+# #     covered_points = []
+# #     index_cloud_index = index_cloud.index()
+# #     for point, embedding in enumerate(tqdm.tqdm(index_cloud.embeddings(), desc=f"Ball coverage (for each {index_work_type}, count the number of {index_work_type}s within {radius_fraction} * distance to nearest {query_work_type})")):
+# #         lims, dists, ids = index_cloud_index.range_search(embedding[np.newaxis], D_scaled[point]) # type: ignore
+# #         zero, num = lims
+# #         assert zero == 0, f"Range search lims[0] != 0: {zero}"
+# #         assert num == len(dists) == len(ids), f"Range search: not {num=} == {len(dists)=} == {len(ids)=}"
+# #         covered_points.append((dists, ids))
+# #     return GetBallCoverageResult(
+# #         index_works_per_query_work=index_works_per_query_work,
+# #         ball_counts=ball_counts,
+# #         covered_points=covered_points)
 
 
 class InferenceManager:
@@ -857,7 +679,7 @@ def loadPipeline():
     )
     return pipe
 
-def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_dists: NDArray, covered_ids: NDArray, original_coverage: int, index_cloud: Cloud, query_cloud: Cloud, artifacts_dir: Path):
+def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_dists: NDArray, covered_ids: NDArray, original_coverage: int, index_cloud: Union[Cloud, SubCloud], query_cloud: Union[Cloud, SubCloud], artifacts_dir: Path):
     assert len(covered_dists) == len(covered_ids), f"Covered dists and ids length mismatch: {len(covered_dists)} != {len(covered_ids)}"
     topic_dir = artifacts_dir / "highest coverage (ball)"
     topic_dir.mkdir(parents=True, exist_ok=True)
@@ -918,7 +740,7 @@ def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_
         f.write("Distances to nearest in-ball article and to center for each book:\n")
         book_to_nearest_inball = defaultdict(list)
         book_to_idx: dict[str, int] = dict()
-        for in_ball_id in tqdm.tqdm(covered_ids, desc="Finding nearest in-ball articles to books"):
+        for in_ball_id in covered_ids:
             book_res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
             nearest_book_idx = book_res.I_outside[in_ball_id, 0]
             nearest_book = query_cloud.works()[nearest_book_idx]
@@ -936,7 +758,7 @@ def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_
         f.write(f"Top {TOP_K} books closest to the center item:\n")
         book_to_nearest_inball_increasing_distance = sorted(book_to_nearest_inball.items(),
                                                             key=lambda x: np.linalg.norm(query_cloud.embeddings()[book_to_idx[x[0]]] - center_embedding))
-        for i, (book_id, in_ball_ids) in enumerate(tqdm.tqdm(book_to_nearest_inball_increasing_distance[:TOP_K], desc="Writing Voronoi intersections")):
+        for i, (book_id, in_ball_ids) in enumerate(book_to_nearest_inball_increasing_distance[:TOP_K]):
             book_idx = book_to_idx[book_id]
             book = query_cloud.works()[book_idx]
             f.write(f"Book {i+1} of {num_books} (id={book['id']}):\n")
@@ -958,7 +780,7 @@ def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_
                                                             key=lambda x: len(x[1]),
                                                             reverse=True)
         f.write("Books that cover the most in-ball articles:\n")
-        for i, (book_id, in_ball_ids) in enumerate(tqdm.tqdm(book_to_nearest_inball_decreasing_coverage[:TOP_K], desc="Writing Voronoi coverage")):
+        for i, (book_id, in_ball_ids) in enumerate(book_to_nearest_inball_decreasing_coverage[:TOP_K]):
             book = query_cloud.works()[book_to_idx[book_id]]
             f.write(f"Book {i+1} of {num_books} (id={book['id']}):\n")
             f.write(f"\tNumber of in-ball articles in Voronoi cell: {len(in_ball_ids)} ({len(in_ball_ids) / len(covered_ids) * 100:.2f}% of ball):\n")
@@ -999,15 +821,15 @@ def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_
     #         f.write(f"{dist:.4f} -- {article['display_name']} -- {article['abstract']}\n")
 
 
-@TIMER.time(formatters=dict(index_info=lambda _: "<...>"))
-def get_points_by_coverage_ball(topic: Subjects, index_work_type: WorkType, query_work_type: WorkType, radius_fraction: float, index_info: IndexInfo, max_works: int, duplicate_expectation: float, normalize_embeddings: bool, denoiser: str, drop_k: int):
-    index_cloud = Cloud(topic=topic, work_type=index_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, denoiser=denoiser, drop_k=drop_k)
-    query_cloud = Cloud(topic=topic, work_type=query_work_type, index_info=index_info, max_works=max_works, duplicate_expectation=duplicate_expectation, normalize_embeddings=normalize_embeddings, denoiser=denoiser, drop_k=drop_k)
-    assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
-    topic = index_cloud.topic
-    index_work_type = index_cloud.work_type
-    query_work_type = query_cloud.work_type
-    artifacts_dir = ARTIFACTS_DIR / f"{topic}" / f"{index_work_type}s covered by {query_work_type}s"
+@TIMER.time(formatters=dict(cloud=lambda cloud: f"<{cloud.name}>"))
+@MEMORY.cache
+def get_points_by_coverage_ball(cloud: Cloud, index_work_type: str, query_work_type: str, radius_fraction: float):
+    # Create SubClouds for the two work types
+    index_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_type=index_work_type))
+    query_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_type=query_work_type))
+    
+    filter_pair = cloud.filter_pair
+    artifacts_dir = ARTIFACTS_DIR / f"{filter_pair}" / f"{index_work_type}s covered by {query_work_type}s"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     # index_cloud = get_cloud(topic, index_work_type, **kwargs) 
     # query_cloud = get_cloud(topic, query_work_type, **kwargs)
@@ -1036,11 +858,11 @@ def get_points_by_coverage_ball(topic: Subjects, index_work_type: WorkType, quer
     # ball_counts = res.lims[1:] - res.lims[:-1]
     # logger.info(f"{title} (ball):\n{get_stats(ball_counts)}")
 
-    res = get_ball_coverage(index_cloud, query_cloud, radius_fraction)
+    res = get_ball_coverage(index_subcloud, query_subcloud, radius_fraction)
     index_works_per_query_work = res.index_works_per_query_work
     ball_counts = res.ball_counts
     covered_points = res.covered_points
-    title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type}"
+    title = f"{filter_pair} - Number of {index_work_type}s covered by each {query_work_type}"
 
     fig, ax = plt.subplots(figsize=FIGSIZE)
 
@@ -1067,7 +889,7 @@ def get_points_by_coverage_ball(topic: Subjects, index_work_type: WorkType, quer
     for rank in tqdm.tqdm(range(num_centers), desc=f"Outputting highest coverage {index_work_type}s"):
         highest_coverage_id = np.argmax([len(ids) for _dists, ids in covered_points])
         dists, ids = covered_points[highest_coverage_id]
-        output_covered_points(rank, highest_coverage_id, dists, ids, coverages[0][highest_coverage_id], index_cloud, query_cloud, artifacts_dir)
+        output_covered_points(rank, highest_coverage_id, dists, ids, coverages[0][highest_coverage_id], index_subcloud, query_subcloud, artifacts_dir)
         # Remove the covered points from the list
         if highest_coverage_id not in ids:
             LOGGER.warning(f"Top point {highest_coverage_id} not in its own covered points")
@@ -1119,7 +941,7 @@ def get_points_by_coverage_ball(topic: Subjects, index_work_type: WorkType, quer
 
     ax.set_xlabel(f"Number of {index_work_type}s covered")
     ax.set_ylabel(f"Number of {index_work_type}s with a given coverage of other {index_work_type}s")
-    ax.set_title(f"{topic} - Number of {index_work_type}s covered by each {index_work_type}")
+    ax.set_title(f"{filter_pair} - Number of {index_work_type}s covered by each {index_work_type}")
     ax.set_yscale("log")
     ax.legend(loc="upper right")
     fig.savefig(artifacts_dir / f"{index_work_type}s covered per {index_work_type} (pruning overlaid).png", dpi=DPI)
@@ -1160,7 +982,6 @@ def export_avgref_stats_to_latex():
         for col, value in zip(key_columns, combo):
             subtable = subtable[subtable[col] == value]
         LOGGER.info(f"Exporting LaTeX for combination {combo}")
-        LOGGER.info(f"Subtable:\n{subtable}")
         tex_path = directory / f"avgref_rank_stats_{'_'.join([f'{col}={value}' for col, value in zip(key_columns, combo)])}.tex"
         subtable.drop(columns=key_columns).rename(columns=col_map).to_latex(tex_path, index=False, float_format="%.1f", escape=False)
         LOGGER.info(f"Exported LaTeX to {tex_path}")
@@ -1249,7 +1070,7 @@ def plot_embeddings(clouds: Iterable[Cloud], colored_feature: str, method: Liter
     plot_title_prefix = ""
     labels = {}
 
-    cloud_names = ", ".join(sorted(cloud.name for cloud in clouds))
+    cloud_names = ", ".join(sorted(cloud.name() for cloud in clouds))
 
     if method == "pca":
         plot_title_prefix = f"{cloud_names} PCA embeddings colored by {colored_feature}"
@@ -1309,7 +1130,7 @@ def plot_norms(clouds: Collection[Cloud]) -> None:
 def do_embedding_plots(config, clouds):
     color_f = lambda colors: [lang if lang in {"en", "fr", "ja", "ko", "nl", "ru", "tr"} else "other" for lang in colors]
 
-    for work_type, topic in itertools.product(WorkType, Subjects):
+    for work_type, topic in itertools.product(WorkType, Filters):
         cloud = clouds[(topic, work_type)]
         plot_embeddings([cloud], "language", method="pca", dimensions=2, color_f=color_f, **vars(config))
         # plot_embeddings([cloud], "language", method="pca", dimensions=3, color_f=color_f, **vars(config))
@@ -1355,95 +1176,40 @@ def do_inference():
 @dataclass(frozen=True)
 class Config:
     # log_level: str
-    max_works: int
+    max_works: Optional[int]
     duplicate_expectation: float
     radius_fraction: float
     index_info: IndexInfo
-    denoiser: str
+    denoiser: Optional[str]
     drop_k: int
     normalize_embeddings: bool = field(repr=False)
 
 @TIMER.time()
-def main():
-    parser = argparse.ArgumentParser(description="Fetch, deduplicate, embed, and analyze OpenAlex works.")
-    parser.add_argument("--drop_k", type=int, default=0, help="Number of top components to drop from embeddings")
-    # Arguments for Config fields
-    parser.add_argument("--log_level", type=str, default=logging._levelToName[logging.DEBUG], choices=sorted(logging._nameToLevel.keys(), key=lambda x: logging._nameToLevel[x]))
-    parser.add_argument("--max_works", type=int, default=None, help="Maximum number of works to fetch")
-    parser.add_argument("--duplicate_expectation", type=float, default=.05, help="Belief value in [0, 1] for expected fraction of duplicates (removed by semantic distance percentile)")
-    parser.add_argument("--radius_fraction", type=float, default=0.75, help="Radius fraction for ball coverage")
-    parser.add_argument("--denoiser", type=str, choices=[d.name for d in Denoiser], default=Denoiser.NONE.name, help=f"Denoiser method.")
-    
-    # Arguments for IndexInfo fields (and its subtypes)
-    parser.add_argument("--index_type", type=IndexType._member_map_.__getitem__, choices=list(IndexType), default=IndexType.HNSW, help=f"Faiss index type. Choices: {', '.join(map(str, IndexType))}")
-    # HNSW specific arguments
-    parser.add_argument("--hnsw_m", type=int, default=16, help="HNSW M parameter")
-    parser.add_argument("--hnsw_efc", type=int, default=8192, help="HNSW efConstruction parameter")
-    parser.add_argument("--hnsw_efs", type=int, default=1024, help="HNSW efSearch parameter")
-    # parser.add_argument("--index_metric", type=IndexMetric._member_map_.__getitem__, choices=list(IndexMetric), default=IndexMetric.L2.name, help=f"Faiss index metric (used in HNSW). Choices: {', '.join(IndexMetric._member_names_)}")
-    # parser.add_argument("--normalize_embeddings", action="store_true", default=False, help="Whether to normalize embeddings")
-
-    parsed_args = parser.parse_args()
-
-
-    logging_level = logging._nameToLevel[parsed_args.log_level]
-
-    def get_explicit_args(parser: argparse.ArgumentParser, args: argparse.Namespace):
-        # Set all arguments to have unique default
-        sentinel = object()
-        parser.set_defaults(**{arg: sentinel for arg in vars(args)})
-        # Re-parse the arguments to get explicit values
-        explicit_args = vars(parser.parse_args())
-        ret = [(k, v) for k, v in explicit_args.items() if v is not sentinel]
-        ret = [(k, v) for k, v in ret if k not in {"log_level"}]
-        return [(k, v) for k, v in explicit_args.items() if v is not sentinel]
-    cmdline_args = get_explicit_args(parser, parsed_args)
-            
-    arg_string = create_unicode_safe_filename("_".join(f"{k}:{v}" for k, v in sorted(cmdline_args)))
-    log_fname_parts = [time.strftime('%Y-%m-%d_%H-%M-%S')]
-    if arg_string:
-        log_fname_parts.append(arg_string)
-    log_filename = Path("logs") / ("_".join(log_fname_parts) + ".log")
-    log_filename.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Configure the named logger
-    LOGGER.setLevel(logging_level)
-    
-    # File handler
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)-8s | %(funcName)-12s: %(message)s"))
-    LOGGER.addHandler(file_handler)
-
-    # Console handler
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO) # Set console level separately if needed
-    console.setFormatter(logging.Formatter('%(levelname)-8s | %(funcName)-12s: %(message)s'))
-    LOGGER.addHandler(console)
-
-    LOGGER.propagate = False  # Prevent log messages from being propagated to the root logger
+def main(drop_k: int, log_level: str, max_works: Optional[int], duplicate_expectation: float, radius_fraction: float, denoiser: Optional[str],
+         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int):
 
     # Construct IndexInfo
     index_info_obj: IndexInfo
-    if parsed_args.index_type == IndexType.HNSW:
+    if index_type == IndexType.HNSW:
         index_info_obj = HNSW(
-            hnsw_m=parsed_args.hnsw_m,
-            hnsw_efc=parsed_args.hnsw_efc,
-            hnsw_efs=parsed_args.hnsw_efs,
+            hnsw_m=hnsw_m,
+            hnsw_efc=hnsw_efc,
+            hnsw_efs=hnsw_efs,
         )
-    elif parsed_args.index_type == IndexType.FLAT_L2:
+    elif index_type == IndexType.FLAT_L2:
         index_info_obj = FlatL2()
     else:
-        raise ValueError(f"Unhandled index type: {parsed_args.index_type}")
+        raise ValueError(f"Unhandled index type: {index_type}")
 
     config = Config(
-        # log_level=parsed_args.log_level,
-        max_works=parsed_args.max_works,
-        duplicate_expectation=parsed_args.duplicate_expectation,
-        radius_fraction=parsed_args.radius_fraction,
+        # log_level=log_level,
+        max_works=max_works,
+        duplicate_expectation=duplicate_expectation,
+        radius_fraction=radius_fraction,
         index_info=index_info_obj,
-        denoiser=parsed_args.denoiser,
-        drop_k=parsed_args.drop_k,
-        # normalize_embeddings=parsed_args.normalize_embeddings
+        denoiser=denoiser,
+        drop_k=drop_k,
+        # normalize_embeddings=normalize_embeddings
         normalize_embeddings=True,
     )
 
@@ -1454,14 +1220,12 @@ def main():
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
     LOGGER.info(f"Starting run with config: {config}")
-    LOGGER.info(f"Logging to: {log_filename}")
 
     export_avgref_stats_to_latex()
 
     clouds = {
-        (topic, work_type): Cloud(
-            topic=topic,
-            work_type=work_type,
+        topic: Cloud(
+            filter_pair=topic.value,
             index_info=config.index_info,
             max_works=config.max_works,
             duplicate_expectation=config.duplicate_expectation,
@@ -1469,17 +1233,17 @@ def main():
             denoiser=config.denoiser,
             drop_k=config.drop_k,
         )
-        for topic, work_type in itertools.product(Subjects, WorkType)
+        for topic in Filters
     }
 
     # Log the closest pairs of works in each cloud
     # for work_type, topic in itertools.product(WorkType, Topic):
-    for topic in Subjects:
+    for topic in Filters:
         work_type = WorkType.ARTICLE
         fname = ARTIFACTS_DIR / f"{topic}" / f"{work_type}" / "closest_pairs.txt"
         fname.parent.mkdir(parents=True, exist_ok=True)
         with open(fname, "w") as f:
-            cloud =  clouds[(topic, work_type)]
+            cloud = clouds[topic]
             # Log the nearest neighbors in order of increasing distance
             Dnn, I = get_nearest_neighbor(cloud, cloud, 0)
             I = I[:, 1]
@@ -1501,20 +1265,21 @@ def main():
                         f"{selfwork['id']} | {selfwork['publication_date']} | {selfwork['display_name']} | {' '.join(selfwork['abstract'].split())}\n"
                         f"{otherwork['id']} | {otherwork['publication_date']} | {otherwork['display_name']} | {' '.join(otherwork['abstract'].split())}\n\n")
 
-    for topic in Subjects:
-        get_points_by_coverage_ball(topic, WorkType.ARTICLE, WorkType.BOOK, config.radius_fraction, config.index_info, config.max_works, config.duplicate_expectation, config.normalize_embeddings, config.denoiser, config.drop_k)
+    for topic in Filters:
+        cloud = clouds[topic]
+        get_points_by_coverage_ball(cloud, WorkType.ARTICLE.value, WorkType.BOOK.value, config.radius_fraction)
 
     # for work_type, topic in itertools.product(WorkType, Topic):
-    for topic in Subjects:
+    for topic in Filters:
         work_type = WorkType.ARTICLE
-        cloud = clouds[(topic, work_type)]
+        cloud = clouds[topic]
         do_avgref_analysis([cloud], cloud)
 
     # for work_type, topic in itertools.product(WorkType, Topic):
-    for topic in Subjects:
+    for topic in Filters:
         work_type = WorkType.ARTICLE
         # Compute distribution of number of referenced_works
-        cloud = clouds[(topic, work_type)]
+        cloud = clouds[topic]
         referenced_work_counts = np.array([len(work["referenced_works"]) for work in cloud.works()])
         LOGGER.info(f"Number of referenced works in {topic} - {work_type}:\n{get_stats(referenced_work_counts)}")
         fig, ax = plt.subplots(figsize=FIGSIZE)
@@ -1534,4 +1299,4 @@ def main():
     # do_inference()
 
 if __name__ == "__main__":
-    main()
+    main(**vars(parse_args(log_prefix=__file__)))

@@ -7,7 +7,7 @@ from scipy.linalg import eigh, svd
 import scipy.sparse as sp
 from sklearn.decomposition import PCA
 from numpy.linalg import pinv, LinAlgError, lstsq
-from util import TIMER, LOGGER
+from nextbook.util import TIMER, LOGGER
 from abc import ABC, abstractmethod
 
 def subset_range(n: int, subset_size: int, smallest: bool) -> tuple[int, int]:
@@ -66,55 +66,17 @@ def _recover_projector_from_dual(X: NDArray, U: NDArray) -> NDArray:
     LOGGER.info(f"{P_raw.shape=} {P_norms.shape=} {ret.shape=}")
     return ret
 
-class DenoiserImpl(ABC):
-    def __call__(self, X: NDArray, A: sp.spmatrix, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        X_mean = X.mean(axis=0)
-        X_centered = X - X_mean
-        P, extra = self.projector(X_centered, A, n_components)
-        X_denoised = X_centered @ P + X_mean
-        return X_denoised, extra
-        # return X_centered @ P, extra
-
-    @TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", A=lambda A: f"<shape={A.shape}>"))
-    @abstractmethod
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        pass
-
-    def needs_citation_graph(self) -> bool:
-        """Returns True if this denoiser requires a citation graph (affinity matrix A) to function."""
-        return True
-
-# class IdDenoiser(DenoiserImpl):
-#     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-#         d = X.shape[1]
-#         if n_components > d: n_components = d
-#         return np.eye(d, n_components), np.array([])
-class IdDenoiser:
-    def __call__(self, X: NDArray, A: sp.spmatrix, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        if n_components != X.shape[1]:
-            raise ValueError(f"IdDenoiser does not support n_components < X.shape[1], got n_components={n_components} and X.shape={X.shape}.")
-        return X, None
-    
-    def needs_citation_graph(self) -> bool:
-        return False
-
-class PCADenoiser(DenoiserImpl):
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+class PCADenoiser:
+    def projector(self, X: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
         min_cs = min(X.shape)
         if n_components > min_cs:
             n_components = min_cs
         pca = PCA(n_components=n_components)
         pca.fit(X)
         P = pca.components_.T
-        # Assert adj(P) @ P is identity
-        assert np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-5), "PCA: adj(P) @ P is not identity!"
-        return P @ adj(P), pca.singular_values_
-    
-    # @override
-    def needs_citation_graph(self) -> bool:
-        return False
+        return P, pca.singular_values_
 
-class GPCADenoiser(DenoiserImpl):
+class GPCADenoiser:
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
         B = (A + adj(A)) / 2
         M = adj(X) @ B @ X
@@ -125,7 +87,7 @@ class GPCADenoiser(DenoiserImpl):
         assert np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-6), "GPCA: adj(P) @ P is not identity!"
         return P @ adj(P), eigvals
 
-class RelAmpDenoiser(DenoiserImpl):
+class RelAmpDenoiser:
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
         N, d = X.shape
         B = (A + adj(A)) / 2
@@ -150,7 +112,7 @@ class RelAmpDenoiser(DenoiserImpl):
             assert not np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-6), "RelAmp: adj(P) @ P is identity!"
             return P @ pinv(P), res.eigvals
 
-class NeighborDistMinDenoiser(DenoiserImpl):
+class NeighborDistMinDenoiser:
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
         N, d = X.shape
         B = (A + adj(A)) / 2
@@ -175,7 +137,7 @@ class NeighborDistMinDenoiser(DenoiserImpl):
             assert not np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-6), "NeighborDistMin: adj(P) @ P is identity!"
             return P @ pinv(P), res.eigvals
 
-class LPPDenoiser(DenoiserImpl):
+class LPPDenoiser:
     @TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", A=lambda A: f"<shape={A.shape}>"))
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
         assert A is not None
@@ -219,7 +181,7 @@ class LPPDenoiser(DenoiserImpl):
             assert not np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-6), "LPP: adj(P) @ P is identity!"
             return P @ pinv(P), res.eigvals
 
-class NormalizedLPPDenoiser(DenoiserImpl):
+class NormalizedLPPDenoiser:
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
         B = (A + adj(A)) / 2
         N, d = X.shape
@@ -235,7 +197,7 @@ class NormalizedLPPDenoiser(DenoiserImpl):
         assert not np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-6), "NormLPP: adj(P) @ P is identity!"
         return P @ pinv(P), eigvals
 
-class WDenoiser(DenoiserImpl):
+class WDenoiser:
     """
     Learns W where XW ≈ AX, then uses rank-reduced W for projection.
     """
@@ -249,7 +211,7 @@ class WDenoiser(DenoiserImpl):
         assert np.allclose(adj(P) @ P, np.eye(P.shape[1]), atol=1e-6), "ReducedRankW: adj(P) @ P is not identity!"
         return P @ adj(P), s[:n_components]
 
-class LDADenoiser(DenoiserImpl):
+class LDADenoiser:
     """
     Maximizes the ratio of total variance to the variance of difference vectors AX-X.
     This is solved as the generalized eigenvalue problem S_T g = λ S_W g.
@@ -272,8 +234,70 @@ class SymmetrizedLDADenoiser(LDADenoiser):
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
         return super().projector(X, (A + adj(A)) / 2, n_components)
 
-class EmbeddedGraphDenoiser(DenoiserImpl):
-    def __init__(self, wrapped_denoiser: DenoiserImpl):
+class AntiLDADenoiser:
+    """
+    Anti-LDA denoiser that removes the directions that best discriminate between two groups.
+    Returns the projection matrix (and eigenvalues).
+    """
+    
+    def projector(self, X1: NDArray, X2: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        """
+        Apply Anti-LDA to two groups of embeddings.
+        
+        Args:
+            X1: First group embeddings (N1 x d)
+            X2: Second group embeddings (N2 x d) 
+            n_components: Number of components to retain (removing the most discriminative ones)
+            
+        Returns:
+            Tuple of (denoised_X1, denoised_X2)
+        """
+        # Combine the data
+        X_combined = np.vstack([X1, X2])
+        N1, d = X1.shape
+        N2, _ = X2.shape
+        N_total = N1 + N2
+        
+        # Center the combined data
+        X_mean = X_combined.mean(axis=0)
+        X_centered = X_combined - X_mean
+        X1_centered = X_centered[:N1]
+        X2_centered = X_centered[N1:]
+        
+        # Compute scatter matrices
+        # Within-class scatter: S_W = S_1 + S_2
+        S1 = X1_centered.T @ X1_centered  # d x d
+        S2 = X2_centered.T @ X2_centered  # d x d
+        S_W = S1 + S2
+        
+        # Between-class scatter: S_B = n1*n2/n * (mu1-mu2)(mu1-mu2)^T
+        mu1 = X1_centered.mean(axis=0)  # d
+        mu2 = X2_centered.mean(axis=0)  # d
+        mu_diff = mu1 - mu2  # d
+        S_B = (N1 * N2 / N_total) * np.outer(mu_diff, mu_diff)  # d x d
+        
+        # Find the discriminative directions by solving generalized eigenvalue problem
+        # S_B v = λ S_W v
+        # We want to REMOVE the directions with highest λ (most discriminative)
+        
+        # For Anti-LDA, we want to keep the directions with LOWEST discriminative power
+        # So we solve for the smallest eigenvalues of S_B w.r.t. S_W
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        
+        try:
+            eigvals, P_basis = eigh(S_B, S_W, subset_by_index=subset)
+        except Exception as e:
+            LOGGER.warning(f"AntiLDA generalized eigenvalue problem failed: {e}. Falling back to PCA.")
+            # Fallback to PCA if the generalized eigenvalue problem fails
+            pca = PCA(n_components=n_components)
+            pca.fit(X_centered)
+            P_basis = pca.components_.T
+            eigvals = pca.singular_values_
+        
+        return P_basis, eigvals
+
+class EmbeddedGraphDenoiser:
+    def __init__(self, wrapped_denoiser):
         self.wrapped_denoiser = wrapped_denoiser
 
     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
@@ -290,7 +314,7 @@ class EmbeddedGraphDenoiser(DenoiserImpl):
     def __repr__(self):
         return f"EmbeddedGraph({self.wrapped_denoiser.__class__.__name__})"
 
-class AugmentedLPPDenoiser(DenoiserImpl):
+class AugmentedLPPDenoiser:
     """
     Improves LPP by augmenting its objective.
     It combines the standard LPP goal (preserving neighbor distances) with the goal of
@@ -337,7 +361,7 @@ class AugmentedLPPDenoiser(DenoiserImpl):
             P = res.P_or_U
             return P @ pinv(P), res.eigvals
 
-class OrthogonalManifoldDenoiser(DenoiserImpl):
+class OrthogonalManifoldDenoiser:
     """
     A monolithic approach that balances preserving global, non-local structure against
     minimizing the error introduced by graph-smoothing (the AX-X distance).
@@ -363,33 +387,3 @@ class OrthogonalManifoldDenoiser(DenoiserImpl):
         
         # Form the projector using the pseudo-inverse for a non-orthonormal basis
         return P_basis @ pinv(P_basis), res.eigvals
-
-class Denoiser(enum.Enum):
-    NONE = IdDenoiser()
-    PCA = PCADenoiser()
-    GPCA = GPCADenoiser()
-    REL_AMP = RelAmpDenoiser()
-    NEIGHBOR_DIST_MIN = NeighborDistMinDenoiser()
-    LPP = LPPDenoiser()
-    AUG_LPP = AugmentedLPPDenoiser() # Added new denoiser
-    ORTHO_MANIFOLD = OrthogonalManifoldDenoiser() # Added new denoiser
-    NORM_LPP = NormalizedLPPDenoiser()
-    W = WDenoiser()
-    LDA = LDADenoiser()
-    SYM_LDA = SymmetrizedLDADenoiser()
-    W_LPP = EmbeddedGraphDenoiser(LPP)
-    W_NEIGHBOR_DIST_MIN = EmbeddedGraphDenoiser(NEIGHBOR_DIST_MIN)
-    
-    def __call__(self, X: NDArray, A: Optional[sp.spmatrix], n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        if A is None:
-            A = sp.csr_matrix((0, 0))
-        return self.value(X, A, n_components)
-
-    def __str__(self):
-        return self.name
-    
-    def __repr__(self):
-        return str(self)
-
-    def needs_citation_graph(self) -> bool:
-        return self.value.needs_citation_graph()

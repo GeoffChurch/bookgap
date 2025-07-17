@@ -16,9 +16,12 @@ import abc
 from dataclasses import dataclass, field
 import enum
 from functools import partial
+from typing import Optional
 
 import faiss
+import numpy as np
 from numpy.typing import NDArray
+import tqdm
 
 from nextbook.util import TIMER
 
@@ -105,3 +108,81 @@ class FlatL2(IndexInfo):
 
 def build_index(index_info: IndexInfo, embeddings: NDArray) -> faiss.Index:
     return index_info.index_type.build(embeddings, index_info)
+
+
+@dataclass(frozen=True)
+class RangeSearchResult:
+    lims: Optional[NDArray]
+    dists: Optional[NDArray]
+    ids: Optional[NDArray]
+    def __post_init__(self):
+        if self.lims is not None and len(self.lims) > 0:
+            assert self.lims[0] == 0, f"lims[0] != 0: {self.lims[0]}"
+        if self.dists is not None and self.ids is not None:
+            assert len(self.dists) == len(self.ids), f"len(dists) != len(ids): {len(self.dists)} != {len(self.ids)}"
+        # assert len(self.lims) == len(self.dists) + 1, f"len(lims) != len(dists) + 1: {len(self.lims)} != {len(self.dists)} + 1"
+
+@TIMER.time(formatters=dict(index=lambda index: f"<{index.ntotal} vectors, d={index.d}>", query=lambda q: f"<shape={q.shape}>", radii=lambda r: f"<shape={r.shape}>") )
+def range_search_radii_(
+    index: faiss.Index,
+    query: NDArray,
+    radii: NDArray,
+    return_lims: bool = True,
+    return_dists: bool = True,
+    return_ids: bool = True
+) -> RangeSearchResult:
+    lims = [np.array([], dtype=np.uint64)] if return_lims else None
+    dists = [np.array([], dtype=np.float32)] if return_dists else None
+    ids = [np.array([], np.int64)] if return_ids else None
+    for i in tqdm.tqdm(range(len(query)), desc="Range search radii"):
+        batch = query[i:i+1]
+        lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore
+        assert lims_.dtype == np.uint64
+        assert dists_.dtype == np.float32
+        assert ids_.dtype == np.int64
+        if lims is not None:
+            if i > 0:
+                lims_ = lims_[1:]
+                lims_ += lims[-1][-1]
+            lims.append(lims_)
+        if dists is not None:
+            dists.append(dists_)
+        if ids is not None:
+            ids.append(ids_)
+    lims = np.concatenate(lims) if lims is not None else None
+    dists = np.concatenate(dists) if dists is not None else None
+    ids = np.concatenate(ids) if ids is not None else None
+    return RangeSearchResult(lims=lims, dists=dists, ids=ids)
+
+
+def range_search_(index: faiss.Index, query_embeddings: NDArray, epsilon: float) -> RangeSearchResult:
+    # Need to use small batches to avoid crashing
+    lims = []
+    dists = []
+    ids = []
+
+    batch_size = 48
+    with tqdm.tqdm(desc="Range search", total=len(query_embeddings)) as pbar:
+        for i in range(0, len(query_embeddings), batch_size):
+            batch = query_embeddings[i:i + batch_size]
+            lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore
+            if i > 0:
+                lims_ = lims_[1:]
+                lims_ += lims[-1][-1]
+            lims.append(lims_)
+            dists.append(dists_)
+            ids.append(ids_)
+            pbar.update(len(batch))
+    return RangeSearchResult(lims=np.concatenate(lims), dists=np.concatenate(dists), ids=np.concatenate(ids))
+
+@dataclass(frozen=True)
+class FlatWithLims:
+    concatenated: NDArray
+    lims: NDArray
+def to_flat_with_lims(arrs: list[NDArray]) -> FlatWithLims:
+    lims = np.array([0] + [len(arr) for arr in arrs], dtype=np.uint32).cumsum()
+    return FlatWithLims(concatenated=np.concatenate(arrs), lims=lims)
+def from_flat_with_lims(flat_with_lims: FlatWithLims) -> list[NDArray]:
+    lims = flat_with_lims.lims
+    arr = flat_with_lims.concatenated
+    return [arr[i:j] for i, j in zip(lims[:-1], lims[1:])]
