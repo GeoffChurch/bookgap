@@ -1,15 +1,15 @@
-import argparse
+from abc import ABC
 from dataclasses import dataclass
 import enum
 import logging
 from functools import wraps
 import inspect
 import re
-from typing import Any, Callable, Optional
-import joblib
+from typing import Any, Optional
 from pathlib import Path
 import time
 
+import joblib
 import numpy as np
 from numpy.typing import NDArray
 
@@ -40,6 +40,9 @@ class Timer:
 LOGGER = logging.getLogger("nextbook")
 
 TIMER = Timer(print=LOGGER.info)
+
+ARTIFACTS_DIR = Path("artifacts")
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -174,19 +177,27 @@ class Filters(enum.Enum):
                 raise ValueError("Pre-filter and post-filter topics do not match")
 
 def create_unicode_safe_filename(s):
-    return re.sub(r'[^a-zA-Z0-9 _.-=\(\),"\']', ' ', str(s)).rstrip()
+    return re.sub(r'[^a-zA-Z0-9 _\.\-=\(\),"\']', ' ', str(s)).rstrip()
 
-def setup_logging(log_name: str = "", log_level: str = "INFO", include_time: bool = True):
+def setup_logging(log_name: str = "", log_level: str = "INFO", include_time: bool = True, explicit_args: Optional[list[tuple[str, Any]]] = None):
     LOGGER.setLevel(log_level)
     
+    found_handlers = LOGGER.hasHandlers()
+    # Remove all handlers associated with the logger
+    if found_handlers:
+        LOGGER.warning("Clearing existing handlers from LOGGER")
+        LOGGER.handlers.clear()
+
     parts = []
     if include_time:
         parts.append(time.strftime('%Y-%m-%d_%H-%M-%S'))
     if log_name:
         parts.append(log_name)
+    if explicit_args:
+        parts.append(create_unicode_safe_filename("_".join(f"{k}={v}" for k, v in sorted(explicit_args))))
     if not parts:
         raise ValueError("At least one part must be provided for the log name")
-    log_file = Path("logs") / ("_".join(parts) + ".log")
+    log_file = Path("logs") / create_unicode_safe_filename("__".join(parts) + ".log")
     log_file.parent.mkdir(parents=True, exist_ok=True)
     
     # File handler
@@ -202,7 +213,10 @@ def setup_logging(log_name: str = "", log_level: str = "INFO", include_time: boo
 
     LOGGER.propagate = False  # Prevent log messages from being propagated to the root logger
 
-def get_stats(a: NDArray):
+    if found_handlers:
+        LOGGER.warning("Replaced existing handlers with new ones")
+
+def get_stats(a: NDArray) -> dict[str, float|int]:
     """Get statistics for an array."""
     assert a.ndim == 1, f"Expected 1D array, got {a.ndim}D"
     if a.size == 0:

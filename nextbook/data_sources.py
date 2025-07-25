@@ -31,12 +31,9 @@ from scipy import sparse
 
 from nextbook.cloud import Cloud, SubCloud, WorkDenoisers, get_ball_coverage, faiss_search_outside_epsilon
 from nextbook.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
-from nextbook.parse_args import parse_args
-from nextbook.util import CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, setup_logging, get_stats
+from nextbook.parse_args import get_explicit_args, parse_args
+from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
 from nextbook.mp_ks_test import ks_2samp
-
-ARTIFACTS_DIR = Path("artifacts")
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 FIGSIZE = (10, 6)
 DPI = 150
@@ -1175,9 +1172,9 @@ def do_inference():
 
 @dataclass(frozen=True)
 class Config:
-    # log_level: str
     max_works: Optional[int]
     duplicate_expectation: float
+    min_sqdist: Optional[float]
     radius_fraction: float
     index_info: IndexInfo
     denoiser: Optional[str]
@@ -1185,8 +1182,8 @@ class Config:
     normalize_embeddings: bool = field(repr=False)
 
 @TIMER.time()
-def main(drop_k: int, log_level: str, max_works: Optional[int], duplicate_expectation: float, radius_fraction: float, denoiser: Optional[str],
-         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int):
+def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, radius_fraction: float, denoiser: Optional[str],
+         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, min_sqdist: Optional[float]):
 
     # Construct IndexInfo
     index_info_obj: IndexInfo
@@ -1202,7 +1199,6 @@ def main(drop_k: int, log_level: str, max_works: Optional[int], duplicate_expect
         raise ValueError(f"Unhandled index type: {index_type}")
 
     config = Config(
-        # log_level=log_level,
         max_works=max_works,
         duplicate_expectation=duplicate_expectation,
         radius_fraction=radius_fraction,
@@ -1211,6 +1207,7 @@ def main(drop_k: int, log_level: str, max_works: Optional[int], duplicate_expect
         drop_k=drop_k,
         # normalize_embeddings=normalize_embeddings
         normalize_embeddings=True,
+        min_sqdist=min_sqdist,
     )
 
     global ARTIFACTS_DIR
@@ -1232,6 +1229,7 @@ def main(drop_k: int, log_level: str, max_works: Optional[int], duplicate_expect
             normalize_embeddings=config.normalize_embeddings,
             denoiser=config.denoiser,
             drop_k=config.drop_k,
+            min_sqdist=config.min_sqdist,
         )
         for topic in Filters
     }
@@ -1299,4 +1297,5 @@ def main(drop_k: int, log_level: str, max_works: Optional[int], duplicate_expect
     # do_inference()
 
 if __name__ == "__main__":
-    main(**vars(parse_args(log_prefix=__file__)))
+    setup_logging(log_name=f"{Path(__file__).stem}", explicit_args=get_explicit_args())
+    main(**vars(parse_args()))

@@ -1,4 +1,3 @@
-
 # class IndexMetric(enum.Enum):
 #     L2 = ("L2", faiss.METRIC_L2)
 #     INNER_PRODUCT = ("INNER_PRODUCT", faiss.METRIC_INNER_PRODUCT)
@@ -155,25 +154,76 @@ def range_search_radii_(
     return RangeSearchResult(lims=lims, dists=dists, ids=ids)
 
 
-def range_search_(index: faiss.Index, query_embeddings: NDArray, epsilon: float) -> RangeSearchResult:
+def range_search_(
+    index: faiss.Index, 
+    query_embeddings: NDArray, 
+    epsilon: float,
+    return_lims: bool = True,
+    return_dists: bool = True,
+    return_ids: bool = True
+) -> RangeSearchResult:
     # Need to use small batches to avoid crashing
-    lims = []
-    dists = []
-    ids = []
+    lims = [] if return_lims else None
+    dists = [] if return_dists else None
+    ids = [] if return_ids else None
 
     batch_size = 48
     with tqdm.tqdm(desc="Range search", total=len(query_embeddings)) as pbar:
         for i in range(0, len(query_embeddings), batch_size):
             batch = query_embeddings[i:i + batch_size]
             lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore
-            if i > 0:
-                lims_ = lims_[1:]
-                lims_ += lims[-1][-1]
-            lims.append(lims_)
-            dists.append(dists_)
-            ids.append(ids_)
+            if lims is not None:
+                if i > 0:
+                    lims_ = lims_[1:]
+                    lims_ += lims[-1][-1]
+                lims.append(lims_)
+            if dists is not None:
+                dists.append(dists_)
+            if ids is not None:
+                ids.append(ids_)
             pbar.update(len(batch))
-    return RangeSearchResult(lims=np.concatenate(lims), dists=np.concatenate(dists), ids=np.concatenate(ids))
+    
+    lims = np.concatenate(lims) if lims is not None else None
+    dists = np.concatenate(dists) if dists is not None else None
+    ids = np.concatenate(ids) if ids is not None else None
+    return RangeSearchResult(lims=lims, dists=dists, ids=ids)
+
+
+def range_search_with_(
+    index: faiss.Index, 
+    query_embeddings: NDArray, 
+    epsilon: float,
+    kernel_fn,
+    batch_size: int = 48
+) -> None:
+    """
+    Range search that processes results point-by-point to avoid memory bottlenecks.
+    
+    Args:
+        index: The FAISS index to search
+        query_embeddings: Query vectors, shape (N, D)
+        epsilon: Search radius
+        kernel_fn: Function called as kernel_fn(query_idx, neighbor_dists, neighbor_ids)
+                  for each query point
+        batch_size: Number of queries to process at once
+    """
+    with tqdm.tqdm(desc="Range search with kernel", total=len(query_embeddings)) as pbar:
+        for i in range(0, len(query_embeddings), batch_size):
+            batch = query_embeddings[i:i + batch_size]
+            lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore
+            
+            # Process each query in the batch
+            for j in range(len(batch)):
+                query_idx = i + j
+                start_idx = lims_[j]
+                end_idx = lims_[j + 1]
+                
+                neighbor_dists = dists_[start_idx:end_idx] if len(dists_) > 0 else np.array([])
+                neighbor_ids = ids_[start_idx:end_idx] if len(ids_) > 0 else np.array([])
+                
+                kernel_fn(query_idx, neighbor_dists, neighbor_ids)
+            
+            pbar.update(len(batch))
 
 @dataclass(frozen=True)
 class FlatWithLims:

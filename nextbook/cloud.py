@@ -1,10 +1,11 @@
-from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+from collections import Counter, OrderedDict, defaultdict
+from dataclasses import dataclass
 import enum
 from functools import lru_cache
 import itertools
 import json
-from pathlib import Path
+import matplotlib.pyplot as plt
 import re
 import time
 from typing import Any, Dict, Generator, List, Optional, Union
@@ -13,24 +14,36 @@ import numpy as np
 from numpy.typing import NDArray
 import pyalex
 from scipy import sparse as sp
+import scipy.linalg
 from sentence_transformers import SentenceTransformer
 import tqdm
 import nextbook.denoisers as denoisers
 from nextbook.index import IndexInfo, build_index, range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims
-from nextbook.util import CACHE_DIR, FilterPair, Filter, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
+from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
+from nextbook.deduplicators import Deduplicator
+
+@dataclass(frozen=True)
+class CloudData:
+    works: List[Dict[str, Any]]
+    index: faiss.Index
+    embeddings: NDArray
+    def __post_init__(self):
+        assert len(self.works) == self.embeddings.shape[0], f"Works and embeddings length mismatch: {len(self.works)} != {self.embeddings.shape[0]}"
+        assert self.index.ntotal == len(self.works), f"Index and works length mismatch: {self.index.ntotal} != {len(self.works)}"
+        assert self.index.d == self.embeddings.shape[1], f"Index and embeddings dimension mismatch: {self.index.d} != {self.embeddings.shape[1]}"
+
 @dataclass(frozen=True)
 class Cloud:
     filter_pair: FilterPair
     index_info: IndexInfo
     max_works: Optional[int]
-    duplicate_expectation: float
+    deduplicator: Optional[Deduplicator]
     normalize_embeddings: bool
     denoiser: Optional[str]
     drop_k: int
 
     def __post_init__(self):
         assert self.drop_k >= 0
-        assert 0 <= self.duplicate_expectation <= 1, f"duplicate_expectation must be in [0, 1], got {self.duplicate_expectation}"
         if self.denoiser is None:
             assert self.drop_k == 0, f"If denoiser is NONE, drop_k must be 0 (got {self.drop_k})"
         # else:
@@ -48,28 +61,18 @@ class Cloud:
     def name(self) -> str:
         return f"{self.filter_pair.merged_name()}"
 
-    def _data(self) -> "Cloud.CloudData":
+    def _data(self) -> CloudData:
         return get_cloud_data(self)
 
-    @dataclass(frozen=True)
-    class CloudData:
-        works: List[Dict[str, Any]]
-        index: faiss.Index
-        embeddings: NDArray
-        def __post_init__(self):
-            assert len(self.works) == self.embeddings.shape[0], f"Works and embeddings length mismatch: {len(self.works)} != {self.embeddings.shape[0]}"
-            assert self.index.ntotal == len(self.works), f"Index and works length mismatch: {self.index.ntotal} != {len(self.works)}"
-            assert self.index.d == self.embeddings.shape[1], f"Index and embeddings dimension mismatch: {self.index.d} != {self.embeddings.shape[1]}"
 
 
 # Work-aware denoiser system
-class WorkDenoiser:
+class WorkDenoiser(ABC):
     """Base class for work-aware denoisers that can filter works and apply denoisers."""
-    
-    def __call__(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+    @abstractmethod
+    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> NDArray:
         """Apply the denoiser to works and embeddings."""
-        raise NotImplementedError
-
+        ...
 
 class SimpleWorkDenoiser(WorkDenoiser):
     """A simple work denoiser that applies a single denoiser implementation to all works."""
@@ -78,51 +81,41 @@ class SimpleWorkDenoiser(WorkDenoiser):
         self.denoiser_impl = denoiser_impl
         self.needs_citation_graph = needs_citation_graph
     
-    def __call__(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int):
         # Center
         X_mean = embeddings.mean(axis=0)
         X_centered = embeddings - X_mean
         # Compute projection matrix
         if self.needs_citation_graph:
             citation_graph = build_citation_graph(works)
-            P, extra = self.denoiser_impl.projector(X_centered, citation_graph, n_components)
+            P, _eigvals = self.denoiser_impl.projector(X_centered, citation_graph, n_components)
         else:
-            P, extra = self.denoiser_impl.projector(X_centered, n_components)
-        # Project and decenter
-        X_denoised = X_centered @ P
-        X_denoised = X_denoised + X_mean
-        return X_denoised, extra
+            P, _eigvals = self.denoiser_impl.projector(X_centered, n_components)
+        return P
 
 
-class AntiLDAWorkDenoiser(WorkDenoiser):
-    """Work denoiser that applies Anti-LDA to remove discriminative directions between two work types."""
+class TwoSubsetWorkDenoiser(WorkDenoiser):
+    """Work denoiser that applies a denoiser to two filtered subsets of works."""
     
-    def __init__(self, filter1: Filter, filter2: Filter):
+    def __init__(self, denoiser_impl: denoisers.TwoSubsetScatterDenoiser, filter1: Filter, filter2: Filter):
+        self.denoiser_impl = denoiser_impl
         self.filter1 = filter1
         self.filter2 = filter2
     
-    def __call__(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int):
         indices1 = [i for i, work in enumerate(works) if self.filter1.check_work(work)]
         indices2 = [i for i, work in enumerate(works) if self.filter2.check_work(work)]
         # Union of both groups for centering
         union_indices = sorted(set(indices1) | set(indices2))
         if not union_indices:
-            # If union is empty, just return original embeddings
-            return embeddings, None
-        X_union = embeddings[union_indices]
-        X_mean = X_union.mean(axis=0)
-        # Center all embeddings
-        X_centered = embeddings - X_mean
-        # Centered filtered groups
-        X1_centered = X_centered[indices1]
-        X2_centered = X_centered[indices2]
-        # Get projection matrix
-        from nextbook.denoisers import AntiLDADenoiser
-        anti_lda = AntiLDADenoiser()
-        P, eigvals = anti_lda.projector(X1_centered, X2_centered, n_components)
-        # Project all centered embeddings
-        X_denoised = X_centered @ P
-        return X_denoised, eigvals
+            return np.eye(embeddings.shape[1], dtype=embeddings.dtype)
+        
+        # Filtered groups
+        X1 = embeddings[indices1]
+        X2 = embeddings[indices2]
+        # Get projection matrix (pass full embeddings set for better scatter computation)
+        P, _eigvals = self.denoiser_impl.projector(X1, X2, n_components, X=embeddings)
+        return P
 
 class WorkDenoisers(enum.Enum):
     # Simple denoisers
@@ -137,17 +130,26 @@ class WorkDenoisers(enum.Enum):
     W = SimpleWorkDenoiser(denoisers.WDenoiser(), needs_citation_graph=True)
     LDA = SimpleWorkDenoiser(denoisers.LDADenoiser(), needs_citation_graph=True)
     SYM_LDA = SimpleWorkDenoiser(denoisers.SymmetrizedLDADenoiser(), needs_citation_graph=True)
-    W_LPP = SimpleWorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()), needs_citation_graph=True)
-    W_NEIGHBOR_DIST_MIN = SimpleWorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()), needs_citation_graph=True)
+    PLS = SimpleWorkDenoiser(denoisers.PLSModeADenoiser(), needs_citation_graph=True)
+    CCA = SimpleWorkDenoiser(denoisers.PLSModeBDenoiser(), needs_citation_graph=True)
+    # W_LPP = SimpleWorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()), needs_citation_graph=True)
+    # W_NEIGHBOR_DIST_MIN = SimpleWorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()), needs_citation_graph=True)
     
     # Work-aware denoisers
-    BOOK_ARTICLE_ANTI_LDA = AntiLDAWorkDenoiser(
+    BOOK_ARTICLE_ANTI_LDA = TwoSubsetWorkDenoiser(
+        denoisers.AntiLDADenoiser(),
         Filter(work_type=WorkType.BOOK.value), 
         Filter(work_type=WorkType.ARTICLE.value)
     )
+    BOOK_ARTICLE_DOM_INVAR = TwoSubsetWorkDenoiser(
+        denoisers.DomainInvariantDenoiser(),
+        Filter(work_type=WorkType.BOOK.value), 
+        Filter(work_type=WorkType.ARTICLE.value)
+    ) 
     
-    def __call__(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        return self.value(works, embeddings, n_components)
+    @TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>", embeddings=lambda embeddings: f"<{embeddings.shape}>"))
+    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int):
+        return self.value.projector(works, embeddings, n_components)
     
     def __str__(self):
         return self.name
@@ -180,111 +182,130 @@ def get_denoised_embeddings(cloud: Cloud, works: List[Dict[str, Any]], embedding
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             return embeddings / np.where(norms == 0, 1, norms)
         return embeddings
-    if cloud.denoiser is not None:
-        # cloud_dir = ARTIFACTS_DIR / str(cloud.topic) / str(cloud.work_type)
-        # cloud_dir.mkdir(parents=True, exist_ok=True)
+    
+    if cloud.denoiser is None:
+        return maybe_normalize(embeddings)
+    
+    cloud_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre) / f"{cloud.denoiser} drop_k={cloud.drop_k}"
+    cloud_dir.mkdir(parents=True, exist_ok=True)
 
-        # Dimensionality reduction/cleaning
-        n_components = embeddings.shape[1] - cloud.drop_k
-        LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
-        denoiser = WorkDenoisers[cloud.denoiser]
-        embeddings, eigvals = denoiser(works, embeddings, n_components)
-        # if len(eigvals) > 0:
-        #     plot_eigenvalues(
-        #         eigvals,
-        #         n_components,
-        #         cloud_dir / f"{cloud.denoiser.lower()}_eigenvalues.png",
-        #         f"Eigenvalues for {cloud.denoiser} on {cloud.name()} embeddings"
-        #     )
+    # Pre-projection PCA for baseline singular values
+    s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0)) # type: ignore
+    
+    LOGGER.info(f"Cloud {cloud.name()} -- Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
 
-    return maybe_normalize(embeddings)
+    # Dimensionality reduction/cleaning
+    n_components = embeddings.shape[1] - cloud.drop_k # TODO where should we make sure this is >= 1 or 0?
+    LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
+    denoiser = WorkDenoisers[cloud.denoiser]
 
-@TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>", undeduped_embeddings=lambda embeddings: f"<{embeddings.shape}>"))
-@MEMORY.cache(ignore=["works", "undeduped_embeddings"])
-def deduplicate_works(cloud: Cloud, works: List[Dict[str, Any]], undeduped_embeddings: NDArray):
-    # --- Adaptive min_dist based on duplicate_expectation ---
-    duplicate_expectation = cloud.duplicate_expectation
-    num_to_drop = int(duplicate_expectation * (len(undeduped_embeddings) - 1))
-    LOGGER.info(f"Cloud {cloud.name()} -- Using duplicate_expectation={duplicate_expectation}")
+    P = denoiser.projector(works, embeddings, n_components)
+    assert np.allclose(P.T @ P, np.eye(P.shape[1]), atol=1e-6), f"Projector {denoiser} did not produce orthogonal matrix P! {np.linalg.norm(P.T @ P - np.eye(P.shape[1]))=:.6f}"
+    
+    denoised_embeddings = embeddings @ P
 
-    if num_to_drop > 0 and len(undeduped_embeddings) > 1:
-        # Compute distances to nearest older neighbor
-        dist_to_nearest_older = []
-        # Build index incrementally, but in batches for efficiency
-        main_index = cloud.index_info.index_type.build(undeduped_embeddings[:1], cloud.index_info) # Start with oldest work
-        batch_size = 8192
+    s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0)) # type: ignore
+    
+    # Plot singular value comparison        
+    fig, ax = plt.subplots(figsize=(12, 5))
+    
+    # Scatter plot for original and post-denoising singular values
+    ax.scatter(np.arange(len(s_orig)), s_orig, color='b', label='Original', alpha=0.7)
+    ax.scatter(np.arange(len(s_post)), s_post, color='r', label='Post-denoising', alpha=0.7)
+    ax.set_xlabel('Component Index')
+    ax.set_ylabel('Singular Value')
+    ax.set_title('Singular Values')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Calculate variance decay
+    total_variance_orig = np.sum(s_orig**2)
+    total_variance_post = np.sum(s_post**2)
+    variance_retained = total_variance_post / total_variance_orig
+    
+    fig.suptitle(f'{cloud.denoiser} drop_k={cloud.drop_k} Denoising: {variance_retained:.2%} variance retained')
+    
+    plt.tight_layout()
+    plt.savefig(cloud_dir / f"singular_values_comparison.png", dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    LOGGER.info(f"Cloud {cloud.name()} -- Variance retained after denoising: {variance_retained:.2%}")
+    LOGGER.info(f"Cloud {cloud.name()} -- Saved singular value analysis to {cloud_dir}")
         
-        desc = f"Finding nearest older neighbors for {cloud.name()}"
-        with tqdm.tqdm(total=len(undeduped_embeddings)-1, desc=desc) as pbar:
-            for i in range(1, len(undeduped_embeddings), batch_size):
-                batch_start = i
-                batch_end = min(i + batch_size, len(undeduped_embeddings))
-                query_batch = undeduped_embeddings[batch_start:batch_end]
 
-                # Find nearest neighbor in the main_index (all points older than this batch)
-                D_outside, _ = main_index.search(query_batch, 1) # type: ignore
+    return maybe_normalize(denoised_embeddings)
 
-                # For each point in the batch, find its nearest neighbor among older points *within the batch*
-                # and take the minimum of that and the distance to the nearest neighbor outside the batch.
-                if len(query_batch) > 1:
-                    # Use a temporary flat index for within-batch searches, as it's fast to build.
-                    temp_index = faiss.IndexFlatL2(query_batch.shape[1])
-                    temp_index.add(query_batch[0:1]) # type: ignore
-                    
-                    # First element of batch can only have older neighbors outside the batch
-                    dist_to_nearest_older.append(D_outside[0, 0])
+@TIMER.time(formatters=dict(embeddings=lambda embeddings: f"<{embeddings.shape}>"))
+@MEMORY.cache(ignore=["embeddings"]) # embeddings are ignored by the cache key because hashing is too slow. Use embeddings_key to disambiguate.
+def deduplicate_works_semantic_(deduplicator: Optional[Deduplicator], index_info: IndexInfo, embeddings: NDArray, embeddings_key: tuple) -> NDArray[np.intp]:
+    if deduplicator is None:
+        return np.arange(len(embeddings), dtype=np.intp) # Retain all indices
+    return deduplicator.deduplicate(embeddings, index_info)
 
-                    for j in range(1, len(query_batch)):
-                        query_vec = query_batch[j:j+1]
-                        D_inside, _ = temp_index.search(query_vec, 1) # type: ignore
-                        dist_to_nearest_older.append(min(D_outside[j, 0], D_inside[0, 0]))
-                        temp_index.add(query_vec) # type: ignore
-                elif len(query_batch) == 1: # batch size is 1, or last batch has 1 element
-                    dist_to_nearest_older.append(D_outside[0, 0])
-
-                # Add the processed batch to the main index for the next iteration
-                main_index.add(query_batch) # type: ignore
-                pbar.update(len(query_batch))
-
-        assert len(dist_to_nearest_older) == len(undeduped_embeddings) - 1, f"Expected {len(undeduped_embeddings) - 1} distances, got {len(dist_to_nearest_older)}"
-
-        argsort = np.argsort(dist_to_nearest_older)
-        retained_indices = np.concatenate(([0], argsort[num_to_drop:] + 1))  # +1 because we dropped the first element
-    else:
-        retained_indices = np.arange(len(undeduped_embeddings))
-
-    LOGGER.info(f"Cloud {cloud.name()} -- Retaining {len(retained_indices)} points out of {len(undeduped_embeddings)} based on duplicate expectation")
-    retained_works = [works[i] for i in retained_indices]
-    retained_embeddings = undeduped_embeddings[retained_indices]
-    return retained_works, retained_embeddings
+def deduplicate_works_semantic(cloud, works, embeddings):
+    LOGGER.info(f"Cloud {cloud.name()} -- Applying deduplication to {len(embeddings)} embeddings with {cloud.deduplicator}")
+    retained_idxs = deduplicate_works_semantic_(cloud.deduplicator, cloud.index_info, embeddings, embeddings_key=(cloud.filter_pair.pre, cloud.max_works))
+    # Write total and per-type retention stats
+    artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    original_counts = defaultdict(int)
+    for work in works:
+        original_counts[work.get("type", "UNKNOWN")] += 1
+    new_counts = defaultdict(int)
+    for i in retained_idxs:
+        new_counts[works[i].get("type", "UNKNOWN")] += 1
+    fname = f"deduplication_stats_{cloud.deduplicator}"
+    if cloud.max_works is not None:
+        fname += f"_maxworks={cloud.max_works}"
+    path = artifacts_dir / f"{fname}.txt"
+    with path.open("w") as f:
+        total_original = sum(original_counts.values())
+        total_new = sum(new_counts.values())
+        f.write(f"Total works before deduplication: {total_original}\n")
+        f.write(f"Total works after deduplication: {total_new}\n")
+        f.write(f"Fraction of works retained: {total_new / total_original:.4f}\n")
+        for work_type in sorted(original_counts.keys()):
+            original_count = original_counts[work_type]
+            new_count = new_counts[work_type]
+            f.write(f"{work_type}: {original_count} -> {new_count} ({new_count / original_count:.4f})\n")
+    with path.open("r") as f:
+        LOGGER.info(f"Deduplication stats:\n{f.read()}")
+    return retained_idxs
 
 @lru_cache(maxsize=1)
 @TIMER.time()
 @MEMORY.cache
-def get_cloud_data(cloud: Cloud) -> Cloud.CloudData:
-    works, undeduped_embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
+def get_cloud_data(cloud: Cloud) -> CloudData:
+    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
     
+    # Apply deduplication in initial space because denoisers shouldn't need
+    # to consider post-projection deduplication and so that different denoisers
+    # will not result in different deduplicated works.
+    retained_idxs = deduplicate_works_semantic(cloud, works, embeddings)
+    works = [works[i] for i in retained_idxs]
+    embeddings = embeddings[retained_idxs]
+    LOGGER.info(f"Cloud {cloud.name()} -- Retained {len(works)} works after deduplication")
+
     # Apply post-filtering
     LOGGER.info(f"Cloud {cloud.name()} -- Applying post-filtering to {len(works)} works with {cloud.filter_pair.post}")
     retained_idxs = [i for i, work in enumerate(works) if cloud.filter_pair.post.check_work(work)]
-    LOGGER.info(f"Cloud {cloud.name()} -- Retained {len(retained_idxs)} works after post-filtering")
     works = [works[i] for i in retained_idxs]
-    undeduped_embeddings = undeduped_embeddings[retained_idxs]
+    embeddings = embeddings[retained_idxs]
+    LOGGER.info(f"Cloud {cloud.name()} -- Retained {len(works)} works after post-filtering")
 
-    undeduped_embeddings = get_denoised_embeddings(cloud, works, undeduped_embeddings)
-
-    # Deduplicate works based on the duplicate expectation
-    retained_works, deduped_embeddings = deduplicate_works(cloud, works, undeduped_embeddings)
+    embeddings = get_denoised_embeddings(cloud, works, embeddings)
 
     # Clean up work texts
-    for work in retained_works:
-        work["display_name"] = work["display_name"].replace("\n", "\\n")
-        work["abstract"] = work["abstract"].replace("\n", "\\n")
+    WHITESPACE_PAT = re.compile(r"\s")
+    for work in works:
+        work["display_name"] = WHITESPACE_PAT.sub(" ", work["display_name"])
+        work["abstract"] = WHITESPACE_PAT.sub(" ", work["abstract"])
 
     # Rebuild the index with the retained points
     LOGGER.info(f"Cloud {cloud.name()} -- Rebuilding index with {len(works)} points")
-    index = build_index(cloud.index_info, deduped_embeddings)
-    return Cloud.CloudData(works=retained_works, index=index, embeddings=deduped_embeddings)
+    index = build_index(cloud.index_info, embeddings)
+    return CloudData(works=works, index=index, embeddings=embeddings)
+
 
 
 @TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>"))
@@ -295,7 +316,7 @@ def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
     col = []
     for i, work in enumerate(works):
         # Add self as reference for safe normalization and stability
-        for ref_id in work["referenced_works"] + [work["id"]]:
+        for ref_id in work.get("referenced_works", []) + [work["id"]]:
             if ref_id in id_to_idx:
                 row.append(i)
                 col.append(id_to_idx[ref_id])
@@ -320,8 +341,8 @@ def get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
         state = json.load(f)
 
     # First yield cached works
-    for page in range(1, state["next_page"]):
-        page_file = cache_dir / f"page_{page}.json"
+    for page_num in range(1, state["next_page"]):
+        page_file = cache_dir / f"page_{page_num}.json"
         with page_file.open("r") as f:
             yield from json.load(f)
     
@@ -332,31 +353,32 @@ def get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
     # Then yield new works
     last_time = time.time() # For rate limiting
     for i, page in enumerate(get_query(pre_filter).paginate(
-        cursor=state["next_cursor"], per_page=200, n_max=None) # type: ignore
-        ):
+        cursor=state["next_cursor"], per_page=200,
+        n_max=None # type: ignore
+        )):
         next_cursor = page.meta["next_cursor"]
         if next_cursor is None:
             with state_file.open("w") as f:
                 json.dump({"next_cursor": None, "next_page": state["next_page"]}, f)
             return
-        page = list(map(dict, page))
-        for work in page:
+        works: list[dict[str, Any]] = list(map(dict, page))
+        for work in works:
             work["abstract"] = resolve_abstract_inverted_index(work["abstract_inverted_index"])
             del work["abstract_inverted_index"]
             work["id"] = work["ids"]["openalex"]
             del work["ids"]
             work["topic"] = str(pre_filter)
-        # Save page
+        # Save works
         page_file = cache_dir / f"page_{state['next_page']}.json"
         with page_file.open("w") as f:
-            json.dump(page, f, indent=2)
+            json.dump(works, f, indent=2)
         # Save state
         state["next_page"] += 1
         state["next_cursor"] = next_cursor
         with state_file.open("w") as f:
             json.dump(state, f)
         # Yield works
-        yield from page
+        yield from works
         # Rate limit
         min_time_diff = 0.25 # Minimum time between requests
         time.sleep(max(0, min_time_diff - (time.time() - last_time)))
@@ -365,7 +387,7 @@ def get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
 class RegexFilter:
     def __init__(self, regex: str, flags: int = re.IGNORECASE):
         self.regex = re.compile(regex, flags)
-    def __call__(self, work: Dict) -> bool:
+    def __call__(self, work: dict[str, Any]) -> bool:
         return self.regex.search(f"{work['display_name']} {work['abstract']}") is not None
     def __repr__(self):
         return f"Contains {self.regex}"
@@ -373,7 +395,7 @@ class RegexFilter:
 class MissingFieldFilter:
     def __init__(self, field: str):
         self.field = field
-    def __call__(self, work: Dict) -> bool:
+    def __call__(self, work: dict[str, Any]) -> bool:
         return work.get(self.field) is None
     def __repr__(self):
         return f"Missing {self.field}"
@@ -382,7 +404,7 @@ class ShortFieldFilter:
     def __init__(self, field: str, min_length: int):
         self.field = field
         self.min_length = min_length
-    def __call__(self, work: Dict) -> bool:
+    def __call__(self, work: dict[str, Any]) -> bool:
         field = work.get(self.field)
         return field is not None and len(field) < self.min_length
     def __repr__(self):
@@ -396,70 +418,119 @@ class WorkFilter(enum.Enum):
     MARITAL_ARMS                          = RegexFilter(r"Judging from repetitious appearances of her marital arms")
     NO_DISPLAY_NAME                       = MissingFieldFilter("display_name")
     NO_ABSTRACT                           = MissingFieldFilter("abstract")
-    SHORT_DISPLAY_NAME                    = ShortFieldFilter("display_name", 4)
-    SHORT_ABSTRACT                        = ShortFieldFilter("abstract", 10)
-    NULL_REFERENCED_WORKS                 = MissingFieldFilter("referenced_works")
-    ZERO_REFERENCED_WORKS                 = ShortFieldFilter("referenced_works", 1)
+    SHORT_DISPLAY_NAME                    = ShortFieldFilter("display_name", min_length=4)
+    SHORT_ABSTRACT                        = ShortFieldFilter("abstract", min_length=10)
+    # NULL_REFERENCED_WORKS                 = MissingFieldFilter("referenced_works")
+    # ZERO_REFERENCED_WORKS                 = ShortFieldFilter("referenced_works", min_length=1)
     
-    def __call__(self, work: Dict) -> bool:
+    def __call__(self, work: dict[str, Any]) -> bool:
         return self.value(work)
 
     def __str__(self):
         return repr(self.value)
 
 def filter_works(work_filter: Filter):
-    stats: Dict[str, Union[int, float]]
-    stats = {f"{filter}": 0 for filter in WorkFilter}
-    stats["total"] = 0
-    stats["num_removed"] = 0
-    # invalid_dir = cache_dir / "filter" / str(topic) / str(work_type)
-    # invalid_dir.mkdir(parents=True, exist_ok=True)
+    class PerTypeCounter:
+        def __init__(self):
+            self.total: int = 0
+            self.per_type: defaultdict[str, int] = defaultdict(int)
+        def insert(self, work: dict[str, Any]):
+            self.total += 1
+            work_type = work.get('type', 'UNKNOWN')
+            self.per_type[work_type] += 1
+        
+    filter_stats = {f"{filter}": PerTypeCounter() for filter in WorkFilter}
+    total = PerTypeCounter()
+    num_removed = PerTypeCounter()
+    artifacts_dir = ARTIFACTS_DIR / str(work_filter)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
     
-    # with (invalid_dir / "invalid_works.txt").open("w") as f:
-    for work in tqdm.tqdm(get_works(work_filter), total=get_query(work_filter).count(),
-                          desc=f"Filtering works in {work_filter}", disable=False):
-        invalidators = []
-        stats["total"] += 1
-        for filter in WorkFilter:
-            if filter(work):
-                stats[f"{filter}"] += 1
-                invalidators.append(f"{filter}")
-        if len(invalidators) == 0:
-            yield work
-        else:
-            stats["num_removed"] += 1
-    #         else:
-    #             f.write(f"{' '.join(invalidators)} invalidated {work['id']}: {work['display_name']} -- {work['abstract']}\n")
+    with (artifacts_dir / "invalid_works.txt").open("w") as f:
+        for work in tqdm.tqdm(get_works(work_filter), total=get_query(work_filter).count(),
+                            desc=f"Filtering works in {work_filter}", disable=False):
+            invalidators = []
+            total.insert(work)
+            for filter in WorkFilter:
+                if filter(work):
+                    filter_stats[f"{filter}"].insert(work)
+                    invalidators.append(f"{filter}")
+            if len(invalidators) == 0:
+                yield work
+            else:
+                num_removed.insert(work)
+                f.write(f"{' '.join(invalidators)} invalidated {work['type']} {work['id']}: {work['display_name']} -- {' '.join(work['abstract'].split())}\n")
 
-    # with (invalid_dir / "stats.json").open("w") as f:
-    stats["fraction_removed"] = stats["num_removed"] / stats["total"]
-    stats = OrderedDict(sorted(stats.items(), key=lambda x: (-x[1], x[0])))
-    # json.dump(stats, f, indent=2, sort_keys=False)
-    LOGGER.info(f"{work_filter} filter stats: {json.dumps(stats, indent=2, sort_keys=True)}")
-
+    # Write stats to file
+    with (artifacts_dir / "invalid_works_stats.json").open("w") as f:
+        stats = OrderedDict(total=total.total, num_removed=num_removed.total,
+                            fraction_removed=num_removed.total / total.total if total.total > 0 else 0.0,
+                            **OrderedDict(sorted((work_type, v.total) for work_type, v in filter_stats.items() if v.total > 0)))
+        for work_type in total.per_type.keys():
+            stats[f"{work_type}_total"] = total.per_type[work_type]
+            stats[f"{work_type}_removed"] = num_removed.per_type[work_type]
+            stats[f"{work_type}_fraction_removed"] = num_removed.per_type[work_type] / total.per_type[work_type] if total.per_type[work_type] > 0 else 0.0
+            for filter_name in filter_stats.keys():
+                stats[f"{work_type}_{filter_name}"] = filter_stats[filter_name].per_type[work_type]
+        json.dump(stats, f, indent=2)
+        LOGGER.info(f"{work_filter} filter stats: {json.dumps(stats, indent=2)}") 
+                            
 @MEMORY.cache
 def deduplicate_works_syntactic(work_filter: Filter):
     works = list(filter_works(work_filter))
-    deduped: defaultdict[str, List[Dict[str, Any]]] = defaultdict(list)
-    def normalize_work(work: Dict) -> str:
-        return ' '.join(f"{work['display_name']} {work['abstract']}".lower().split())
+    deduped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    def normalize_work(work: dict[str, Any], _NONWORD_PAT=re.compile(r"\W")) -> str:
+        s = f"{work['display_name']} {work['abstract']}"
+        s = _NONWORD_PAT.sub("", s)
+        s = s.lower()
+        return s
     for work in works:
         key = normalize_work(work)
         deduped[key].append(work)
 
-    # dedup_dir = OUTPUT_DIR / "deduped" / str(topic) / str(work_type)
-    # dedup_dir.mkdir(parents=True, exist_ok=True)
-    # with (dedup_dir / "stats.json").open("w") as f:
-    #     counts = np.array([len(works) for works in deduped.values()])
-    #     json.dump({"min": counts.min().item(), "max": counts.max().item(), "mean": counts.mean().item(), "std": counts.std().item(), "total": len(works)}, f, indent=2)
-    counts = np.array([len(works) for works in deduped.values()])
-    LOGGER.info(f"{work_filter} deduplication stats: {json.dumps({'min': counts.min().item(), 'max': counts.max().item(), 'mean': counts.mean().item(), 'std': counts.std().item(), 'total': len(works)}, indent=2)}")
-    # for key, works in deduped.items():
-    #     # if len(works) > 1:
-    #     #     logger.debug(f"Duplicate works found: {len(works)} for key {key}\n"
-    #     #                   f"{json.dumps(works, indent=2)}")
-    #     yield works[0]
-    return [work for (work, *_dups) in deduped.values()]
+
+    artifacts_dir = ARTIFACTS_DIR / str(work_filter)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # Find cross-type duplicates
+    with (artifacts_dir / f"syntactic_deduplication_crosstype_duplicates.txt").open("w") as f:
+        collisions = defaultdict(int)
+        for works in deduped.values():
+            work_types = tuple(sorted(set(work["type"] for work in works)))
+            if len(work_types) > 1:
+                collisions[work_types] += 1
+        for work_types, count in sorted(collisions.items(), key=lambda x: (-x[1], x[0])):
+            f.write(f"{work_types}: {count}\n")
+    # Split duplicate groups into subgroups by type
+    key_and_type_to_dupgroup: defaultdict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for key, dupgroup in deduped.items():
+        for work in dupgroup:
+            work_type = work.get("type", "UNKNOWN")
+            key_and_type_to_dupgroup[(key, work_type)].append(work)
+
+    with (artifacts_dir / f"syntactic_deduplication_stats.txt").open("w") as f:
+        f.write(f"Total works: {len(works)}\n")
+        f.write(f"Unique works (before splitting by type): {len(deduped)} ({len(deduped) / len(works):.2%})\n")
+        f.write(f"Number of works with duplicates (before splitting by type): {sum(1 for group in deduped.values() if len(group) > 1)}\n")
+        f.write(f"Distribution of len(group) for all duplicate groups with at least 2 works (before splitting by type):\n")
+        f.write(f"{get_stats(np.array([len(group) for group in deduped.values() if len(group) > 1]))}\n") 
+        f.write("\n")
+        f.write(f"Unique works (after splitting duplicate groups by type): {len(key_and_type_to_dupgroup)} ({len(key_and_type_to_dupgroup) / len(works):.2%})\n")
+        f.write(f"Number of works with duplicates (after splitting duplicate groups by type): {sum(1 for group in key_and_type_to_dupgroup.values() if len(group) > 1)}\n")
+        f.write(f"Distribution of len(group) for all duplicate groups with at least 2 works (after splitting by type):\n")
+        f.write(f"{get_stats(np.array([len(subdupgroup) for subdupgroup in key_and_type_to_dupgroup.values() if len(subdupgroup) > 1]))}\n")
+        f.write("\n")
+        
+        counts_by_type = defaultdict(list)
+        for (key, work_type), subdupgroup in key_and_type_to_dupgroup.items():
+            counts_by_type[work_type].append(len(subdupgroup))
+        f.write(f"Counts by type:\n")
+        for work_type, counts in sorted(counts_by_type.items()):
+            f.write(f"\t{work_type} -- total works: {sum(counts)}\n")
+            f.write(f"\t{work_type} -- unique works: {len(counts)}\n")
+            f.write(f"\t{work_type} -- distribution of len(group) for all duplicate groups with at least 2 works:\n")
+            f.write(f"{get_stats(np.array([count for count in counts if count > 1]))}\n")
+            f.write("\n")
+
+    return [subdupgroup[0] for subdupgroup in key_and_type_to_dupgroup.values()] # Return the first work of each deduplicated group
 
 def batched(iterable, n): # TODO use itertools.batched when available
     # batched('ABCDEFG', 3) → ABC DEF G
@@ -532,16 +603,6 @@ class SubCloud:
     parent: Cloud
     post_filter: Filter
 
-    @dataclass(frozen=True)
-    class SubCloudData:
-        works: List[Dict[str, Any]]
-        index: faiss.Index
-        embeddings: NDArray
-        def __post_init__(self):
-            assert len(self.works) == self.embeddings.shape[0], f"Works and embeddings length mismatch: {len(self.works)} != {self.embeddings.shape[0]}"
-            assert self.index.ntotal == len(self.works), f"Index and works length mismatch: {self.index.ntotal} != {len(self.works)}"
-            assert self.index.d == self.embeddings.shape[1], f"Index and embeddings dimension mismatch: {self.index.d} != {self.embeddings.shape[1]}"
-
     def works(self) -> List[Dict[str, Any]]:
         return self._data().works
     
@@ -555,22 +616,20 @@ class SubCloud:
     def filter_pair(self) -> FilterPair:
         return self.parent.filter_pair
 
-    def _data(self) -> "SubCloud.SubCloudData":
+    def _data(self) -> CloudData:
         return get_subcloud_data(self)
 
 @lru_cache(maxsize=2)
 @TIMER.time()
-@MEMORY.cache
-def get_subcloud_data(subcloud: SubCloud) -> SubCloud.SubCloudData:
-    parent_data = subcloud.parent._data()
-    works = parent_data.works
-    embeddings = parent_data.embeddings
+def get_subcloud_data(subcloud: SubCloud) -> CloudData:
+    works = subcloud.parent.works()
+    embeddings = subcloud.parent.embeddings()
     # Apply post-filtering
     retained_idxs = [i for i, work in enumerate(works) if subcloud.post_filter.check_work(work)]
     filtered_works = [works[i] for i in retained_idxs]
     filtered_embeddings = embeddings[retained_idxs]
     index = build_index(subcloud.parent.index_info, filtered_embeddings)
-    return SubCloud.SubCloudData(works=filtered_works, index=index, embeddings=filtered_embeddings)
+    return CloudData(works=filtered_works, index=index, embeddings=filtered_embeddings)
 
 
 def get_query(work_filter: Filter) -> pyalex.Works:
@@ -597,17 +656,16 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
 class GetBallCoverageResult:
     index_works_per_query_work: NDArray
     ball_counts: NDArray  # Number of index works within the ball for each query work
-    covered_points: list[tuple[NDArray, NDArray]]  # List of (dists, ids) tuples
+    covered_points: list[tuple[NDArray[np.float32], NDArray[np.intp]]]  # List of (dists, ids) tuples
 
 @TIMER.time()
 @MEMORY.cache
-def get_ball_coverage(index_subcloud: 'SubCloud', query_subcloud: 'SubCloud', radius_fraction: float) -> GetBallCoverageResult:
+def get_ball_coverage(index_subcloud: SubCloud, query_subcloud: SubCloud, radius_fraction: float) -> GetBallCoverageResult:
     """Get ball coverage statistics between two SubClouds."""
     # Both must be SubClouds of the same parent
     assert isinstance(index_subcloud, SubCloud) and isinstance(query_subcloud, SubCloud), "Both arguments must be SubClouds"
     assert index_subcloud.parent is query_subcloud.parent, "SubClouds must share the same parent Cloud"
-    topic = index_subcloud.parent.filter_pair
-    LOGGER.info(f"{topic} -- Finding closest {query_subcloud} to each {index_subcloud} (each {query_subcloud} gets a voronoi cell of {index_subcloud}s)")
+    LOGGER.info(f"Finding closest query work to each index work (each query work gets a voronoi cell of index works)")
 
     # For each index_subcloud item, find the nearest query_subcloud item
     res = faiss_search_outside_epsilon(query_subcloud, index_subcloud, k=1, epsilon=0)
@@ -617,7 +675,7 @@ def get_ball_coverage(index_subcloud: 'SubCloud', query_subcloud: 'SubCloud', ra
         index_works_per_query_work = np.array([], dtype=np.intp)
     else:
         index_works_per_query_work = np.bincount(I, minlength=query_subcloud.index().ntotal)
-    title = f"{topic} - Number of {index_subcloud}s covered by each {query_subcloud} (radius fraction: {radius_fraction})"
+    title = f"Number of index works covered by each query work (radius fraction: {radius_fraction})"
     LOGGER.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
 
     # Now, for each article, count how many other articles are within a radius defined by its distance to the nearest book.
@@ -625,7 +683,7 @@ def get_ball_coverage(index_subcloud: 'SubCloud', query_subcloud: 'SubCloud', ra
     res = range_search_radii_(index_subcloud.index(), index_subcloud.embeddings(), D_scaled)
     assert res.lims is not None and res.dists is not None and res.ids is not None
     ball_counts = res.lims[1:] - res.lims[:-1]
-    LOGGER.info(f"Number of {index_subcloud}s covered by each {index_subcloud} (ball):\n{get_stats(ball_counts)}")
+    LOGGER.info(f"Number of index works covered by each index work (ball):\n{get_stats(ball_counts)}")
     dists_list = from_flat_with_lims(FlatWithLims(res.dists, res.lims))
     ids_list = from_flat_with_lims(FlatWithLims(res.ids, res.lims))
     covered_points = list(zip(dists_list, ids_list))
@@ -756,4 +814,3 @@ def cross_cloud_nn_ranks(
         dists=balls.dists,
         ids=balls.ids
     )
-    
