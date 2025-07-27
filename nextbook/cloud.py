@@ -493,8 +493,8 @@ def deduplicate_works_syntactic(work_filter: Filter):
     # Find cross-type duplicates
     with (artifacts_dir / f"syntactic_deduplication_crosstype_duplicates.txt").open("w") as f:
         collisions = defaultdict(int)
-        for works in deduped.values():
-            work_types = tuple(sorted(set(work["type"] for work in works)))
+        for dupgroup in deduped.values():
+            work_types = tuple(sorted(set(work["type"] for work in dupgroup)))
             if len(work_types) > 1:
                 collisions[work_types] += 1
         for work_types, count in sorted(collisions.items(), key=lambda x: (-x[1], x[0])):
@@ -525,7 +525,7 @@ def deduplicate_works_syntactic(work_filter: Filter):
         f.write(f"Counts by type:\n")
         for work_type, counts in sorted(counts_by_type.items()):
             f.write(f"\t{work_type} -- total works: {sum(counts)}\n")
-            f.write(f"\t{work_type} -- unique works: {len(counts)}\n")
+            f.write(f"\t{work_type} -- unique works: {len(counts)} ({len(counts) / sum(counts):.2%})\n")
             f.write(f"\t{work_type} -- distribution of len(group) for all duplicate groups with at least 2 works:\n")
             f.write(f"{get_stats(np.array([count for count in counts if count > 1]))}\n")
             f.write("\n")
@@ -541,60 +541,65 @@ def batched(iterable, n): # TODO use itertools.batched when available
 @MEMORY.cache
 def embed_works(work_filter: Filter):
     LOGGER.info(f"Embedding {work_filter} works")
-    works = iter(deduplicate_works_syntactic(work_filter))
+    works = deduplicate_works_syntactic(work_filter)
+    n_works = len(works)
+    works = iter(works)
     emb_cache_dir = CACHE_DIR / "embeddings" / create_unicode_safe_filename(work_filter)
     emb_cache_dir.mkdir(parents=True, exist_ok=True)
 
     ret: list[dict[str, Any]] = []
     # Yield cached works and embeddings
-    i = 1
-    seen = 0
-    while True:
-        try:
-            embeddings = np.load(emb_cache_dir / f"batch_{i}_embeddings.npy")
-            with (emb_cache_dir / f"batch_{i}_ids.json").open("r") as ids_f:
-                embedding_ids = json.load(ids_f)
-            for embedding_id, embedding in zip(embedding_ids, embeddings, strict=True):
-                # zip(works, embedding_ids, embeddings) was a nasty bug because it would
-                # discard the work pulled just before embedding_ids raised StopIteration
-                work = next(works) # So, manually call `next` here
-                assert work["id"] == embedding_id, f"ID mismatch: {work['id']} != {embedding_id} at index {seen}"
+    with tqdm.tqdm(total=n_works, desc="Getting embeddings", disable=False) as pbar:
+        i = 1
+        seen = 0
+        while True:
+            try:
+                embeddings = np.load(emb_cache_dir / f"batch_{i}_embeddings.npy")
+                with (emb_cache_dir / f"batch_{i}_ids.json").open("r") as ids_f:
+                    embedding_ids = json.load(ids_f)
+                for embedding_id, embedding in zip(embedding_ids, embeddings, strict=True):
+                    # zip(works, embedding_ids, embeddings) was a nasty bug because it would
+                    # discard the work pulled just before embedding_ids raised StopIteration
+                    work = next(works) # So, manually call `next` here
+                    assert work["id"] == embedding_id, f"ID mismatch: {work['id']} != {embedding_id} at index {seen}"
+                    work["embedding"] = embedding
+                    seen += 1
+                    # yield work
+                    ret.append(work)
+                    pbar.update(1)
+                i += 1
+            except FileNotFoundError:
+                break
+        if seen > 0:
+            LOGGER.info(f"Yielded {seen} cached embeddings") # TODO no longer yielding
+                
+        # Yield new works and embeddings
+        model = None # Lazy load the model in case `works` is already exhausted
+        start_time = time.time()
+        batch_size = 512
+        seen = 0
+        LOGGER.info(f"Embedding {work_filter} works")
+        for batch in batched(works, batch_size):
+            if model is None:
+                # model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+                model = SentenceTransformer('avsolatorio/GIST-small-Embedding-v0')
+            # Embed batch
+            inputs = [f"{work['display_name']}\n{work['abstract']}" for work in batch]
+            embeddings = model.encode(inputs, batch_size=batch_size, show_progress_bar=False)
+            # Save batch
+            with (emb_cache_dir / f"batch_{i}_embeddings.npy").open("wb") as embeddings_f, (emb_cache_dir / f"batch_{i}_ids.json").open("w") as ids_f:
+                np.save(embeddings_f, embeddings)
+                json.dump([work["id"] for work in batch], ids_f)
+            # Yield works and embeddings
+            for work, embedding in zip(batch, embeddings):
                 work["embedding"] = embedding
-                seen += 1
                 # yield work
                 ret.append(work)
+                pbar.update(1)
+                seen += 1
             i += 1
-        except FileNotFoundError:
-            break
-    if seen > 0:
-        LOGGER.info(f"Yielded {seen} cached embeddings") # TODO no longer yielding
-            
-    # Yield new works and embeddings
-    model = None # Lazy load the model in case `works` is already exhausted
-    start_time = time.time()
-    batch_size = 512
-    seen = 0
-    LOGGER.info(f"Embedding {work_filter} works")
-    for batch in batched(tqdm.tqdm(works, desc="Embedding works", disable=False), batch_size):
-        if model is None:
-            # model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-            model = SentenceTransformer('avsolatorio/GIST-small-Embedding-v0')
-        # Embed batch
-        inputs = [f"{work['display_name']}\n{work['abstract']}" for work in batch]
-        embeddings = model.encode(inputs, batch_size=batch_size, show_progress_bar=False)
-        # Save batch
-        with (emb_cache_dir / f"batch_{i}_embeddings.npy").open("wb") as embeddings_f, (emb_cache_dir / f"batch_{i}_ids.json").open("w") as ids_f:
-            np.save(embeddings_f, embeddings)
-            json.dump([work["id"] for work in batch], ids_f)
-        # Yield works and embeddings
-        for work, embedding in zip(batch, embeddings):
-            work["embedding"] = embedding
-            # yield work
-            ret.append(work)
-            seen += 1
-        i += 1
-    if seen > 0:
-        LOGGER.info(f"Yielded {seen} new embeddings in {time.time() - start_time:.2f} seconds")
+        if seen > 0:
+            LOGGER.info(f"Yielded {seen} new embeddings in {time.time() - start_time:.2f} seconds")
 
     return ret
 
@@ -668,7 +673,7 @@ def get_ball_coverage(index_subcloud: SubCloud, query_subcloud: SubCloud, radius
     LOGGER.info(f"Finding closest query work to each index work (each query work gets a voronoi cell of index works)")
 
     # For each index_subcloud item, find the nearest query_subcloud item
-    res = faiss_search_outside_epsilon(query_subcloud, index_subcloud, k=1, epsilon=0)
+    res = faiss_search_outside_epsilon(query_subcloud, index_subcloud, is_intra_cloud_search=False, k=1, epsilon=0)
     D = res.D_outside.squeeze(1)
     I = res.I_outside.squeeze(1)
     if query_subcloud.index().ntotal == 0:
@@ -702,34 +707,49 @@ class FaissSearchOutsideEpsilonResult:
 
 @MEMORY.cache
 def faiss_search_outside_epsilon(
-        index: Union[Cloud, SubCloud],
-        query: Union[Cloud, SubCloud],
-        k: int,
-        epsilon: float) -> FaissSearchOutsideEpsilonResult:
+    index: Union[Cloud, SubCloud],
+    query: Union[Cloud, SubCloud],
+    is_intra_cloud_search: bool,
+    k: int,
+    epsilon: float,
+) -> FaissSearchOutsideEpsilonResult:
     """
     Find the k nearest neighbors of query that are not (strictly) within epsilon of the query.
     """
     query_embeddings = query.embeddings()
     if epsilon == 0:
-        LOGGER.info("Epsilon is 0, using k nearest neighbors search instead of range search")
+        LOGGER.info("Epsilon is 0, using k-NN search instead of range search")
         start_time = time.time()
-        D, I = index.index().search(query_embeddings, k) # type: ignore
-        LOGGER.info(f"{k}-NN search took {time.time() - start_time:.2f} seconds")
-        if k == 2:
-            Dself, Dnn = D.T
-            for i, idx in enumerate(I[:, 0]):
-                dself, dnn = D[i]
-                if idx != i and not np.allclose(dself, dnn):
-                    LOGGER.warning(f"Index mismatch ({dself=} {dnn=}): {idx} != {i}")
-            assert np.all(Dself <= Dnn), f"Distance to self is greater than distance to nearest neighbor at {np.count_nonzero(Dself > Dnn)} points"
-            argmax_dist_to_self = np.argmax(Dself)
-            max_dist_to_self = Dself[argmax_dist_to_self]
-            atol = 1e-5
-            if not np.isclose(max_dist_to_self, 0, atol=atol):
-                LOGGER.warning(f"{np.sum(~np.isclose(Dself, 0, atol=atol))} points have distance to self not close to 0.")
+        
+        if is_intra_cloud_search:
+            # For intra-cloud, we need k+1 neighbors to discard the point itself.
+            num_to_find = k + 1
+            D_raw, I_raw = index.index().search(query_embeddings, num_to_find) # type: ignore
+            
+            # Check that the first neighbor is the point itself.
+            # TODO may need to allow for some tolerance.
+            if query.index().ntotal > 0:
+                dist_to_self = D_raw[:, 0]
+                max_dist_to_self = np.max(dist_to_self)
+                atol = 1e-5
+                if not np.isclose(max_dist_to_self, 0, atol=atol):
+                    LOGGER.warning(f"Max distance to self was not close to 0: {max_dist_to_self:.6f}")
+            
+            # Check that distances are non-decreasing.
+            assert np.all(np.diff(D_raw, axis=1) >= 0)
+
+            # The results "outside epsilon" are the columns from index 1 onwards.
+            D_outside = D_raw[:, 1:]
+            I_outside = I_raw[:, 1:]
+
+        else:
+            # For inter-cloud search, a standard k-NN search is correct.
+            D_outside, I_outside = index.index().search(query_embeddings, k) # type: ignore
+
+        LOGGER.info(f"k-NN search took {time.time() - start_time:.2f} seconds")
         return FaissSearchOutsideEpsilonResult(
-            D_outside=D,
-            I_outside=I,
+            D_outside=D_outside,
+            I_outside=I_outside,
             lims_within=np.zeros((len(query_embeddings) + 1,), dtype=np.uint64),
             dists_within=np.empty((0,), dtype=np.float32),
             ids_within=np.empty((0,), dtype=np.int64))
@@ -783,15 +803,56 @@ class CrossCloudNNRanksResult:
 
 @TIMER.time()
 @MEMORY.cache
+def within_cloud_nn_ranks(
+        ambient_subcloud: SubCloud,
+        query_subcloud: SubCloud,
+        return_dists: bool = False,
+        return_ids: bool = False,
+        k: int = 1):
+    # Find nearest neighbor in query_subcloud for each query_subcloud point
+    nns = faiss_search_outside_epsilon(query_subcloud, query_subcloud, is_intra_cloud_search=True, k=k, epsilon=0)
+    D = nns.D_outside[:, -1]
+    I = nns.I_outside[:, -1]
+    
+    # Sanity check: calculate squared distance to each such nearest neighbor
+    query_embeddings = query_subcloud.embeddings()
+    num_query_points = query_subcloud.index().ntotal
+    if num_query_points > 0:
+        sq_dists = np.linalg.norm(query_embeddings[I] - query_embeddings, axis=1) ** 2
+        assert len(D) == len(I) == len(sq_dists) == num_query_points
+        assert np.allclose(D, sq_dists)
+    
+    balls = range_search_radii_(
+        ambient_subcloud.index(),
+        query_embeddings,
+        D,
+        return_lims=True,
+        return_dists=return_dists,
+        return_ids=return_ids
+    )
+    assert balls.lims is not None
+    ranks = balls.lims[1:] - balls.lims[:-1]
+    assert len(ranks) == num_query_points, f"Ranks length mismatch: {len(ranks)} != {num_query_points}"
+    assert np.all(ranks >= 0), f"Negative ranks found: {ranks[ranks < 0]}"
+    return CrossCloudNNRanksResult(
+        ranks=ranks,
+        dists=balls.dists,
+        ids=balls.ids
+    )
+
+
+@TIMER.time()
+@MEMORY.cache
 def cross_cloud_nn_ranks(
         ambient_subcloud: SubCloud,
         query_subcloud: SubCloud,
         return_dists: bool = False,
-        return_ids: bool = False):
+        return_ids: bool = False,
+        k: int = 1):
     # Find nearest neighbor in index_subcloud for each query_subcloud point
-    nns = faiss_search_outside_epsilon(ambient_subcloud, query_subcloud, k=1, epsilon=0)
-    D = nns.D_outside.squeeze(1)
-    I = nns.I_outside.squeeze(1)
+    nns = faiss_search_outside_epsilon(ambient_subcloud, query_subcloud, is_intra_cloud_search=False, k=k, epsilon=0)
+    D = nns.D_outside[:, -1]
+    I = nns.I_outside[:, -1]
     # Calculate squared distance to each such nearest neighbor
     if ambient_subcloud.index().ntotal > 0:
         sq_dists = np.linalg.norm(ambient_subcloud.embeddings()[I] - query_subcloud.embeddings(), axis=1) ** 2

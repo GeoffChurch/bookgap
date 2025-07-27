@@ -15,15 +15,13 @@ import pyalex
 import plotly.express as px
 import plotly.graph_objects as go
 
-from nextbook.cloud import Cloud, SubCloud, get_ball_coverage, cross_cloud_nn_ranks, faiss_search_outside_epsilon, WorkDenoisers
+from nextbook.cloud import Cloud, SubCloud, get_ball_coverage, within_cloud_nn_ranks, faiss_search_outside_epsilon, WorkDenoisers
 from nextbook.parse_args import get_explicit_args, parse_args
 from nextbook.util import Filter, WorkType, LOGGER, FilterPair, SubField, setup_logging, get_stats, MEMORY
 from nextbook.deduplicators import Deduplicator
 from nextbook.index import HNSW, IndexType
 
 FONT_SIZE = 7
-
-
 
 @dataclass
 class BookArticleAnalysis:
@@ -32,41 +30,23 @@ class BookArticleAnalysis:
     num_articles: int
     largest_gap: float
     total_works: int
-    nearest_article_rank_mean: float
-    nearest_article_rank_median: float
-    nearest_book_rank_mean: float
-    nearest_book_rank_median: float
-    article_hubness: float
-    book_hubness: float
+    kball_size: float
 
 def analyze_book_article_gap(cloud: Cloud, topic_id: str, radius_fraction: float) -> BookArticleAnalysis:
     books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.BOOK.value))
     articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.ARTICLE.value))
-    book_works = books.works()
-    article_works = articles.works()
-    num_books = len(book_works)
-    num_articles = len(article_works)
+    num_books = len(books.embeddings())
+    num_articles = len(articles.embeddings())
     total_works = num_books + num_articles
     coverage_result = get_ball_coverage(articles, books, radius_fraction=radius_fraction)
     largest_gap = float(np.max(coverage_result.ball_counts)) if len(coverage_result.ball_counts) > 0 else 0.0
-    ranks_of_nearest_article = cross_cloud_nn_ranks(articles, books).ranks
-    assert ranks_of_nearest_article is not None
-    nearest_article_stats = get_stats(ranks_of_nearest_article)
-    ranks_of_nearest_book = cross_cloud_nn_ranks(books, articles).ranks
-    assert ranks_of_nearest_book is not None
-    nearest_book_stats = get_stats(ranks_of_nearest_book)
 
     return BookArticleAnalysis(
         num_books=num_books,
         num_articles=num_articles,
-        article_hubness=hubness(articles, books),
-        book_hubness=hubness(books, articles),
         largest_gap=largest_gap,
         total_works=total_works,
-        nearest_article_rank_mean=nearest_article_stats['mean'],
-        nearest_article_rank_median=nearest_article_stats['median'],
-        nearest_book_rank_mean=nearest_book_stats['mean'],
-        nearest_book_rank_median=nearest_book_stats['median'],
+        kball_size=kball_size(articles, books, k=1)
     )
 
 def write_results_to_csv(df, results, csv_path):
@@ -84,36 +64,95 @@ def write_results_to_csv(df, results, csv_path):
         # df = df.sort_values(by=['gap_significance'], ascending=[False])
         df = df.sort_values(by=['total_works', 'drop_k', 'denoiser'])
         # Save to CSV
-        df.to_csv(csv_path, index=False, float_format='%.3f')
+        df.to_csv(csv_path, index=False, float_format='%.5f')
     return df
+
+def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
+    """
+    Calculates the mean k-ball size as a fraction of the index cloud.
+
+    This metric evaluates how well the 'index' cloud separates points within the
+    'query' cloud. For each point in the query cloud, it defines a hypersphere ("k-ball")
+    whose radius is the distance to its k-th nearest neighbor within that same cloud.
+    It then counts how many points from the 'index' cloud fall inside this ball,
+    and divides by the total number of points in the index cloud.
+
+    Higher is better, meaning that on average a large fraction of index points
+    are closer to a query point than its own k-th nearest neighbor.
+
+    Args:
+        index: The cloud of points that "separates" the query points (e.g., articles).
+        query: The cloud of points for which the metric is calculated (e.g., books).
+        k: The rank of the same-cloud neighbor used to define the radius of the k-ball.
+
+    Returns:
+        The mean fraction of index points found inside the k-balls, or NaN if no
+        ranks could be computed.
+    """
+    ranks = within_cloud_nn_ranks(index, query, k=k).ranks
+
+    if ranks is None or len(ranks) == 0:
+        LOGGER.warning(f"No ranks found for k={k}, returning NaN")
+        return np.nan
+    
+    num_index_points = len(index.embeddings())
+    if num_index_points == 0:
+        LOGGER.warning(f"Index cloud has no points, returning NaN")
+        return np.nan
+    
+    LOGGER.info(f"Mean k-ball size stats: {get_stats(ranks)}")
+    
+    # Divide by number of index points to get fraction
+    return float(np.mean(ranks) / num_index_points)
 
 def hubness(index: SubCloud, query: SubCloud):
     """
-    Calculate the hubness of the nearest neighbors of `query` in `index`.
-    Hubness is defined as the Gini coefficient of distribution over all index points
-    of the number of times each index point is the nearest neighbor of a query point.
-    Lower Gini means more uniform distribution (better alignment), higher means more hubness.
+    Calculate the hubness:
+    1. Draw an arrow from each query point to its nearest index point.
+    2. Count the number of incoming arrows to each index point.
+    3. There may be more index points than query points. In this case we
+    only retain the top N counts, where N is the number of query points.
+    The discarded counts are guaranteed to be zero.
+    4. Hubness is the Gini coefficient of the retained counts.
     """
-    nn_result = faiss_search_outside_epsilon(index, query, k=1, epsilon=0)
-    nearest_indices = nn_result.I_outside.squeeze(1)  # Shape: (num_queries,)
+    num_queries = len(query.embeddings())
+    num_indices = len(index.embeddings())
+    n = min(num_queries, num_indices)
+    if n == 0:
+        LOGGER.warning(f"n=min({num_queries=}, {num_indices=}) == 0, returning NaN for hubness")
+        return np.nan
     
+    nearest_indices = faiss_search_outside_epsilon(index, query,is_intra_cloud_search=False, k=1, epsilon=0).I_outside.squeeze(1)
+
     if np.any(nearest_indices < 0):
-        assert len(index.embeddings()) == 0
+        assert num_indices == 0
         return np.nan
 
-    # Count how many times each index is a nearest neighbor
-    nn_counts = np.bincount(nearest_indices, minlength=len(index.embeddings()))
+    # 1. Count how many times each of the index points is a nearest neighbor
+    nn_counts = np.bincount(nearest_indices, minlength=num_indices)
     
-    # Gini coefficient calculation
-    counts = nn_counts.astype(np.float64)
-    sorted_counts = np.sort(counts)
-    n = len(sorted_counts)
-    cum_counts = np.cumsum(sorted_counts)
-    gini = (n + 1 - 2 * np.sum(cum_counts) / cum_counts[-1]) / n
-    assert type(gini) is np.float64, f"Expected type(gini) is np.float64, got {type(gini)}"
+    # 2. Sort the counts
+    nn_counts.sort()
+    
+    assert nn_counts.shape == (num_indices,)
+
+    # 3. Take the top N counts, where N is the number of queries
+    nn_counts = nn_counts[-num_queries:]
+
+    assert nn_counts.shape == (n,)
+    
+    # --- Gini coefficient calculation on the subset ---
+
+    assert nn_counts.sum() == n
+
+    cum_counts = nn_counts.cumsum()
+    gini = (n + 1 - 2 * cum_counts.sum() / cum_counts[-1]) / n
+    
+    assert type(gini) is np.float64, f"Expected np.float64, got {type(gini)}"
     percentiles = np.linspace(0, 100, 11)
-    percentiles = ' '.join(f"{perc}:{value:.3f}" for perc, value in zip(percentiles, np.percentile(sorted_counts, percentiles)))
+    percentiles = ' '.join(f"{perc}:{value:.3f}" for perc, value in zip(percentiles, np.percentile(nn_counts, percentiles)))
     LOGGER.info(f"Hubness Gini: {gini:.4f}, Percentiles: {percentiles}")
+    
     return float(gini)
 
 
@@ -199,17 +238,17 @@ def plot_scatter_by_total_works(
     output_file = plot_dir / output_filename
     fig.write_html(output_file)
 
-def plot_nn_book_rank_by_total_works(df: pd.DataFrame, artifacts_dir: Path, color_col='denoiser_drop_k', show_labels=False):
+def plot_kball_size_by_total_works(df: pd.DataFrame, artifacts_dir: Path, color_col='denoiser_drop_k', show_labels=False):
     plot_scatter_by_total_works(
         df,
         artifacts_dir,
-        y_col='nearest_book_rank_mean',
-        title='Book-Article Gap Analysis: Nearest Neighbor Ranks by Total Works',
-        output_filename='nn_book_rank_by_total_works.html',
+        y_col='kball_size',
+        title='Book-Article Gap Analysis: K-Ball Size by Total Works',
+        output_filename='kball_size_by_total_works.html',
         hover_cols=['topic_name', 'largest_gap', 'gap_significance', 'num_books', 'num_articles'],
         color_col=color_col,
         show_labels=show_labels,
-        yaxis_title='Nearest Book Rank Mean',
+        yaxis_title='K-Ball Size',
         log_y=False
     )
 def plot_gap_significance_by_total_works(df: pd.DataFrame, artifacts_dir: Path, color_col='denoiser_drop_k', show_labels=False, denoisers=None):
@@ -227,19 +266,6 @@ def plot_gap_significance_by_total_works(df: pd.DataFrame, artifacts_dir: Path, 
         color_col=color_col,
         show_labels=show_labels,
         yaxis_title='Gap Significance',
-        log_y=False
-    )
-def plot_nn_book_rank_lift_by_total_works(df: pd.DataFrame, artifacts_dir: Path, color_col: str, show_labels=False):
-    plot_scatter_by_total_works(
-        df,
-        artifacts_dir,
-        y_col='lift',
-        title='Book-Article Gap Analysis: Nearest Neighbor Ranks Lift by Total Works',
-        output_filename='nn_book_rank_lift_by_total_works.html',
-        hover_cols=['topic_name', 'largest_gap', 'gap_significance', 'num_books', 'num_articles'],
-        color_col=color_col,
-        show_labels=show_labels,
-        yaxis_title='Nearest Book Rank Lift',
         log_y=False
     )
     
@@ -291,7 +317,7 @@ def plot_col_by_denoiser(df: pd.DataFrame, artifacts_dir: Path, y_col: str, colo
         y=y_col,
         color=color_col,
         color_discrete_map=color_map,
-        hover_data=['topic_name', 'largest_gap', 'gap_significance', 'num_books', 'num_articles', 'nearest_book_rank_mean'],
+        hover_data=['topic_name', 'largest_gap', 'gap_significance', 'num_books', 'num_articles'],
         title=f'{y_col} by Denoiser/Drop_k',
         opacity=0.5,
         category_orders={color_col: unique_vals}
@@ -386,19 +412,6 @@ def plot_col_by_denoiser(df: pd.DataFrame, artifacts_dir: Path, y_col: str, colo
     output_file = plot_dir / f"{y_col}_by_denoiser_{color_col=}.html"
     fig.write_html(output_file)
 
-def with_lift(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a copy of the DataFrame with a 'lift' column added:
-    lift = log2(nearest_book_rank_mean / (num_articles / num_books)), or 1.0 if num_books == 0.
-    """
-    df = df.copy()
-    df['lift'] = np.log2(np.where(
-        df['num_books'].astype(float) == 0,
-        1.0,
-        df['nearest_book_rank_mean'] / (df['num_articles'] / df['num_books'])
-    ))
-    return df
-
 def plot_metric_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str):
     """
     Plot metric vs drop_k with each denoiser as a separate series.
@@ -408,7 +421,7 @@ def plot_metric_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str):
     Args:
         df: DataFrame with the data
         artifacts_dir: Directory to save plots
-        y_col: Column name to plot on y-axis (e.g., 'log_nearest_book_rank_mean', 'lift')
+        y_col: Column name to plot on y-axis
     """
     plot_df = df.copy()
     
@@ -568,8 +581,8 @@ def plot_books_vs_articles(df: pd.DataFrame, artifacts_dir: Path, show_labels=Fa
     # Add regression line
     x = plot_df['num_articles'].values
     y = plot_df['num_books'].values
-    assert type(x) is NDArray
-    assert type(y) is NDArray
+    assert type(x) == np.ndarray
+    assert type(y) == np.ndarray
     mask = (x > 0) & (y > 0)
     x = x[mask]
     y = y[mask]
@@ -634,31 +647,15 @@ def do_plots(df: pd.DataFrame, artifacts_dir: Path, show_labels=True):
         return
     
     df = df.copy()
-    df = with_lift(df)
-    df['log_nearest_book_rank_mean'] = np.log2(df['nearest_book_rank_mean'])
-    df['log_nearest_book_rank_median'] = np.log2(df['nearest_book_rank_median'])
-    df['log_nearest_article_rank_mean'] = np.log2(df['nearest_article_rank_mean'])
-    df['log_nearest_article_rank_median'] = np.log2(df['nearest_article_rank_median'])
     
     plot_books_vs_articles(df, artifacts_dir, show_labels=show_labels, log_scale=True, min_articles=10_000)
     plot_books_vs_articles(df, artifacts_dir, show_labels=show_labels, log_scale=False, min_articles=10_000)
 
-    plot_metric_by_drop_k(df, artifacts_dir, 'log_nearest_book_rank_mean')
-    plot_metric_by_drop_k(df, artifacts_dir, 'log_nearest_article_rank_mean')
-    plot_metric_by_drop_k(df, artifacts_dir, 'lift')
-    plot_metric_by_drop_k(df, artifacts_dir, 'article_hubness')
-    plot_metric_by_drop_k(df, artifacts_dir, 'book_hubness')
+    plot_metric_by_drop_k(df, artifacts_dir, 'kball_size')
 
     for color_col in ['denoiser', 'drop_k']:
-        plot_nn_book_rank_by_total_works(df, artifacts_dir, color_col=color_col, show_labels=show_labels)
         plot_gap_significance_by_total_works(df, artifacts_dir, color_col=color_col, show_labels=show_labels, denoisers=['NONE'])
-        plot_nn_book_rank_lift_by_total_works(df, artifacts_dir, color_col=color_col, show_labels=show_labels)
-        
-        # plot_col_by_denoiser(df, artifacts_dir, y_col='lift', color_col=color_col, show_labels=False)
-        # plot_col_by_denoiser(df, artifacts_dir, y_col='log_nearest_book_rank_mean', color_col=color_col, show_labels=False)
-        # plot_col_by_denoiser(df, artifacts_dir, y_col='log_nearest_book_rank_median', color_col=color_col, show_labels=False)
-        plot_col_by_denoiser(df, artifacts_dir, y_col='article_hubness', color_col=color_col, show_labels=show_labels)
-        plot_col_by_denoiser(df, artifacts_dir, y_col='book_hubness', color_col=color_col, show_labels=show_labels)
+        plot_col_by_denoiser(df, artifacts_dir, y_col='kball_size', color_col=color_col, show_labels=show_labels)
 
 @MEMORY.cache
 def get_sorted_topics_by_work_count(cloud: Cloud, subfield: str):
@@ -748,7 +745,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         LOGGER.info(f"Completed analysis for topic {topic_id}: {result_row}")
         # Write to CSV after each iteration
         df = write_results_to_csv(df, [result_row], csv_path)
-        if i % 10 == 0 or i == len(topics) - 1:
+        if i % 2 == 0 or i == len(topics) - 1:
             do_plots(df, artifacts_dir)
 
 # python -c "from nextbook.analyze_book_article_gap import many_main; many_main()"
