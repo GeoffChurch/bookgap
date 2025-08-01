@@ -1,3 +1,4 @@
+import abc
 from dataclasses import dataclass
 import enum
 from typing import Optional
@@ -40,6 +41,67 @@ def orthonormalize(P: NDArray) -> NDArray:
         LOGGER.warning(f"Found {n_flat_dimensions} additional flat dimensions in projector, which may indicate numerical instability.")
     
     return Q
+
+class DenoiserContext(abc.ABC):
+    """
+    Abstract interface for providing data to denoiser strategies.
+    """
+    @abc.abstractmethod
+    def A(self) -> sp.csr_matrix:
+        """The citation graph affinity matrix."""
+        ...
+
+    @abc.abstractmethod
+    def X(self) -> NDArray:
+        """The full embeddings matrix."""
+        ...
+
+    @abc.abstractmethod
+    def X1(self) -> NDArray:
+        """The embeddings for the first subset."""
+        ...
+
+    @abc.abstractmethod
+    def X2(self) -> NDArray:
+        """The embeddings for the second subset."""
+        ...
+
+    def A_sym(self) -> sp.csr_matrix:
+        """The symmetrization of the affinity matrix A."""
+        return self.A() + adj(self.A())
+    
+    def D(self) -> sp.dia_matrix:
+        """The degree matrix D, where D[i, i] = sum(A[i, :])."""
+        return sp.diags(np.asarray(self.A_sym().sum(axis=1)).squeeze(1))
+
+    def L(self) -> sp.spmatrix:
+        """The Laplacian matrix L = D - A."""
+        return self.D() - self.A_sym()
+    
+    def S_T(self) -> NDArray:
+        """The total scatter matrix (covariance matrix of X)."""
+        return scatter(self.X())
+    
+    def S_L(self) -> NDArray:
+        """The graph Laplacian scatter matrix X^T L X."""
+        X = self.X()
+        X_centered = X - X.mean(axis=0)
+        return adj(X_centered) @ self.L() @ X_centered
+    
+    def S_B(self) -> NDArray:
+        """The between-class scatter matrix for two subsets X1 and X2."""
+        X1 = self.X1()
+        X2 = self.X2()
+        
+        n1, n2 = len(X1), len(X2)
+        
+        if n1 == 0 or n2 == 0:
+            # Return zero matrix if one subset is empty
+            d = self.X().shape[1]
+            return np.zeros((d, d))
+
+        mu_diff = X1.mean(axis=0) - X2.mean(axis=0)
+        return (n1 * n2 / (n1 + n2)) * np.outer(mu_diff, mu_diff)
 
 @dataclass(frozen=True)
 class SolveEighRobustlyResult:
@@ -96,7 +158,8 @@ def _recover_projector_from_dual(X: NDArray, U: NDArray) -> NDArray:
     return ret
 
 class PCADenoiser:
-    def projector(self, X: NDArray, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        X = context.X()
         min_cs = min(X.shape)
         if n_components > min_cs:
             n_components = min_cs
@@ -106,8 +169,9 @@ class PCADenoiser:
         return P, pca.singular_values_
 
 class GPCADenoiser:
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        B = (A + adj(A)) / 2
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        B = context.A_sym()
         M = adj(X) @ B @ X
         d = X.shape[1]
         subset = subset_range(n=d, subset_size=n_components, smallest=False)
@@ -115,9 +179,11 @@ class GPCADenoiser:
         return P, eigvals
 
 class RelAmpDenoiser:
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        A = context.A()
         N, d = X.shape
-        B = (A + adj(A)) / 2
+        B = context.A_sym()
         
         if N < d:
             LOGGER.info(f"RelAmp: N < d, using dual formulation. N={N}, d={d}")
@@ -136,47 +202,43 @@ class RelAmpDenoiser:
             P = res.P_or_U
             return P, res.eigvals
 
-class NeighborDistMinDenoiser:
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        N, d = X.shape
-        B = (A + adj(A)) / 2
-        M = sp.eye(N) - B
-        a_mat = adj(X) @ adj(M) @ M @ X
+# class NeighborDistMinDenoiser:
+#     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+#         N, d = X.shape
+#         B = A + adj(A)
+#         M = sp.eye(N) - B
+#         a_mat = adj(X) @ adj(M) @ M @ X
         
-        if N < d:
-            LOGGER.info(f"NeighborDistMin: N < d, using dual formulation. N={N}, d={d}")
-            K = X @ adj(X)
-            subset = subset_range(n=N, subset_size=n_components, smallest=True)
-            a_dual = adj(K) @ adj(M) @ M @ K
-            b_dual = adj(K) @ K
-            res = _solve_eigh_robustly(a_dual, b_dual, subset)
-            P = _recover_projector_from_dual(X, res.P_or_U)
-            return P, res.eigvals
-        else:
-            subset = subset_range(n=d, subset_size=n_components, smallest=True)
-            b_mat = adj(X) @ X
-            res = _solve_eigh_robustly(a_mat, b_mat, subset)
-            P = res.P_or_U
-            return P, res.eigvals
+#         if N < d:
+#             LOGGER.info(f"NeighborDistMin: N < d, using dual formulation. N={N}, d={d}")
+#             K = X @ adj(X)
+#             subset = subset_range(n=N, subset_size=n_components, smallest=True)
+#             a_dual = adj(K) @ adj(M) @ M @ K
+#             b_dual = adj(K) @ K
+#             res = _solve_eigh_robustly(a_dual, b_dual, subset)
+#             P = _recover_projector_from_dual(X, res.P_or_U)
+#             return P, res.eigvals
+#         else:
+#             subset = subset_range(n=d, subset_size=n_components, smallest=True)
+#             b_mat = adj(X) @ X
+#             res = _solve_eigh_robustly(a_mat, b_mat, subset)
+#             P = res.P_or_U
+#             return P, res.eigvals
 
 class LPPDenoiser:
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        assert A is not None
-        LOGGER.info(f"Computing LPP projector for {X.shape=} and {A.shape=}.")
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
         N, d = X.shape
-        B = (A + adj(A)) / 2
-        LOGGER.info(f"{type(A)=} {A.shape=} {type(B)=} {B.shape=}")
+        B = context.A_sym()
 
-        # LPP requires non-negative weights for a valid Degree matrix.
         negatives = B < 0
         num_negatives = np.sum(negatives)
         if num_negatives > 0:
             LOGGER.warning(f"LPPDenoiser received an affinity matrix with {num_negatives} negative weights ({num_negatives / B.size:.2%} of total). Setting negative weights to zero.")
             B[B < 0] = 0
+            LOGGER.info(f"After setting negatives to zero, {type(B)=} {B.shape=}")
 
-        LOGGER.info(f"After setting negatives to zero, {type(B)=} {B.shape=}")
         B_sum = np.asarray(B.sum(axis=1)).squeeze(1)
-        # Print statistics about the sum of rows
         LOGGER.info(f"{np.mean(B_sum)=:.2f} (mean), {np.std(B_sum)=:.2f} (std), {np.min(B_sum)=:.2f} (min), {np.max(B_sum)=:.2f} (max) {np.percentile(B_sum, 10)=:.2f}, {np.percentile(B_sum, 90)=:.2f}")
         D = sp.diags(B_sum)
         L = D - B
@@ -191,18 +253,23 @@ class LPPDenoiser:
             LOGGER.info(f"{type(b_dual)=} {b_dual.shape=}")
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
             P = _recover_projector_from_dual(X, res.P_or_U)
-            return P, res.eigvals
+            P = P[:, ::-1]  # Reverse to put most important components first
+            eigvals = res.eigvals[::-1]  # Reverse to match projector order
+            return P, eigvals
         else:
             subset = subset_range(n=d, subset_size=n_components, smallest=True)
             a_matrix = adj(X) @ L @ X
             b_matrix = adj(X) @ D @ X
             res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
             P = res.P_or_U
-            return P, res.eigvals
+            P = P[:, ::-1]  # Reverse to put most important components first
+            eigvals = res.eigvals[::-1]  # Reverse to match projector order
+            return P, eigvals
 
 class NormalizedLPPDenoiser:
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        B = (A + adj(A)) / 2
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        B = context.A_sym()
         N, d = X.shape
         degrees = np.array(B.sum(axis=1)).ravel()
         inv_sqrt_deg = np.zeros_like(degrees, dtype=float)
@@ -214,13 +281,17 @@ class NormalizedLPPDenoiser:
         subset = subset_range(n=d, subset_size=n_components, smallest=True)
         assert np.allclose(adj(a_matrix), a_matrix, atol=1e-6), "a_matrix is not Hermitian!"
         eigvals, P = eigh(a_matrix, subset_by_index=subset)
+        P = P[:, ::-1]  # Reverse to put most important components first
+        eigvals = eigvals[::-1]  # Reverse to match projector order
         return P, eigvals
 
 class WDenoiser:
     """
     Learns W where XW ≈ AX, then uses rank-reduced W for projection.
     """
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        A = context.A()
         # Solve for W in XW ≈ AX
         target = A @ X
         W, _, _, _ = lstsq(X, target, rcond=None)
@@ -228,24 +299,24 @@ class WDenoiser:
         P = U[:, :n_components]
         return P, s[:n_components]
 
-class LDADenoiser:
-    """
-    Maximizes the ratio of total variance to the variance of difference vectors AX-X.
-    This is solved as the generalized eigenvalue problem S_T g = λ S_W g.
-    """
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        def scatter(M: NDArray) -> NDArray:
-            return adj(M) @ M
-        N, d = X.shape
-        res = _solve_eigh_robustly(a_matrix=scatter(X), b_matrix=scatter(A @ X - X), subset=subset_range(n=d, subset_size=n_components, smallest=False))
-        P_basis = res.P_or_U
-        LOGGER.info(f"LDADenoiser: {P_basis.shape=} {res.eigvals.shape=}")
-        # Return the projector and the eigenvalues as extra info
-        return P_basis, res.eigvals
+# class LDADenoiser:
+#     """
+#     Maximizes the ratio of total variance to the variance of difference vectors AX-X.
+#     This is solved as the generalized eigenvalue problem S_T g = λ S_W g.
+#     """
+#     def projector(self, context: DenoiserContext, n_components: int):
+#         X = context.X()
+#         A = context.A()
+#         N, d = X.shape
+#         res = _solve_eigh_robustly(a_matrix=scatter(X), b_matrix=scatter(A @ X - X), subset=subset_range(n=d, subset_size=n_components, smallest=False))
+#         P_basis = res.P_or_U
+#         LOGGER.info(f"LDADenoiser: {P_basis.shape=} {res.eigvals.shape=}")
+#         # Return the projector and the eigenvalues as extra info
+#         return P_basis, res.eigvals
     
-class SymmetrizedLDADenoiser(LDADenoiser):
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        return super().projector(X, (A + adj(A)) / 2, n_components)
+# class SymmetrizedLDADenoiser::
+#     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+#         return super().projector(X, A + adj(A), n_components)
 
 class TwoSubsetScatterDenoiser(ABC):
     """
@@ -256,8 +327,10 @@ class TwoSubsetScatterDenoiser(ABC):
     def get_within_class_scatter(self, X1: NDArray, X2: NDArray, X: NDArray) -> NDArray:
         ...
 
-    def projector(self, X1: NDArray, X2: NDArray, n_components: int, X: Optional[NDArray] = None) -> tuple[NDArray, Optional[NDArray]]:
-        # Use entire embeddings set if provided, otherwise combine the two groups for centering
+    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        X1 = context.X1()
+        X2 = context.X2()
+        X = context.X()
         if X is None:
             X_combined = np.vstack([X1, X2])
         else:
@@ -281,6 +354,8 @@ class TwoSubsetScatterDenoiser(ABC):
         res = _solve_eigh_robustly(a_matrix=S_B, b_matrix=S_W, subset=subset)
         P_basis = res.P_or_U
         eigvals = res.eigvals
+        P_basis = P_basis[:, ::-1]  # Reverse to put most important components first
+        eigvals = eigvals[::-1]  # Reverse to match projector order
         return P_basis, eigvals
 
 class AntiLDADenoiser(TwoSubsetScatterDenoiser):
@@ -290,7 +365,6 @@ class AntiLDADenoiser(TwoSubsetScatterDenoiser):
     """
     def get_within_class_scatter(self, X1: NDArray, X2: NDArray, X: NDArray) -> NDArray:
         return scatter(X1) + scatter(X2)
-    # get_scatter_matrices uses default (Anti-LDA)
 
 class DomainInvariantDenoiser(TwoSubsetScatterDenoiser):
     """
@@ -300,23 +374,22 @@ class DomainInvariantDenoiser(TwoSubsetScatterDenoiser):
     def get_within_class_scatter(self, X1: NDArray, X2: NDArray, X: NDArray) -> NDArray:
         return scatter(X)
 
-class EmbeddedGraphDenoiser:
-    def __init__(self, wrapped_denoiser):
-        self.wrapped_denoiser = wrapped_denoiser
+# class EmbeddedGraphDenoiser:
+#     def __init__(self, wrapped_denoiser):
+#         self.wrapped_denoiser = wrapped_denoiser
 
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
-        N, d = X.shape
-        LOGGER.info(f"Embedding A into embedding space by solving AX ≈ XW.")
-        A_sym = (A + adj(A)) / 2
-        target = A_sym @ X
-        W, residuals, rank, s = lstsq(X, target, rcond=None)
+#     def projector(self, context: DenoiserContext, n_components: int):
+#         X = context.X()
+#         A_sym = context.A_sym()
+#         target = A_sym @ X
+#         W, residuals, rank, s = lstsq(X, target, rcond=None)
         
-        X_smoothed = X @ W
-        A_w = X_smoothed @ adj(X_smoothed)
-        return self.wrapped_denoiser.projector(X, A_w, n_components)
+#         X_smoothed = X @ W
+#         A_w = X_smoothed @ adj(X_smoothed)
+#         return self.wrapped_denoiser.projector(X, A_w, n_components)
 
-    def __repr__(self):
-        return f"EmbeddedGraph({self.wrapped_denoiser.__class__.__name__})"
+#     def __repr__(self):
+#         return f"EmbeddedGraph({self.wrapped_denoiser.__class__.__name__})"
 
 class AugmentedLPPDenoiser:
     """
@@ -325,45 +398,39 @@ class AugmentedLPPDenoiser:
     minimizing the distance between a point and its A-transformed image.
     This is achieved by summing their respective scatter matrices in the numerator.
     """
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        B = context.A_sym()
         N, d = X.shape
-        B = (A + adj(A)) / 2
-        
-        # Standard LPP components
         D = sp.diags(np.asarray(B.sum(axis=1)).squeeze())
         L = D - B
-
         # Tuning parameter to balance the two objectives
         gamma = 1.0
-        
         if N < d:
             LOGGER.info(f"AugmentedLPP: N < d, using dual formulation. N={N}, d={d}")
             K = X @ adj(X)
-            
-            # Numerator: S_A_combined = (XᵀLX) + gamma * ((BX - X)ᵀ(BX - X))
-            # The dual of XᵀMX is KMK.
             M_lpp = L
             M_new = adj(B - sp.eye(N)) @ (B - sp.eye(N))
             a_dual = K @ (M_lpp + gamma * M_new) @ K
-
-            # Denominator: S_B_lpp = XᵀDX
             b_dual = K @ D @ K
-
             subset = subset_range(n=N, subset_size=n_components, smallest=True)
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
             P = _recover_projector_from_dual(X, res.P_or_U)
-            return P, res.eigvals
+            P = P[:, ::-1]  # Reverse to put most important components first
+            eigvals = res.eigvals[::-1]  # Reverse to match projector order
+            return P, eigvals
         else:
             # Primal formulation
             S_W_lpp = adj(X) @ L @ X
             S_W_new = adj(B @ X - X) @ (B @ X - X)
             S_A_combined = S_W_lpp + gamma * S_W_new
             S_B_lpp = adj(X) @ D @ X
-
             subset = subset_range(n=d, subset_size=n_components, smallest=True)
             res = _solve_eigh_robustly(S_A_combined, S_B_lpp, subset)
             P = res.P_or_U
-            return P, res.eigvals
+            P = P[:, ::-1]  # Reverse to put most important components first
+            eigvals = res.eigvals[::-1]  # Reverse to match projector order
+            return P, eigvals
 
 class OrthogonalManifoldDenoiser:
     """
@@ -372,23 +439,19 @@ class OrthogonalManifoldDenoiser:
     S_B = Xᵀ(I - L)X  (preserves global variance while shrinking neighbor distances)
     S_W = (AX - X)ᵀ(AX - X) (minimizes the smoothing error)
     """
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        B = context.A_sym()
         N, d = X.shape
-        B = (A + adj(A)) / 2
-
         # Numerator: S_B represents non-local scatter (Total Scatter - Local Scatter)
         D = sp.diags(np.asarray(B.sum(axis=1)).squeeze())
         L = D - B
         S_B = adj(X) @ (sp.eye(N) - L) @ X
-
         # Denominator: S_W represents the smoothing error to be minimized
         S_W = adj(B @ X - X) @ (B @ X - X)
-
         subset = subset_range(n=d, subset_size=n_components, smallest=False)
         res = _solve_eigh_robustly(a_matrix=S_B, b_matrix=S_W, subset=subset)
         P_basis = res.P_or_U
-        
-        # Form the projector using the pseudo-inverse for a non-orthonormal basis
         return P_basis, res.eigvals
 
 class _PLSDenoiser(ABC):
@@ -396,9 +459,10 @@ class _PLSDenoiser(ABC):
     Superclass for fast PLS/CCA-style projection using direct SVD of a cross-matrix.
     Subclasses should override get_cross_matrix.
     """
-    def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
+    def projector(self, context: DenoiserContext, n_components: int):
+        X = context.X()
+        B = context.A_sym()
         N, d = X.shape
-        B = (A + adj(A)) / 2
         Y = B @ X
         X_centered = X - X.mean(axis=0)
         Y_centered = Y - Y.mean(axis=0)
@@ -435,3 +499,55 @@ class PLSModeBDenoiser(_PLSDenoiser):
         X_normalized = X_centered / X_std
         Y_normalized = Y_centered / Y_std
         return X_normalized.T @ Y_normalized / (N - 1)
+
+class CCLIPDenoiser:
+    """
+    Class-Conflating Locality-Inducing Projections (CCLIP) Denoiser.
+
+    This denoiser seeks a projection that simultaneously:
+    1. Minimizes the separation between two classes (e.g., books and articles).
+    2. Minimizes fluctuation across a citation graph (induces locality).
+    3. Preserves the maximum amount of total variance of the original data.
+
+    The objective is to find a projection P that minimizes the Rayleigh quotient:
+        R(P) = Trace(Pᵀ * ((1-α)*S_B + α*S_L) * P) / Trace(Pᵀ * S_T * P)
+    
+    The optimal projection directions are the eigenvectors corresponding to the
+    smallest eigenvalues.
+    """
+    def __init__(self, alpha: float = 0.5):
+        """
+        Initializes the CCLIPDenoiser.
+
+        Args:
+            alpha (float): A tuning parameter in [0, 1] to balance the objectives.
+                           alpha = 0 -> Purely class-conflating projection.
+                           alpha = 1 -> Purely locality-inducing projection.
+        """
+        assert 0 <= alpha <= 1, "alpha must be in the range [0, 1]"
+        self.alpha = alpha
+
+    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        """
+        Computes the projection matrix for CCLIP.
+        """
+        X = context.X()
+        N, d = X.shape
+        
+        # Get precomputed scatter matrices from context
+        S_T = context.S_T()
+        S_B = context.S_B()
+        S_L = context.S_L()
+
+        # Construct the numerator matrix using the alpha mixing parameter
+        A_matrix = (1 - self.alpha) * S_B + self.alpha * S_L
+        
+        # Find smallest eigenvalues and corresponding eigenvectors
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        res = _solve_eigh_robustly(a_matrix=A_matrix, b_matrix=S_T, subset=subset)
+
+        P = res.P_or_U
+        eigvals = res.eigvals
+        P = P[:, ::-1]  # Ensure the projector is in descending order of eigenvalues
+        eigvals = eigvals[::-1]  # Reverse to match projector order
+        return P, eigvals

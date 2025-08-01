@@ -22,9 +22,6 @@ import numpy as np
 from numpy.typing import NDArray
 import tqdm
 
-from nextbook.util import TIMER
-
-
 def init_flatl2_(d: int, _index_info: 'FlatL2') -> faiss.IndexFlatL2:
     assert isinstance(_index_info, FlatL2), f"Expected FlatL2 IndexInfo, got {_index_info}"
     return faiss.IndexFlatL2(d)
@@ -54,17 +51,9 @@ class IndexType(enum.Enum):
     def __repr__(self):
         return str(self)
     
-    @TIMER.time(formatters=dict(vectors=lambda vs: f"<shape={vs.shape}>"))
     def build(self, vectors: NDArray, index_info: 'IndexInfo') -> faiss.Index:
         d = vectors.shape[1]
         index = self.value(d, index_info)
-        # if isinstance(index_info, HNSW):
-        #     normalized_vectors = index_info.index_metric.normalize_fn(vectors)
-        #     index.add(normalized_vectors)
-        # elif isinstance(index_info, FlatL2):
-        #     index.add(vectors)
-        
-        # index.add(index_info.normalize_vectors(vectors))
         index.add(vectors)
 
         return index
@@ -111,7 +100,7 @@ def build_index(index_info: IndexInfo, embeddings: NDArray) -> faiss.Index:
 
 @dataclass(frozen=True)
 class RangeSearchResult:
-    lims: Optional[NDArray]
+    lims: Optional[NDArray[np.uint64]]
     dists: Optional[NDArray]
     ids: Optional[NDArray]
     def __post_init__(self):
@@ -121,7 +110,6 @@ class RangeSearchResult:
             assert len(self.dists) == len(self.ids), f"len(dists) != len(ids): {len(self.dists)} != {len(self.ids)}"
         # assert len(self.lims) == len(self.dists) + 1, f"len(lims) != len(dists) + 1: {len(self.lims)} != {len(self.dists)} + 1"
 
-@TIMER.time(formatters=dict(index=lambda index: f"<{index.ntotal} vectors, d={index.d}>", query=lambda q: f"<shape={q.shape}>", radii=lambda r: f"<shape={r.shape}>") )
 def range_search_radii_(
     index: faiss.Index,
     query: NDArray,
@@ -133,7 +121,7 @@ def range_search_radii_(
     lims = [np.array([], dtype=np.uint64)] if return_lims else None
     dists = [np.array([], dtype=np.float32)] if return_dists else None
     ids = [np.array([], np.int64)] if return_ids else None
-    for i in tqdm.tqdm(range(len(query)), desc="Range search radii"):
+    for i in tqdm.tqdm(range(len(query)), desc="Range search radii", mininterval=1, delay=1):
         batch = query[i:i+1]
         lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore
         assert lims_.dtype == np.uint64
@@ -207,7 +195,7 @@ def range_search_with_(
                   for each query point
         batch_size: Number of queries to process at once
     """
-    with tqdm.tqdm(desc="Range search with kernel", total=len(query_embeddings)) as pbar:
+    with tqdm.tqdm(desc="Range search with kernel", total=len(query_embeddings), mininterval=1, delay=1) as pbar:
         for i in range(0, len(query_embeddings), batch_size):
             batch = query_embeddings[i:i + batch_size]
             lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore

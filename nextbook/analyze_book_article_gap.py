@@ -3,82 +3,126 @@
 Analyze the gap between books and articles across different filters.
 """
 
+from functools import lru_cache
 import pandas as pd
 import numpy as np
 from numpy.typing import NDArray
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, Union
+from typing import Collection, Optional, Union
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 
 import pyalex
 import plotly.express as px
 import plotly.graph_objects as go
 
-from nextbook.cloud import Cloud, SubCloud, get_ball_coverage, within_cloud_nn_ranks, faiss_search_outside_epsilon, WorkDenoisers
+from nextbook.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers
+from nextbook.cloud_index import avgref_ranks, get_ball_coverage, within_cloud_nn_ranks, faiss_search_outside_epsilon
 from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.util import Filter, WorkType, LOGGER, FilterPair, SubField, setup_logging, get_stats, MEMORY
+from nextbook.util import TIMER, Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
 from nextbook.deduplicators import Deduplicator
 from nextbook.index import HNSW, IndexType
 
+ALLOWED_DENOISERS = ['NONE', 'PCA', 'CCLIP_01', 'CCLIP_1', 'CCLIP', 'CCP', 'LIP', 'LPP', 'ANTI_LDA']
+
 FONT_SIZE = 7
+DPI = 300
+
+def get_denoiser_display_name(denoiser: str) -> str:
+    """Map denoiser names to display-friendly names with LaTeX math notation."""
+    display_names = {
+        'LIP': r'LIP = CCLIP($\alpha=1$)',
+        'CCLIP': r'CCLIP($\alpha=0.5$)',
+        'CCLIP_1': r'CCLIP($\alpha=0.1$)',
+        'CCLIP_01': r'CCLIP($\alpha=0.01$)',
+        'CCP': r'CCP = CCLIP($\alpha=0$)',
+        'ANTI_LDA': 'Anti-LDA',
+        'NONE': 'No Denoising'
+    }
+    return display_names.get(denoiser, denoiser)
+
+ARTIFACTS_DIR = Path("artifacts")
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 @dataclass
 class BookArticleAnalysis:
     """Results of analyzing books vs articles in a cloud or subcloud."""
     num_books: int
     num_articles: int
-    largest_gap: float
-    total_works: int
     kball_size: float
+    num_books_with_avgref: int
+    avgref_mean_rank: float
 
 def analyze_book_article_gap(cloud: Cloud, topic_id: str, radius_fraction: float) -> BookArticleAnalysis:
     books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.BOOK.value))
     articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.ARTICLE.value))
     num_books = len(books.embeddings())
     num_articles = len(articles.embeddings())
-    total_works = num_books + num_articles
-    coverage_result = get_ball_coverage(articles, books, radius_fraction=radius_fraction)
-    largest_gap = float(np.max(coverage_result.ball_counts)) if len(coverage_result.ball_counts) > 0 else 0.0
+
+    avgref_rank_res = avgref_rank([cloud], books)
 
     return BookArticleAnalysis(
         num_books=num_books,
         num_articles=num_articles,
-        largest_gap=largest_gap,
-        total_works=total_works,
-        kball_size=kball_size(articles, books, k=1)
+        kball_size=kball_size(articles, books, k=1),
+        num_books_with_avgref=avgref_rank_res.num_queries_with_avgref,
+        avgref_mean_rank=float(avgref_rank_res.avgref_mean_rank)
     )
 
-def write_results_to_csv(df, results, csv_path):
-    if results:
-        new_df = pd.DataFrame(results)
-        if not df.empty:
-            # Ensure column compatibility
-            assert list(df.columns) == list(new_df.columns), f"Column mismatch: {list(df.columns)} != {list(new_df.columns)}"
-            df = pd.concat([df, new_df], ignore_index=True)
-        else:
-            df = new_df
-        # Sort by largest gap (descending) and then by filter name
-        # df = df.sort_values(by=['largest_gap', 'topic_name'], ascending=[False, True], na_position='last')
-        # Sort by descending gap significance
-        # df = df.sort_values(by=['gap_significance'], ascending=[False])
-        df = df.sort_values(by=['total_works', 'drop_k', 'denoiser'])
-        # Save to CSV
-        df.to_csv(csv_path, index=False, float_format='%.5f')
+
+def _df_from_file(csv_path: Path) -> pd.DataFrame:        
+    try:
+        df = pd.read_csv(csv_path)
+        LOGGER.info(f"Loaded existing results from {csv_path}")
+    except FileNotFoundError:
+        df = pd.DataFrame()
+        LOGGER.info(f"No existing results found at {csv_path}, starting fresh.")
     return df
+class Results:
+    _csv_path = ARTIFACTS_DIR / "book_article_analysis.csv"
+    _key_columns = ['topic_name', 'denoiser', 'drop_k']
+    _df = _df_from_file(_csv_path)
+    
+    @classmethod
+    def has_row(cls, **keys) -> bool:
+        assert set(keys.keys()) == set(cls._key_columns), \
+            f"Keys must match the key columns: {cls._key_columns}. Provided keys: {keys.keys()}"
+        if cls._df.empty:
+            return False
+        key_tuple = tuple(keys[col] for col in cls._key_columns)
+        existing_keys = {tuple(existing_row) for existing_row in cls._df[cls._key_columns].to_numpy()}
+        return key_tuple in existing_keys
+
+    @classmethod
+    def write_row(cls, row: dict):
+        if not cls._df.empty:
+            assert set(row.keys()) == set(cls._df.columns), \
+                f"Row keys must match DataFrame columns: {cls._df.columns}. Provided keys: {row.keys()}"
+        cls._df = pd.concat([cls._df, pd.DataFrame([row])], ignore_index=True)
+        cls._df.to_csv(cls._csv_path, index=False)
+
+    @classmethod
+    def get_df_copy(cls) -> pd.DataFrame:
+        """
+        Returns a copy of the DataFrame containing all results.
+        This is useful for analysis or plotting without modifying the original DataFrame.
+        """
+        return cls._df.copy()
+
 
 def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
     """
-    Calculates the mean k-ball size as a fraction of the index cloud.
+    Calculates the mean k-ball size.
 
     This metric evaluates how well the 'index' cloud separates points within the
     'query' cloud. For each point in the query cloud, it defines a hypersphere ("k-ball")
     whose radius is the distance to its k-th nearest neighbor within that same cloud.
-    It then counts how many points from the 'index' cloud fall inside this ball,
-    and divides by the total number of points in the index cloud.
+    It then counts how many points from the 'index' cloud fall inside this ball.
 
-    Higher is better, meaning that on average a large fraction of index points
-    are closer to a query point than its own k-th nearest neighbor.
+    Higher is better, meaning that on average many index points are closer to a query
+    point than its own k-th nearest neighbor.
 
     Args:
         index: The cloud of points that "separates" the query points (e.g., articles).
@@ -86,24 +130,36 @@ def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
         k: The rank of the same-cloud neighbor used to define the radius of the k-ball.
 
     Returns:
-        The mean fraction of index points found inside the k-balls, or NaN if no
+        The mean number of index points found inside the k-balls, or NaN if no
         ranks could be computed.
     """
-    ranks = within_cloud_nn_ranks(index, query, k=k).ranks
-
-    if ranks is None or len(ranks) == 0:
-        LOGGER.warning(f"No ranks found for k={k}, returning NaN")
-        return np.nan
-    
-    num_index_points = len(index.embeddings())
-    if num_index_points == 0:
-        LOGGER.warning(f"Index cloud has no points, returning NaN")
-        return np.nan
-    
+    ranks = within_cloud_nn_ranks(index, query, k=k).ranks    
     LOGGER.info(f"Mean k-ball size stats: {get_stats(ranks)}")
+    return float(np.mean(ranks))
+
+@dataclass(frozen=True)
+class AvgrefRankResult:
+    avgref_mean_rank: np.float64
+    num_queries_with_avgref: int
+
+def avgref_rank(index_clouds: Collection[Cloud | SubCloud], query: Cloud | SubCloud) -> AvgrefRankResult:
+    """
+    For each query point, compute its avgref (average embedding of its references in the index clouds)
+    and return the mean rank of these avgrefs within the index clouds.
+    """
+    res = avgref_ranks(index_clouds, query, normalize_avgref_embeddings=query.normalize_embeddings)
+
+    ranks = np.concatenate(res.per_cloud_ranks)
+    assert ranks.shape == (len(res.avgref_res.corresponding_query_idxs) * len(index_clouds),)
+    LOGGER.info(f"Rank stats: {get_stats(ranks)}")
+
+    return AvgrefRankResult(
+        avgref_mean_rank=np.mean(ranks),
+        num_queries_with_avgref=len(res.avgref_res.corresponding_query_idxs)
+    )
     
-    # Divide by number of index points to get fraction
-    return float(np.mean(ranks) / num_index_points)
+    
+
 
 def hubness(index: SubCloud, query: SubCloud):
     """
@@ -245,54 +301,58 @@ def plot_kball_size_by_total_works(df: pd.DataFrame, artifacts_dir: Path, color_
         y_col='kball_size',
         title='Book-Article Gap Analysis: K-Ball Size by Total Works',
         output_filename='kball_size_by_total_works.html',
-        hover_cols=['topic_name', 'largest_gap', 'gap_significance', 'num_books', 'num_articles'],
+        hover_cols=['topic_name', 'num_books', 'num_articles'],
         color_col=color_col,
         show_labels=show_labels,
         yaxis_title='K-Ball Size',
         log_y=False
     )
-def plot_gap_significance_by_total_works(df: pd.DataFrame, artifacts_dir: Path, color_col='denoiser_drop_k', show_labels=False, denoisers=None):
-    plot_df = df.copy()
-    if denoisers is not None:
-        plot_df = plot_df[plot_df['denoiser'].isin(denoisers)]
-    plot_df['log_gap_significance'] = np.log2(plot_df['gap_significance'].replace(0, np.nan))
-    plot_scatter_by_total_works(
-        plot_df,
-        artifacts_dir,
-        y_col='log_gap_significance',
-        title='Gap Significance by Total Works',
-        output_filename='gap_significance_by_total_works.html',
-        hover_cols=['topic_name', 'largest_gap', 'num_books', 'num_articles', 'log_gap_significance'],
-        color_col=color_col,
-        show_labels=show_labels,
-        yaxis_title='Gap Significance',
-        log_y=False
-    )
     
-def plot_col_by_denoiser(df: pd.DataFrame, artifacts_dir: Path, y_col: str, color_col='denoiser', show_labels=False):
+def plot_col_by_denoiser(df: pd.DataFrame, artifacts_dir: Path, y_col: str, color_col='denoiser', show_labels=False, log_y=False, weights: Optional[str] = None, hover_data: Optional[list] = None):
     """
     Plot a specified y_col for each (denoiser, drop_k) as a categorical x-axis.
     Show all points, mean, and horizontal whiskers at ±1 stddev.
     Sort denoiser_drop_k by ascending mean y_col. Draw faint lines between adjacent denoiser_drop_k groups for the same topic_id, and connect whisker means as well.
+    The right y-axis shows the ratio to baseline (NONE denoiser).
     color_col: str or tuple/list of str, column(s) to use for color grouping.
     show_labels: if True, always show topic_name as text label at each point.
+    log_y: if True, use log scale for y-axis.
+    weights: Column name to use for weighting the mean and std calculations.
+    hover_data: List of column names to include in hover information.
     """
     df = df.copy()
     df['denoiser'] = df['denoiser'].astype(str).str.strip()
     df['denoiser_drop_k'] = df['denoiser'] + '_k' + df['drop_k'].astype(str)
+    
+    # Drop rows where y_col is NaN
+    df = df.dropna(subset=[y_col])
+    
+    # Handle weights parameter - create uniform weights if None
+    if weights is None:
+        assert 'weights_' not in df.columns, "Column 'weights_' already exists in DataFrame"
+        df['weights_'] = 1.0
+        weights = 'weights_'
+    
     # Compute weighted means and stddevs for each group (with respect to y_col)
     def weighted_mean(x):
-        return np.average(x[y_col], weights=x['total_works'])
+        return np.average(x[y_col], weights=x[weights])
     def weighted_std(x):
         values = x[y_col].to_numpy(dtype=float)
-        weights = x['total_works'].to_numpy(dtype=float)
-        if np.sum(weights) == 0:
+        weight_vals = x[weights].to_numpy(dtype=float)
+        if np.sum(weight_vals) == 0:
             return np.nan
-        mean = np.average(values, weights=weights)
-        variance = np.average((values - mean) ** 2, weights=weights)
+        mean = np.average(values, weights=weight_vals)
+        variance = np.average((values - mean) ** 2, weights=weight_vals)
         return np.sqrt(variance)
     stats = df.groupby('denoiser_drop_k').apply(weighted_mean).reset_index(name='mean')
     stats['std'] = df.groupby('denoiser_drop_k').apply(weighted_std).values
+    
+    # # Calculate baseline for secondary y-axis
+    # baseline_stats = stats[stats['denoiser_drop_k'].str.startswith('NONE_k')]
+    # baseline_mean = baseline_stats['mean'].iloc[0] if not baseline_stats.empty else 1.0
+
+    # LOGGER.info(f"Baseline mean for {y_col} (NONE denoiser): {baseline_mean:.3f}")
+    
     # Sort denoiser_drop_k by ascending mean y_col
     sorted_groups = stats.sort_values('mean')['denoiser_drop_k'].tolist()
     # Set categorical order for x-axis (enforce strict Categorical)
@@ -317,7 +377,7 @@ def plot_col_by_denoiser(df: pd.DataFrame, artifacts_dir: Path, y_col: str, colo
         y=y_col,
         color=color_col,
         color_discrete_map=color_map,
-        hover_data=['topic_name', 'largest_gap', 'gap_significance', 'num_books', 'num_articles'],
+        hover_data=hover_data,
         title=f'{y_col} by Denoiser/Drop_k',
         opacity=0.5,
         category_orders={color_col: unique_vals}
@@ -407,27 +467,173 @@ def plot_col_by_denoiser(df: pd.DataFrame, artifacts_dir: Path, y_col: str, colo
         xaxis={'categoryorder':'array', 'categoryarray': sorted_groups},
         showlegend=True
     )
+    
+    # # Add secondary y-axis showing ratio to baseline
+    # if baseline_mean != 0 and not np.isnan(baseline_mean):
+    #     # Get unique y values from the stats for tick positioning
+    #     y_values = sorted(stats['mean'].dropna().unique())
+    #     fig.update_layout(
+    #         yaxis2=dict(
+    #             title="Ratio to Baseline",
+    #             overlaying='y',
+    #             side='right',
+    #             tickvals=y_values,
+    #             ticktext=[f"{y/baseline_mean:.2f}" for y in y_values]
+    #         )
+    #     )
+    # else:
+    #     LOGGER.warning("Baseline mean is zero or NaN, not adding secondary y-axis.")
+    
+    if log_y:
+        fig.update_yaxes(type='log')
     plot_dir = artifacts_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_file = plot_dir / f"{y_col}_by_denoiser_{color_col=}.html"
     fig.write_html(output_file)
 
-def plot_metric_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str):
+def plot_col_by_denoiser_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str, color_col='denoiser', show_labels=False, log_y=False, weights: Optional[str] = None):
+    """
+    Pyplot version of plot_col_by_denoiser.
+    Plot a specified y_col for each (denoiser, drop_k) as a categorical x-axis using matplotlib.
+    Show all points, mean, and horizontal whiskers at ±1 stddev.
+    Sort denoiser_drop_k by ascending mean y_col. Draw faint lines between adjacent denoiser_drop_k groups for the same topic_id.
+    """
+    df = df.copy()
+    df['denoiser'] = df['denoiser'].astype(str).str.strip()
+    df['denoiser_drop_k'] = df['denoiser'] + '_k' + df['drop_k'].astype(str)
+    
+    # Drop rows where y_col is NaN
+    df = df.dropna(subset=[y_col])
+    
+    # Handle weights parameter - create uniform weights if None
+    if weights is None:
+        assert 'weights_' not in df.columns, "Column 'weights_' already exists in DataFrame"
+        df['weights_'] = 1.0
+        weights = 'weights_'
+    
+    # Compute weighted means and stddevs for each group (with respect to y_col)
+    def weighted_mean(x):
+        return np.average(x[y_col], weights=x[weights])
+    def weighted_std(x):
+        values = x[y_col].to_numpy(dtype=float)
+        weight_vals = x[weights].to_numpy(dtype=float)
+        if np.sum(weight_vals) == 0:
+            return np.nan
+        mean = np.average(values, weights=weight_vals)
+        variance = np.average((values - mean) ** 2, weights=weight_vals)
+        return np.sqrt(variance)
+    stats = df.groupby('denoiser_drop_k').apply(weighted_mean).reset_index(name='mean')
+    stats['std'] = df.groupby('denoiser_drop_k').apply(weighted_std).values
+    
+    # # Calculate baseline for secondary y-axis
+    # baseline_stats = stats[stats['denoiser_drop_k'].str.startswith('NONE_k')]
+    # baseline_mean = baseline_stats['mean'].iloc[0] if not baseline_stats.empty else 1.0
+
+    # LOGGER.info(f"Baseline mean for {y_col} (NONE denoiser): {baseline_mean:.3f}")
+    
+    # Sort denoiser_drop_k by ascending mean y_col
+    sorted_groups = stats.sort_values('mean')['denoiser_drop_k'].tolist()
+    # Set categorical order for x-axis (enforce strict Categorical)
+    df['denoiser_drop_k'] = pd.Categorical(df['denoiser_drop_k'], categories=sorted_groups, ordered=True)
+    
+    # Assign colors to each unique value of color_col in natural order
+    col_values = df[color_col]
+    if pd.api.types.is_numeric_dtype(col_values):
+        unique_vals = sorted(col_values.unique(), key=lambda x: float(x))
+    else:
+        unique_vals = sorted(col_values.unique())
+    
+    # Create the plot
+    fig, ax1 = plt.subplots(figsize=(14, 8))
+    
+    # Color map for different categories
+    cmap = plt.cm.get_cmap('tab10')
+    color_map = {val: cmap(i % 10) for i, val in enumerate(unique_vals)}
+    
+    # Plot all points
+    for val in unique_vals:
+        mask = df[color_col] == val
+        subset = df[mask]
+        x_positions = [sorted_groups.index(group) for group in subset['denoiser_drop_k']]
+        ax1.scatter(x_positions, subset[y_col], alpha=0.5, color=color_map[val], label=f'{color_col}={val}', s=30)
+    
+    # Add means and error bars
+    x_positions = list(range(len(sorted_groups)))
+    means = [stats[stats['denoiser_drop_k'] == group]['mean'].iloc[0] for group in sorted_groups]
+    stds = [stats[stats['denoiser_drop_k'] == group]['std'].iloc[0] for group in sorted_groups]
+    
+    # Plot means as diamonds
+    ax1.scatter(x_positions, means, marker='D', s=80, color='black', zorder=5, label='Mean')
+    
+    # Add error bars
+    for i, (mean, std) in enumerate(zip(means, stds)):
+        if not np.isnan(std):
+            ax1.errorbar(i, mean, yerr=std, fmt='none', color='black', capsize=5, capthick=2, linewidth=2)
+    
+    # Connect lines for same topic_id
+    for topic_id, group in df.groupby('topic_id'):
+        group = group.sort_values('denoiser_drop_k')
+        if len(group) < 2:
+            continue
+        x_vals = [sorted_groups.index(g) for g in group['denoiser_drop_k']]
+        y_vals = group[y_col].tolist()
+        ax1.plot(x_vals, y_vals, color='gray', alpha=0.2, linewidth=1, zorder=1)
+        
+        # Connect means for this topic_id
+        group_means = [stats[stats['denoiser_drop_k'] == g]['mean'].iloc[0] for g in group['denoiser_drop_k']]
+        ax1.plot(x_vals, group_means, color='black', alpha=0.5, linewidth=2, linestyle='--', zorder=2)
+    
+    # Add text labels if requested
+    if show_labels:
+        for _, row in df.iterrows():
+            x_pos = sorted_groups.index(row['denoiser_drop_k'])
+            ax1.text(x_pos, row[y_col], row['topic_name'], fontsize=FONT_SIZE, ha='center', va='bottom', alpha=0.7)
+    
+    # Formatting
+    ax1.set_xlabel('Denoiser / Drop_k')
+    ax1.set_ylabel(y_col)
+    ax1.set_title(f'{y_col} by Denoiser/Drop_k')
+    ax1.set_xticks(x_positions)
+    ax1.set_xticklabels(sorted_groups, rotation=45, ha='right')
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    
+    # # Add secondary y-axis for ratio to baseline
+    # ax2 = None
+    # if baseline_mean != 0 and not np.isnan(baseline_mean):
+    #     ax2 = ax1.twinx()
+    #     ax2.set_ylabel('Ratio to Baseline')
+    #     ylim = ax1.get_ylim()
+    #     ax2.set_ylim((ylim[0] / baseline_mean, ylim[1] / baseline_mean))
+    
+    if log_y:
+        ax1.set_yscale('log')
+        # if ax2 is not None:
+        #     ax2.set_yscale('log')
+    
+    # plt.tight_layout()
+    plot_dir = artifacts_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_file = plot_dir / f"{y_col}_by_denoiser_{color_col=}_pyplot.png"
+    plt.savefig(output_file, dpi=DPI)
+    plt.close(fig)
+
+def plot_col_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y: bool = False, weights: Optional[str] = None):
     """
     Plot metric vs drop_k with each denoiser as a separate series.
     For each (denoiser, drop_k) pair, average the metric across all topics.
     Treats "NONE" denoiser as drop_k = 0 baseline.
+    A secondary y-axis shows the ratio to baseline (NONE denoiser).
     
     Args:
         df: DataFrame with the data
         artifacts_dir: Directory to save plots
         y_col: Column name to plot on y-axis
+        log_y: if True, use log scale for y-axis
+        weights: Column name to use for weighting the mean and std calculations
     """
     plot_df = df.copy()
     
-    # For NONE denoiser, set drop_k to 0 regardless of actual drop_k value
-    plot_df.loc[plot_df['denoiser'] == 'NONE', 'drop_k'] = 0
-
     # Drop rows where the metric is NaN
     plot_df = plot_df[plot_df[y_col].notna()]
     
@@ -440,18 +646,45 @@ def plot_metric_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str):
         LOGGER.warning(f"Column '{y_col}' not found in data. Skipping plot.")
         return
     
+    # Handle weights parameter - create uniform weights if None
+    if weights is None:
+        assert 'weights_' not in plot_df.columns, "Column 'weights_' already exists in DataFrame"
+        plot_df['weights_'] = 1.0
+        weights = 'weights_'
+    
     # Group by denoiser and drop_k, then average the metric across topics
-    grouped = plot_df.groupby(['denoiser', 'drop_k'])[y_col].agg(['mean', 'std', 'count']).reset_index()
-    grouped.columns = ['denoiser', 'drop_k', 'metric_mean', 'std', 'count']
+    def weighted_mean(x):
+        return np.average(x[y_col], weights=x[weights])
+    def weighted_std(x):
+        values = x[y_col].to_numpy(dtype=float)
+        weight_vals = x[weights].to_numpy(dtype=float)
+        if np.sum(weight_vals) == 0:
+            return np.nan
+        mean = np.average(values, weights=weight_vals)
+        variance = np.average((values - mean) ** 2, weights=weight_vals)
+        return np.sqrt(variance)
+    grouped = plot_df.groupby(['denoiser', 'drop_k']).apply(
+        lambda x: pd.Series({
+            'metric_mean': weighted_mean(x),
+            'std': weighted_std(x),
+            'count': len(x)
+        })
+    ).reset_index()
     
     # Sort by drop_k for proper x-axis ordering
     grouped = grouped.sort_values('drop_k')
     
+    # Get baseline value and add as horizontal line
+    baseline_data = grouped[grouped['denoiser'] == 'NONE']
+    baseline_value = baseline_data['metric_mean'].iloc[0] if not baseline_data.empty else None
+
+    # LOGGER.info(f"Baseline value for {y_col} (NONE denoiser): {baseline_value:.3f}")
+    
     # Create the line plot
     fig = go.Figure()
     
-    # Get unique denoisers and assign colors
-    denoisers = grouped['denoiser'].unique()
+    # Get unique denoisers and assign colors (excluding NONE since it will be a horizontal line)
+    denoisers = grouped[grouped['denoiser'] != 'NONE']['denoiser'].unique()
     colors = px.colors.qualitative.Dark24[:len(denoisers)]
     
     # Use generic naming conventions
@@ -461,67 +694,45 @@ def plot_metric_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str):
     for i, denoiser in enumerate(denoisers):
         denoiser_data = grouped[grouped['denoiser'] == denoiser].sort_values('drop_k')
         
-        # Special styling for NONE denoiser (baseline)
-        if denoiser == 'NONE':
-            line_style = dict(color='black', width=4, dash='dash')
-            marker_style = dict(size=10, color='black', symbol='diamond')
-            denoiser_display_name = 'No Denoising (Baseline)'
-
-            # Add baseline line and markers
-            fig.add_trace(go.Scatter(
-                x=denoiser_data['drop_k'],
-                y=denoiser_data['metric_mean'],
-                mode='lines+markers',
-                name=denoiser_display_name,
-                line=line_style,
-                marker=marker_style,
-                hovertemplate=(
-                    f'<b>{denoiser_display_name}</b><br>' +
-                    'Drop K: %{x}<br>' +
-                    f'{y_axis_title}: %{{y:.3f}}<br>' +
-                    'Std: %{customdata[0]:.3f}<br>' +
-                    'Topic Count: %{customdata[1]}<br>' +
-                    '<extra></extra>'
-                ),
-                customdata=denoiser_data[['std', 'count']].values
-            ))
-        else:
-            line_style = dict(color=colors[i % len(colors)], width=3)
-            marker_style = dict(size=8, color=colors[i % len(colors)])
-            denoiser_display_name = denoiser
-        
-            # Add main line
-            fig.add_trace(go.Scatter(
-                x=denoiser_data['drop_k'],
-                y=denoiser_data['metric_mean'],
-                mode='lines+markers',
-                name=denoiser_display_name,
-                line=line_style,
-                marker=marker_style,
-                hovertemplate=(
-                    f'<b>{denoiser_display_name}</b><br>' +
-                    'Drop K: %{x}<br>' +
-                    f'{y_axis_title}: %{{y:.3f}}<br>' +
-                    'Std: %{customdata[0]:.3f}<br>' +
-                    'Topic Count: %{customdata[1]}<br>' +
-                    '<extra></extra>'
-                ),
-                customdata=denoiser_data[['std', 'count']].values
-            ))
-            
-            # # Add error bars (±s std)
-            # s = 0.01
-            # fig.add_trace(go.Scatter(
-            #     x=denoiser_data['drop_k'].tolist() + denoiser_data['drop_k'].tolist()[::-1],
-            #     y=(denoiser_data['log_nearest_book_rank_mean'] + s*denoiser_data['std']).tolist() + 
-            #         (denoiser_data['log_nearest_book_rank_mean'] - s*denoiser_data['std']).tolist()[::-1],
-            #     fill='toself',
-            #     fillcolor=f'rgba{tuple(list(mcolors.to_rgb(colors[i % len(colors)])) + [0.2])}',
-            #     line=dict(color='rgba(255,255,255,0)'),
-            #     hoverinfo="skip",
-            #     showlegend=False,
-            #     name=f'{denoiser} ±{s}σ'
-            # ))
+        line_style = dict(color=colors[i % len(colors)], width=3)
+        marker_style = dict(size=8, color=colors[i % len(colors)])
+        denoiser_display_name = get_denoiser_display_name(denoiser)
+    
+        # Add main line
+        fig.add_trace(go.Scatter(
+            x=denoiser_data['drop_k'],
+            y=denoiser_data['metric_mean'],
+            mode='lines+markers',
+            name=denoiser_display_name,
+            line=line_style,
+            marker=marker_style,
+            hovertemplate=(
+                f'<b>{denoiser_display_name}</b><br>' +
+                'Drop K: %{x}<br>' +
+                f'{y_axis_title}: %{{y:.3f}}<br>' +
+                'Std: %{customdata[0]:.3f}<br>' +
+                'Topic Count: %{customdata[1]}<br>' +
+                '<extra></extra>'
+            ),
+            customdata=denoiser_data[['std', 'count']].values
+        ))
+    
+    # Add baseline horizontal line
+    if baseline_value is not None:
+        x_range = grouped['drop_k']
+        x_min, x_max = x_range.min(), x_range.max()
+        fig.add_trace(go.Scatter(
+            x=[x_min, x_max],
+            y=[baseline_value, baseline_value],
+            mode='lines',
+            name=get_denoiser_display_name('NONE'),
+            line=dict(color='black', width=4, dash='dash'),
+            hovertemplate=(
+                f'<b>{get_denoiser_display_name("NONE")}</b><br>' +
+                f'{y_axis_title}: {baseline_value:.3f}<br>' +
+                '<extra></extra>'
+            )
+        ))
     
     fig.update_layout(
         title=f'{y_axis_title} by Drop K (Averaged Across Topics)',
@@ -541,12 +752,134 @@ def plot_metric_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str):
         hovermode='closest'
     )
     
+    # # Add secondary y-axis showing ratio to baseline
+    # if baseline_value != 0 and not np.isnan(baseline_value):
+    #     # Get unique y values from the grouped data for tick positioning
+    #     y_values = sorted(grouped['metric_mean'].dropna().unique())
+    #     fig.update_layout(
+    #         yaxis2=dict(
+    #             title="Ratio to Baseline",
+    #             overlaying='y',
+    #             side='right',
+    #             tickvals=y_values,
+    #             ticktext=[f"{y/baseline_value:.2f}" for y in y_values]
+    #         )
+    #     )
+    # else:
+    #     LOGGER.warning("Baseline value is zero or NaN, not adding secondary y-axis.")
+    
+    if log_y:
+        fig.update_yaxes(type='log')
+    
     # Save the plot
     plot_dir = artifacts_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_file = plot_dir / filename
     fig.write_html(output_file)
-    LOGGER.info(f"Saved drop_k plot ({y_col}) to {output_file}")
+
+def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y: bool = False, weights: Optional[str] = None):
+    """
+    Pyplot version of plot_col_by_drop_k.
+    Plot metric vs drop_k with each denoiser as a separate series using matplotlib.
+    For each (denoiser, drop_k) pair, average the metric across all topics.
+    Treats "NONE" denoiser as drop_k = 0 baseline.
+    """
+    plot_df = df.copy()
+    
+    # Drop rows where the metric is NaN
+    plot_df = plot_df[plot_df[y_col].notna()]
+    
+    if plot_df.empty:
+        LOGGER.info(f"No data available for drop_k plot ({y_col}). Skipping plot.")
+        return
+    
+    # Check that the y_col exists
+    if y_col not in plot_df.columns:
+        LOGGER.warning(f"Column '{y_col}' not found in data. Skipping plot.")
+        return
+    
+    # Handle weights parameter - create uniform weights if None
+    if weights is None:
+        assert 'weights_' not in plot_df.columns, "Column 'weights_' already exists in DataFrame"
+        plot_df['weights_'] = 1.0
+        weights = 'weights_'
+    
+    # Group by denoiser and drop_k, then average the metric across topics
+    def weighted_mean(x):
+        return np.average(x[y_col], weights=x[weights])
+    def weighted_std(x):
+        values = x[y_col].to_numpy(dtype=float)
+        weight_vals = x[weights].to_numpy(dtype=float)
+        if np.sum(weight_vals) == 0:
+            return np.nan
+        mean = np.average(values, weights=weight_vals)
+        variance = np.average((values - mean) ** 2, weights=weight_vals)
+        return np.sqrt(variance)
+    grouped = plot_df.groupby(['denoiser', 'drop_k']).apply(
+        lambda x: pd.Series({
+            'metric_mean': weighted_mean(x),
+            'std': weighted_std(x),
+            'count': len(x)
+        })
+    ).reset_index()
+    
+    # Sort by drop_k for proper x-axis ordering
+    grouped = grouped.sort_values('drop_k')
+    
+    # Get baseline value for secondary y-axis
+    baseline_data = grouped[grouped['denoiser'] == 'NONE']
+    baseline_value = baseline_data['metric_mean'].iloc[0] if not baseline_data.empty else None
+
+    # LOGGER.info(f"Baseline value for {y_col} (NONE denoiser): {baseline_value:.3f}")
+    
+    # Create the plot
+    fig, ax1 = plt.subplots(figsize=(12, 8))
+    
+    # Get unique denoisers and assign colors/styles (excluding NONE since it will be a horizontal line)
+    denoisers = grouped[grouped['denoiser'] != 'NONE']['denoiser'].unique()
+    colors = plt.cm.get_cmap('tab10')(np.linspace(0, 1, len(denoisers)))
+    
+    for i, denoiser in enumerate(denoisers):
+        denoiser_data = grouped[grouped['denoiser'] == denoiser].sort_values('drop_k')
+        
+        # Regular styling for other denoisers
+        ax1.plot(denoiser_data['drop_k'], denoiser_data['metric_mean'], 
+                color=colors[i], linewidth=2, marker='o', markersize=6, label=get_denoiser_display_name(denoiser))
+    
+    # Add baseline horizontal line
+    if baseline_value is not None:
+        x_range = grouped['drop_k']
+        ax1.axhline(y=baseline_value, xmin=x_range.min(), xmax=x_range.max(),
+                   color='black', linestyle='--', linewidth=3, 
+                   label=get_denoiser_display_name('NONE'), zorder=10)
+    
+    # Formatting
+    y_axis_title = y_col.replace('_', ' ').title()
+    ax1.set_xlabel('Drop K')
+    ax1.set_ylabel(y_axis_title)
+    ax1.set_title(f'{y_axis_title} by Drop K (Averaged Across Topics)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Add secondary y-axis for ratio to baseline
+    ax2 = None
+    # if baseline_value != 0 and not np.isnan(baseline_value):
+    #     ax2 = ax1.twinx()
+    #     ax2.set_ylabel('Ratio to Baseline')
+    #     ylim = ax1.get_ylim()
+    #     ax2.set_ylim((ylim[0] / baseline_value, ylim[1] / baseline_value))
+    
+    if log_y:
+        ax1.set_yscale('log')
+        if ax2 is not None:
+            ax2.set_yscale('log')
+    
+    # plt.tight_layout()
+    plot_dir = artifacts_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_file = plot_dir / f"{y_col}_by_drop_k_pyplot.png"
+    plt.savefig(output_file, dpi=DPI)
+    plt.close(fig)
 
 def plot_books_vs_articles(df: pd.DataFrame, artifacts_dir: Path, show_labels=False, log_scale=True, min_articles=0):
     """
@@ -558,6 +891,9 @@ def plot_books_vs_articles(df: pd.DataFrame, artifacts_dir: Path, show_labels=Fa
         log_scale: If True, use log scale for both axes and fit regression in log-log space
         min_articles: Only include topics with at least this many articles
     """
+    if df.empty:
+        LOGGER.warning("No data available for books vs articles plot. Skipping.")
+        return
     # Filter to just denoiser=None since num_books and num_articles are invariant wrt denoiser/drop_k
     plot_df = df.copy()
     plot_df = plot_df[plot_df['denoiser'] == 'NONE'].copy()
@@ -573,7 +909,7 @@ def plot_books_vs_articles(df: pd.DataFrame, artifacts_dir: Path, show_labels=Fa
         x='num_articles',
         y='num_books',
         color_discrete_sequence=['#1f77b4'],  # All points same color
-        hover_data=['topic_name', 'topic_id', 'largest_gap', 'gap_significance', 'total_works'],
+        hover_data=['topic_name', 'topic_id', 'total_works'],
         hover_name='topic_name',
         title='Books vs Articles by Topic',
     )
@@ -641,22 +977,118 @@ def plot_books_vs_articles(df: pd.DataFrame, artifacts_dir: Path, show_labels=Fa
     output_file = plot_dir / ('books_vs_articles.html' if not log_scale else 'books_vs_articles_log.html')
     fig.write_html(output_file)
 
-def do_plots(df: pd.DataFrame, artifacts_dir: Path, show_labels=True):
+def plot_books_vs_articles_pyplot(df: pd.DataFrame, artifacts_dir: Path, show_labels=False, log_scale=True, min_articles=0):
+    """
+    Plot number of books vs number of articles for each topic using matplotlib, with an optional regression line.
+    Args:
+        df: DataFrame with the data
+        artifacts_dir: Directory to save plots
+        show_labels: If True, show topic names as text labels
+        log_scale: If True, use log scale for both axes and fit regression in log-log space
+        min_articles: Only include topics with at least this many articles
+    """
+    if df.empty:
+        LOGGER.warning("No data available for books vs articles plot. Skipping.")
+        return
+    plot_df = df.copy()
+    plot_df = plot_df[plot_df['denoiser'] == 'NONE'].copy()
+    if min_articles > 0:
+        plot_df = plot_df[plot_df['num_articles'] >= min_articles]
+    if plot_df.empty:
+        LOGGER.warning("No data with denoiser=None found for books vs articles plot. Skipping.")
+        return
+    x = plot_df['num_articles'].to_numpy()
+    y = plot_df['num_books'].to_numpy()
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.scatter(x, y, s=40, alpha=0.7)
+    if show_labels:
+        for i, row in plot_df.iterrows():
+            ax.text(row['num_articles'], row['num_books'], row['topic_name'], fontsize=FONT_SIZE, ha='center', va='bottom', color='black')
+    mask = (x > 0) & (y > 0)
+    x_fit = x[mask]
+    y_fit = y[mask]
+    if len(x_fit) > 1:
+        if log_scale:
+            logx = np.log10(x_fit)
+            logy = np.log10(y_fit)
+            slope, intercept = np.polyfit(logx, logy, 1)
+            x_line = np.linspace(x_fit.min(), x_fit.max(), 200)
+            y_line = 10 ** (slope * np.log10(x_line) + intercept)
+            label = f"log-log fit: y ~ x^{slope:.2f}"
+        else:
+            slope, intercept = np.polyfit(x_fit, y_fit, 1)
+            x_line = np.linspace(x_fit.min(), x_fit.max(), 200)
+            y_line = slope * x_line + intercept
+            label = f"linear fit: y = {slope:.2f}x + {intercept:.2f}"
+        ax.plot(x_line, y_line, 'r--', linewidth=2, label=label)
+    ax.set_xlabel('Number of Articles')
+    ax.set_ylabel('Number of Books')
+    ax.set_title('Books vs Articles by Topic')
+    if log_scale:
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+    ax.legend(loc='best', fontsize=10)
+    # plt.tight_layout()
+    plot_dir = artifacts_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_file = plot_dir / ('books_vs_articles_pyplot.png' if not log_scale else 'books_vs_articles_log_pyplot.png')
+    plt.savefig(output_file, dpi=DPI)
+    plt.close(fig)
+
+def do_plots(artifacts_dir: Path):
+
+    df = Results.get_df_copy()
+
     if df.empty:
         LOGGER.info("No data available for plotting. Skipping plots.")
         return
-    
-    df = df.copy()
-    
-    plot_books_vs_articles(df, artifacts_dir, show_labels=show_labels, log_scale=True, min_articles=10_000)
-    plot_books_vs_articles(df, artifacts_dir, show_labels=show_labels, log_scale=False, min_articles=10_000)
 
-    plot_metric_by_drop_k(df, artifacts_dir, 'kball_size')
+    LOGGER.info(f"Plotting {len(df)} rows of data")
 
+    df['total_works'] = df['num_books'] + df['num_articles']
+
+    df = df[df['denoiser'].isin(ALLOWED_DENOISERS)]
+
+    df['kball_lift'] = df['kball_size'] * df['num_books'] / df['num_articles']
+    df['kball_log_lift'] = np.log2(df['kball_lift'])
+    df['avgref_mean_rank_lift'] = df['avgref_mean_rank'] * df['num_books'] / df['num_articles']
+    df['avgref_mean_rank_log_lift'] = np.log2(df['avgref_mean_rank_lift'])
+
+    plot_books_vs_articles(df, artifacts_dir, show_labels=True, log_scale=True, min_articles=0)
+    plot_books_vs_articles_pyplot(df, artifacts_dir, show_labels=True, log_scale=True, min_articles=0)
+    plot_books_vs_articles(df, artifacts_dir, show_labels=True, log_scale=False, min_articles=0)
+    plot_books_vs_articles_pyplot(df, artifacts_dir, show_labels=True, log_scale=False, min_articles=0)
+
+    plot_col_by_drop_k(df, artifacts_dir, 'kball_size', log_y=True, weights='total_works')
+    plot_col_by_drop_k(df, artifacts_dir, 'kball_lift', log_y=True, weights='total_works')
+    plot_col_by_drop_k(df, artifacts_dir, 'kball_log_lift', log_y=False, weights='total_works')
+    plot_col_by_drop_k(df, artifacts_dir, 'avgref_mean_rank', log_y=True, weights='num_books_with_avgref')
+    plot_col_by_drop_k(df, artifacts_dir, 'avgref_mean_rank_lift', log_y=True, weights='num_books_with_avgref')
+    plot_col_by_drop_k(df, artifacts_dir, 'avgref_mean_rank_log_lift', log_y=False, weights='num_books_with_avgref')
+    
+    # Generate pyplot versions as well
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_size', log_y=True, weights='total_works')
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_lift', log_y=True, weights='total_works')
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_log_lift', log_y=False, weights='total_works')
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank', log_y=True, weights='num_books_with_avgref')
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank_lift', log_y=True, weights='num_books_with_avgref')
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank_log_lift', log_y=False, weights='num_books_with_avgref')
+    
     for color_col in ['denoiser', 'drop_k']:
-        plot_gap_significance_by_total_works(df, artifacts_dir, color_col=color_col, show_labels=show_labels, denoisers=['NONE'])
-        plot_col_by_denoiser(df, artifacts_dir, y_col='kball_size', color_col=color_col, show_labels=show_labels)
-
+        plot_col_by_denoiser(df, artifacts_dir, y_col='kball_size', color_col=color_col, show_labels=False, log_y=True, weights='total_works', hover_data=['topic_name', 'num_books', 'num_articles'])
+        plot_col_by_denoiser(df, artifacts_dir, y_col='kball_lift', color_col=color_col, show_labels=False, log_y=True, weights='total_works', hover_data=['topic_name', 'num_books', 'num_articles'])
+        plot_col_by_denoiser(df, artifacts_dir, y_col='kball_log_lift', color_col=color_col, show_labels=False, log_y=False, weights='total_works', hover_data=['topic_name', 'num_books', 'num_articles'])
+        plot_col_by_denoiser(df, artifacts_dir, y_col='avgref_mean_rank', color_col=color_col, show_labels=False, log_y=True, weights='num_books_with_avgref', hover_data=['topic_name', 'num_articles', 'num_books', 'num_books_with_avgref'])
+        plot_col_by_denoiser(df, artifacts_dir, y_col='avgref_mean_rank_lift', color_col=color_col, show_labels=False, log_y=True, weights='num_books_with_avgref', hover_data=['topic_name', 'num_articles', 'num_books', 'num_books_with_avgref'])
+        plot_col_by_denoiser(df, artifacts_dir, y_col='avgref_mean_rank_log_lift', color_col=color_col, show_labels=False, log_y=False, weights='num_books_with_avgref', hover_data=['topic_name', 'num_articles', 'num_books', 'num_books_with_avgref'])
+        
+        # Generate pyplot versions as well
+        plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='kball_size', color_col=color_col, show_labels=False, log_y=True, weights='total_works')
+        plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='kball_lift', color_col=color_col, show_labels=False, log_y=True, weights='total_works')
+        plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='kball_log_lift', color_col=color_col, show_labels=False, log_y=False, weights='total_works')
+        plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='avgref_mean_rank', color_col=color_col, show_labels=False, log_y=True, weights='num_books_with_avgref')
+        plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='avgref_mean_rank_lift', color_col=color_col, show_labels=False, log_y=True, weights='num_books_with_avgref')
+        plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='avgref_mean_rank_log_lift', color_col=color_col, show_labels=False, log_y=False, weights='num_books_with_avgref')
 @MEMORY.cache
 def get_sorted_topics_by_work_count(cloud: Cloud, subfield: str):
     subfields = pyalex.Subfields()
@@ -666,37 +1098,117 @@ def get_sorted_topics_by_work_count(cloud: Cloud, subfield: str):
     for topic in topics:
         topic_id = topic["id"].split("/")[-1]
         subcloud = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id))
-        num_works = len(subcloud.works())
+        num_works = len(subcloud.embeddings())
         topic_work_counts.append((num_works, topic))
     topics_sorted = [topic for _, topic in sorted(topic_work_counts, key=lambda x: -x[0])]
     return topics_sorted, topic_work_counts
 
+def variance_retention_main():
+    explicit_args = get_explicit_args()
+    setup_logging(log_name=__name__.split('.')[-1], explicit_args=explicit_args)
+    
+    if 'drop_k' in dict(explicit_args):
+        raise ValueError("many_main should not be called with a specific drop_k. Use the main function instead.")
+    if 'radius_fraction' in dict(explicit_args):
+        raise ValueError("many_main should not be called with a specific radius_fraction. Use the main function instead.")
+    
+    args = vars(parse_args())
+    del args['drop_k']
+    del args['radius_fraction']
+
+    plot_variance_retention(
+        filter_pair=FilterPair(Filter(subfield=SubField.AI.value), Filter()),
+        **args)
+
+def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int,
+                            max_works: Optional[int], deduplicator: Optional[Deduplicator], denoiser: str) -> None:
+    if index_type == IndexType.HNSW:
+        index_info = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
+    else:
+        index_info = index_type.value()
+    original_cloud = Cloud(
+        filter_pair=filter_pair,
+        index_info=index_info,
+        max_works=max_works,
+        deduplicator=deduplicator,
+        normalize_embeddings=True,
+        denoiser=None,
+        drop_k=0
+    )
+    original_embeddings = original_cloud.embeddings()
+    N, d = original_embeddings.shape
+    context = CloudDenoiserContext(original_cloud.works(), original_embeddings, Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    S_T = context.S_T()
+    S_L = context.S_L()
+    S_B = context.S_B()
+
+    assert S_T.shape == (d, d), f"Expected S_T shape {(d, d)}, got {S_T.shape}"
+    assert S_L.shape == (d, d), f"Expected S_L shape {(d, d)}, got {S_L.shape}"
+    assert S_B.shape == (d, d), f"Expected S_B shape {(d, d)}, got {S_B.shape}"
+
+    S_T_var = np.linalg.trace(S_T)
+    S_L_var = np.linalg.trace(S_L)
+    S_B_var = np.linalg.trace(S_B)
+
+    P = WorkDenoisers[denoiser].value.projector(original_cloud.works(), original_embeddings, n_components=d)
+
+    S_T_proj = P @ S_T @ P.T
+    S_L_proj = P @ S_L @ P.T
+    S_B_proj = P @ S_B @ P.T
+
+    S_T_diag = np.diag(S_T_proj)
+    S_L_diag = np.diag(S_L_proj)
+    S_B_diag = np.diag(S_B_proj)
+
+    S_T_proj_vars = np.cumsum(S_T_diag) / S_T_var
+    S_L_proj_vars = np.cumsum(S_L_diag) / S_L_var
+    S_B_proj_vars = np.cumsum(S_B_diag) / S_B_var
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=np.arange(1, d + 1),
+        y=S_T_proj_vars,
+        mode='lines+markers',
+        name='S_T Variance Retention',
+        line=dict(color='blue', width=2),
+        marker=dict(size=5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=np.arange(1, d + 1),
+        y=S_L_proj_vars,
+        mode='lines+markers',
+        name='S_L Variance Retention',
+        line=dict(color='green', width=2),
+        marker=dict(size=5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=np.arange(1, d + 1),
+        y=S_B_proj_vars,
+        mode='lines+markers',
+        name='S_B Variance Retention',
+        line=dict(color='red', width=2),
+        marker=dict(size=5)
+    ))
+    fig.update_layout(
+        title='Variance Retention by Projection',
+        xaxis_title='Number of Components',
+        yaxis_title='Cumulative Variance Retention',
+        width=1000,
+        height=700,
+    )
+    plot_dir = Path("artifacts") / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_file = plot_dir / f"variance_retention_{denoiser}.html"
+    fig.write_html(output_file)
+    LOGGER.info(f"Variance retention plot saved to {output_file}")
+
+                
+    
+
+
 def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplicator], radius_fraction: float, denoiser: str,
          index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int):
-    # Set up output directory and CSV file
-    artifacts_dir = Path("artifacts")
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = artifacts_dir / "book_article_analysis.csv"
-    
-    # Load existing results if they exist
-    try:
-        df = pd.read_csv(csv_path)
-        # Ensure drop_k is always an integer after reading from CSV
-        if 'drop_k' in df.columns:
-            LOGGER.info(f"drop_k dtype before conversion: {df['drop_k'].dtype}")
-            df['drop_k'] = pd.to_numeric(df['drop_k'], errors='coerce').astype('Int64')
-            LOGGER.info(f"drop_k dtype after conversion: {df['drop_k'].dtype}")
-        LOGGER.info(f"Loaded existing results from {csv_path}")
-    except FileNotFoundError:
-        df = pd.DataFrame()
-        LOGGER.info(f"Starting fresh analysis - {csv_path} not found")
-    
-    key_columns = ['topic_name', 'denoiser', 'drop_k']
-    existing_keys = [tuple(row) for row in df[key_columns].to_numpy()] if not df.empty else set()
-    results = []
 
-    do_plots(df, artifacts_dir)
-    
     # Standard cloud configuration
     if index_type == IndexType.HNSW:
         index_info = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
@@ -717,20 +1229,17 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
     
     
 
-    topics_sorted, _topic_work_counts = get_sorted_topics_by_work_count(
+    topics, _topic_work_counts = get_sorted_topics_by_work_count(
         # Use the AI cloud with denoiser=None and drop_k=0 for caching
         replace(ai_cloud, denoiser=None, drop_k=0),
         subfield=SubField.AI.value)
-    topics = topics_sorted[:10][::-1]
 
     for i, topic in enumerate(topics):
         topic_name = topic["display_name"]
-        key_tuple = (topic_name, denoiser, drop_k)
-        if key_tuple in existing_keys:
-            LOGGER.info(f"Skipping topic '{topic_name}' - already analyzed")
+        if Results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k):
             continue
         topic_id = topic["id"]
-        LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})")
+        LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})\nDenoiser: {denoiser}, Drop_k: {drop_k}\n" + "-+-"*10)
         topic_id_suf = topic_id.split("/")[-1]
         analysis = analyze_book_article_gap(ai_cloud, topic_id_suf, radius_fraction=radius_fraction)
         result_row = {
@@ -738,16 +1247,11 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
             'topic_id': topic_id,
             'denoiser': denoiser,
             'drop_k': drop_k,
-            'gap_significance': analysis.largest_gap / (analysis.num_articles / analysis.num_books) if analysis.num_books > 0 and analysis.num_articles > 0 else 0.0,
             **vars(analysis)
         }
-        results.append(result_row)
-        LOGGER.info(f"Completed analysis for topic {topic_id}: {result_row}")
-        # Write to CSV after each iteration
-        df = write_results_to_csv(df, [result_row], csv_path)
-        if i % 2 == 0 or i == len(topics) - 1:
-            do_plots(df, artifacts_dir)
-
+        Results.write_row(result_row)
+        if (i+1) % 10 == 0 or i == len(topics) - 1:
+            do_plots(ARTIFACTS_DIR)
 # python -c "from nextbook.analyze_book_article_gap import many_main; many_main()"
 def many_main():
     explicit_args = get_explicit_args()
@@ -758,20 +1262,26 @@ def many_main():
     if 'drop_k' in dict(explicit_args):
         raise ValueError("many_main should not be called with a specific drop_k. Use the main function instead.")
     
-    denoisers = [denoiser.name for denoiser in WorkDenoisers]
-    LOGGER.info(f"All denoisers: {denoisers}")
-    drop_ks = [1, 5, 10, 20, 50, 100, 200]
+    work_denoisers = [denoiser.name for denoiser in WorkDenoisers]
+    allowed_denoisers = [denoiser for denoiser in ALLOWED_DENOISERS if denoiser != "NONE"]
+    assert set(allowed_denoisers).issubset(set(work_denoisers)), f"Allowed denoisers {allowed_denoisers} must be a subset of WorkDenoisers {work_denoisers}"
+    LOGGER.info(f"All denoisers: {ALLOWED_DENOISERS}")
+    drop_ks = [1, 2, 3, 4, 5, 6, 7, 8]
     LOGGER.info(f"All drop_k values: {drop_ks}")
     
     args = vars(parse_args())
     del args['denoiser']
     del args['drop_k']
 
-    # Run with denoiser=None first
-    main(**args, denoiser="NONE", drop_k=0)
+    do_plots(ARTIFACTS_DIR)
+
+    if "NONE" in ALLOWED_DENOISERS:
+        # Run with denoiser=None first
+        LOGGER.info("Running analysis with denoiser=None (baseline)")
+        main(**args, denoiser="NONE", drop_k=0)
     
     for drop_k in drop_ks:
-        for denoiser in denoisers:
+        for denoiser in allowed_denoisers:
             LOGGER.info(f"Running analysis with denoiser={denoiser}, drop_k={drop_k}")
             main(**args, denoiser=denoiser, drop_k=drop_k)
 

@@ -29,7 +29,8 @@ from typing import Collection, Dict, Iterable, List, Optional, Literal, Union#, 
 import pandas as pd
 from scipy import sparse
 
-from nextbook.cloud import Cloud, SubCloud, WorkDenoisers, get_ball_coverage, faiss_search_outside_epsilon
+from nextbook.cloud import Cloud, SubCloud, WorkDenoisers
+from nextbook.cloud_index import get_avgrefs, get_ball_coverage, faiss_search_outside_epsilon
 from nextbook.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
 from nextbook.parse_args import get_explicit_args, parse_args
 from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
@@ -257,25 +258,7 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
 #         covered = covered_points[i]
 #         logger.info(f"Point {i} -- {len(covered)} {index_cloud.work_type}s covered by {index_point['display_name']} {index_point['id']}")
 
-@TIMER.time(formatters=dict(index_clouds=lambda x: f"<{len(x)} clouds>"))
-@MEMORY.cache
-def get_avgref(index_clouds: Collection[Cloud], query_cloud: Cloud) -> tuple[NDArray, list[str]]:
-    LOGGER.info(f"get_avgref({query_cloud.name=}) for {len(index_clouds)} index clouds")
-    index_id_to_cloud_idx = {work["id"]: (cloud, i) for cloud in index_clouds for i, work in enumerate(cloud.works())}
-    ret = []
-    ret_ids = []
-    for work in query_cloud.works():
-        referenced_embeddings = []
-        for ref_id in work["referenced_works"]:
-            if ref_id in index_id_to_cloud_idx:
-                cloud, idx = index_id_to_cloud_idx[ref_id]
-                referenced_embeddings.append(cloud.embeddings()[idx])
-        # assert referenced_embeddings, f"No referenced works found for {work['id']} in {index_cloud.name}"
-        if referenced_embeddings:
-            ret.append(np.mean(referenced_embeddings, axis=0))
-            ret_ids.append(work["id"])
-    LOGGER.info(f"get_avgref -- Found {len(ret)} avgrefs for {len(query_cloud.works())} query works ({len(ret) / len(query_cloud.works()) * 100:.2f}%)")
-    return np.array(ret), ret_ids
+
 
 # def plot_avgref(index_clouds: Collection[Cloud], query_cloud: Cloud, method: L
 #     logger.info(f"plot_avgref({query_cloud.name=}) for {len(index_clouds)} index clouds")
@@ -292,20 +275,20 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     artifacts_dir = ARTIFACTS_DIR / str(query_cloud.filter_pair) / "avgref_analysis"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     
-    avgref_embeddings, avgref_ids = get_avgref(index_clouds, query_cloud)
+    avgref_embeddings, avgref_ids = get_avgrefs(index_clouds, query_cloud, normalize_avgref_embeddings=query_cloud.normalize_embeddings)
     
-    avgref_norms = np.linalg.norm(avgref_embeddings, axis=1, keepdims=True)
-    LOGGER.info(f"{query_cloud.name} -- Avgref norms: {get_stats(avgref_norms)}")
-    if query_cloud.normalize_embeddings:
-        LOGGER.info(f"{query_cloud.name} -- Normalizing avgref embeddings")
-        if np.any(avgref_norms < 1e-6):
-            LOGGER.warning(f"{query_cloud.name} -- Some avgref embeddings have zero norm, will not normalize those.")
-            non_zero_mask = (avgref_norms > 1e-6).squeeze(1) # Use a small epsilon for floating point
-            LOGGER.info(f"{avgref_embeddings.shape=}, {avgref_norms.shape=}, {non_zero_mask.shape=}")
-            LOGGER.info(f"{avgref_embeddings.dtype=}, {avgref_norms.dtype=}, {non_zero_mask.dtype=}")
-            avgref_embeddings[non_zero_mask] /= avgref_norms[non_zero_mask]
-        else:
-            avgref_embeddings /= avgref_norms
+    # avgref_norms = np.linalg.norm(avgref_embeddings, axis=1, keepdims=True)
+    # LOGGER.info(f"{query_cloud.name} -- Avgref norms: {get_stats(avgref_norms)}")
+    # if query_cloud.normalize_embeddings:
+    #     LOGGER.info(f"{query_cloud.name} -- Normalizing avgref embeddings")
+    #     if np.any(avgref_norms < 1e-6):
+    #         LOGGER.warning(f"{query_cloud.name} -- Some avgref embeddings have zero norm, will not normalize those.")
+    #         non_zero_mask = (avgref_norms > 1e-6).squeeze(1) # Use a small epsilon for floating point
+    #         LOGGER.info(f"{avgref_embeddings.shape=}, {avgref_norms.shape=}, {non_zero_mask.shape=}")
+    #         LOGGER.info(f"{avgref_embeddings.dtype=}, {avgref_norms.dtype=}, {non_zero_mask.dtype=}")
+    #         avgref_embeddings[non_zero_mask] /= avgref_norms[non_zero_mask]
+    #     else:
+    #         avgref_embeddings /= avgref_norms
 
     LOGGER.info(f"{query_cloud.name} -- Found {len(avgref_embeddings)} avgrefs for {len(query_cloud.works())} query works ({len(avgref_embeddings) / len(query_cloud.works()) * 100:.2f}%)")
     id_to_idx = {work["id"]: i for i, work in enumerate(query_cloud.works())}

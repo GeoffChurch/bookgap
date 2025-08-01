@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
-from nextbook.cloud import SubCloud, get_ball_coverage
+from nextbook.cloud import SubCloud
+from nextbook.cloud_index import get_ball_coverage
 from nextbook.util import LOGGER
 
 @dataclass(frozen=True)

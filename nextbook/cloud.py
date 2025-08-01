@@ -1,5 +1,5 @@
-from abc import ABC, abstractmethod
-from collections import Counter, OrderedDict, defaultdict
+from abc import ABC
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 import enum
 from functools import lru_cache
@@ -8,7 +8,7 @@ import json
 import matplotlib.pyplot as plt
 import re
 import time
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Dict, Generator, List, Optional
 import faiss
 import numpy as np
 from numpy.typing import NDArray
@@ -18,19 +18,16 @@ import scipy.linalg
 from sentence_transformers import SentenceTransformer
 import tqdm
 import nextbook.denoisers as denoisers
-from nextbook.index import IndexInfo, build_index, range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims
+from nextbook.index import IndexInfo, build_index
 from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
 from nextbook.deduplicators import Deduplicator
 
 @dataclass(frozen=True)
 class CloudData:
     works: List[Dict[str, Any]]
-    index: faiss.Index
     embeddings: NDArray
     def __post_init__(self):
         assert len(self.works) == self.embeddings.shape[0], f"Works and embeddings length mismatch: {len(self.works)} != {self.embeddings.shape[0]}"
-        assert self.index.ntotal == len(self.works), f"Index and works length mismatch: {self.index.ntotal} != {len(self.works)}"
-        assert self.index.d == self.embeddings.shape[1], f"Index and embeddings dimension mismatch: {self.index.d} != {self.embeddings.shape[1]}"
 
 @dataclass(frozen=True)
 class Cloud:
@@ -50,113 +47,168 @@ class Cloud:
         #     assert self.drop_k > 0, f"If denoiser is not NONE, drop_k must be > 0 (got {self.drop_k})"
 
     def works(self) -> List[Dict[str, Any]]:
-        return self._data().works
+        return get_cloud_works(self)
+
+    def work_ids(self) -> List[str]:
+        return get_cloud_work_ids(self)
+    
+    def work_references(self) -> List[List[str]]:
+        return get_cloud_work_references(self)
     
     def index(self) -> faiss.Index:
-        return self._data().index
+        return get_cloud_index(self)
     
     def embeddings(self) -> NDArray:
-        return self._data().embeddings
+        return get_cloud_embeddings(self)
 
     def name(self) -> str:
         return f"{self.filter_pair.merged_name()}"
 
-    def _data(self) -> CloudData:
-        return get_cloud_data(self)
-
-
-
-# Work-aware denoiser system
-class WorkDenoiser(ABC):
-    """Base class for work-aware denoisers that can filter works and apply denoisers."""
-    @abstractmethod
-    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> NDArray:
-        """Apply the denoiser to works and embeddings."""
-        ...
-
-class SimpleWorkDenoiser(WorkDenoiser):
-    """A simple work denoiser that applies a single denoiser implementation to all works."""
+@lru_cache(maxsize=1)
+@TIMER.time()
+@MEMORY.cache
+def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
+    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
     
-    def __init__(self, denoiser_impl, needs_citation_graph: bool = True):
-        self.denoiser_impl = denoiser_impl
-        self.needs_citation_graph = needs_citation_graph
-    
-    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int):
-        # Center
-        X_mean = embeddings.mean(axis=0)
-        X_centered = embeddings - X_mean
-        # Compute projection matrix
-        if self.needs_citation_graph:
-            citation_graph = build_citation_graph(works)
-            P, _eigvals = self.denoiser_impl.projector(X_centered, citation_graph, n_components)
-        else:
-            P, _eigvals = self.denoiser_impl.projector(X_centered, n_components)
-        return P
+    # Apply deduplication in initial space because denoisers shouldn't need
+    # to consider post-projection deduplication and so that different denoisers
+    # will not result in different deduplicated works.
+    retained_idxs = deduplicate_works_semantic(cloud, works, embeddings)
+    LOGGER.info(f"Retained {len(retained_idxs)} works after deduplication")
 
+    # Apply post-filtering
+    LOGGER.info(f"Applying post-filtering to {len(retained_idxs)} works with {cloud.filter_pair.post}")
+    mask = [cloud.filter_pair.post.check_work(works[i]) for i in retained_idxs]
+    retained_idxs = retained_idxs[mask]
+    LOGGER.info(f"Retained {len(retained_idxs)} works after post-filtering")
 
-class TwoSubsetWorkDenoiser(WorkDenoiser):
-    """Work denoiser that applies a denoiser to two filtered subsets of works."""
-    
-    def __init__(self, denoiser_impl: denoisers.TwoSubsetScatterDenoiser, filter1: Filter, filter2: Filter):
-        self.denoiser_impl = denoiser_impl
+    # embeddings = get_denoised_embeddings(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
+
+    # return CloudData(works=works, embeddings=embeddings)
+    return retained_idxs
+
+@lru_cache(maxsize=1)
+@TIMER.time()
+@MEMORY.cache
+def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
+    works, _ = load_works(cloud.filter_pair.pre, cloud.max_works)
+    retained_idxs = get_cloud_retained_idxs(cloud)
+    return [works[i] for i in retained_idxs]
+
+@lru_cache(maxsize=1)
+@MEMORY.cache
+def get_cloud_work_ids(cloud: Cloud) -> List[str]:
+    return [work["id"] for work in get_cloud_works(cloud)]
+
+@lru_cache(maxsize=1)
+@MEMORY.cache
+def get_cloud_work_references(cloud: Cloud) -> List[List[str]]:
+    return [work.get("referenced_works", []).copy() for work in get_cloud_works(cloud)]
+
+@lru_cache(maxsize=1)
+@TIMER.time()
+@MEMORY.cache
+def get_cloud_index(cloud: Cloud) -> faiss.Index:
+    embeddings = get_cloud_embeddings(cloud)
+    return build_index(cloud.index_info, embeddings)
+
+@lru_cache(maxsize=1)
+@TIMER.time()
+@MEMORY.cache
+def get_cloud_embeddings(cloud: Cloud) -> NDArray:
+    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
+    retained_idxs = get_cloud_retained_idxs(cloud)
+    return get_denoised_embeddings(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
+
+class CloudDenoiserContext(denoisers.DenoiserContext):
+    def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, filter1: Filter, filter2: Filter):
+        self.works = works
         self.filter1 = filter1
         self.filter2 = filter2
+        self._A: Optional[sp.csr_matrix] = None
+        self._X: NDArray = embeddings
+        self._X1: Optional[NDArray] = None
+        self._X2: Optional[NDArray] = None
+
+    def A(self) -> sp.csr_matrix:
+        if self._A is None:
+            self._A = build_citation_graph(self.works)
+        return self._A
     
-    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int):
-        indices1 = [i for i, work in enumerate(works) if self.filter1.check_work(work)]
-        indices2 = [i for i, work in enumerate(works) if self.filter2.check_work(work)]
-        # Union of both groups for centering
-        union_indices = sorted(set(indices1) | set(indices2))
-        if not union_indices:
-            return np.eye(embeddings.shape[1], dtype=embeddings.dtype)
-        
-        # Filtered groups
-        X1 = embeddings[indices1]
-        X2 = embeddings[indices2]
-        # Get projection matrix (pass full embeddings set for better scatter computation)
-        P, _eigvals = self.denoiser_impl.projector(X1, X2, n_components, X=embeddings)
+    def X(self) -> NDArray:
+        return self._X
+    
+    def X1(self) -> NDArray:
+        if self._X1 is None:
+            self._X1 = self._X[self._get_mask(self.filter1)]
+        return self._X1
+    
+    def X2(self) -> NDArray:
+        if self._X2 is None:
+            self._X2 = self._X[self._get_mask(self.filter2)]
+        return self._X2
+    
+    def _get_mask(self, filter: Filter) -> NDArray:
+        """Get a boolean mask for works that match the filter."""
+        return np.array([filter.check_work(work) for work in self.works], dtype=bool)
+    
+class WorkDenoiser(ABC):
+    def __init__(self, denoiser_impl, filter1: Optional[Filter] = None, filter2: Optional[Filter] = None):
+        self.denoiser_impl = denoiser_impl
+        self.filter1 = filter1 or Filter()
+        self.filter2 = filter2 or Filter()
+
+    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> NDArray:
+        # 1. Instantiate the context object.
+        context = CloudDenoiserContext(works, embeddings, self.filter1, self.filter2)
+
+        # 2. Pass it to the denoiser strategy.
+        P, _eigvals = self.denoiser_impl.projector(context, n_components)
         return P
 
 class WorkDenoisers(enum.Enum):
     # Simple denoisers
-    PCA = SimpleWorkDenoiser(denoisers.PCADenoiser(), needs_citation_graph=False)
-    GPCA = SimpleWorkDenoiser(denoisers.GPCADenoiser(), needs_citation_graph=True)
-    REL_AMP = SimpleWorkDenoiser(denoisers.RelAmpDenoiser(), needs_citation_graph=True)
-    NEIGHBOR_DIST_MIN = SimpleWorkDenoiser(denoisers.NeighborDistMinDenoiser(), needs_citation_graph=True)
-    LPP = SimpleWorkDenoiser(denoisers.LPPDenoiser(), needs_citation_graph=True)
-    AUG_LPP = SimpleWorkDenoiser(denoisers.AugmentedLPPDenoiser(), needs_citation_graph=True)
-    ORTHO_MANIFOLD = SimpleWorkDenoiser(denoisers.OrthogonalManifoldDenoiser(), needs_citation_graph=True)
-    NORM_LPP = SimpleWorkDenoiser(denoisers.NormalizedLPPDenoiser(), needs_citation_graph=True)
-    W = SimpleWorkDenoiser(denoisers.WDenoiser(), needs_citation_graph=True)
-    LDA = SimpleWorkDenoiser(denoisers.LDADenoiser(), needs_citation_graph=True)
-    SYM_LDA = SimpleWorkDenoiser(denoisers.SymmetrizedLDADenoiser(), needs_citation_graph=True)
-    PLS = SimpleWorkDenoiser(denoisers.PLSModeADenoiser(), needs_citation_graph=True)
-    CCA = SimpleWorkDenoiser(denoisers.PLSModeBDenoiser(), needs_citation_graph=True)
-    # W_LPP = SimpleWorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()), needs_citation_graph=True)
-    # W_NEIGHBOR_DIST_MIN = SimpleWorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()), needs_citation_graph=True)
+    PCA = WorkDenoiser(denoisers.PCADenoiser())
+    GPCA = WorkDenoiser(denoisers.GPCADenoiser())
+    REL_AMP = WorkDenoiser(denoisers.RelAmpDenoiser())
+    # NEIGHBOR_DIST_MIN = WorkDenoiser(denoisers.NeighborDistMinDenoiser())
+    LPP = WorkDenoiser(denoisers.LPPDenoiser())
+    AUG_LPP = WorkDenoiser(denoisers.AugmentedLPPDenoiser())
+    ORTHO_MANIFOLD = WorkDenoiser(denoisers.OrthogonalManifoldDenoiser())
+    NORM_LPP = WorkDenoiser(denoisers.NormalizedLPPDenoiser())
+    # W = WorkDenoiser(denoisers.WDenoiser())
+    # LDA = WorkDenoiser(denoisers.LDADenoiser())
+    # SYM_LDA = WorkDenoiser(denoisers.SymmetrizedLDADenoiser())
+    PLS = WorkDenoiser(denoisers.PLSModeADenoiser())
+    CCA = WorkDenoiser(denoisers.PLSModeBDenoiser())
+    # W_LPP = WorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()))
+    # W_NEIGHBOR_DIST_MIN = WorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()))
     
     # Work-aware denoisers
-    BOOK_ARTICLE_ANTI_LDA = TwoSubsetWorkDenoiser(
+    ANTI_LDA = WorkDenoiser(
         denoisers.AntiLDADenoiser(),
         Filter(work_type=WorkType.BOOK.value), 
         Filter(work_type=WorkType.ARTICLE.value)
     )
-    BOOK_ARTICLE_DOM_INVAR = TwoSubsetWorkDenoiser(
+    DOM_INVAR = WorkDenoiser(
         denoisers.DomainInvariantDenoiser(),
         Filter(work_type=WorkType.BOOK.value), 
         Filter(work_type=WorkType.ARTICLE.value)
     ) 
     
-    @TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>", embeddings=lambda embeddings: f"<{embeddings.shape}>"))
-    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int):
-        return self.value.projector(works, embeddings, n_components)
-    
+    CCLIP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.5), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    CCLIP_1 = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.1), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    CCLIP_01 = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    CCP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    LIP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+
     def __str__(self):
         return self.name
     
     def __repr__(self):
         return str(self)
 
+@lru_cache(maxsize=1)
 @TIMER.time()
 @MEMORY.cache
 def load_works(filter: Filter, max_works: Optional[int]):
@@ -173,6 +225,13 @@ def load_works(filter: Filter, max_works: Optional[int]):
     for i, work in enumerate(works):
         undeduped_embeddings[i] = work["embedding"]
         del work["embedding"]
+
+    # Clean up work texts
+    WHITESPACE_PAT = re.compile(r"\s")
+    for work in works:
+        work["display_name"] = WHITESPACE_PAT.sub(" ", work["display_name"])
+        work["abstract"] = WHITESPACE_PAT.sub(" ", work["abstract"])
+
     return works, undeduped_embeddings
 
 @TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>", embeddings=lambda embeddings: f"<{embeddings.shape}>"))
@@ -199,7 +258,7 @@ def get_denoised_embeddings(cloud: Cloud, works: List[Dict[str, Any]], embedding
     LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
     denoiser = WorkDenoisers[cloud.denoiser]
 
-    P = denoiser.projector(works, embeddings, n_components)
+    P = denoiser.value.projector(works, embeddings, n_components)
     assert np.allclose(P.T @ P, np.eye(P.shape[1]), atol=1e-6), f"Projector {denoiser} did not produce orthogonal matrix P! {np.linalg.norm(P.T @ P - np.eye(P.shape[1]))=:.6f}"
     
     denoised_embeddings = embeddings @ P
@@ -237,9 +296,9 @@ def get_denoised_embeddings(cloud: Cloud, works: List[Dict[str, Any]], embedding
 
 @TIMER.time(formatters=dict(embeddings=lambda embeddings: f"<{embeddings.shape}>"))
 @MEMORY.cache(ignore=["embeddings"]) # embeddings are ignored by the cache key because hashing is too slow. Use embeddings_key to disambiguate.
-def deduplicate_works_semantic_(deduplicator: Optional[Deduplicator], index_info: IndexInfo, embeddings: NDArray, embeddings_key: tuple) -> NDArray[np.intp]:
+def deduplicate_works_semantic_(deduplicator: Optional[Deduplicator], index_info: IndexInfo, embeddings: NDArray, embeddings_key: tuple) -> NDArray[np.uint64]:
     if deduplicator is None:
-        return np.arange(len(embeddings), dtype=np.intp) # Retain all indices
+        return np.arange(len(embeddings), dtype=np.uint64) # Retain all indices
     return deduplicator.deduplicate(embeddings, index_info)
 
 def deduplicate_works_semantic(cloud, works, embeddings):
@@ -272,41 +331,6 @@ def deduplicate_works_semantic(cloud, works, embeddings):
         LOGGER.info(f"Deduplication stats:\n{f.read()}")
     return retained_idxs
 
-@lru_cache(maxsize=1)
-@TIMER.time()
-@MEMORY.cache
-def get_cloud_data(cloud: Cloud) -> CloudData:
-    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
-    
-    # Apply deduplication in initial space because denoisers shouldn't need
-    # to consider post-projection deduplication and so that different denoisers
-    # will not result in different deduplicated works.
-    retained_idxs = deduplicate_works_semantic(cloud, works, embeddings)
-    works = [works[i] for i in retained_idxs]
-    embeddings = embeddings[retained_idxs]
-    LOGGER.info(f"Cloud {cloud.name()} -- Retained {len(works)} works after deduplication")
-
-    # Apply post-filtering
-    LOGGER.info(f"Cloud {cloud.name()} -- Applying post-filtering to {len(works)} works with {cloud.filter_pair.post}")
-    retained_idxs = [i for i, work in enumerate(works) if cloud.filter_pair.post.check_work(work)]
-    works = [works[i] for i in retained_idxs]
-    embeddings = embeddings[retained_idxs]
-    LOGGER.info(f"Cloud {cloud.name()} -- Retained {len(works)} works after post-filtering")
-
-    embeddings = get_denoised_embeddings(cloud, works, embeddings)
-
-    # Clean up work texts
-    WHITESPACE_PAT = re.compile(r"\s")
-    for work in works:
-        work["display_name"] = WHITESPACE_PAT.sub(" ", work["display_name"])
-        work["abstract"] = WHITESPACE_PAT.sub(" ", work["abstract"])
-
-    # Rebuild the index with the retained points
-    LOGGER.info(f"Cloud {cloud.name()} -- Rebuilding index with {len(works)} points")
-    index = build_index(cloud.index_info, embeddings)
-    return CloudData(works=works, index=index, embeddings=embeddings)
-
-
 
 @TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>"))
 def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
@@ -315,16 +339,21 @@ def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
     row = []
     col = []
     for i, work in enumerate(works):
-        # Add self as reference for safe normalization and stability
-        for ref_id in work.get("referenced_works", []) + [work["id"]]:
+        # Add self-reference for safe normalization and stability. Don't use append on the original list!
+        refs: list[str] = work.get("referenced_works", []) + [work["id"]]  
+        for ref_id in refs:
             if ref_id in id_to_idx:
                 row.append(i)
                 col.append(id_to_idx[ref_id])
-    citation_graph = sp.csr_matrix((np.ones(len(row)), (row, col)), shape=(n, n))
+    data = np.ones(len(row), dtype=np.float32)
+    citation_graph = sp.csr_matrix((data, (row, col)), shape=(n, n))
     row_sums = np.asarray(citation_graph.sum(axis=1)).squeeze(1)
     assert row_sums.min() >= 1 # This is guaranteed by the self-references
-    # In-place row normalization for CSR matrix
+    
+    # In-place row normalization
+    assert citation_graph.data.dtype == np.float32, f"Expected float32 data type, got {citation_graph.data.dtype}"
     citation_graph.data /= row_sums[citation_graph.indices]
+    
     assert type(citation_graph) is sp.csr_matrix, f"Expected csr_matrix, got {type(citation_graph)}"
     LOGGER.info(f"Built citation graph with shape {citation_graph.shape} and {citation_graph.nnz} non-zero entries")
     return citation_graph
@@ -447,7 +476,7 @@ def filter_works(work_filter: Filter):
     
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
         for work in tqdm.tqdm(get_works(work_filter), total=get_query(work_filter).count(),
-                            desc=f"Filtering works in {work_filter}", disable=False):
+                            desc=f"Filtering works in {work_filter}", mininterval=1, delay=1, disable=False):
             invalidators = []
             total.insert(work)
             for filter in WorkFilter:
@@ -549,7 +578,7 @@ def embed_works(work_filter: Filter):
 
     ret: list[dict[str, Any]] = []
     # Yield cached works and embeddings
-    with tqdm.tqdm(total=n_works, desc="Getting embeddings", disable=False) as pbar:
+    with tqdm.tqdm(desc="Loading cached embeddings", mininterval=1, delay=1) as cached_pbar:
         i = 1
         seen = 0
         while True:
@@ -566,18 +595,20 @@ def embed_works(work_filter: Filter):
                     seen += 1
                     # yield work
                     ret.append(work)
-                    pbar.update(1)
+                    cached_pbar.update(1)
                 i += 1
             except FileNotFoundError:
                 break
         if seen > 0:
-            LOGGER.info(f"Yielded {seen} cached embeddings") # TODO no longer yielding
+            LOGGER.info(f"Yielded {seen} cached embeddings")
                 
-        # Yield new works and embeddings
+    # Yield new works and embeddings with their own progress bar
+    new_works_count = n_works - seen
+    with tqdm.tqdm(total=new_works_count, desc="Generating new embeddings", disable=False) as new_pbar:
         model = None # Lazy load the model in case `works` is already exhausted
         start_time = time.time()
         batch_size = 512
-        seen = 0
+        seen_new = 0
         LOGGER.info(f"Embedding {work_filter} works")
         for batch in batched(works, batch_size):
             if model is None:
@@ -595,11 +626,11 @@ def embed_works(work_filter: Filter):
                 work["embedding"] = embedding
                 # yield work
                 ret.append(work)
-                pbar.update(1)
-                seen += 1
+                new_pbar.update(1)
+                seen_new += 1
             i += 1
-        if seen > 0:
-            LOGGER.info(f"Yielded {seen} new embeddings in {time.time() - start_time:.2f} seconds")
+        if seen_new > 0:
+            LOGGER.info(f"Yielded {seen_new} new embeddings in {time.time() - start_time:.2f} seconds")
 
     return ret
 
@@ -609,32 +640,67 @@ class SubCloud:
     post_filter: Filter
 
     def works(self) -> List[Dict[str, Any]]:
-        return self._data().works
+        parent_works = self.parent.works()
+        retained_idxs = get_subcloud_retained_idxs(self)
+        return [parent_works[i] for i in retained_idxs]        
+    
+    def work_ids(self) -> List[str]:
+        return get_subcloud_work_ids(self)
+    
+    def work_references(self) -> List[List[str]]:
+        return get_subcloud_work_references(self)
     
     def index(self) -> faiss.Index:
-        return self._data().index
+        return get_subcloud_index(self)
     
     def embeddings(self) -> NDArray:
-        return self._data().embeddings
-
+        return get_subcloud_embeddings(self)
+    
     @property
-    def filter_pair(self) -> FilterPair:
-        return self.parent.filter_pair
+    def normalize_embeddings(self) -> bool:
+        return self.parent.normalize_embeddings
 
-    def _data(self) -> CloudData:
-        return get_subcloud_data(self)
+# @lru_cache(maxsize=2)
+# @TIMER.time()
+# def get_subcloud_data(subcloud: SubCloud) -> CloudData:
+#     works = subcloud.parent.works()
+#     # Apply post-filtering
+#     retained_idxs = [i for i, work in enumerate(works) if subcloud.post_filter.check_work(work)]
+#     filtered_embeddings = subcloud.parent.embeddings()[retained_idxs]
+#     index = build_index(subcloud.parent.index_info, filtered_embeddings)
+#     return CloudData(works=[works[i] for i in retained_idxs], index=index, embeddings=filtered_embeddings)
+
+@lru_cache(maxsize=2)
+@MEMORY.cache
+def get_subcloud_retained_idxs(subcloud: SubCloud) -> NDArray[np.uint64]:
+    return np.array([i for i, work in enumerate(subcloud.parent.works()) if subcloud.post_filter.check_work(work)], dtype=np.uint64)
+
+@lru_cache(maxsize=2)
+@MEMORY.cache
+def get_subcloud_work_ids(subcloud: SubCloud) -> List[str]:
+    parent_work_ids = subcloud.parent.work_ids()
+    retained_idxs = get_subcloud_retained_idxs(subcloud)
+    return [parent_work_ids[i] for i in retained_idxs]
+
+@lru_cache(maxsize=2)
+@MEMORY.cache
+def get_subcloud_work_references(subcloud: SubCloud) -> List[List[str]]:
+    parent_work_references = subcloud.parent.work_references()
+    retained_idxs = get_subcloud_retained_idxs(subcloud)
+    return [parent_work_references[i] for i in retained_idxs]
 
 @lru_cache(maxsize=2)
 @TIMER.time()
-def get_subcloud_data(subcloud: SubCloud) -> CloudData:
-    works = subcloud.parent.works()
-    embeddings = subcloud.parent.embeddings()
-    # Apply post-filtering
-    retained_idxs = [i for i, work in enumerate(works) if subcloud.post_filter.check_work(work)]
-    filtered_works = [works[i] for i in retained_idxs]
-    filtered_embeddings = embeddings[retained_idxs]
-    index = build_index(subcloud.parent.index_info, filtered_embeddings)
-    return CloudData(works=filtered_works, index=index, embeddings=filtered_embeddings)
+@MEMORY.cache
+def get_subcloud_index(subcloud: SubCloud) -> faiss.Index:
+    return build_index(subcloud.parent.index_info, get_subcloud_embeddings(subcloud))
+
+@lru_cache(maxsize=2)
+@MEMORY.cache
+def get_subcloud_embeddings(subcloud: SubCloud) -> NDArray:
+    parent_embeddings = subcloud.parent.embeddings()
+    retained_idxs = get_subcloud_retained_idxs(subcloud)
+    return parent_embeddings[retained_idxs]
 
 
 def get_query(work_filter: Filter) -> pyalex.Works:
@@ -655,223 +721,3 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
     max_pos = max(pos_to_word.keys())
     words = [pos_to_word.get(i, "[[MISSING]]") for i in range(max_pos + 1)]
     return " ".join(words)
-
-
-@dataclass
-class GetBallCoverageResult:
-    index_works_per_query_work: NDArray
-    ball_counts: NDArray  # Number of index works within the ball for each query work
-    covered_points: list[tuple[NDArray[np.float32], NDArray[np.intp]]]  # List of (dists, ids) tuples
-
-@TIMER.time()
-@MEMORY.cache
-def get_ball_coverage(index_subcloud: SubCloud, query_subcloud: SubCloud, radius_fraction: float) -> GetBallCoverageResult:
-    """Get ball coverage statistics between two SubClouds."""
-    # Both must be SubClouds of the same parent
-    assert isinstance(index_subcloud, SubCloud) and isinstance(query_subcloud, SubCloud), "Both arguments must be SubClouds"
-    assert index_subcloud.parent is query_subcloud.parent, "SubClouds must share the same parent Cloud"
-    LOGGER.info(f"Finding closest query work to each index work (each query work gets a voronoi cell of index works)")
-
-    # For each index_subcloud item, find the nearest query_subcloud item
-    res = faiss_search_outside_epsilon(query_subcloud, index_subcloud, is_intra_cloud_search=False, k=1, epsilon=0)
-    D = res.D_outside.squeeze(1)
-    I = res.I_outside.squeeze(1)
-    if query_subcloud.index().ntotal == 0:
-        index_works_per_query_work = np.array([], dtype=np.intp)
-    else:
-        index_works_per_query_work = np.bincount(I, minlength=query_subcloud.index().ntotal)
-    title = f"Number of index works covered by each query work (radius fraction: {radius_fraction})"
-    LOGGER.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
-
-    # Now, for each article, count how many other articles are within a radius defined by its distance to the nearest book.
-    D_scaled = D * radius_fraction
-    res = range_search_radii_(index_subcloud.index(), index_subcloud.embeddings(), D_scaled)
-    assert res.lims is not None and res.dists is not None and res.ids is not None
-    ball_counts = res.lims[1:] - res.lims[:-1]
-    LOGGER.info(f"Number of index works covered by each index work (ball):\n{get_stats(ball_counts)}")
-    dists_list = from_flat_with_lims(FlatWithLims(res.dists, res.lims))
-    ids_list = from_flat_with_lims(FlatWithLims(res.ids, res.lims))
-    covered_points = list(zip(dists_list, ids_list))
-    return GetBallCoverageResult(
-        index_works_per_query_work=index_works_per_query_work,
-        ball_counts=ball_counts,
-        covered_points=covered_points)
-
-@dataclass(frozen=True)
-class FaissSearchOutsideEpsilonResult:
-    D_outside: NDArray
-    I_outside: NDArray
-    lims_within: NDArray
-    dists_within: NDArray
-    ids_within: NDArray
-
-@MEMORY.cache
-def faiss_search_outside_epsilon(
-    index: Union[Cloud, SubCloud],
-    query: Union[Cloud, SubCloud],
-    is_intra_cloud_search: bool,
-    k: int,
-    epsilon: float,
-) -> FaissSearchOutsideEpsilonResult:
-    """
-    Find the k nearest neighbors of query that are not (strictly) within epsilon of the query.
-    """
-    query_embeddings = query.embeddings()
-    if epsilon == 0:
-        LOGGER.info("Epsilon is 0, using k-NN search instead of range search")
-        start_time = time.time()
-        
-        if is_intra_cloud_search:
-            # For intra-cloud, we need k+1 neighbors to discard the point itself.
-            num_to_find = k + 1
-            D_raw, I_raw = index.index().search(query_embeddings, num_to_find) # type: ignore
-            
-            # Check that the first neighbor is the point itself.
-            # TODO may need to allow for some tolerance.
-            if query.index().ntotal > 0:
-                dist_to_self = D_raw[:, 0]
-                max_dist_to_self = np.max(dist_to_self)
-                atol = 1e-5
-                if not np.isclose(max_dist_to_self, 0, atol=atol):
-                    LOGGER.warning(f"Max distance to self was not close to 0: {max_dist_to_self:.6f}")
-            
-            # Check that distances are non-decreasing.
-            assert np.all(np.diff(D_raw, axis=1) >= 0)
-
-            # The results "outside epsilon" are the columns from index 1 onwards.
-            D_outside = D_raw[:, 1:]
-            I_outside = I_raw[:, 1:]
-
-        else:
-            # For inter-cloud search, a standard k-NN search is correct.
-            D_outside, I_outside = index.index().search(query_embeddings, k) # type: ignore
-
-        LOGGER.info(f"k-NN search took {time.time() - start_time:.2f} seconds")
-        return FaissSearchOutsideEpsilonResult(
-            D_outside=D_outside,
-            I_outside=I_outside,
-            lims_within=np.zeros((len(query_embeddings) + 1,), dtype=np.uint64),
-            dists_within=np.empty((0,), dtype=np.float32),
-            ids_within=np.empty((0,), dtype=np.int64))
-
-    # Range search for all points strictly within epsilon
-    LOGGER.info(f"Range searching for all points strictly within epsilon")
-    start_time = time.time()
-    range_search_result = range_search_(index.index(), query.embeddings(), epsilon)
-    lims_within, dists_within, ids_within = range_search_result.lims, range_search_result.dists, range_search_result.ids
-    assert lims_within is not None
-    assert dists_within is not None
-    assert ids_within is not None
-    LOGGER.info(f"Range searching took {time.time() - start_time:.2f} seconds")
-    assert lims_within[0] == 0
-    num_within = lims_within[1:] - lims_within[:-1]
-    assert len(num_within) == len(query_embeddings)
-    assert np.all(num_within >= 0), f"Negative number of points within epsilon: {num_within}"
-
-    # Batch search all queries with the same number of points "j" within epsilon
-    D_outside = np.empty((len(query_embeddings), k), dtype=np.float32)
-    I_outside = np.empty((len(query_embeddings), k), dtype=np.int64)
-    for j in np.unique(num_within).tolist():
-        query_indices = num_within == j # Could pre-sort, but index.search is the bottleneck
-        D, I = index.index().search(query_embeddings[query_indices], j + k) # type: ignore
-        # Discard the first j points, which are within epsilon
-        D_outside[query_indices] = D[:, j:]
-        I_outside[query_indices] = I[:, j:]
-
-    return FaissSearchOutsideEpsilonResult(
-        D_outside=D_outside,
-        I_outside=I_outside,
-        lims_within=lims_within,
-        dists_within=dists_within,
-        ids_within=ids_within,
-    )
-
-@dataclass(frozen=True)
-class CrossCloudNNRanksResult:
-    ranks: NDArray
-    dists: Optional[NDArray]
-    ids: Optional[NDArray]
-
-    def __post_init__(self):
-        assert self.ranks.ndim == 1
-        if self.dists is not None:
-            assert self.dists.ndim == 1
-            assert len(self.dists) == len(self.ranks)
-        if self.ids is not None:
-            assert self.ids.ndim == 1
-            assert len(self.ids) == len(self.ranks)
-
-@TIMER.time()
-@MEMORY.cache
-def within_cloud_nn_ranks(
-        ambient_subcloud: SubCloud,
-        query_subcloud: SubCloud,
-        return_dists: bool = False,
-        return_ids: bool = False,
-        k: int = 1):
-    # Find nearest neighbor in query_subcloud for each query_subcloud point
-    nns = faiss_search_outside_epsilon(query_subcloud, query_subcloud, is_intra_cloud_search=True, k=k, epsilon=0)
-    D = nns.D_outside[:, -1]
-    I = nns.I_outside[:, -1]
-    
-    # Sanity check: calculate squared distance to each such nearest neighbor
-    query_embeddings = query_subcloud.embeddings()
-    num_query_points = query_subcloud.index().ntotal
-    if num_query_points > 0:
-        sq_dists = np.linalg.norm(query_embeddings[I] - query_embeddings, axis=1) ** 2
-        assert len(D) == len(I) == len(sq_dists) == num_query_points
-        assert np.allclose(D, sq_dists)
-    
-    balls = range_search_radii_(
-        ambient_subcloud.index(),
-        query_embeddings,
-        D,
-        return_lims=True,
-        return_dists=return_dists,
-        return_ids=return_ids
-    )
-    assert balls.lims is not None
-    ranks = balls.lims[1:] - balls.lims[:-1]
-    assert len(ranks) == num_query_points, f"Ranks length mismatch: {len(ranks)} != {num_query_points}"
-    assert np.all(ranks >= 0), f"Negative ranks found: {ranks[ranks < 0]}"
-    return CrossCloudNNRanksResult(
-        ranks=ranks,
-        dists=balls.dists,
-        ids=balls.ids
-    )
-
-
-@TIMER.time()
-@MEMORY.cache
-def cross_cloud_nn_ranks(
-        ambient_subcloud: SubCloud,
-        query_subcloud: SubCloud,
-        return_dists: bool = False,
-        return_ids: bool = False,
-        k: int = 1):
-    # Find nearest neighbor in index_subcloud for each query_subcloud point
-    nns = faiss_search_outside_epsilon(ambient_subcloud, query_subcloud, is_intra_cloud_search=False, k=k, epsilon=0)
-    D = nns.D_outside[:, -1]
-    I = nns.I_outside[:, -1]
-    # Calculate squared distance to each such nearest neighbor
-    if ambient_subcloud.index().ntotal > 0:
-        sq_dists = np.linalg.norm(ambient_subcloud.embeddings()[I] - query_subcloud.embeddings(), axis=1) ** 2
-        assert len(D) == len(I) == len(sq_dists) == query_subcloud.index().ntotal
-        assert np.allclose(D, sq_dists)
-    balls = range_search_radii_(
-        query_subcloud.index(),
-        query_subcloud.embeddings(),
-        D,
-        return_lims=True,
-        return_dists=return_dists,
-        return_ids=return_ids
-    )
-    assert balls.lims is not None
-    ranks = balls.lims[1:] - balls.lims[:-1]
-    assert len(ranks) == query_subcloud.index().ntotal, f"Ranks length mismatch: {len(ranks)} != {query_subcloud.index().ntotal}"
-    assert np.all(ranks >= 0), f"Negative ranks found: {ranks[ranks < 0]}"
-    return CrossCloudNNRanksResult(
-        ranks=ranks,
-        dists=balls.dists,
-        ids=balls.ids
-    )

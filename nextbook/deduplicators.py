@@ -17,7 +17,7 @@ class Deduplicator(ABC):
     """Abstract base class for deduplication strategies."""
     
     @abstractmethod
-    def deduplicate(self, undeduped_embeddings: NDArray, index_info: IndexInfo) -> NDArray[np.intp]:
+    def deduplicate(self, undeduped_embeddings: NDArray, index_info: IndexInfo) -> NDArray[np.uint64]:
         """
         Deduplicate embeddings and return indices of elements to retain.
         
@@ -91,9 +91,9 @@ class FractionalDeduplicator(Deduplicator):
             assert len(dist_to_nearest_older) == len(undeduped_embeddings) - 1, f"Expected {len(undeduped_embeddings) - 1} distances, got {len(dist_to_nearest_older)}"
 
             argsort = np.argsort(dist_to_nearest_older)
-            retained_indices = np.concatenate(([0], argsort[num_to_drop:] + 1))  # +1 because we dropped the first element
+            retained_indices = np.concatenate(([0], argsort[num_to_drop:] + 1), dtype=np.uint64)  # +1 because we dropped the first element
         else:
-            retained_indices = np.arange(len(undeduped_embeddings), dtype=np.intp)
+            retained_indices = np.arange(len(undeduped_embeddings), dtype=np.uint64)
 
         LOGGER.info(f"Retaining {len(retained_indices)} points out of {len(undeduped_embeddings)}")
         return retained_indices
@@ -116,7 +116,7 @@ class SqDistDeduplicator(Deduplicator):
 
         if len(undeduped_embeddings) <= 1:
             LOGGER.info(f"Only {len(undeduped_embeddings)} points, no deduplication needed")
-            return np.arange(len(undeduped_embeddings))
+            return np.arange(len(undeduped_embeddings), dtype=np.uint64)
 
         # Build index with all points
         index = index_info.index_type.build(undeduped_embeddings, index_info)
@@ -141,4 +141,4 @@ class SqDistDeduplicator(Deduplicator):
         retained_indices = np.where(points_to_keep)[0]
         LOGGER.info(f"Retaining {len(retained_indices)} points out of {len(undeduped_embeddings)}")
         
-        return retained_indices
+        return retained_indices.astype(np.uint64)

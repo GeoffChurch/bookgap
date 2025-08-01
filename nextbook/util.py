@@ -207,8 +207,7 @@ def setup_logging(log_name: str = "", log_level: str = "INFO", include_time: boo
 
     # Console handler
     console = logging.StreamHandler()
-    # console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter('%(levelname)-8s | %(funcName)-12s: %(message)s'))
+    console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)-8s | %(funcName)-12s: %(message)s'))
     LOGGER.addHandler(console)
 
     LOGGER.propagate = False  # Prevent log messages from being propagated to the root logger
