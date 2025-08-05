@@ -8,8 +8,14 @@ from scipy.linalg import eigh, svd, qr
 import scipy.sparse as sp
 from sklearn.decomposition import PCA
 from numpy.linalg import pinv, LinAlgError, lstsq
+from nextbook.rsdc import rnojd, manopt_rnojd
 from nextbook.util import TIMER, LOGGER
 from abc import ABC, abstractmethod
+
+# Import RNOJD from the submodule
+import sys
+from pathlib import Path
+
 
 def subset_range(n: int, subset_size: int, smallest: bool) -> tuple[int, int]:
     subset_size = min(subset_size, n)
@@ -22,8 +28,12 @@ def adj(A):
     return A.conj().T
 
 def scatter(M: NDArray) -> NDArray:
-    M = M - M.mean(axis=0, keepdims=True)
-    return M.T @ M
+    M_centered = M - M.mean(axis=0, keepdims=True)
+    n = M.shape[0]
+    if n <= 1:
+        # Avoid division by zero for single-sample case
+        return M_centered.T @ M_centered
+    return M_centered.T @ M_centered / (n - 1)
 
 def orthonormalize(P: NDArray) -> NDArray:
     Q: NDArray
@@ -42,6 +52,9 @@ def orthonormalize(P: NDArray) -> NDArray:
     
     return Q
 
+# def get_coordinate_transform(P: NDArray) -> NDArray:
+#     return P @ np.linalg.inv(P.T @ P)
+
 class DenoiserContext(abc.ABC):
     """
     Abstract interface for providing data to denoiser strategies.
@@ -57,13 +70,13 @@ class DenoiserContext(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def X1(self) -> NDArray:
-        """The embeddings for the first subset."""
+    def X_n(self, n: int) -> NDArray:
+        """The embeddings for the n-th subset (0-indexed)."""
         ...
 
     @abc.abstractmethod
-    def X2(self) -> NDArray:
-        """The embeddings for the second subset."""
+    def num_subsets(self) -> int:
+        """The number of subsets available."""
         ...
 
     def A_sym(self) -> sp.csr_matrix:
@@ -89,19 +102,44 @@ class DenoiserContext(abc.ABC):
         return adj(X_centered) @ self.L() @ X_centered
     
     def S_B(self) -> NDArray:
-        """The between-class scatter matrix for two subsets X1 and X2."""
-        X1 = self.X1()
-        X2 = self.X2()
-        
-        n1, n2 = len(X1), len(X2)
-        
-        if n1 == 0 or n2 == 0:
-            # Return zero matrix if one subset is empty
+        """The between-class scatter matrix for two subsets X1 and X2 (backward compatibility)."""
+        assert self.num_subsets() == 2, "S_B is only defined for exactly two subsets."
+        return self.S_B_multi([0, 1])
+    
+    def S_B_multi(self, subset_indices: list[int]) -> NDArray:
+        """The between-class scatter matrix for multiple subsets."""
+        if len(subset_indices) < 2:
             d = self.X().shape[1]
             return np.zeros((d, d))
-
-        mu_diff = X1.mean(axis=0) - X2.mean(axis=0)
-        return (n1 * n2 / (n1 + n2)) * np.outer(mu_diff, mu_diff)
+        
+        # Get all subset data and sizes
+        subsets = [self.X_n(i) for i in subset_indices]
+        sizes = [len(subset) for subset in subsets]
+        total_size = sum(sizes)
+        
+        if total_size == 0:
+            d = self.X().shape[1]
+            return np.zeros((d, d))
+        
+        # Compute weighted overall mean
+        overall_mean = np.zeros(self.X().shape[1])
+        for subset, size in zip(subsets, sizes):
+            if size > 0:
+                overall_mean += size * subset.mean(axis=0)
+        overall_mean /= total_size
+        
+        # Compute between-class scatter matrix
+        S_B = np.zeros((self.X().shape[1], self.X().shape[1]))
+        for subset, size in zip(subsets, sizes):
+            if size > 0:
+                mu_diff = subset.mean(axis=0) - overall_mean
+                S_B += size * np.outer(mu_diff, mu_diff)
+        
+        return S_B / total_size
+    
+    def S_subset(self, subset_index: int) -> NDArray:
+        """The scatter matrix for a specific subset."""
+        return scatter(self.X_n(subset_index))
 
 @dataclass(frozen=True)
 class SolveEighRobustlyResult:
@@ -116,7 +154,7 @@ class SolveEighRobustlyResult:
             raise ValueError(f"P_or_U must be 2D with second dimension matching eigvals, got {self.P_or_U.shape}.")
 
 @TIMER.time(formatters=dict(a_matrix=lambda a: f"<shape={a.shape}>", b_matrix=lambda b: f"<shape={b.shape}>" if b is not None else "None"))
-def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: tuple[int, int]) -> SolveEighRobustlyResult:
+def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: Optional[tuple[int, int]] = None) -> SolveEighRobustlyResult:
     """Solves eigh, retrying with regularization upon failure."""
     try:
         eigvals, P_or_U = eigh(a=a_matrix, b=b_matrix, subset_by_index=subset)
@@ -133,7 +171,6 @@ def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: tu
     
     # If this was a generalized eigenvalue problem, orthogonalize the result
     if b_matrix is not None:
-        expected_rank = subset[1] - subset[0] + 1
         LOGGER.info(f"Orthogonalizing generalized eigenvectors from shape {P_or_U.shape}")
         P_or_U = orthonormalize(P_or_U)
         LOGGER.info(f"Orthogonalized projector shape: {P_or_U.shape}")
@@ -328,8 +365,8 @@ class TwoSubsetScatterDenoiser(ABC):
         ...
 
     def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        X1 = context.X1()
-        X2 = context.X2()
+        X1 = context.X_n(0)
+        X2 = context.X_n(1)
         X = context.X()
         if X is None:
             X_combined = np.vstack([X1, X2])
@@ -551,3 +588,188 @@ class CCLIPDenoiser:
         P = P[:, ::-1]  # Ensure the projector is in descending order of eigenvalues
         eigvals = eigvals[::-1]  # Reverse to match projector order
         return P, eigvals
+
+class AntiCSPDenoiser:
+    """
+    Finds the least discriminative directions between two classes by finding
+    eigenvectors of the generalized system S1*v = λ*(S1+S2)*v where λ is
+    closest to 0.5.
+    """
+    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        S1 = scatter(context.X_n(0))
+        S2 = scatter(context.X_n(1))
+        
+        # 1. Use the robust solver to get the full set of orthogonal eigenvectors.
+        result = _solve_eigh_robustly(a_matrix=S1, b_matrix=(S1 + S2), subset=None)
+        P_full = result.P_or_U
+        eigvals_full = result.eigvals
+
+        # The eigenvalues λ are between 0 and 1. We want the ones closest to 0.5,
+        # as this indicates that v.T*S1*v ≈ v.T*S2*v.
+        scores = np.abs(eigvals_full - 0.5)
+        
+        # 2. Sort by score in ascending order to find components where λ is closest to 0.5
+        order = np.argsort(scores)
+        best_indices = order[:n_components]
+        
+        # 3. Select the best columns from the already-orthogonal projector.
+        P_final = P_full[:, best_indices]
+        
+        # Return the corresponding variance ratios as the quality score for context.
+        eigvals_final = eigvals_full[best_indices]
+        eigvals_ratio = eigvals_final / (1 - eigvals_final + 1e-9)
+
+        return P_final, eigvals_ratio
+
+class JADDenoiser:
+    """
+    Joint Approximate Diagonalization (JAD) Denoiser.
+    
+    Uses joint approximate diagonalization of scatter matrices:
+    - S_T: Total scatter matrix
+    - S_L: Laplacian scatter matrix  
+    - S_subset_i: Scatter matrix of each subset
+    
+    Based on the RNOJD algorithm from:
+    He, H., & Kressner, D. (2024). A randomized algorithm for simultaneously 
+    diagonalizing symmetric matrices by congruence. arXiv preprint arXiv:2402.16557.
+    
+    Uses Manopt+RNOJD for superior convergence performance.
+    """
+    
+    def __init__(self, trials: int = 30, use_positive_definite: bool = False, 
+                 wt: float = 1.0, wl: float = 1.0, w_conflate: float = 1.0):
+        """
+        Initialize the JAD denoiser.
+        
+        Args:
+            trials: Number of random trials for the RNOJD algorithm
+            use_positive_definite: If True, use the positive definite formulation
+            wt: Weight for total scatter matrix S_T
+            wl: Weight for Laplacian scatter matrix S_L
+            w_conflate: Weight for the class-conflation objective (1 - normalized_entropy of subset variances)
+        """
+        self.trials = trials
+        self.use_positive_definite = use_positive_definite
+        self.wt = wt
+        self.wl = wl
+        self.w_conflate = w_conflate
+    
+    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        """
+        Compute the JAD projection using RNOJD.
+        
+        Args:
+            context: The denoiser context providing access to data
+            n_components: Number of components to keep
+            
+        Returns:
+            Tuple of (projection_matrix, quality_scores)
+        """
+        X = context.X()
+        N, d = X.shape
+        num_subsets = context.num_subsets()
+        
+        # Get the scatter matrices
+        S_T = context.S_T()
+        S_L = context.S_L()
+        
+        # Get all subset scatter matrices
+        subset_scatter_matrices = []
+        for i in range(num_subsets):
+            subset_scatter_matrices.append(context.S_subset(i))
+        
+        # Apply weights and stack the matrices for joint diagonalization.
+        matrices_list = [
+            self.wt * S_T,
+            self.wl * S_L
+        ]
+        
+        # Add weighted subset matrices
+        for i, S_subset in enumerate(subset_scatter_matrices):
+            matrices_list.append(self.w_conflate * S_subset)
+        
+        matrices = np.stack(matrices_list, axis=0)
+        
+        LOGGER.info(f"JAD: Joint diagonalization of {matrices.shape[0]} weighted scatter matrices of size {d}x{d}")
+        LOGGER.info(f"JAD: {num_subsets} subsets, weights - wt={self.wt}, wl={self.wl}, w_conflate={self.w_conflate}")
+        LOGGER.info(f"JAD: trials={self.trials}, use_positive_definite={self.use_positive_definite}")
+        
+        # Apply the chosen SDC solver
+        try:
+            # Use Manopt+RNOJD for superior optimization performance
+            result = manopt_rnojd(matrices, trials=self.trials, max_iter=50, trivial_init=False, pd=self.use_positive_definite)
+            X_transform = result[0] if isinstance(result, tuple) else result
+            LOGGER.info(f"JAD: Solver returned transformation matrix with shape {X_transform.shape}")
+            
+            if X_transform is None:
+                raise ValueError("SDC algorithm returned None")
+                
+        except Exception as e:
+            LOGGER.error(f"JAD/SDC solver failed: {e}")
+            raise RuntimeError(f"JAD denoiser failed with SDC solver error: {e}") from e
+        
+        # Score the full basis before truncating
+        P_full_basis = X_transform
+        all_scores = []
+        
+        # Iterate over ALL basis vectors returned by the solver
+        for i in range(P_full_basis.shape[1]):
+            p_i = P_full_basis[:, i:i+1]
+            
+            # Get the unweighted quadratic forms (variances along the basis vector)
+            t = float(p_i.T @ S_T @ p_i)
+            l = float(p_i.T @ S_L @ p_i)
+            
+            # Get subset variances
+            subset_variances = []
+            for S_subset in subset_scatter_matrices:
+                s = float(p_i.T @ S_subset @ p_i)
+                subset_variances.append(s)
+            
+            # # Add a small epsilon for numerical stability to prevent log(0)
+            epsilon = 1e-9
+            if t <= 0 or l <= 0 or any(s <= 0 for s in subset_variances):
+                LOGGER.warning(f"JAD: Non-positive variance encountered for basis vector {i}: t={t}, l={l}, subset_variances={subset_variances}. Adjusting with epsilon.")
+                t = max(t, epsilon)
+                l = max(l, epsilon)
+                subset_variances = [max(s, epsilon) for s in subset_variances]
+            
+            # Compute conflation measure for multiple subsets
+            if len(subset_variances) > 1:
+                # Normalized entropy conflation penalty (most statistically sound)
+                # Based on analysis: ranges from 0.0000 (perfect) to ~0.43 (extreme outlier)
+                subset_vars_normalized = np.array(subset_variances) / np.sum(subset_variances)
+                # Compute entropy, skipping zero probabilities naturally
+                entropy = -sum(p * np.log(p) for p in subset_vars_normalized if p > 0)
+                max_entropy = np.log(len(subset_variances))
+                normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
+                # Conflation penalty: 0=perfect conflation, 1=worst conflation
+                conflation_measure = 1.0 - normalized_entropy
+            else:
+                # Single subset: conflation is irrelevant, use neutral value
+                conflation_measure = 1.0
+
+            # The final score is a weighted multiplicative objective.
+            score = (t ** self.wt) / ((l ** self.wl) * (conflation_measure ** self.w_conflate))
+                     
+            all_scores.append(score)
+        
+        all_scores = np.array(all_scores)
+        
+        # Sort by the final, weighted score to find the best components
+        sort_indices = np.argsort(all_scores)[::-1]
+        
+        # Truncate to the desired number of components
+        n_components = min(n_components, len(sort_indices))
+        best_indices = sort_indices[:n_components]
+        
+        # The final projector is built from the highest-scoring columns
+        P_final = P_full_basis[:, best_indices]
+        scores_final = all_scores[best_indices]
+
+        P_final_orthonormalized = orthonormalize(P_final)
+        
+        LOGGER.info(f"JAD: Final projection shape {P_final.shape}, quality scores: {scores_final}")
+        
+        return P_final_orthonormalized, scores_final

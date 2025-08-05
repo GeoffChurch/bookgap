@@ -24,7 +24,19 @@ from nextbook.util import TIMER, Filter, WorkType, LOGGER, MEMORY, FilterPair, S
 from nextbook.deduplicators import Deduplicator
 from nextbook.index import HNSW, IndexType
 
-ALLOWED_DENOISERS = ['NONE', 'PCA', 'CCLIP_01', 'CCLIP_1', 'CCLIP', 'CCP', 'LIP', 'LPP', 'ANTI_LDA']
+# Define allowed denoisers using actual enum members for better static checking
+ALLOWED_WORK_DENOISERS = [
+    WorkDenoisers.PCA,
+    WorkDenoisers.LPP,
+    WorkDenoisers.ANTI_CSP,
+    WorkDenoisers.JAD_EQUAL,
+    WorkDenoisers.JAD_HALF_L,
+    WorkDenoisers.JAD_CCP,
+    WorkDenoisers.JAD_LIP,
+]
+
+# Helper to include 'NONE' as a special case (since it's not a WorkDenoiser enum member)
+ALLOWED_DENOISER_NAMES = ['NONE'] + [wd.name for wd in ALLOWED_WORK_DENOISERS]
 
 FONT_SIZE = 7
 DPI = 300
@@ -33,11 +45,19 @@ def get_denoiser_display_name(denoiser: str) -> str:
     """Map denoiser names to display-friendly names with LaTeX math notation."""
     display_names = {
         'LIP': r'LIP = CCLIP($\alpha=1$)',
-        'CCLIP': r'CCLIP($\alpha=0.5$)',
+        # 'CCLIP': r'CCLIP($\alpha=0.5$)',
         'CCLIP_1': r'CCLIP($\alpha=0.1$)',
         'CCLIP_01': r'CCLIP($\alpha=0.01$)',
         'CCP': r'CCP = CCLIP($\alpha=0$)',
         'ANTI_LDA': 'Anti-LDA',
+        # 'JAD': 'JAD (Balanced)',
+        # 'JAD_BOOK_EMPHASIS': 'JAD (Book Emphasis)',
+        # 'JAD_SQRT_BALANCE': 'JAD (√-Balance)',
+        # 'JAD_CONSERVATIVE': 'JAD (Conservative)',
+        'JAD_1_4': 'JAD (1:4 Book:Article)',
+        'JAD_EQUAL': 'JAD (Equal Emphasis)',
+        'JAD_PRIO_T': 'JAD (Total Scatter)',
+        # 'RNOJD': 'RNOJD',
         'NONE': 'No Denoising'
     }
     return display_names.get(denoiser, denoiser)
@@ -1047,7 +1067,7 @@ def do_plots(artifacts_dir: Path):
 
     df['total_works'] = df['num_books'] + df['num_articles']
 
-    df = df[df['denoiser'].isin(ALLOWED_DENOISERS)]
+    df = df[df['denoiser'].isin(ALLOWED_DENOISER_NAMES)]
 
     df['kball_lift'] = df['kball_size'] * df['num_books'] / df['num_articles']
     df['kball_log_lift'] = np.log2(df['kball_lift'])
@@ -1089,6 +1109,7 @@ def do_plots(artifacts_dir: Path):
         plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='avgref_mean_rank', color_col=color_col, show_labels=False, log_y=True, weights='num_books_with_avgref')
         plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='avgref_mean_rank_lift', color_col=color_col, show_labels=False, log_y=True, weights='num_books_with_avgref')
         plot_col_by_denoiser_pyplot(df, artifacts_dir, y_col='avgref_mean_rank_log_lift', color_col=color_col, show_labels=False, log_y=False, weights='num_books_with_avgref')
+
 @MEMORY.cache
 def get_sorted_topics_by_work_count(cloud: Cloud, subfield: str):
     subfields = pyalex.Subfields()
@@ -1250,7 +1271,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
             **vars(analysis)
         }
         Results.write_row(result_row)
-        if (i+1) % 10 == 0 or i == len(topics) - 1:
+        if (i+1) % 20 == 0 or i == len(topics) - 1:
             do_plots(ARTIFACTS_DIR)
 # python -c "from nextbook.analyze_book_article_gap import many_main; many_main()"
 def many_main():
@@ -1263,9 +1284,8 @@ def many_main():
         raise ValueError("many_main should not be called with a specific drop_k. Use the main function instead.")
     
     work_denoisers = [denoiser.name for denoiser in WorkDenoisers]
-    allowed_denoisers = [denoiser for denoiser in ALLOWED_DENOISERS if denoiser != "NONE"]
-    assert set(allowed_denoisers).issubset(set(work_denoisers)), f"Allowed denoisers {allowed_denoisers} must be a subset of WorkDenoisers {work_denoisers}"
-    LOGGER.info(f"All denoisers: {ALLOWED_DENOISERS}")
+    allowed_denoisers = [wd.name for wd in ALLOWED_WORK_DENOISERS]
+    LOGGER.info(f"All denoisers: {ALLOWED_DENOISER_NAMES}")
     drop_ks = [1, 2, 3, 4, 5, 6, 7, 8]
     LOGGER.info(f"All drop_k values: {drop_ks}")
     
@@ -1275,7 +1295,7 @@ def many_main():
 
     do_plots(ARTIFACTS_DIR)
 
-    if "NONE" in ALLOWED_DENOISERS:
+    if "NONE" in ALLOWED_DENOISER_NAMES:
         # Run with denoiser=None first
         LOGGER.info("Running analysis with denoiser=None (baseline)")
         main(**args, denoiser="NONE", drop_k=0)

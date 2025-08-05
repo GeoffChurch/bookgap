@@ -121,14 +121,12 @@ def get_cloud_embeddings(cloud: Cloud) -> NDArray:
     return get_denoised_embeddings(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
 
 class CloudDenoiserContext(denoisers.DenoiserContext):
-    def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, filter1: Filter, filter2: Filter):
+    def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, *filters: Filter):
         self.works = works
-        self.filter1 = filter1
-        self.filter2 = filter2
+        self.filters = list(filters)
         self._A: Optional[sp.csr_matrix] = None
         self._X: NDArray = embeddings
-        self._X1: Optional[NDArray] = None
-        self._X2: Optional[NDArray] = None
+        self._X_subsets: List[Optional[NDArray]] = [None] * len(self.filters)
 
     def A(self) -> sp.csr_matrix:
         if self._A is None:
@@ -138,29 +136,34 @@ class CloudDenoiserContext(denoisers.DenoiserContext):
     def X(self) -> NDArray:
         return self._X
     
-    def X1(self) -> NDArray:
-        if self._X1 is None:
-            self._X1 = self._X[self._get_mask(self.filter1)]
-        return self._X1
+    def X_n(self, n: int) -> NDArray:
+        """Get embeddings for the n-th subset (0-indexed)."""
+        if n >= len(self.filters):
+            raise IndexError(f"Subset {n} requested, but only {len(self.filters)} subsets available")
+        
+        if self._X_subsets[n] is None:
+            self._X_subsets[n] = self._X[self._get_mask(self.filters[n])]
+        
+        result = self._X_subsets[n]
+        assert result is not None, f"Subset {n} should not be None after initialization"
+        return result
     
-    def X2(self) -> NDArray:
-        if self._X2 is None:
-            self._X2 = self._X[self._get_mask(self.filter2)]
-        return self._X2
+    def num_subsets(self) -> int:
+        """Return the number of subsets available."""
+        return len(self.filters)
     
     def _get_mask(self, filter: Filter) -> NDArray:
         """Get a boolean mask for works that match the filter."""
         return np.array([filter.check_work(work) for work in self.works], dtype=bool)
     
 class WorkDenoiser(ABC):
-    def __init__(self, denoiser_impl, filter1: Optional[Filter] = None, filter2: Optional[Filter] = None):
+    def __init__(self, denoiser_impl, *filters: Filter):
         self.denoiser_impl = denoiser_impl
-        self.filter1 = filter1 or Filter()
-        self.filter2 = filter2 or Filter()
+        self.filters = filters
 
     def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> NDArray:
         # 1. Instantiate the context object.
-        context = CloudDenoiserContext(works, embeddings, self.filter1, self.filter2)
+        context = CloudDenoiserContext(works, embeddings, *self.filters)
 
         # 2. Pass it to the denoiser strategy.
         P, _eigvals = self.denoiser_impl.projector(context, n_components)
@@ -184,6 +187,8 @@ class WorkDenoisers(enum.Enum):
     # W_LPP = WorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()))
     # W_NEIGHBOR_DIST_MIN = WorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()))
     
+    ANTI_CSP = WorkDenoiser(denoisers.AntiCSPDenoiser())
+
     # Work-aware denoisers
     ANTI_LDA = WorkDenoiser(
         denoisers.AntiLDADenoiser(),
@@ -201,6 +206,15 @@ class WorkDenoisers(enum.Enum):
     CCLIP_01 = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
     CCP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
     LIP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    
+    # Joint Approximate Diagonalization denoisers
+    # JAD_1_4 = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.25, wsubset2=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))  # Optimal 1:4 book:article ratio
+    # JAD_EQUAL = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, wsubset1=1.0, wsubset2=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))  # Pre-sample-covariance optimal
+    # JAD_PRIO_T = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.5, wsubset2=0.5), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))  # Equal emphasis
+    JAD_EQUAL = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    JAD_HALF_L = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    JAD_CCP = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    JAD_LIP = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
 
     def __str__(self):
         return self.name
@@ -604,7 +618,7 @@ def embed_works(work_filter: Filter):
                 
     # Yield new works and embeddings with their own progress bar
     new_works_count = n_works - seen
-    with tqdm.tqdm(total=new_works_count, desc="Generating new embeddings", disable=False) as new_pbar:
+    with tqdm.tqdm(total=new_works_count, desc="Generating new embeddings", mininterval=1, delay=1) as new_pbar:
         model = None # Lazy load the model in case `works` is already exhausted
         start_time = time.time()
         batch_size = 512

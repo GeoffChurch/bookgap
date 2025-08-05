@@ -4,7 +4,7 @@
 /nextbook.egg-info
 /cache
 /logs
-/nextbook/__pycache__
+__pycache__/
 
 # Keep all but plots
 # !/artifacts/*/*

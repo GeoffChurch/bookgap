@@ -11,10 +11,16 @@ dependencies = [
     "bitsandbytes",
     "faiss-cpu",
     "matplotlib",
+    "openai",
     "plotly",
     "pyalex",
     "sentence-transformers",
     "transformers",
+    # For rnojd
+    "cdopt",
+    "coroica",
+    "pymanopt",
+    "pyriemann",
 ]
 
 [tool.setuptools]
