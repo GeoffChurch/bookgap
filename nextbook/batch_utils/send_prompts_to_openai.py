@@ -21,15 +21,13 @@ import numpy as np
 import openai
 from openai import OpenAI
 from . import batch_operations
+from .batch_operations import get_client
 
 # Configuration
 ARTIFACTS_DIR = Path("artifacts")
 GAPS_DIR = ARTIFACTS_DIR / "gaps"
 BATCH_DIR = ARTIFACTS_DIR / "batch_results"
 BATCH_DIR.mkdir(parents=True, exist_ok=True)
-
-# OpenAI client
-client = OpenAI()  # Requires OPENAI_API_KEY environment variable
 
 def find_prompt_files() -> List[Path]:
     """Find all _prompt.txt files in the gaps directory."""
@@ -50,42 +48,47 @@ def create_batch_requests(prompt_files: List[Path]) -> List[Dict[str, Any]]:
     requests = []
     
     GAP_IDX_PAT = re.compile(r'gap_(\d+)')
+    TOPIC_ID_PAT = re.compile(r'(.+)_id=([^_]+)_prompt\.txt$')
+    
     for i, prompt_file in enumerate(prompt_files):
         # Extract identifying information from the file path
         relative_path = prompt_file.relative_to(GAPS_DIR)
-        gap_config = relative_path.parts[0]  # e.g., "NONE_k=0_radiusfrac=0.75"
         
-        # Handle new 3-level directory structure: config/gap_X/topic_gap_X_prompt.txt
-        if len(relative_path.parts) >= 3:
-            gap_dir = relative_path.parts[1]     # e.g., "gap_0"
-            filename = relative_path.parts[2]    # e.g., "AI and Multimedia in Education_gap_0_prompt.txt"
+        # Expected structure: config/gap_X/prompts/topic_name_id=topic_id_prompt.txt
+        if len(relative_path.parts) != 4:
+            print(f"Warning: Unexpected path structure: {relative_path}")
+            continue
             
-            # Extract gap index from directory name (gap_X)
-            # assert gap_dir.startswith("gap_")
-            # gap_idx = gap_dir[4:]  # Remove "gap_" prefix
-            match = GAP_IDX_PAT.match(gap_dir)
-            assert match
-            gap_idx = match.group(1)
-                
-        else:
-            # Fallback for old 2-level structure
-            filename = relative_path.parts[1] if len(relative_path.parts) > 1 else relative_path.name
-            gap_idx = None
+        gap_config = relative_path.parts[0]    # e.g., "NONE_k=0_radiusfrac=0.75"
+        gap_dir = relative_path.parts[1]       # e.g., "gap_0"
+        prompts_subdir = relative_path.parts[2]  # should be "prompts"
+        filename = relative_path.parts[3]      # e.g., "AI and Multimedia in Education_id=T13567_prompt.txt"
         
-        # Extract topic name from filename
-        # Format: "Topic_Name_gap_X_prompt.txt"
-        base_name = filename.replace("_prompt.txt", "")
-        parts = base_name.split("_gap_")
-        topic_name = parts[0] if len(parts) > 1 else base_name
+        # Validate structure
+        if prompts_subdir != "prompts":
+            print(f"Warning: Expected 'prompts' subdirectory, got '{prompts_subdir}' in {relative_path}")
+            continue
         
-        # Use gap_idx from directory name if available, otherwise from filename
-        if len(relative_path.parts) < 3 and len(parts) > 1:
-            gap_idx = parts[1]
+        # Extract gap index from directory name (gap_X)
+        match = GAP_IDX_PAT.match(gap_dir)
+        if not match:
+            print(f"Warning: Could not extract gap index from directory name: {gap_dir}")
+            continue
+        gap_idx = match.group(1)
+        
+        # Extract topic name and ID from filename
+        # Format: "Topic_Name_id=TopicID_prompt.txt"
+        topic_match = TOPIC_ID_PAT.match(filename)
+        if not topic_match:
+            print(f"Warning: Could not extract topic name and ID from filename: {filename}")
+            continue
+        topic_name = topic_match.group(1)
+        topic_id = topic_match.group(2)
         
         prompt_content = read_prompt_content(prompt_file)
         
         request = {
-            "custom_id": f"{gap_config}___{topic_name}___gap_{gap_idx}",
+            "custom_id": f"{gap_config}___{topic_name}___id={topic_id}___gap_{gap_idx}",
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {
@@ -122,7 +125,7 @@ def upload_batch_file(batch_file: Path) -> str:
     print(f"Uploading batch file to OpenAI...")
     
     with open(batch_file, 'rb') as f:
-        file_response = client.files.create(
+        file_response = get_client().files.create(
             file=f,
             purpose="batch"
         )
@@ -135,7 +138,7 @@ def create_batch_job(file_id: str) -> str:
     """Create a batch job and return the batch ID."""
     print("Creating batch job...")
     
-    batch_response = client.batches.create(
+    batch_response = get_client().batches.create(
         input_file_id=file_id,
         endpoint="/v1/chat/completions",
         completion_window="24h",  # Complete within 24 hours

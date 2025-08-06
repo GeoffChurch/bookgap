@@ -19,8 +19,15 @@ ARTIFACTS_DIR = Path("artifacts")
 BATCH_DIR = ARTIFACTS_DIR / "batch_results"
 BATCH_DIR.mkdir(parents=True, exist_ok=True)
 
-# OpenAI client
-client = OpenAI()
+# OpenAI client singleton
+_client = None
+
+def get_client() -> OpenAI:
+    """Get or create the OpenAI client singleton."""
+    global _client
+    if _client is None:
+        _client = OpenAI()  # Requires OPENAI_API_KEY environment variable
+    return _client
 
 def monitor_batch_job(batch_id: str, poll_interval: int = 30) -> Optional[Any]:
     """
@@ -37,7 +44,7 @@ def monitor_batch_job(batch_id: str, poll_interval: int = 30) -> Optional[Any]:
     
     while True:
         try:
-            batch_status = client.batches.retrieve(batch_id)
+            batch_status = get_client().batches.retrieve(batch_id)
             status = batch_status.status
             
             print(f"Batch status: {status}")
@@ -88,7 +95,7 @@ def download_batch_results(batch_status: Any) -> Path:
     
     try:
         # Download the results file
-        file_response = client.files.content(output_file_id)
+        file_response = get_client().files.content(output_file_id)
         
         # Save the results
         results_file = BATCH_DIR / f"results_{batch_status.id}.jsonl"
@@ -101,6 +108,68 @@ def download_batch_results(batch_status: Any) -> Path:
     except Exception as e:
         print(f"Error downloading results: {e}")
         raise
+
+def clean_json_content(content: str) -> str:
+    """
+    Clean JSON content by removing leading and trailing code block markers.
+    
+    Args:
+        content: Raw content from OpenAI response
+        
+    Returns:
+        Cleaned JSON content with leading/trailing code block markers removed
+    """
+    content = content.strip()
+    
+    # Remove various code block markers
+    if content.startswith("```json"):
+        content = content[len("```json"):].strip()
+    elif content.startswith("```"):
+        content = content[len("```"):].strip()
+
+    if content.endswith("```"):
+        content = content[:-len("```")].strip()
+    
+    return content.strip()
+
+def json_to_latex(json_data: dict) -> str:
+    """
+    Convert JSON proposal data to LaTeX format.
+    
+    Args:
+        json_data: Dictionary containing title, abstract, and chapters
+        
+    Returns:
+        LaTeX formatted string
+    """
+    latex_content = []
+    
+    # Title using custom command
+    title = json_data.get('title', 'Untitled Textbook')
+    latex_content.append(f"\\proposalTitle{{{title}}}")
+    
+    # Abstract using custom command
+    abstract = json_data.get('abstract', 'No abstract provided.')
+    latex_content.append(f"\\proposalAbstract{{{abstract}}}")
+    
+    # Chapters using the simpler approach with manual formatting
+    chapters = json_data.get('chapters', [])
+    if chapters:
+        # Build the chapter items manually
+        chapter_items = []
+        for chapter in chapters:
+            chapter_title = chapter.get('chapter_title', 'Untitled Chapter')
+            chapter_desc = chapter.get('chapter_description', 'No description provided.')
+            chapter_items.append(f"\\chapterItem{{{chapter_title}}}{{{chapter_desc}}}")
+        
+        # Create the command call with formatted items
+        chapters_content = '\n        '.join(chapter_items)
+        latex_content.append(f"\\proposalChapters{{\n        {chapters_content}\n    }}")
+    else:
+        # Handle case with no chapters
+        latex_content.append("\\proposalChapters{}")
+    
+    return '\n\n'.join(latex_content) + '\n'
 
 def clean_latex_content(content: str) -> str:
     """
@@ -162,13 +231,21 @@ def create_all_tex_files(output_dir: Path) -> int:
             with open(all_tex_path, 'w', encoding='utf-8') as f:
                 # Include each proposal on a separate page
                 for i, tex_file in enumerate(tex_files):
-                    # Extract topic name from filename (remove _gap_X_proposal.tex suffix)
+                    # Extract topic name from filename 
+                    # New format: "Topic_Name_id=TopicID_gap_X_proposal.tex"
                     topic_name = tex_file.stem
                     if topic_name.endswith('_proposal'):
-                        # Remove _gap_X_proposal suffix
-                        parts = topic_name.split('_gap_')
-                        if len(parts) > 1:
-                            topic_name = parts[0]
+                        # Remove _proposal suffix first
+                        topic_name = topic_name[:-len("_proposal")]
+                        
+                        # Now extract just the topic name (everything before _id=)
+                        if '_id=' in topic_name:
+                            topic_name = topic_name.split('_id=')[0]
+                        else:
+                            # Fallback: try to remove _gap_X suffix for old format
+                            parts = topic_name.split('_gap_')
+                            if len(parts) > 1:
+                                topic_name = parts[0]
                     
                     f.write(f"\\section{{{topic_name.replace('_', ' ')}}}\n")
                     f.write(f"\\input{{{tex_file.name[:-4]}}}\n")  # Local reference, no path
@@ -184,13 +261,21 @@ def create_all_tex_files(output_dir: Path) -> int:
             with open(all_with_path, 'w', encoding='utf-8') as f:
                 # Include each proposal on a separate page with relative paths
                 for i, tex_file in enumerate(tex_files):
-                    # Extract topic name from filename (remove _gap_X_proposal.tex suffix)
+                    # Extract topic name from filename 
+                    # New format: "Topic_Name_id=TopicID_gap_X_proposal.tex"
                     topic_name = tex_file.stem
                     if topic_name.endswith('_proposal'):
-                        # Remove _gap_X_proposal suffix
-                        parts = topic_name.split('_gap_')
-                        if len(parts) > 1:
-                            topic_name = parts[0]
+                        # Remove _proposal suffix first
+                        topic_name = topic_name[:-len("_proposal")]
+                        
+                        # Now extract just the topic name (everything before _id=)
+                        if '_id=' in topic_name:
+                            topic_name = topic_name.split('_id=')[0]
+                        else:
+                            # Fallback: try to remove _gap_X suffix for old format
+                            parts = topic_name.split('_gap_')
+                            if len(parts) > 1:
+                                topic_name = parts[0]
                     
                     f.write(f"\\section{{{topic_name.replace('_', ' ')}}}\n")
                     f.write(f"\\input{{{gap_dir.name}/{tex_file.name[:-4]}}}\n")  # Include gap_X/ prefix
@@ -276,16 +361,38 @@ def extract_textbook_proposals(results_file: Path, output_dir: Optional[Path] = 
                 # Successful response
                 raw_message = result['response']['body']['choices'][0]['message']['content']
                 
-                # Clean the LaTeX content
-                cleaned_message = clean_latex_content(raw_message)
+                # Clean the JSON content
+                cleaned_json = clean_json_content(raw_message)
+                try:
+                    
+                    # Parse JSON
+                    json_data = json.loads(cleaned_json)
+                    
+                    # Convert JSON to LaTeX
+                    latex_content = json_to_latex(json_data)
+                    
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    print(f"Warning: Failed to parse JSON for {custom_id}: {e}")
+                    print(f"Raw content: {raw_message[:200]}...")
+                    # Fallback: write the JSON as a listing in latex
+                    latex_content = f"\\textbf{{Error parsing JSON for {custom_id}}}\n\n"
+                    latex_content += f"\\texttt{{{cleaned_json}}}\n"
                 
                 # Parse custom_id to get file structure
-                # Format: "gap_config___topic_name___gap_X"
+                # Format: "gap_config___topic_name___id=topic_id___gap_X"
                 parts = custom_id.split("___")
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     gap_config = parts[0]
                     topic_name = parts[1]
-                    gap_info = parts[2]  # "gap_X"
+                    topic_id_part = parts[2]  # "id=topic_id"
+                    gap_info = parts[3]  # "gap_X"
+                    
+                    # Extract topic_id from topic_id_part
+                    if topic_id_part.startswith("id="):
+                        topic_id = topic_id_part[3:]  # Remove "id=" prefix
+                    else:
+                        print(f"Warning: Expected 'id=' prefix in custom_id: {custom_id}")
+                        topic_id = "unknown"
                     
                     # Create directory structure
                     config_dir = output_dir / gap_config
@@ -295,14 +402,14 @@ def extract_textbook_proposals(results_file: Path, output_dir: Optional[Path] = 
                         gap_dir = config_dir / gap_info
                         gap_dir.mkdir(parents=True, exist_ok=True)
                         # Save the proposal in the gap subdirectory
-                        proposal_file = gap_dir / f"{topic_name}_{gap_info}_proposal.tex"
+                        proposal_file = gap_dir / f"{topic_name}_id={topic_id}_{gap_info}_proposal.tex"
                     else:
                         # Save directly in config directory
                         config_dir.mkdir(exist_ok=True)
-                        proposal_file = config_dir / f"{topic_name}_{gap_info}_proposal.tex"
+                        proposal_file = config_dir / f"{topic_name}_id={topic_id}_{gap_info}_proposal.tex"
                     
                     with open(proposal_file, 'w', encoding='utf-8') as pf:
-                        pf.write(cleaned_message)
+                        pf.write(latex_content)
                     
                     successful_count += 1
                     print(f"Saved proposal: {proposal_file}")
@@ -348,7 +455,7 @@ def list_batch_jobs(limit: int = 20) -> None:
     print("Listing all batch jobs...")
     
     try:
-        batches = client.batches.list(limit=limit)
+        batches = get_client().batches.list(limit=limit)
         
         if not batches.data:
             print("No batch jobs found.")
@@ -384,7 +491,7 @@ def get_batch_status(batch_id: str) -> Optional[Any]:
         The batch status object, or None if retrieval failed
     """
     try:
-        batch = client.batches.retrieve(batch_id)
+        batch = get_client().batches.retrieve(batch_id)
         print(f"\nBatch ID: {batch.id}")
         print(f"Status: {batch.status}")
         print(f"Created: {batch.created_at}")

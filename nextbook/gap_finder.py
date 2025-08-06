@@ -2,6 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
+import json
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
@@ -483,22 +484,29 @@ def write_llm_prompt(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, den
                 f.write(f"\t*Abstract*: {book.get('abstract', 'N/A')}\n\n")
         
         f.write("## Required Output Format\n\n")
-        f.write("Format your response as a complete LaTeX subsection using EXACTLY the following structure. ")
-        f.write("Do not add any text before or after this LaTeX code:\n\n")
-        f.write("```\n")
-        f.write("\\subsection{[Proposed Title]}\n\n")
-        f.write("\\textbf{Abstract:} [Abstract]\n\n")
-        f.write("\\textbf{Table of Contents:}\n")
-        f.write("\\begin{enumerate}\n")
-        f.write("    \\item [Chapter Name] - [Description of concepts covered (1-2 sentences)]\n")
-        f.write("    \\item [Chapter Name] - [Description of concepts covered (1-2 sentences)]\n")
-        f.write("    % ...\n")
-        f.write("\\end{enumerate}\n\n")
+        f.write("Format your response as valid JSON with EXACTLY the following structure. ")
+        f.write("Do not add any text before or after this JSON:\n\n")
+        f.write("```json\n")
+        f.write("{\n")
+        f.write('  "title": "[Proposed Title]",\n')
+        f.write('  "abstract": "[Abstract]",\n')
+        f.write('  "chapters": [\n')
+        f.write('    {\n')
+        f.write('      "chapter_title": "[Chapter Name]",\n')
+        f.write('      "chapter_description": "[Description of concepts covered (1-2 sentences)]"\n')
+        f.write('    },\n')
+        f.write('    {\n')
+        f.write('      "chapter_title": "[Chapter Name]",\n')
+        f.write('      "chapter_description": "[Description of concepts covered (1-2 sentences)]"\n')
+        f.write('    }\n')
+        f.write('    // ... continue for 10-15 chapters\n')
+        f.write('  ]\n')
+        f.write('}\n')
         f.write("```\n\n")
         f.write("## Guidelines\n\n")
-        f.write("- Use the EXACT LaTeX structure shown above, so that it can be directly copied into a LaTeX document.\n")
+        f.write("- Use the EXACT JSON structure shown above.\n")
         f.write("- Replace ALL bracketed placeholders with your content.\n")
-        f.write("- Include 10-15 chapters in the enumerated list.\n")
+        f.write("- Include 10-15 chapters in the chapters array.\n")
         f.write("- Build up systematically from basic to advanced concepts.\n")
     
     LOGGER.info(f"LLM prompt written to {prompt_file}")
@@ -850,17 +858,23 @@ class _GapVisualizationContext(DenoiserContext):
     Custom DenoiserContext for gap visualization that uses the k-NN graph
     from FAISS searches as the affinity matrix.
     """
-    def __init__(self, embeddings: NDArray, neighbor_indices: NDArray, k: int = 5):
+    def __init__(self, embeddings: NDArray, neighbor_indices: NDArray, item_types: list[str], k: int = 5):
         """
         Args:
             embeddings: All embeddings for visualization items
             neighbor_indices: Array of shape (n_items, k) containing neighbor indices
+            item_types: List of item type strings (e.g., 'article', 'book') for each embedding
             k: Number of neighbors per item
         """
         self._embeddings = embeddings
         self._neighbor_indices = neighbor_indices
+        self._item_types = item_types
         self._k = k
         self._affinity_matrix = None
+        self._subsets = {}  # Cache for subset embeddings
+        
+        # Determine unique item types for subsets
+        self._unique_types = list(dict.fromkeys(item_types))  # Preserve order, remove duplicates
         
     def _build_affinity_matrix(self) -> sp.csr_matrix:
         """Build sparse affinity matrix from neighbor indices."""
@@ -891,13 +905,21 @@ class _GapVisualizationContext(DenoiserContext):
     def X(self) -> NDArray:
         return self._embeddings
     
-    def X1(self) -> NDArray:
-        # Not used for LPP, but required by interface
-        return self._embeddings[:len(self._embeddings)//2]
+    def X_n(self, n: int) -> NDArray:
+        """Get embeddings for the n-th subset (0-indexed)."""
+        if n >= len(self._unique_types):
+            raise IndexError(f"Subset {n} requested, but only {len(self._unique_types)} subsets available")
+        
+        if n not in self._subsets:
+            target_type = self._unique_types[n]
+            mask = np.array([item_type == target_type for item_type in self._item_types], dtype=bool)
+            self._subsets[n] = self._embeddings[mask]
+        
+        return self._subsets[n]
     
-    def X2(self) -> NDArray:
-        # Not used for LPP, but required by interface  
-        return self._embeddings[len(self._embeddings)//2:]
+    def num_subsets(self) -> int:
+        """Return the number of subsets available."""
+        return len(self._unique_types)
 
 
 def plot_gap_visualization_lpp(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
@@ -989,7 +1011,7 @@ def plot_gap_visualization_lpp(gap: Gap, gap_idx: int, topic_name: str, topic_id
     neighbor_indices = np.array(neighbor_indices_list)
     
     # Create LPP context and apply LPP
-    context = _GapVisualizationContext(all_embeddings, neighbor_indices, k)
+    context = _GapVisualizationContext(all_embeddings, neighbor_indices, item_types, k)
     lpp_denoiser = LPPDenoiser()
     
     try:
