@@ -17,8 +17,9 @@ import pyalex
 import plotly.express as px
 import plotly.graph_objects as go
 
-from nextbook.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers
-from nextbook.cloud_index import avgref_ranks, get_ball_coverage, within_cloud_nn_ranks, faiss_search_outside_epsilon
+from nextbook.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers, build_cloud, get_subclouds_for_topic
+from nextbook.gap_finder import find_gaps_for_topic
+from nextbook.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
 from nextbook.parse_args import get_explicit_args, parse_args
 from nextbook.util import TIMER, Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
 from nextbook.deduplicators import Deduplicator
@@ -39,7 +40,10 @@ ALLOWED_WORK_DENOISERS = [
 ALLOWED_DENOISER_NAMES = ['NONE'] + [wd.name for wd in ALLOWED_WORK_DENOISERS]
 
 FONT_SIZE = 7
-DPI = 300
+
+# Import plotting utilities to eliminate duplication
+from nextbook.plot_utils import PlotManager, StatisticalPlotUtils, DPI
+from nextbook.results_manager import BookArticleResults
 
 def get_denoiser_display_name(denoiser: str) -> str:
     """Map denoiser names to display-friendly names with LaTeX math notation."""
@@ -65,6 +69,9 @@ def get_denoiser_display_name(denoiser: str) -> str:
 ARTIFACTS_DIR = Path("artifacts")
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Global BookArticleResults instance
+_book_article_results = BookArticleResults(csv_path=ARTIFACTS_DIR / "book_article_analysis.csv")
+
 
 @dataclass
 class BookArticleAnalysis:
@@ -76,8 +83,7 @@ class BookArticleAnalysis:
     avgref_mean_rank: float
 
 def analyze_book_article_gap(cloud: Cloud, topic_id: str, radius_fraction: float) -> BookArticleAnalysis:
-    books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.BOOK.value))
-    articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.ARTICLE.value))
+    books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
     num_articles = len(articles.embeddings())
 
@@ -100,36 +106,6 @@ def _df_from_file(csv_path: Path) -> pd.DataFrame:
         df = pd.DataFrame()
         LOGGER.info(f"No existing results found at {csv_path}, starting fresh.")
     return df
-class Results:
-    _csv_path = ARTIFACTS_DIR / "book_article_analysis.csv"
-    _key_columns = ['topic_name', 'denoiser', 'drop_k']
-    _df = _df_from_file(_csv_path)
-    
-    @classmethod
-    def has_row(cls, **keys) -> bool:
-        assert set(keys.keys()) == set(cls._key_columns), \
-            f"Keys must match the key columns: {cls._key_columns}. Provided keys: {keys.keys()}"
-        if cls._df.empty:
-            return False
-        key_tuple = tuple(keys[col] for col in cls._key_columns)
-        existing_keys = {tuple(existing_row) for existing_row in cls._df[cls._key_columns].to_numpy()}
-        return key_tuple in existing_keys
-
-    @classmethod
-    def write_row(cls, row: dict):
-        if not cls._df.empty:
-            assert set(row.keys()) == set(cls._df.columns), \
-                f"Row keys must match DataFrame columns: {cls._df.columns}. Provided keys: {row.keys()}"
-        cls._df = pd.concat([cls._df, pd.DataFrame([row])], ignore_index=True)
-        cls._df.to_csv(cls._csv_path, index=False)
-
-    @classmethod
-    def get_df_copy(cls) -> pd.DataFrame:
-        """
-        Returns a copy of the DataFrame containing all results.
-        This is useful for analysis or plotting without modifying the original DataFrame.
-        """
-        return cls._df.copy()
 
 
 def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
@@ -198,7 +174,7 @@ def hubness(index: SubCloud, query: SubCloud):
         LOGGER.warning(f"n=min({num_queries=}, {num_indices=}) == 0, returning NaN for hubness")
         return np.nan
     
-    nearest_indices = faiss_search_outside_epsilon(index, query,is_intra_cloud_search=False, k=1, epsilon=0).I_outside.squeeze(1)
+    nearest_indices = knn(index, query).I.squeeze(1)
 
     if np.any(nearest_indices < 0):
         assert num_indices == 0
@@ -564,7 +540,7 @@ def plot_col_by_denoiser_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: st
         unique_vals = sorted(col_values.unique())
     
     # Create the plot
-    fig, ax1 = plt.subplots(figsize=(14, 8))
+    fig, ax1 = PlotManager.create_figure(figsize=(14, 8))
     
     # Color map for different categories
     cmap = plt.cm.get_cmap('tab10')
@@ -635,8 +611,7 @@ def plot_col_by_denoiser_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: st
     plot_dir = artifacts_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_file = plot_dir / f"{y_col}_by_denoiser_{color_col=}_pyplot.png"
-    plt.savefig(output_file, dpi=DPI)
-    plt.close(fig)
+    PlotManager.save_and_close(fig, output_file)
 
 def plot_col_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y: bool = False, weights: Optional[str] = None):
     """
@@ -853,7 +828,7 @@ def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str,
     # LOGGER.info(f"Baseline value for {y_col} (NONE denoiser): {baseline_value:.3f}")
     
     # Create the plot
-    fig, ax1 = plt.subplots(figsize=(12, 8))
+    fig, ax1 = PlotManager.create_figure(figsize=(12, 8))
     
     # Get unique denoisers and assign colors/styles (excluding NONE since it will be a horizontal line)
     denoisers = grouped[grouped['denoiser'] != 'NONE']['denoiser'].unique()
@@ -898,8 +873,7 @@ def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str,
     plot_dir = artifacts_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_file = plot_dir / f"{y_col}_by_drop_k_pyplot.png"
-    plt.savefig(output_file, dpi=DPI)
-    plt.close(fig)
+    PlotManager.save_and_close(fig, output_file)
 
 def plot_books_vs_articles(df: pd.DataFrame, artifacts_dir: Path, show_labels=False, log_scale=True, min_articles=0):
     """
@@ -1019,7 +993,7 @@ def plot_books_vs_articles_pyplot(df: pd.DataFrame, artifacts_dir: Path, show_la
         return
     x = plot_df['num_articles'].to_numpy()
     y = plot_df['num_books'].to_numpy()
-    fig, ax = plt.subplots(figsize=(10, 7))
+    fig, ax = PlotManager.create_figure(figsize=(10, 7))
     ax.scatter(x, y, s=40, alpha=0.7)
     if show_labels:
         for i, row in plot_df.iterrows():
@@ -1052,12 +1026,11 @@ def plot_books_vs_articles_pyplot(df: pd.DataFrame, artifacts_dir: Path, show_la
     plot_dir = artifacts_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_file = plot_dir / ('books_vs_articles_pyplot.png' if not log_scale else 'books_vs_articles_log_pyplot.png')
-    plt.savefig(output_file, dpi=DPI)
-    plt.close(fig)
+    PlotManager.save_and_close(fig, output_file)
 
 def do_plots(artifacts_dir: Path):
 
-    df = Results.get_df_copy()
+    df = _book_article_results.get_df()
 
     if df.empty:
         LOGGER.info("No data available for plotting. Skipping plots.")
@@ -1158,7 +1131,7 @@ def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw
     )
     original_embeddings = original_cloud.embeddings()
     N, d = original_embeddings.shape
-    context = CloudDenoiserContext(original_cloud.works(), original_embeddings, Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    context = CloudDenoiserContext(original_cloud.works(), original_embeddings, Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
     S_T = context.S_T()
     S_L = context.S_L()
     S_B = context.S_B()
@@ -1257,7 +1230,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
 
     for i, topic in enumerate(topics):
         topic_name = topic["display_name"]
-        if Results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k):
+        if _book_article_results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k):
             continue
         topic_id = topic["id"]
         LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})\nDenoiser: {denoiser}, Drop_k: {drop_k}\n" + "-+-"*10)
@@ -1270,7 +1243,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
             'drop_k': drop_k,
             **vars(analysis)
         }
-        Results.write_row(result_row)
+        _book_article_results.add_row(**result_row)
         if (i+1) % 20 == 0 or i == len(topics) - 1:
             do_plots(ARTIFACTS_DIR)
 # python -c "from nextbook.analyze_book_article_gap import many_main; many_main()"
@@ -1306,5 +1279,5 @@ def many_main():
             main(**args, denoiser=denoiser, drop_k=drop_k)
 
 if __name__ == "__main__":
-    setup_logging(log_name=Path(__file__).stem, explicit_args=get_explicit_args())
-    main(**vars(parse_args()))
+    from nextbook.script_utils import run_script_main
+    run_script_main(main, __file__)

@@ -1,29 +1,88 @@
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable, Tuple, Protocol, Union
+import os
+import abc
 import json
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 import pyalex
 import random
+import matplotlib.axes
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import scipy.sparse as sp
+from scipy import stats
 from nextbook.denoisers import LPPDenoiser, DenoiserContext
-from nextbook.cloud import Cloud, SubCloud
-from nextbook.cloud_index import faiss_search_outside_epsilon, get_ball_coverage
+from nextbook.cloud import Cloud, SubCloud, build_cloud, get_subclouds_for_topic
+from nextbook.cloud_index import knn, get_kball_coverage
 from nextbook.deduplicators import Deduplicator
-from nextbook.index import HNSW, IndexType
+from nextbook.index import HNSW, IndexType, actual_voronoi_coverage, hypothetical_voronoi_coverage
 from nextbook.parse_args import get_explicit_args, parse_args
 from nextbook.util import LOGGER, Filter, FilterPair, SubField, WorkType, create_unicode_safe_filename, setup_logging
+from nextbook.gap_directory_manager import GapDirectoryManager
+from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from nextbook.plot_utils import (
+    PlotManager, GapPlotUtils, StatisticalPlotUtils, 
+    DPI, FIGURE_SIZE_LARGE, FIGURE_SIZE_MEDIUM, BBOX_INCHES_SETTING, GRID_ALPHA,
+    BOOK_COLOR, GAP_COLOR, PROPOSAL_COLOR
+)
+from nextbook.results_manager import GapResults
+from nextbook.gap_statistics import compute_gap_statistics, create_book_gap_sizes_qqplot, GAP_STATISTICS_COLUMNS, GAP_STATISTICS_COLUMN_NAMES
+import abc
+
+# Machine learning and algorithmic constants
+NEAREST_NEIGHBOR_K = 5  # Default k for neighbor searches in visualization
+RANDOM_STATE = 42       # Random state for reproducibility
+
+# Analysis and reporting constants
+TOP_ARTICLES_TO_DISPLAY = 10  # Number of closest articles to show in gap analysis
+
+# Validation and error constants
+MIN_REQUIRED_DIMENSION = 1  # Minimum required dimension for distance arrays
+CENTER_ARTICLE_DISTANCE = 0  # Expected squared distance for center article (self-distance)
+INVALID_LANDMARK_INDEX = -1   # Indicator for no nearest landmark found
 
 @dataclass(frozen=True)
 class DistsAndIdxs:
-    dists: NDArray[np.float32]
-    idxs: NDArray[np.intp]
+    """Container for squared distances and corresponding indices."""
+    sqdists: NDArray[np.float32]  # Squared distances
+    idxs: NDArray[np.intp]      # Corresponding indices
+
+
+class GapProtocol(Protocol):
+    """Protocol defining the common interface for gap analysis objects.
+    
+    This eliminates the need for isinstance checks by defining the methods
+    that both KballGap and VoronoiGap must implement.
+    """
+    
+    @property
+    def dists_idxs(self) -> DistsAndIdxs:
+        """Return the distances and indices of articles in the gap."""
+        ...
+    
+    @property 
+    def ambient(self) -> 'SubCloud':
+        """Return the ambient space (articles)."""
+        ...
+        
+    @property
+    def landmark(self) -> 'SubCloud':  
+        """Return the landmark space (books)."""
+        ...
+    
+    def get_covering_book_indices(self) -> list[np.intp]:
+        """Get the indices of books that cover articles in the gap."""
+        ...
+        
+    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
+        """Get mapping from book indices to their covered articles with distances."""
+        ...
+
 
 @dataclass(frozen=True)
 class GapVisualizationData:
@@ -72,87 +131,260 @@ class GapVisualizationData:
         return nearest_books[0] if len(nearest_books) > 0 else None
 
 @dataclass(frozen=True)
-class Gap:
-    index: SubCloud
-    query: SubCloud
+class KballGap:
+    ambient: SubCloud  # The ambient space to count points in (e.g., articles)
+    landmark: SubCloud  # The landmarks used to define distances (e.g., books)
+    query: SubCloud  # The query points to analyze for gaps (e.g., articles)
     radius_fraction: float
-    dists_idxs: DistsAndIdxs  # Distances and indices of the index points that are in the gap.
+    k: int  # Which nearest landmark to use
+    dists_idxs: DistsAndIdxs  # Squared distances and indices of the ambient points that are in the gap.
 
     @dataclass(frozen=True)
     class CoveredPoints:
-        index: SubCloud
+        ambient: SubCloud
+        landmark: SubCloud
         query: SubCloud
         radius_fraction: float
-        qidx_to_covered_index_points: dict[np.intp, DistsAndIdxs]  # List of distances and idxs for each index point covered by the corresponding query point.
+        landmark_to_covered_ambient_points: dict[np.intp, DistsAndIdxs]  # List of squared distances and idxs for each ambient point covered by the corresponding landmark point.
     def closest_query_points(self):
-        qidx_to_covered_iidxs = defaultdict(list)
-        qidx_to_covered_dists = defaultdict(list)
-        res = faiss_search_outside_epsilon(index=self.query, query=self.index, is_intra_cloud_search=False, k=1, epsilon=0)
-        closest_q_to_each_i = res.I_outside[self.dists_idxs.idxs].squeeze(1)
-        if np.any(closest_q_to_each_i < 0):
-            assert np.all(closest_q_to_each_i < 0)
-            return Gap.CoveredPoints(
-                index=self.index,
+        landmark_to_covered_ambient_idxs = defaultdict(list)
+        landmark_to_covered_ambient_dists = defaultdict(list)
+        res = knn(index=self.landmark, query=self.ambient, k=1)
+        closest_landmark_to_each_ambient = res.I[self.dists_idxs.idxs].squeeze(1)
+        if np.any(closest_landmark_to_each_ambient < 0):
+            assert np.all(closest_landmark_to_each_ambient < 0)
+            return KballGap.CoveredPoints(
+                ambient=self.ambient,
+                landmark=self.landmark,
                 query=self.query,
                 radius_fraction=self.radius_fraction,
-                qidx_to_covered_index_points={}
+                landmark_to_covered_ambient_points={}
             )
 
-        closest_q_dists = res.D_outside[self.dists_idxs.idxs].squeeze(1)
+        closest_landmark_sqdists = res.sq_dists[self.dists_idxs.idxs].squeeze(1)
 
-        for dist, iidx, qidx in zip(closest_q_dists, self.dists_idxs.idxs, closest_q_to_each_i):
-            qidx_to_covered_iidxs[qidx].append(iidx)
-            qidx_to_covered_dists[qidx].append(dist)
-        qidxs = np.unique(closest_q_to_each_i).tolist()  # Ensure qidxs are unique
-        assert set(qidxs) == set(closest_q_to_each_i)
-        assert set(qidxs) == set(qidx_to_covered_iidxs.keys())
-        assert set(qidxs) == set(qidx_to_covered_dists.keys())
-        qidx_to_covered_index_points = {qidx: DistsAndIdxs(dists=np.array(qidx_to_covered_dists[qidx], dtype=np.float32),
-                                             idxs=np.array(qidx_to_covered_iidxs[qidx], dtype=np.intp))
-                            for qidx in qidxs}  # Exclude -1 indices which indicate no nearest query point found
-        return Gap.CoveredPoints(
-            index=self.index,
+        for dist, ambient_idx, landmark_idx in zip(closest_landmark_sqdists, self.dists_idxs.idxs, closest_landmark_to_each_ambient):
+            landmark_to_covered_ambient_idxs[landmark_idx].append(ambient_idx)
+            landmark_to_covered_ambient_dists[landmark_idx].append(dist)
+        landmark_idxs = np.unique(closest_landmark_to_each_ambient).tolist()  # Ensure landmark_idxs are unique
+        assert set(landmark_idxs) == set(closest_landmark_to_each_ambient)
+        assert set(landmark_idxs) == set(landmark_to_covered_ambient_idxs.keys())
+        assert set(landmark_idxs) == set(landmark_to_covered_ambient_dists.keys())
+        landmark_to_covered_ambient_points = {landmark_idx: DistsAndIdxs(sqdists=np.array(landmark_to_covered_ambient_dists[landmark_idx], dtype=np.float32),
+                                             idxs=np.array(landmark_to_covered_ambient_idxs[landmark_idx], dtype=np.intp))
+                            for landmark_idx in landmark_idxs}  # Exclude -1 indices which indicate no nearest landmark point found
+        return KballGap.CoveredPoints(
+            ambient=self.ambient,
+            landmark=self.landmark,
             query=self.query,
             radius_fraction=self.radius_fraction,
-            qidx_to_covered_index_points=qidx_to_covered_index_points
+            landmark_to_covered_ambient_points=landmark_to_covered_ambient_points
         )
-        
-
-
 
     def __post_init__(self):
-        if not np.all(np.diff(self.dists_idxs.dists) >= 0):
-            raise ValueError("Distances must be sorted in non-decreasing order")
-        if not self.dists_idxs.dists.ndim == 1:
-            raise ValueError("Distances must be a 1D array")
-        if not self.dists_idxs.dists.shape == self.dists_idxs.idxs.shape:
-            raise ValueError("Distances and indices must have the same shape")
-        if not self.dists_idxs.dists[0] == 0:
-            raise ValueError("The closest point in the gap must have distance 0 (it is the center point)")
+        if not np.all(np.diff(self.dists_idxs.sqdists) >= 0):
+            raise ValueError("Squared distances must be sorted in non-decreasing order")
+        if not self.dists_idxs.sqdists.ndim == 1:
+            raise ValueError("Squared distances must be a 1D array")
+        if not self.dists_idxs.sqdists.shape == self.dists_idxs.idxs.shape:
+            raise ValueError("Squared distances and indices must have the same shape")
+        if self.query == self.ambient and not self.dists_idxs.sqdists[0] == 0:
+            raise ValueError("The closest point in the gap must have squared distance 0 (it is the center point)")
 
-ARTIFACTS_DIR = Path("artifacts")
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    def get_covering_book_indices(self) -> list[np.intp]:
+        """Get the indices of books that cover articles in the gap."""
+        covered_points_analysis = self.closest_query_points()
+        return list(covered_points_analysis.landmark_to_covered_ambient_points.keys())
 
-# Color constants for visualization
-BOOK_COLOR = 'blue'
-GAP_COLOR = 'orange'
+    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
+        """Get mapping from book indices to their covered articles with distances."""
+        return self.closest_query_points().landmark_to_covered_ambient_points
 
-def get_gap_dir(denoiser: str, drop_k: int, radius_fraction: float, gap_idx: int) -> Path:
+
+def _select_gap_algorithm(config: AnalysisConfiguration):
     """
-    Get the directory path for a specific gap and create it if it doesn't exist.
+    Select the appropriate gap finding algorithm based on cell type.
     
     Args:
-        denoiser: Name of the denoiser used
-        drop_k: Drop-k parameter used
-        radius_fraction: Radius fraction for gap analysis
-        gap_idx: Index of the gap (0-indexed)
+        config: Analysis configuration containing cell_type
         
     Returns:
-        Path to the gap directory
+        Gap finding function (kball_gaps or voronoi_gaps)
+        
+    Raises:
+        ValueError: If cell_type is not supported
     """
-    gap_dir = ARTIFACTS_DIR / "gaps" / f"{denoiser}_k={drop_k}_radiusfrac={radius_fraction:.2f}" / f"gap_{gap_idx}"
-    gap_dir.mkdir(parents=True, exist_ok=True)
-    return gap_dir
+    if config.cell_type == "kball":
+        return kball_gaps
+    elif config.cell_type == "voronoi":
+        return voronoi_gaps
+    else:
+        raise ValueError(f"Unsupported cell_type: {config.cell_type}")
+
+
+def kball_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 
+         radius_fraction: float, k: int, is_intra_cloud: bool):
+    """
+    Find gaps: query points where there are many closer ambient points than the nearest landmark points.
+    
+    Args:
+        ambient: The ambient space to count points in (e.g., articles)
+        landmark: The landmarks used to define distances (e.g., books)
+        query: The query points to analyze for gaps (e.g., articles)
+        radius_fraction: Fraction of distance to k-th nearest landmark to use as radius
+        k: Which nearest landmark to use (1 = nearest, 2 = second nearest, etc.)
+        is_intra_cloud: Whether landmark and query are the same cloud
+    """
+    covered_ambient_points = get_kball_coverage(ambient=ambient, landmark=landmark,
+                                                query=query, radius_fraction=radius_fraction,
+                                                k=k, is_intra_cloud=is_intra_cloud)
+    while True:
+        if len(covered_ambient_points) == 0:
+            LOGGER.info("No gaps found")
+            break
+        highest_coverage_query = np.argmax([len(idxs) for _dists, idxs in covered_ambient_points])
+        dists, idxs = covered_ambient_points[highest_coverage_query]
+        if len(idxs) == 0:
+            LOGGER.info("No more gaps found")
+            break
+        order = np.argsort(dists)
+        dists = dists[order]
+        idxs = idxs[order]
+
+        if query == ambient:
+            assert idxs[0] == highest_coverage_query
+            assert dists[0] == 0
+        
+        yield KballGap(
+            ambient=ambient,
+            landmark=landmark,
+            query=query,
+            radius_fraction=radius_fraction,
+            k=k,
+            dists_idxs=DistsAndIdxs(sqdists=dists, idxs=idxs))
+
+        # Prune the gap
+        for idx, (dists_, idxs_) in enumerate(covered_ambient_points):
+            # Remove all covered ambient points from other query point coverages (this completely zeros out the current gap)
+            mask = np.isin(idxs_, idxs, invert=True)
+            covered_ambient_points[idx] = (dists_[mask], idxs_[mask])
+
+@dataclass(frozen=True)
+class VoronoiGap:
+    ambient: SubCloud
+    landmark: SubCloud
+    query: SubCloud
+    ambient_idxs: NDArray[np.intp]
+    ambient_to_nearest_landmark_idxs: NDArray[np.intp]
+    ambient_to_query_sqdists: NDArray[np.float32]  # Squared distances from query point to ambient points (sorted)
+    query_idx: Optional[int] = None  # Index of the query point that defines this gap (if applicable)
+        
+    @property
+    def dists_idxs(self) -> DistsAndIdxs:
+        # Return the pre-computed sorted squared distances and indices
+        return DistsAndIdxs(
+            sqdists=self.ambient_to_query_sqdists,
+            idxs=self.ambient_idxs
+        )
+        
+    def get_covering_book_indices(self) -> list[np.intp]:
+        """Get the indices of books that cover articles in the gap."""
+        return list(np.unique(self.ambient_to_nearest_landmark_idxs))
+
+    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
+        """Get mapping from book indices to their covered articles with distances."""
+        book_to_articles = {}
+        book_coverage = defaultdict(list)
+        
+        # Group articles by covering books
+        for gap_pos, landmark_idx in enumerate(self.ambient_to_nearest_landmark_idxs):
+            article_idx = self.ambient_idxs[gap_pos]
+            book_coverage[landmark_idx].append(article_idx)
+        
+        # Get embeddings for proper distance calculations
+        landmark_embeddings = self.landmark.embeddings()
+        ambient_embeddings = self.ambient.embeddings()
+        
+        # Compute actual book→article distances (not query→article!)
+        for book_idx, article_indices in book_coverage.items():
+            book_embedding = landmark_embeddings[book_idx] if book_idx >= 0 else np.full(ambient_embeddings.shape[1], np.nan)
+            article_embeddings = ambient_embeddings[article_indices]
+            
+            # Compute squared distances from book to covered articles
+            book_to_article_sqdists = np.sum((article_embeddings - book_embedding) ** 2, axis=1)
+            
+            # Sort by distance
+            order = np.argsort(book_to_article_sqdists)
+            sorted_sqdists = book_to_article_sqdists[order].astype(np.float32)
+            sorted_idxs = np.array(article_indices, dtype=np.intp)[order]
+            
+            book_to_articles[book_idx] = DistsAndIdxs(
+                sqdists=sorted_sqdists,
+                idxs=sorted_idxs
+            )
+        
+        return book_to_articles
+
+def get_covering_book_indices(gap: GapProtocol) -> list[np.intp]:
+    """Get the indices of books that cover articles in the gap."""
+    return gap.get_covering_book_indices()
+
+
+def get_book_to_articles_mapping(gap: GapProtocol) -> dict[np.intp, DistsAndIdxs]:
+    """Get mapping from book indices to their covered articles with distances."""
+    return gap.get_book_to_articles_mapping()
+
+
+def group_gap_articles_by_covering_books(gap: GapProtocol) -> dict[np.intp, list[np.intp]]:
+    """Group gap articles by their covering books (simplified version without distances)."""
+    book_to_articles = get_book_to_articles_mapping(gap)
+    return {book_idx: dists_idxs.idxs.tolist() for book_idx, dists_idxs in book_to_articles.items()}
+
+
+def voronoi_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud):
+    assert query != landmark, "Use actual_voronoi_coverage when query and landmark are the same cloud"
+    query_embeddings = query.embeddings()
+    cell_sizes = hypothetical_voronoi_coverage(
+        ambient  = ambient.index(),
+        landmark = landmark.index(),
+        query    = query_embeddings,
+        ambient_is_landmark = ambient==landmark)
+    
+    # Find nearest landmark to each ambient point
+    k = 2 if landmark == ambient else 1  # Exclude self-neighbor if landmark and ambient are the same
+    res = knn(index=landmark, query=ambient, k=k)
+    ambient_to_nearest_landmark_sqdist = res.sq_dists[:, -1]
+    ambient_nearest_landmark = res.I[:, -1]
+
+    ambient_embeddings = ambient.embeddings()
+    argsort = np.argsort(-cell_sizes)  # Descending order of voronoi cell sizes
+    for query_idx in argsort:
+        _count = cell_sizes[query_idx]
+        embedding = query_embeddings[query_idx]
+        
+        # Find the ambient points that are closer to this query point than to any landmark
+        ambient_sq_dist_to_query = np.sum((ambient_embeddings - embedding) ** 2, axis=1)
+        reassigned_idxs = np.where(ambient_sq_dist_to_query < ambient_to_nearest_landmark_sqdist)[0]
+        reassigned_dists = ambient_sq_dist_to_query[reassigned_idxs]
+        
+        order = np.argsort(reassigned_dists)
+        reassigned_idxs = reassigned_idxs[order]
+        reassigned_dists = reassigned_dists[order]
+        
+        if query == ambient:
+            assert reassigned_idxs[0] == query_idx, f"Expected the closest ambient point to be the query point itself, got {reassigned_idxs[0]} instead"
+            assert reassigned_dists[0] == 0, f"Expected the squared distance to the query point to be 0, got {reassigned_dists[0]} instead"
+        
+        
+        yield VoronoiGap(
+            ambient=ambient, landmark=landmark, query=query,
+            ambient_idxs=reassigned_idxs,
+            ambient_to_nearest_landmark_idxs=ambient_nearest_landmark[reassigned_idxs],
+            ambient_to_query_sqdists=reassigned_dists,
+            query_idx=query_idx)
+
+
+ARTIFACTS_DIR = GapDirectoryManager.get_base_artifacts_dir()
 
 def _df_from_file(csv_path: Path) -> pd.DataFrame:
     try:
@@ -164,12 +396,15 @@ def _df_from_file(csv_path: Path) -> pd.DataFrame:
             'gap_idx': 'int64',
             'num_books': 'int64',
             'num_articles': 'int64',
-            'gap_size': 'int64'
+            'gap_size': 'int64',
+            'gap_size_percentile': 'float64',
+            'gap_zscore': 'float64',
+            'shapiro_log10_pval': 'float64'
         })
         LOGGER.info(f"Loaded {len(df)} rows from {csv_path}")
     except FileNotFoundError:
         LOGGER.info(f"File {csv_path} not found, creating empty DataFrame")
-        df = pd.DataFrame(columns=['topic_name', 'topic_id', 'denoiser', 'drop_k', 'gap_idx', 'num_books', 'num_articles', 'gap_size'])
+        df = pd.DataFrame(columns=['topic_name', 'topic_id', 'denoiser', 'drop_k', 'gap_idx', 'num_books', 'num_articles', 'gap_size', 'gap_size_percentile', 'gap_zscore', 'shapiro_log10_pval'])
         df = df.astype({
             'topic_name': 'string',
             'topic_id': 'string', 
@@ -178,296 +413,208 @@ def _df_from_file(csv_path: Path) -> pd.DataFrame:
             'gap_idx': 'int64',
             'num_books': 'int64',
             'num_articles': 'int64',
-            'gap_size': 'int64'
+            'gap_size': 'int64',
+            'gap_size_percentile': 'float64',
+            'gap_zscore': 'float64',
+            'shapiro_log10_pval': 'float64'
         })
     return df
 
-class Results:
-    _csv_path = ARTIFACTS_DIR / "gaps" / "gap_analysis.csv"
-    _key_columns = ['topic_name', 'topic_id', 'denoiser', 'drop_k', 'gap_idx']
-    _df = _df_from_file(_csv_path)
-    
-    @classmethod
-    def add_row(cls, topic_name: str, topic_id: str, denoiser: str, drop_k: int, gap_idx: int, num_books: int, num_articles: int, gap_size: int):
-        cls._csv_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        new_row = pd.DataFrame([{
-            'topic_name': topic_name,
-            'topic_id': topic_id,
-            'denoiser': denoiser,
-            'drop_k': drop_k,
-            'gap_idx': gap_idx,
-            'num_books': num_books,
-            'num_articles': num_articles,
-            'gap_size': gap_size
-        }])
 
-        LOGGER.info(f"Adding row:\n{new_row}")
+def write_single_kball_gap(
+    gap: GapProtocol,
+    gap_idx: int,
+    topic_name: str,
+    topic_id: str,
+    analysis_config: AnalysisConfiguration,
+    books: SubCloud,
+    articles: SubCloud,
+    book_gap_sizes: list[int],
+) -> None:
+    """Write detailed analysis, prompt, and CSV row for a single k-ball gap.
 
-        # Check if row already exists
-        if len(cls._df) > 0:
-            mask = cls._df['topic_name'] == topic_name
-            mask &= cls._df['topic_id'] == topic_id
-            mask &= cls._df['denoiser'] == denoiser
-            mask &= cls._df['drop_k'] == drop_k
-            mask &= cls._df['gap_idx'] == gap_idx
-            
-            if mask.any():
-                LOGGER.warning(f"Row already exists. Updating existing row. Old row:\n{cls._df[mask]}")
-                cls._df.loc[mask, 'num_books'] = num_books
-                cls._df.loc[mask, 'num_articles'] = num_articles
-                cls._df.loc[mask, 'gap_size'] = gap_size
-            else:
-                cls._df = pd.concat([cls._df, new_row], ignore_index=True)
-        else:
-            cls._df = pd.concat([cls._df, new_row], ignore_index=True)
-        
-        cls._df.to_csv(cls._csv_path, index=False)
-        LOGGER.info(f"Saved results to {cls._csv_path}")
-    
-    @classmethod
-    def get_df(cls) -> pd.DataFrame:
-        return cls._df.copy()
-
-
-def gaps(index: SubCloud, query: SubCloud, radius_fraction):
+    Requires explicit requested prompt counts in analysis_config; computes actual prompt counts
+    and topic totals, computes statistics, writes artifacts, and records a row in results CSV.
     """
-    Find gaps where there are many index points (e.g. articles) but no query points (e.g. books).
-    """
-    covered_points = get_ball_coverage(index, query, radius_fraction=radius_fraction).covered_points
-    while True:
-        highest_coverage_idx = np.argmax([len(idxs) for _dists, idxs in covered_points])
-        dists, idxs = covered_points[highest_coverage_idx]
-        if len(idxs) == 0:
-            LOGGER.info("No more gaps found")
-            break
-        order = np.argsort(dists)
-        dists = dists[order]
-        idxs = idxs[order]
-
-        # assert highest_coverage_idx in idxs
-        assert idxs[0] == highest_coverage_idx, "The first index should be the one with the highest coverage"
-        assert dists[0] == 0, "The distance for the highest coverage index should be 0"
-        
-        yield Gap(index=index, query=query, radius_fraction=radius_fraction, 
-                 dists_idxs=DistsAndIdxs(dists=dists, idxs=idxs))
-        for idx in idxs:
-            # Prevent all covered points from being topic centers
-            covered_points[idx] = (np.array([], dtype=dists.dtype), np.array([], dtype=idxs.dtype))
-        for idx, (dists_, idxs_) in enumerate(covered_points):
-            # Remove all points in idxs from all other covered points
-            mask = np.isin(idxs_, idxs, invert=True)
-            covered_points[idx] = (dists_[mask], idxs_[mask])
-
-
-def write_single_gap(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
-                     radius_fraction: float, num_books: int, num_articles: int, 
-                     books: SubCloud, articles: SubCloud) -> None:
-    """
-    Write detailed analysis for a single gap to a file and add entry to Results CSV.
-    
-    Args:
-        gap: The Gap object to analyze
-        gap_idx: Index of this gap (0-indexed)
-        topic_name: Display name of the topic
-        topic_id: ID of the topic
-        denoiser: Name of the denoiser used
-        drop_k: Drop-k parameter used
-        radius_fraction: Radius fraction for gap analysis
-        num_books: Total number of books in topic
-        num_articles: Total number of articles in topic
-        books: SubCloud for books
-        articles: SubCloud for articles
-    """
+    # Compute gap size and statistics
     gap_size = len(gap.dists_idxs.idxs)
-    LOGGER.info(f"Found gap {gap_idx} for topic {topic_name} with {gap_size} articles")
-    
-    # Add to Results CSV
-    Results.add_row(topic_name, topic_id, denoiser, drop_k, gap_idx, num_books, num_articles, gap_size)
-    
-    # Create detailed gap analysis file
-    gap_dir = get_gap_dir(denoiser, drop_k, radius_fraction, gap_idx)
-    analysis_dir = gap_dir / "analysis"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Sanitize filename and add gap index
+    gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
+    LOGGER.info(f"Found gap {gap_idx} for topic {topic_name} with {gap_size} articles "
+                f"(percentile: {gap_size_percentile:.3f}, z-score: {gap_zscore:.3f})")
+
+    # Generate LLM prompt and capture actual prompt counts used
+    actual_num_prompt_articles, actual_num_prompt_books = write_llm_prompt(
+        gap, gap_idx, topic_name, topic_id, analysis_config, books, articles
+    )
+
+    # Results CSV
+    results = GapResults(analysis_config=analysis_config)
+    num_articles_total = len(articles.embeddings())
+    num_books_total = len(books.embeddings())
+    results.add_row(
+        topic_name=topic_name,
+        topic_id=topic_id,
+        gap_idx=gap_idx,
+        gap_size=gap_size,
+        gap_size_percentile=gap_size_percentile,
+        gap_zscore=gap_zscore,
+        shapiro_log10_pval=shapiro_log10_pval,
+        num_articles=num_articles_total,
+        num_books=num_books_total,
+        actual_num_prompt_articles=actual_num_prompt_articles,
+        actual_num_prompt_books=actual_num_prompt_books,
+    )
+
+    # Detailed gap analysis text file
+    analysis_dir = GapDirectoryManager.get_analysis_dir(analysis_config, gap_idx)
     filename = f"{create_unicode_safe_filename(topic_name)}_id={topic_id}_analysis.txt"
     gap_file = analysis_dir / filename
-    
-    # Get work metadata
+
     article_works = articles.works()
-    book_works = books.works() if num_books > 0 else []
-    
-    # Get covered points analysis
-    covered_points_analysis = gap.closest_query_points()
-    
+    book_works = books.works()
+    book_coverage = group_gap_articles_by_covering_books(gap)
+
     with open(gap_file, 'w', encoding='utf-8') as f:
         f.write(f"Gap Analysis for Topic: {topic_name}\n")
         f.write(f"Topic ID: {topic_id}\n")
         f.write(f"Gap Index: {gap_idx} (0-indexed)\n")
-        f.write(f"Denoiser: {denoiser}\n")
-        f.write(f"Drop K: {drop_k}\n")
-        f.write(f"Radius Fraction: {radius_fraction}\n")
+        f.write(f"Denoiser: {analysis_config.gap_config.denoiser}\n")
+        f.write(f"Drop K: {analysis_config.gap_config.drop_k}\n")
+        f.write(f"Radius Fraction: {analysis_config.gap_config.radius_fraction}\n")
         f.write(f"Number of articles in gap: {gap_size}\n")
-        f.write(f"Total books in topic: {num_books}\n")
-        f.write(f"Total articles in topic: {num_articles}\n")
+        f.write(f"Total books in topic: {num_books_total}\n")
+        f.write(f"Total articles in topic: {num_articles_total}\n")
+        f.write("\n" + "=" * 80 + "\n")
+        f.write("STATISTICAL ANALYSIS\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Gap size percentile rank: {gap_size_percentile:.3f}\n")
+        f.write(f"  (Fraction of book gaps smaller than this gap)\n")
+        if not np.isnan(gap_zscore):
+            f.write(f"Gap z-score (assuming normality): {gap_zscore:.3f}\n")
+        else:
+            f.write("Gap z-score: N/A (insufficient data or zero variance)\n")
         f.write("=" * 80 + "\n\n")
 
-        # Find the closest book to the center article
-        assert np.argmin(gap.dists_idxs.dists) == 0, f"Expected the closest article to be the first one in the gap, got {np.argmin(gap.dists_idxs.dists)}"
-        center_article_idx = gap.dists_idxs.idxs[0]  # Center is the first article
-        if num_books > 0:
-            # Find the book that covers the center article
-            closest_book_idx = None
-            closest_book_distance = None
+        # Center article
+        assert np.argmin(gap.dists_idxs.sqdists) == 0, (
+            f"Expected the closest article to be the first one in the gap, got {np.argmin(gap.dists_idxs.sqdists)}"
+        )
+        # center_article_idx = gap.dists_idxs.idxs[0]  # Center is the first article
+        # if len(book_works) > 0:
+        #     # Find the book that covers the center article
+        #     closest_book_idx = None
+        #     closest_book_distance = None
             
-            for book_idx, covered_points in covered_points_analysis.qidx_to_covered_index_points.items():
-                # Check if this book covers the center article
-                center_positions = np.where(covered_points.idxs == center_article_idx)[0]
-                if len(center_positions) > 0:
-                    closest_book_idx = book_idx
-                    closest_book_distance = covered_points.dists[center_positions[0]]
-                    break
+        #     # # Find which book covers the center article
+        #     # for book_idx, articles_in_book in book_coverage.items():
+        #     #     if center_article_idx in articles_in_book:
+        #     #         closest_book_idx = book_idx
+        #     #         # For VoronoiGap, we don't have distances readily available, so use placeholder
+        #     #         closest_book_distance = 0.0
+        #     #         break
             
-            assert closest_book_idx is not None
-            closest_book_work = book_works[closest_book_idx]
-            f.write(f"Closest book to gap center (distance: {closest_book_distance:.4f}):\n")
-            f.write(f"{closest_book_work.get('id', 'N/A')}: {closest_book_work.get('display_name', 'N/A')}\n")
-            f.write(f"  {closest_book_work.get('abstract', 'N/A')}\n")
-            f.write("\n" + "=" * 80 + "\n\n")
+        #     # if closest_book_idx is not None:
+        #     #     closest_book_work = book_works[closest_book_idx]
+        #     #     f.write(f"Closest book to gap center (distance: {closest_book_distance:.4f}):\n")
+        #     #     f.write(f"{closest_book_work.get('id', 'N/A')}: {closest_book_work.get('display_name', 'N/A')}\n")
+        #     #     f.write(f"  {closest_book_work.get('abstract', 'N/A')}\n")
+        #     #     f.write("\n" + "=" * 80 + "\n\n")
 
         # List the top articles closest to the center of the gap
-        closest_n = min(10, gap_size)
+        closest_n = min(TOP_ARTICLES_TO_DISPLAY, gap_size)
         f.write(f"{closest_n} most central articles in the gap:\n\n")
         for i, article_idx in enumerate(gap.dists_idxs.idxs[:closest_n]):
             article_work = article_works[article_idx]
-            f.write(f"Article {i + 1} - {article_work.get('id', 'N/A')} - {article_work.get('display_name', 'N/A')} - distance: {gap.dists_idxs.dists[i]:.4f}\n")
-            f.write(f"  Abstract: {article_work.get('abstract', 'N/A')}\n")
-            f.write("\n")
+            f.write(
+                f"Article {i + 1} - {article_work.get('id', 'N/A')} - {article_work.get('display_name', 'N/A')} - "
+                f"squared distance: {gap.dists_idxs.sqdists[i]:.4f}\n"
+            )
+            f.write(f"  Abstract: {article_work.get('abstract', 'N/A')}\n\n")
 
         f.write("Furthest article from the center of the gap:\n\n")
-        furthest_idx = np.argmax(gap.dists_idxs.dists)
+        furthest_idx = int(np.argmax(gap.dists_idxs.sqdists))
         furthest_article_idx = gap.dists_idxs.idxs[furthest_idx]
         furthest_article_work = article_works[furthest_article_idx]
-        f.write(f"Furthest article - Id: {furthest_article_work.get('id', 'N/A')} - Title: {furthest_article_work.get('display_name', 'N/A')} - Distance from center: {gap.dists_idxs.dists[furthest_idx]:.4f}\n")
-        f.write(f"  Abstract: {furthest_article_work.get('abstract', 'N/A')}\n")
-        
-        f.write("=" * 80 + "\n\n")
+        f.write(
+            f"Furthest article - Id: {furthest_article_work.get('id', 'N/A')} - Title: {furthest_article_work.get('display_name', 'N/A')} - "
+            f"Squared distance from center: {gap.dists_idxs.sqdists[furthest_idx]:.4f}\n"
+        )
+        f.write(f"  Abstract: {furthest_article_work.get('abstract', 'N/A')}\n\n")
 
-        if num_books == 0:
-            f.write("No books found in this topic.\n\n")
+        if len(book_coverage) == 0:
+            f.write("No books found in this topic.\n")
         else:
-            # Group covered articles by covering book and sort by number of articles covered
-            book_coverage = defaultdict(list)
-            book_distances = defaultdict(list)
-            
-            for book_idx, covered_points in covered_points_analysis.qidx_to_covered_index_points.items():
-                if len(covered_points.idxs) > 0:
-                    for article_idx, dist in zip(covered_points.idxs, covered_points.dists):
-                        # article_idx here is the index in the original articles subcloud
-                        # We need to find which position in the gap this article corresponds to
-                        gap_position = np.where(gap.dists_idxs.idxs == article_idx)[0]
-                        book_coverage[book_idx].append(gap_position[0])
-                        book_distances[book_idx].append(dist)
-            
-            # Sort books by number of articles covered (descending)
             sorted_books = sorted(book_coverage.items(), key=lambda x: len(x[1]), reverse=True)
-            
+            book_to_articles_mapping = get_book_to_articles_mapping(gap)
             f.write(f"{len(sorted_books)} books covering articles in the gap, in order of decreasing coverage:\n\n")
-            
             for i, (book_idx, covered_article_idxs) in enumerate(sorted_books):
                 book_work = book_works[book_idx]
                 num_covered = len(covered_article_idxs)
-                
-                f.write(f"Book {i + 1}/{len(sorted_books)} - Id: {book_work.get('id', 'N/A')} - Title: {book_work.get('display_name', 'N/A')}\n")
+                f.write(
+                    f"Book {i + 1}/{len(sorted_books)} - Id: {book_work.get('id', 'N/A')} - Title: {book_work.get('display_name', 'N/A')}\n"
+                )
                 f.write(f"  Abstract: {book_work.get('abstract', 'N/A')}\n")
-                f.write(f"  Number of articles covered: {num_covered} ({num_covered / gap_size:.2%})\n")
-                
-                # Find the closest article (minimum distance)
-                distances = book_distances[book_idx]
-                min_dist_idx = np.argmin(distances)
-                gap_position = covered_article_idxs[min_dist_idx]
-                closest_distance = distances[min_dist_idx]
-                
-                # Get the article from the gap using the gap position
-                gap_article_idx = gap.dists_idxs.idxs[gap_position]
-                closest_article_work = article_works[gap_article_idx]
-                
-                f.write(f"  Closest article in gap:\n")
-                f.write(f"    Title: {closest_article_work.get('display_name', 'N/A')}\n")
-                f.write(f"    ID: {closest_article_work.get('id', 'N/A')}\n")
-                f.write(f"    Abstract: {closest_article_work.get('abstract', 'N/A')}\n")
-                f.write(f"    Distance: {closest_distance:.4f}\n")
-                
+                f.write(f"  Number of articles covered: {num_covered} ({(num_covered / gap_size) if gap_size > 0 else 0:.2%})\n")
+                if book_idx in book_to_articles_mapping:
+                    dists_idxs = book_to_articles_mapping[book_idx]
+                    if len(dists_idxs.idxs) > 0:
+                        closest_article_idx = dists_idxs.idxs[0]
+                        closest_distance = float(dists_idxs.sqdists[0])
+                        closest_article_work = article_works[closest_article_idx]
+                        f.write("  Closest article in gap:\n")
+                        f.write(f"    Title: {closest_article_work.get('display_name', 'N/A')}\n")
+                        f.write(f"    ID: {closest_article_work.get('id', 'N/A')}\n")
+                        f.write(f"    Abstract: {closest_article_work.get('abstract', 'N/A')}\n")
+                        f.write(f"    Squared distance: {closest_distance:.4f}\n")
                 f.write("\n" + "-" * 60 + "\n\n")
-    
+
     LOGGER.info(f"Detailed gap analysis written to {gap_file}")
 
 
-def write_llm_prompt(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
-                     radius_fraction: float, num_books: int, num_articles: int, 
-                     books: SubCloud, articles: SubCloud) -> None:
-    """
-    Write an LLM prompt for generating a book proposal based on the gap analysis.
+def write_llm_prompt(gap: GapProtocol, gap_idx: int, topic_name: str, topic_id: str, 
+                     analysis_config: AnalysisConfiguration, 
+                     books: SubCloud, articles: SubCloud) -> Tuple[int, int]:
+    """Write an LLM prompt for generating a book proposal based on the gap analysis.
     
-    Args:
-        gap: The Gap object to analyze
-        gap_idx: Index of this gap (0-indexed)
-        topic_name: Display name of the topic
-        topic_id: ID of the topic
-        denoiser: Name of the denoiser used
-        drop_k: Drop-k parameter used
-        radius_fraction: Radius fraction for gap analysis
-        num_books: Total number of books in topic
-        num_articles: Total number of articles in topic
-        books: SubCloud for books
-        articles: SubCloud for articles
+    Returns:
+        Tuple[int, int]: (num_articles_for_llm, num_books_for_llm)
     """
     gap_size = len(gap.dists_idxs.idxs)
-    
-    # Create prompt file
-    gap_dir = get_gap_dir(denoiser, drop_k, radius_fraction, gap_idx)
-    prompts_dir = gap_dir / "prompts"
-    prompts_dir.mkdir(parents=True, exist_ok=True)
-    
-    prompt_filename = f"{create_unicode_safe_filename(topic_name)}_id={topic_id}_prompt.txt"
-    prompt_file = prompts_dir / prompt_filename
     
     # Get work metadata
     article_works = articles.works()
     book_works = books.works()
     
-    # Sample 20 random articles from the gap
-    sample_size = min(20, gap_size)
+    # Sample random articles from the gap (up to configured limit)
+    sample_size = min(analysis_config.llm_config.requested_num_prompt_articles, gap_size)
     sampled_indices = random.sample(range(gap_size), sample_size)
     sampled_articles = [article_works[gap.dists_idxs.idxs[i]] for i in sampled_indices]
     
-    # Only analyze book coverage if books exist
+    # Analyze book coverage using the configured minimum coverage threshold
     covering_books = []
-    if num_books > 0:
-        # Get covered points analysis to find books covering the gap
-        covered_points_analysis = gap.closest_query_points()
-        
-        # Find books that cover at least 50% of the gap articles
-        book_coverage = defaultdict(list)
-        for book_idx, covered_points in covered_points_analysis.qidx_to_covered_index_points.items():
-            if len(covered_points.idxs) > 0:
-                book_coverage[book_idx] = covered_points.idxs.tolist()
-        
-        # Sort books by coverage and select until we cover at least 50% of gap
-        sorted_books = sorted(book_coverage.items(), key=lambda x: len(x[1]), reverse=True)
-        covered_articles = set()
-        target_coverage = gap_size * 0.5
-        
-        for book_idx, covered_article_idxs in sorted_books:
-            covering_books.append(book_works[book_idx])
-            covered_articles.update(covered_article_idxs)
-            if len(covered_articles) >= target_coverage:
-                break
+    # Get book coverage using helper function
+    book_coverage = group_gap_articles_by_covering_books(gap)
+    
+    # # Find books that cover at least the minimum required coverage of the gap articles
+    sorted_books = sorted(book_coverage.items(), key=lambda x: len(x[1]), reverse=True)
+    covered_articles = set()
+    # target_coverage = gap_size * analysis_config.prompt_book_min_coverage
+    
+    for book_idx, covered_article_idxs in sorted_books[:analysis_config.llm_config.requested_num_prompt_books]:
+        covering_books.append(book_works[book_idx])
+        covered_articles.update(covered_article_idxs)
+        # if len(covered_articles) >= target_coverage:
+        #     break
+    
+    prompts_llm_dir = GapDirectoryManager.get_prompts_llm_dir(analysis_config, gap_idx)
+    
+    prompt_filename = f"{create_unicode_safe_filename(topic_name)}_id={topic_id}_prompt.txt"
+    prompt_file = prompts_llm_dir / prompt_filename
     
     with open(prompt_file, 'w', encoding='utf-8') as f:
-        f.write("# Textbook Proposal Prompt\n\n")
-        f.write("You are a publishing expert and academic researcher. Based on the research articles and related books ")
+        f.write("You are a publishing expert and academic researcher. Based on the research articles ")
+        if covering_books:
+            f.write(f"and related books ")
         f.write("provided below, please propose a title, abstract, and table of contents for a textbook that would ")
         f.write("prepare students to understand research in this area.\n\n")
         
@@ -486,55 +633,52 @@ def write_llm_prompt(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, den
         f.write("## Required Output Format\n\n")
         f.write("Format your response as valid JSON with EXACTLY the following structure. ")
         f.write("Do not add any text before or after this JSON:\n\n")
-        f.write("```json\n")
         f.write("{\n")
-        f.write('  "title": "[Proposed Title]",\n')
-        f.write('  "abstract": "[Abstract]",\n')
+        f.write('  "title": "<Proposed Title>",\n')
+        f.write('  "abstract": "<Abstract>",\n')
         f.write('  "chapters": [\n')
         f.write('    {\n')
-        f.write('      "chapter_title": "[Chapter Name]",\n')
-        f.write('      "chapter_description": "[Description of concepts covered (1-2 sentences)]"\n')
+        f.write('      "chapter_title": "<Chapter Name>",\n')
+        f.write('      "chapter_description": "<Description of concepts covered (1-2 sentences)>"\n')
         f.write('    },\n')
         f.write('    {\n')
-        f.write('      "chapter_title": "[Chapter Name]",\n')
-        f.write('      "chapter_description": "[Description of concepts covered (1-2 sentences)]"\n')
+        f.write('      "chapter_title": "<Chapter Name>",\n')
+        f.write('      "chapter_description": "<Description of concepts covered (1-2 sentences)>"\n')
         f.write('    }\n')
         f.write('    // ... continue for 10-15 chapters\n')
         f.write('  ]\n')
-        f.write('}\n')
-        f.write("```\n\n")
+        f.write('}\n\n')
         f.write("## Guidelines\n\n")
         f.write("- Use the EXACT JSON structure shown above.\n")
-        f.write("- Replace ALL bracketed placeholders with your content.\n")
+        f.write("- Replace ALL angle-bracketed placeholders (e.g., <Proposed Title>) with your content.\n")
         f.write("- Include 10-15 chapters in the chapters array.\n")
         f.write("- Build up systematically from basic to advanced concepts.\n")
-    
     LOGGER.info(f"LLM prompt written to {prompt_file}")
-
-
-def _perform_gap_neighbor_searches(gap: Gap, books: SubCloud, articles: SubCloud, covered_points_analysis: Gap.CoveredPoints, k: int = 5) -> GapVisualizationData:
-    """
-    Perform the four FAISS neighbor searches for gap visualization.
     
-    Returns:
-        GapVisualizationData: Contains both flattened neighbor sets and detailed search results
-    """
+    # Return the counts for CSV tracking
+    num_articles_for_llm = len(sampled_articles)
+    num_books_for_llm = len(covering_books)
+    return num_articles_for_llm, num_books_for_llm
+
+
+def _perform_gap_neighbor_searches(gap: GapProtocol, books: SubCloud, articles: SubCloud, k: int = 5) -> GapVisualizationData:
+    """Perform the four FAISS neighbor searches for gap visualization."""
     gap_article_indices = gap.dists_idxs.idxs
-    covering_book_indices = list(covered_points_analysis.qidx_to_covered_index_points.keys())
+    covering_book_indices = get_covering_book_indices(gap)
     
     # 1. Nearest articles to in-gap articles
     gap_to_article_neighbors = set()
-    if len(gap_article_indices) > 0:
-        res = faiss_search_outside_epsilon(articles, articles, is_intra_cloud_search=True, k=k, epsilon=0)
-        gap_to_article_neighbors.update(res.I_outside.flatten())
+    # if len(gap_article_indices) > 0:
+    #     res = knn(articles, articles, k=k+1) # +1 to exclude self-neighbor
+    #     gap_to_article_neighbors.update(res.I.flatten())
     
     # 2. Nearest books to in-gap articles - KEEP DETAILED RESULTS
     gap_to_book_neighbors = set()
     gap_article_to_book_search = None
     if len(gap_article_indices) > 0 and len(books.embeddings()) > 0:
-        res = faiss_search_outside_epsilon(books, articles, is_intra_cloud_search=False, k=k, epsilon=0)
+        res = knn(books, articles, k=k)
         # Only get neighbors for gap articles
-        gap_book_neighbors = res.I_outside[gap_article_indices]
+        gap_book_neighbors = res.I[gap_article_indices]
         gap_to_book_neighbors.update(gap_book_neighbors.flatten())
         # Keep detailed search results for efficient lookups
         gap_article_to_book_search = gap_book_neighbors
@@ -542,20 +686,20 @@ def _perform_gap_neighbor_searches(gap: Gap, books: SubCloud, articles: SubCloud
     # 3. Nearest articles to covering books - KEEP DETAILED RESULTS
     book_to_article_neighbors = set()
     book_to_article_search = None
-    if len(covering_book_indices) > 0:
-        res = faiss_search_outside_epsilon(articles, books, is_intra_cloud_search=False, k=k, epsilon=0)
-        # Only get neighbors for covering books
-        book_article_neighbors = res.I_outside[covering_book_indices]
-        book_to_article_neighbors.update(book_article_neighbors.flatten())
-        # Keep detailed search results for efficient lookups
-        book_to_article_search = book_article_neighbors
+    # if len(covering_book_indices) > 0:
+    #     res = knn(articles, books, k=k)
+    #     # Only get neighbors for covering books
+    #     book_article_neighbors = res.I[covering_book_indices]
+    #     book_to_article_neighbors.update(book_article_neighbors.flatten())
+    #     # Keep detailed search results for efficient lookups
+    #     book_to_article_search = book_article_neighbors
     
     # 4. Nearest books to covering books
     book_to_book_neighbors = set()
     if len(covering_book_indices) > 0:
-        res = faiss_search_outside_epsilon(books, books, is_intra_cloud_search=True, k=k, epsilon=0)
+        res = knn(books, books, k=k+1) # +1 to exclude self-neighbor
         # Only get neighbors for covering books
-        book_book_neighbors = res.I_outside[covering_book_indices]
+        book_book_neighbors = res.I[covering_book_indices]
         book_to_book_neighbors.update(book_book_neighbors.flatten())
     
     return GapVisualizationData(
@@ -570,17 +714,17 @@ def _perform_gap_neighbor_searches(gap: Gap, books: SubCloud, articles: SubCloud
     )
 
 
-def _collect_visualization_data(gap: Gap, gap_idx: int, num_books: int, books: SubCloud, articles: SubCloud):
+def _collect_visualization_data(gap: GapProtocol, gap_idx: int, books: SubCloud, articles: SubCloud, proposal_embeddings: Optional[list] = None):
     """
     Helper function to collect all embeddings and metadata for gap visualization.
-    
+
     Returns:
-        tuple: (all_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, covered_points_analysis, neighbor_data)
+        tuple: (base_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, neighbor_data, proposal_embeddings_array)
     """
     gap_size = len(gap.dists_idxs.idxs)
     
     if gap_size == 0:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     
     # Get all embeddings and work data
     all_article_embeddings = articles.embeddings()
@@ -590,12 +734,11 @@ def _collect_visualization_data(gap: Gap, gap_idx: int, num_books: int, books: S
     gap_article_indices = gap.dists_idxs.idxs
     
     # Get covered points analysis to find books covering the gap
-    covered_points_analysis = gap.closest_query_points()
-    covering_book_indices = list(covered_points_analysis.qidx_to_covered_index_points.keys())
+    covering_book_indices = get_covering_book_indices(gap)
     
     # Perform the four neighbor searches
-    k = 5
-    neighbor_data = _perform_gap_neighbor_searches(gap, books, articles, covered_points_analysis, k)
+    k = NEAREST_NEIGHBOR_K
+    neighbor_data = _perform_gap_neighbor_searches(gap, books, articles, k)
     
     # Collect all unique items - simplified to just distinguish articles vs books
     item_registry = {}  # (work_type, idx) -> item_type
@@ -626,10 +769,17 @@ def _collect_visualization_data(gap: Gap, gap_idx: int, num_books: int, books: S
         item_types.append(item_type)
     
     if len(all_embeddings_list) < 3:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     
-    # Concatenate embeddings
-    all_embeddings = np.vstack(all_embeddings_list)
+    # Base embeddings (do not include proposals here)
+    base_embeddings = np.vstack(all_embeddings_list)
+    
+    # Prepare proposal embeddings array (kept separate)
+    proposal_embeddings_arr = None
+    if proposal_embeddings:
+        prop_list = [np.asarray(pe) for pe in proposal_embeddings]
+        if len(prop_list) > 0:
+            proposal_embeddings_arr = np.vstack(prop_list)
     
     # Create position mappings for connection lines  
     gap_article_positions_map = {}
@@ -641,498 +791,689 @@ def _collect_visualization_data(gap: Gap, gap_idx: int, num_books: int, books: S
         elif work_type == 'book':
             all_book_positions_map[work_idx] = i
     
-    return (all_embeddings, item_types, all_items, gap_article_positions_map, 
-            all_book_positions_map, covered_points_analysis, neighbor_data)
+    return (base_embeddings, item_types, all_items, gap_article_positions_map, 
+            all_book_positions_map, neighbor_data, proposal_embeddings_arr)
 
 
-def _create_gap_plot(embeddings_2d, item_types, all_items, gap_article_positions_map, 
-                    all_book_positions_map, covered_points_analysis, neighbor_data: GapVisualizationData, 
-                    gap: Gap, topic_name: str, gap_idx: int, method_name: str, variance_info: str = ""):
+def _create_gap_plot(
+    embeddings_2d: NDArray,
+    item_types: list[str],
+    all_items: list[tuple[str, int]],
+    gap_article_positions_map: dict,
+    all_book_positions_map: dict,
+    covered_points_analysis,
+    neighbor_data,
+    gap: GapProtocol,
+    topic_name: str,
+    gap_idx: int,
+    method_name: str,
+    pc_variances: tuple[float, float] | None,
+    ax: matplotlib.axes.Axes,
+    proposals_2d: Optional[NDArray] = None,
+) -> None:
+    """Minimal gap plotting helper used by plotters and overlays.
+
+    Plots base articles and books, highlights articles in the gap, and labels the plot.
+    This intentionally keeps the visualization simple.
     """
-    Helper function to create the actual plot from 2D embeddings.
-    
-    Args:
-        embeddings_2d: 2D coordinates for plotting
-        item_types: List of item type strings
-        all_items: List of (work_type, idx) tuples
-        gap_article_positions_map: Mapping from gap article indices to position in embeddings_2d
-        all_book_positions_map: Mapping from all book indices to position in embeddings_2d
-        covered_points_analysis: Gap coverage analysis
-        neighbor_data: Neighbor search results
-        gap: The Gap object
-        topic_name: Name of the topic
-        gap_idx: Gap index
-        method_name: Name of dimensionality reduction method (e.g., "PCA", "t-SNE")
-        variance_info: Additional info about variance explained (for PCA)
-    """
-    gap_article_indices = gap.dists_idxs.idxs
-    covering_book_indices = list(covered_points_analysis.qidx_to_covered_index_points.keys())
-    
-    # Create the plot
-    plt.figure(figsize=(12, 10))
-    
-    # Determine which articles will be re-assigned to center point
-    center_article_idx = gap_article_indices[0]  # Center is the first article in the gap
-    center_pos = None
-    reassigned_articles = set()  # Articles that will be re-assigned to center
-    
-    if center_article_idx in gap_article_positions_map:
-        center_pos_idx = gap_article_positions_map[center_article_idx]
-        center_pos = embeddings_2d[center_pos_idx]
-        
-        # Check each article to see if it's closer to center than to its nearest book
-        # This applies to ALL articles, not just gap articles
-        for i, (work_type, work_idx) in enumerate(all_items):
-            if work_type == 'article':
-                article_pos = embeddings_2d[i]
-                
-                # Use efficient lookup to find the nearest book
-                nearest_book_idx = neighbor_data.get_nearest_book_for_article(work_idx)
-                
-                if nearest_book_idx is not None and nearest_book_idx in all_book_positions_map:
-                    book_pos_idx = all_book_positions_map[nearest_book_idx]
-                    book_pos = embeddings_2d[book_pos_idx]
-                    
-                    # Calculate distances in 2D visualization space
-                    distance_to_book = np.linalg.norm(article_pos - book_pos)
-                    distance_to_center = np.linalg.norm(article_pos - center_pos)
-                    
-                    # If closer to center, this article will be re-assigned
-                    if distance_to_center < distance_to_book:
-                        reassigned_articles.add(work_idx)
-    
-    # Plot all books
-    book_positions = []
-    article_positions_reassigned = []
-    article_positions_normal = []
-    
-    for i, (work_type, work_idx) in enumerate(all_items):
-        if work_type == 'book':
-            book_positions.append(i)
-        elif work_type == 'article':
-            if work_idx in reassigned_articles:
-                article_positions_reassigned.append(i)
-            else:
-                article_positions_normal.append(i)
-    
-    # # Plot articles
-    # article_positions = article_positions_reassigned + article_positions_normal
-    # article_coords = embeddings_2d[article_positions]
-    # plt.scatter(article_coords[:, 0], article_coords[:, 1], 
-    #             c='gray', marker='o', s=50, alpha=0.5, label='Articles', zorder=1)
+    n = len(embeddings_2d)
+    if n == 0:
+        return
 
-    # Plot unreassigned articles
-    unreassigned_article_coords = embeddings_2d[article_positions_normal]
-    plt.scatter(unreassigned_article_coords[:, 0], unreassigned_article_coords[:, 1], 
-                c='gray', marker='.', s=50, alpha=0.2, label='Unreassigned Articles', zorder=1)
-    
-    # Plot reassigned articles
-    reassigned_article_coords = embeddings_2d[article_positions_reassigned]
-    plt.scatter(reassigned_article_coords[:, 0], reassigned_article_coords[:, 1], 
-                c=GAP_COLOR, marker='.', s=50, alpha=0.5, label='Reassigned Articles', zorder=2)
-    
+    # Determine masks for books and articles
+    is_book = [work_type == 'book' for (work_type, _idx) in all_items[:n]]
+    is_article = [work_type == 'article' for (work_type, _idx) in all_items[:n]]
+
+    emb = embeddings_2d[:n]
+
+    # Compute positions of gap articles within the local plotting array
+    gap_positions_all = list(gap_article_positions_map.values())
+    gap_positions = [p for p in gap_positions_all if p < n]
+    gap_pos_set = set(gap_positions)
+
+    # Plot non-gap articles only (so 'Articles' isn't shown if we only drew gap articles)
+    article_idx = [i for i, v in enumerate(is_article) if v]
+    non_gap_article_idx = [i for i in article_idx if i not in gap_pos_set]
+    if len(non_gap_article_idx) > 0:
+        ax.scatter(emb[non_gap_article_idx, 0], emb[non_gap_article_idx, 1], c=GAP_COLOR, s=30, alpha=0.6, label='Articles', zorder=1)
+
+    # Highlight gap articles (center and others)
+    if len(gap_positions) > 0:
+        ax.scatter(emb[gap_positions, 0], emb[gap_positions, 1], c=GAP_COLOR, s=90, alpha=0.8, marker='o', label='Gap Articles', zorder=2)
+        # Mark center article specially (first in gap.dists_idxs.idxs)
+        try:
+            center_global_idx = gap.dists_idxs.idxs[0]
+            center_pos = gap_article_positions_map.get(int(center_global_idx), None)
+            if center_pos is not None and center_pos < n:
+                ax.scatter(emb[center_pos, 0], emb[center_pos, 1], marker='*', c=GAP_COLOR, s=120, edgecolors='k', linewidths=1.2, label='Gap Center', zorder=4)
+        except Exception:
+            pass
+
     # Plot books
-    book_coords = embeddings_2d[book_positions]
-    plt.scatter(book_coords[:, 0], book_coords[:, 1], 
-                c=BOOK_COLOR, marker='^', s=100, alpha=0.7, label='Books', zorder=3)
-    
-    # Draw lines from each article to its nearest book or gap center
-    for i, (work_type, work_idx) in enumerate(all_items):
-        if work_type == 'article':
-            article_pos = embeddings_2d[i]
-            
-            if work_idx in reassigned_articles and center_pos is not None:
-                # Reassigned articles: yellow line to gap center
-                plt.plot([article_pos[0], center_pos[0]], [article_pos[1], center_pos[1]], 
-                        color=GAP_COLOR, alpha=0.3, linewidth=1, linestyle='-', zorder=4)
-            else:
-                # Un-reassigned articles: blue line to nearest book
-                nearest_book_idx = neighbor_data.get_nearest_book_for_article(work_idx)
-                
-                if nearest_book_idx is not None and nearest_book_idx in all_book_positions_map:
-                    book_pos_idx = all_book_positions_map[nearest_book_idx]
-                    book_pos = embeddings_2d[book_pos_idx]
-                    
-                    plt.plot([article_pos[0], book_pos[0]], [article_pos[1], book_pos[1]], 
-                            color=BOOK_COLOR, alpha=0.3, linewidth=1, linestyle='-', zorder=4)
-    
-    # Plot center article
-    if center_pos is not None:
-        plt.scatter(center_pos[0], center_pos[1], 
-                   c=GAP_COLOR, marker='^', s=200, alpha=1.0, 
-                   edgecolors='black', linewidths=1, 
-                   label='Gap Center', zorder=5)
-    
-    plt.xlabel(f'{method_name} 1{variance_info}')
-    plt.ylabel(f'{method_name} 2{variance_info}')
-    plt.title(f'Gap Visualization ({method_name}): {topic_name} (Gap {gap_idx})\n'
-             f'{len(gap_article_indices)} articles in gap, {len(reassigned_articles)} will be reassigned')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    book_idx = [i for i, v in enumerate(is_book) if v]
+    if len(book_idx) > 0:
+        ax.scatter(emb[book_idx, 0], emb[book_idx, 1], c=BOOK_COLOR, s=80, marker='s', alpha=0.8, label='Books', zorder=3)
+
+    # Plot proposed book(s) as large blue circles with black border
+    if proposals_2d is not None and len(proposals_2d) > 0:
+        ax.scatter(proposals_2d[:, 0], proposals_2d[:, 1],
+                   c=BOOK_COLOR, marker='*', s=120, edgecolors='black', linewidths=1.2,
+                   label='Proposed Book', zorder=4)
+
+    # Title without variance
+    ax.set_title(f"Gap {gap_idx} - {topic_name} ({method_name})")
+    # Axis labels: include per-PC variance if PCA
+    if method_name.upper() == 'PCA' and pc_variances is not None:
+        ax.set_xlabel(f"PC1 ({pc_variances[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({pc_variances[1]:.1%})")
+    else:
+        ax.set_xlabel('Component 1')
+        ax.set_ylabel('Component 2')
+    ax.grid(True, alpha=0.3)
+    handles, labels = ax.get_legend_handles_labels()
+    if len(handles) > 0:
+        ax.legend()
+
+def prepare_gap_visualization_data(gap: GapProtocol, gap_idx: int, num_books: int, books: 'SubCloud', articles: 'SubCloud', proposal_embeddings: Optional[list] = None):
+    """
+    Public wrapper to collect embeddings and metadata for gap visualization.
+    Returns the same tuple as the internal collector, and includes proposal_embeddings_arr as final element.
+    """
+    return _collect_visualization_data(gap, gap_idx, books, articles, proposal_embeddings=proposal_embeddings)
 
 
-def plot_gap_visualization_pca(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
-                              radius_fraction: float, num_books: int, num_articles: int, 
-                              books: SubCloud, articles: SubCloud) -> None:
-    """
-    Create a 2D PCA visualization of the gap showing articles, books, and their relationships.
-    """
-    LOGGER.info(f"Creating PCA gap visualization for topic {topic_name}, gap {gap_idx}")
-    
-    # Collect visualization data
-    data = _collect_visualization_data(gap, gap_idx, num_books, books, articles)
-    if data[0] is None:
-        LOGGER.warning(f"Skipping PCA visualization - insufficient data")
-        return
-    
-    all_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, covered_points_analysis, neighbor_data = data
-    
-    # Apply PCA to reduce to 2D
-    pca = PCA(n_components=2, random_state=42)
-    embeddings_2d = pca.fit_transform(all_embeddings)
-    
-    # Create variance info string
-    variance_info = f' ({pca.explained_variance_ratio_[0]:.1%} variance)'
-    
-    # Create the plot
-    _create_gap_plot(embeddings_2d, item_types, all_items, gap_article_positions_map,
-                    all_book_positions_map, covered_points_analysis, neighbor_data,
-                    gap, topic_name, gap_idx, "PCA", variance_info)
-    
-    # Save the plot
-    gap_dir = get_gap_dir(denoiser, drop_k, radius_fraction, gap_idx)
-    plots_dir = gap_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    plot_file = plots_dir / f"{create_unicode_safe_filename(topic_name)}_gap_{gap_idx}_pca_visualization.png"
-    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    LOGGER.info(f"PCA gap visualization saved to {plot_file}")
+class GapPlotter(abc.ABC):
+    def __init__(self, gap: GapProtocol, gap_idx: int, topic_name: str, topic_id: str, analysis_config: AnalysisConfiguration, books: 'SubCloud', articles: 'SubCloud') -> None:
+        self.gap = gap
+        self.gap_idx = gap_idx
+        self.topic_name = topic_name
+        self.topic_id = topic_id
+        self.analysis_config = analysis_config
+        self.books = books
+        self.articles = articles
+        
+        # Properties for existing code
+        self.denoiser = analysis_config.gap_config.denoiser
+        self.drop_k = analysis_config.gap_config.drop_k
+        self.radius_fraction = analysis_config.gap_config.radius_fraction
+        self.num_articles = analysis_config.llm_config.requested_num_prompt_articles
+        self.num_books = analysis_config.llm_config.requested_num_prompt_books
+    @abc.abstractmethod
+    def get_embeddings_2d(self,
+                         all_embeddings: NDArray,
+                         item_types: list[str],
+                         all_items: list,
+                         gap_article_positions_map: dict,
+                         all_book_positions_map: dict,
+                         neighbor_data
+    ) -> tuple[NDArray, tuple[float, float] | None]:
+        """Return 2D embeddings and method-specific info (e.g., variance_info)."""
+        pass
 
+    @abc.abstractmethod
+    def method_name(self) -> str:
+        pass
 
-def plot_gap_visualization_tsne(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
-                               radius_fraction: float, num_books: int, num_articles: int, 
-                               books: SubCloud, articles: SubCloud) -> None:
-    """
-    Create a 2D t-SNE visualization of the gap showing articles, books, and their relationships.
-    """
-    LOGGER.info(f"Creating t-SNE gap visualization for topic {topic_name}, gap {gap_idx}")
-    
-    # Collect visualization data
-    data = _collect_visualization_data(gap, gap_idx, num_books, books, articles)
-    if data[0] is None:
-        LOGGER.warning(f"Skipping t-SNE visualization - insufficient data")
-        return
-    
-    all_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, covered_points_analysis, neighbor_data = data
-    
-    # Apply t-SNE to reduce to 2D
-    # Use lower perplexity for small datasets
-    n_samples = len(all_embeddings)
-    perplexity = min(30, max(5, n_samples // 4))
-    
-    tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity)
-    
-    embeddings_2d = tsne.fit_transform(all_embeddings)
-    
-    # Create the plot
-    _create_gap_plot(embeddings_2d, item_types, all_items, gap_article_positions_map,
-                    all_book_positions_map, covered_points_analysis, neighbor_data,
-                    gap, topic_name, gap_idx, "t-SNE")
-    
-    # Save the plot
-    gap_dir = get_gap_dir(denoiser, drop_k, radius_fraction, gap_idx)
-    plots_dir = gap_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    plot_file = plots_dir / f"{create_unicode_safe_filename(topic_name)}_gap_{gap_idx}_tsne_visualization.png"
-    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    LOGGER.info(f"t-SNE gap visualization saved to {plot_file}")
-
-
-class _GapVisualizationContext(DenoiserContext):
-    """
-    Custom DenoiserContext for gap visualization that uses the k-NN graph
-    from FAISS searches as the affinity matrix.
-    """
-    def __init__(self, embeddings: NDArray, neighbor_indices: NDArray, item_types: list[str], k: int = 5):
-        """
-        Args:
-            embeddings: All embeddings for visualization items
-            neighbor_indices: Array of shape (n_items, k) containing neighbor indices
-            item_types: List of item type strings (e.g., 'article', 'book') for each embedding
-            k: Number of neighbors per item
-        """
-        self._embeddings = embeddings
-        self._neighbor_indices = neighbor_indices
-        self._item_types = item_types
-        self._k = k
-        self._affinity_matrix = None
-        self._subsets = {}  # Cache for subset embeddings
-        
-        # Determine unique item types for subsets
-        self._unique_types = list(dict.fromkeys(item_types))  # Preserve order, remove duplicates
-        
-    def _build_affinity_matrix(self) -> sp.csr_matrix:
-        """Build sparse affinity matrix from neighbor indices."""
-        if self._affinity_matrix is not None:
-            return self._affinity_matrix
-            
-        n_items = len(self._embeddings)
-        row_indices = []
-        col_indices = []
-        data = []
-        
-        for i, neighbors in enumerate(self._neighbor_indices):
-            for neighbor_idx in neighbors:
-                if 0 <= neighbor_idx < n_items:  # Valid neighbor
-                    row_indices.append(i)
-                    col_indices.append(neighbor_idx)
-                    data.append(1.0)  # Unweighted graph
-        
-        self._affinity_matrix = sp.csr_matrix(
-            (data, (row_indices, col_indices)), 
-            shape=(n_items, n_items)
-        )
-        return self._affinity_matrix
-    
-    def A(self) -> sp.csr_matrix:
-        return self._build_affinity_matrix()
-    
-    def X(self) -> NDArray:
-        return self._embeddings
-    
-    def X_n(self, n: int) -> NDArray:
-        """Get embeddings for the n-th subset (0-indexed)."""
-        if n >= len(self._unique_types):
-            raise IndexError(f"Subset {n} requested, but only {len(self._unique_types)} subsets available")
-        
-        if n not in self._subsets:
-            target_type = self._unique_types[n]
-            mask = np.array([item_type == target_type for item_type in self._item_types], dtype=bool)
-            self._subsets[n] = self._embeddings[mask]
-        
-        return self._subsets[n]
-    
-    def num_subsets(self) -> int:
-        """Return the number of subsets available."""
-        return len(self._unique_types)
-
-
-def plot_gap_visualization_lpp(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
-                              radius_fraction: float, num_books: int, num_articles: int, 
-                              books: SubCloud, articles: SubCloud) -> None:
-    """
-    Create a 2D LPP visualization of the gap using the k-NN graph from FAISS searches.
-    """
-    LOGGER.info(f"Creating LPP gap visualization for topic {topic_name}, gap {gap_idx}")
-    
-    # Collect visualization data
-    data = _collect_visualization_data(gap, gap_idx, num_books, books, articles)
-    if data[0] is None:
-        LOGGER.warning(f"Skipping LPP visualization - insufficient data")
-        return
-    
-    all_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, covered_points_analysis, neighbor_data = data
-    
-    # Get the neighbor searches
-    gap_article_indices = gap.dists_idxs.idxs
-    covering_book_indices = list(covered_points_analysis.qidx_to_covered_index_points.keys())
-    k = 5
-    
-    # Get the actual FAISS search results to build proper neighbor relationships
-    # We need to re-run the searches to get the detailed neighbor mappings
-    item_neighbors = defaultdict(set)  # Maps (work_type, global_idx) -> set of local neighbor indices
-    
-    # Create a mapping from global indices to local positions in all_embeddings
-    global_to_local = {}
-    for local_idx, (work_type, global_idx) in enumerate(all_items):
-        global_to_local[(work_type, global_idx)] = local_idx
-    
-    gap_article_indices_set = set(gap_article_indices)
-    covering_book_indices_set = set(covering_book_indices)
-    
-    # 1. Get neighbors for gap articles from article-to-article search
-    if len(gap_article_indices) > 0:
-        res = faiss_search_outside_epsilon(articles, articles, is_intra_cloud_search=True, k=k, epsilon=0)
-        for i, gap_article_idx in enumerate(gap_article_indices):
-            if ('article', gap_article_idx) in global_to_local:
-                neighbors = res.I_outside[gap_article_idx]
-                for neighbor_idx in neighbors:
-                    if ('article', neighbor_idx) in global_to_local and neighbor_idx != gap_article_idx:
-                        item_neighbors[('article', gap_article_idx)].add(global_to_local[('article', neighbor_idx)])
-    
-    # 2. Get book neighbors for gap articles from article-to-book search  
-    if len(gap_article_indices) > 0 and len(books.embeddings()) > 0:
-        res = faiss_search_outside_epsilon(books, articles, is_intra_cloud_search=False, k=k, epsilon=0)
-        for gap_article_idx in gap_article_indices:
-            if ('article', gap_article_idx) in global_to_local:
-                neighbors = res.I_outside[gap_article_idx]
-                for neighbor_idx in neighbors:
-                    if ('book', neighbor_idx) in global_to_local:
-                        item_neighbors[('article', gap_article_idx)].add(global_to_local[('book', neighbor_idx)])
-    
-    # 3. Get article neighbors for covering books from book-to-article search
-    if len(covering_book_indices) > 0:
-        res = faiss_search_outside_epsilon(articles, books, is_intra_cloud_search=False, k=k, epsilon=0)
-        for covering_book_idx in covering_book_indices:
-            if ('book', covering_book_idx) in global_to_local:
-                neighbors = res.I_outside[covering_book_idx]
-                for neighbor_idx in neighbors:
-                    if ('article', neighbor_idx) in global_to_local:
-                        item_neighbors[('book', covering_book_idx)].add(global_to_local[('article', neighbor_idx)])
-    
-    # 4. Get book neighbors for covering books from book-to-book search
-    if len(covering_book_indices) > 0:
-        res = faiss_search_outside_epsilon(books, books, is_intra_cloud_search=True, k=k, epsilon=0)
-        for covering_book_idx in covering_book_indices:
-            if ('book', covering_book_idx) in global_to_local:
-                neighbors = res.I_outside[covering_book_idx]
-                for neighbor_idx in neighbors:
-                    if ('book', neighbor_idx) in global_to_local and neighbor_idx != covering_book_idx:
-                        item_neighbors[('book', covering_book_idx)].add(global_to_local[('book', neighbor_idx)])
-    
-    # Build neighbor indices list efficiently
-    neighbor_indices_list = []
-    for work_type, global_idx in all_items:
-        neighbors = list(item_neighbors[(work_type, global_idx)])
-        
-        # Pad or truncate to exactly k neighbors
-        neighbors = neighbors[:k]  # Take first k
-        local_idx = global_to_local[(work_type, global_idx)]
-        while len(neighbors) < k:
-            neighbors.append(neighbors[0] if neighbors else local_idx)  # Self-loop if no neighbors
-        
-        neighbor_indices_list.append(neighbors)
-    
-    neighbor_indices = np.array(neighbor_indices_list)
-    
-    # Create LPP context and apply LPP
-    context = _GapVisualizationContext(all_embeddings, neighbor_indices, item_types, k)
-    lpp_denoiser = LPPDenoiser()
-    
-    try:
-        projector, eigenvals = lpp_denoiser.projector(context, n_components=2)
-        embeddings_2d = all_embeddings @ projector
-        
-        # Create the plot
+    def plot_and_save(self) -> None:
+        # Collect data (no proposals for standard plotter)
+        data = _collect_visualization_data(self.gap, self.gap_idx, self.books, self.articles, proposal_embeddings=None)
+        if data[0] is None:
+            LOGGER.warning(f"Skipping {self.method_name()} visualization - insufficient data")
+            return
+        base_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, neighbor_data, _proposal_embeddings = data
+        embeddings_2d, pc_variances = self.get_embeddings_2d(base_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, neighbor_data)
+        fig, ax = PlotManager.create_figure(figsize=FIGURE_SIZE_LARGE)
         _create_gap_plot(embeddings_2d, item_types, all_items, gap_article_positions_map,
-                        all_book_positions_map, covered_points_analysis, neighbor_data,
-                        gap, topic_name, gap_idx, "LPP")
+                        all_book_positions_map, None, neighbor_data,
+                        self.gap, self.topic_name, self.gap_idx, self.method_name(), pc_variances, ax=ax)
         
-        # Save the plot
-        gap_dir = get_gap_dir(denoiser, drop_k, radius_fraction, gap_idx)
-        plots_dir = gap_dir / "plots"
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        
-        plot_file = plots_dir / f"{create_unicode_safe_filename(topic_name)}_gap_{gap_idx}_lpp_visualization.png"
-        plt.savefig(plot_file, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        LOGGER.info(f"LPP gap visualization saved to {plot_file}")
-        
-    except Exception as e:
-        LOGGER.warning(f"LPP visualization failed: {e}")
+        # Use the analysis configuration for centralized directory management
+        plots_dir = GapDirectoryManager.get_plots_dir(self.analysis_config, self.gap_idx)
+        plot_file = plots_dir / f"{create_unicode_safe_filename(self.topic_name)}_gap_{self.gap_idx}_{self.method_name().lower()}_visualization.png"
+        PlotManager.save_and_close(fig, plot_file)
+        LOGGER.info(f"{self.method_name()} gap visualization saved to {plot_file}")
 
 
-def plot_gap_visualization(gap: Gap, gap_idx: int, topic_name: str, topic_id: str, denoiser: str, drop_k: int, 
-                          radius_fraction: float, num_books: int, num_articles: int, 
-                          books: SubCloud, articles: SubCloud) -> None:
-    """
-    Create PCA, t-SNE, and LPP visualizations of the gap.
-    """
-    plot_gap_visualization_pca(gap, gap_idx, topic_name, topic_id, denoiser, drop_k,
-                              radius_fraction, num_books, num_articles, books, articles)
-    # plot_gap_visualization_lpp(gap, gap_idx, topic_name, topic_id, denoiser, drop_k,
-    #                           radius_fraction, num_books, num_articles, books, articles)
-    # plot_gap_visualization_tsne(gap, gap_idx, topic_name, topic_id, denoiser, drop_k,
-    #                            radius_fraction, num_books, num_articles, books, articles)
+# Shared projection helper used by plotters and overlays
 
-def write_gaps(cloud: Cloud, topic_name: str, topic_id: str, radius_fraction: float, num_gaps: int):
+def _compute_base_projection(
+    method: str,
+    base_embeddings: NDArray,
+    item_types: list[str],
+    all_items: list[tuple[str, int]],
+    book_to_articles_mapping,
+    neighbor_data,
+    gap: GapProtocol,
+    books: 'SubCloud',
+    articles: 'SubCloud',
+    proposal_embeddings: Optional[NDArray] = None
+) -> Tuple[NDArray, tuple[float, float] | None, Callable[[NDArray], NDArray]]:
+    """Compute 2D projection. Fit PCA on base + proposals when proposals are provided.
+
+    This function intentionally supports only PCA to keep the projection simple.
     """
-    Analyze the top num_gaps gaps for a topic and write detailed information to files.
-    
-    Args:
-        cloud: The main cloud object
-        topic_name: Display name of the topic
-        topic_id: ID of the topic
-        radius_fraction: Radius fraction for gap analysis
-        num_gaps: Number of top gaps to analyze and write files for
+    # Stack embeddings for fitting if proposals provided; keep base_embeddings for indexing
+    if proposal_embeddings is not None and len(proposal_embeddings) > 0:
+        all_embeddings = np.vstack([base_embeddings, proposal_embeddings])
+    else:
+        all_embeddings = base_embeddings
+
+    method_upper = method.upper()
+    if method_upper == 'PCA':
+        pca = PCA(n_components=2, random_state=RANDOM_STATE)
+        embeddings_2d = pca.fit_transform(all_embeddings)
+        # Return per-axis variances (PC1, PC2) for labeling axes
+        evr = pca.explained_variance_ratio_
+        pc_variances = (float(evr[0]), float(evr[1])) if evr.size >= 2 else (float(evr[0]), 0.0)
+        return embeddings_2d, pc_variances, pca.transform
+
+    if method_upper == 'LPP':
+        raise NotImplementedError("LPP projection is not yet implemented in this context.")
+        gap_article_indices = gap.dists_idxs.idxs
+        covering_book_indices = list(book_to_articles_mapping.keys())
+        k = 5
+        item_neighbors = defaultdict(set)
+        global_to_local = { (work_type, global_idx): local_idx for local_idx, (work_type, global_idx) in enumerate(all_items) }
+        # 1. Article-article neighbors
+        if len(gap_article_indices) > 0:
+            res = knn(articles, articles, k=k+1)
+            for gap_article_idx in gap_article_indices:
+                if ('article', gap_article_idx) in global_to_local:
+                    neighbors = res.I[gap_article_idx]
+                    for neighbor_idx in neighbors:
+                        if ('article', neighbor_idx) in global_to_local and neighbor_idx != gap_article_idx:
+                            item_neighbors[('article', gap_article_idx)].add(global_to_local[('article', neighbor_idx)])
+        # 2. Article-book neighbors
+        if len(gap_article_indices) > 0 and len(books.embeddings()) > 0:
+            res = knn(books, articles, k=k)
+            for gap_article_idx in gap_article_indices:
+                if ('article', gap_article_idx) in global_to_local:
+                    neighbors = res.I[gap_article_idx]
+                    for neighbor_idx in neighbors:
+                        if ('book', neighbor_idx) in global_to_local:
+                            item_neighbors[('article', gap_article_idx)].add(global_to_local[('book', neighbor_idx)])
+        # 3. Book-article neighbors
+        if len(covering_book_indices) > 0:
+            res = knn(articles, books, k=k)
+            for covering_book_idx in covering_book_indices:
+                if ('book', covering_book_idx) in global_to_local:
+                    neighbors = res.I[covering_book_idx]
+                    for neighbor_idx in neighbors:
+                        if ('article', neighbor_idx) in global_to_local:
+                            item_neighbors[('book', covering_book_idx)].add(global_to_local[('article', neighbor_idx)])
+        # 4. Book-book neighbors
+        if len(covering_book_indices) > 0:
+            res = knn(books, books, k=k+1)
+            for covering_book_idx in covering_book_indices:
+                if ('book', covering_book_idx) in global_to_local:
+                    neighbors = res.I[covering_book_idx]
+                    for neighbor_idx in neighbors:
+                        if ('book', neighbor_idx) in global_to_local and neighbor_idx != covering_book_idx:
+                            item_neighbors[('book', covering_book_idx)].add(global_to_local[('book', neighbor_idx)])
+        # Build neighbor indices
+        neighbor_indices_list = []
+        for work_type, global_idx in all_items:
+            neighbors = list(item_neighbors[(work_type, global_idx)])
+            neighbors = neighbors[:k]
+            local_idx = global_to_local[(work_type, global_idx)]
+            while len(neighbors) < k:
+                neighbors.append(neighbors[0] if neighbors else local_idx)
+            neighbor_indices_list.append(neighbors)
+        neighbor_indices = np.array(neighbor_indices_list)
+        # LPP projector
+        context = _GapVisualizationContext(all_embeddings, neighbor_indices, item_types, k)
+        lpp_denoiser = LPPDenoiser()
+        projector, _eigs = lpp_denoiser.projector(context, n_components=2)
+        embeddings_2d = all_embeddings @ projector
+        transform_fn = lambda X: X @ projector
+        return embeddings_2d, "", transform_fn
+
+    raise NotImplementedError(f"Projection method not supported: {method}")
+
+
+
+class PCAGapPlotter(GapPlotter):
+    def method_name(self) -> str:
+        return "PCA"
+    def get_embeddings_2d(self,
+                         all_embeddings: NDArray,
+                         item_types: list[str],
+                         all_items: list,
+                         gap_article_positions_map: dict,
+                         all_book_positions_map: dict,
+                         neighbor_data
+    ) -> tuple[NDArray, tuple[float, float] | None]:
+        # Get book coverage data for _compute_base_projection 
+        book_to_articles_mapping = get_book_to_articles_mapping(self.gap)
+        embeddings_2d, pc_variances, _ = _compute_base_projection(
+            'PCA', all_embeddings, item_types, all_items,
+            book_to_articles_mapping, neighbor_data, self.gap, self.books, self.articles
+        )
+        return embeddings_2d, pc_variances
+
+class TSNEGapPlotter(GapPlotter):
+    def method_name(self) -> str:
+        return "t-SNE"
+    def get_embeddings_2d(self,
+                         all_embeddings: NDArray,
+                         item_types: list[str],
+                         all_items: list,
+                         gap_article_positions_map: dict,
+                         all_book_positions_map: dict,
+                         neighbor_data
+    ) -> tuple[NDArray, tuple[float, float] | None]:
+        n_samples = len(all_embeddings)
+        perplexity = min(30, max(5, n_samples // 4))
+        tsne = TSNE(n_components=2, random_state=RANDOM_STATE, perplexity=perplexity)
+        embeddings_2d = tsne.fit_transform(all_embeddings)
+        return embeddings_2d, None
+
+class LPPGapPlotter(GapPlotter):
+    def method_name(self) -> str:
+        return "LPP"
+    def get_embeddings_2d(self,
+                         all_embeddings: NDArray,
+                         item_types: list[str],
+                         all_items: list,
+                         gap_article_positions_map: dict,
+                         all_book_positions_map: dict,
+                         neighbor_data
+    ) -> tuple[NDArray, tuple[float, float] | None]:
+        book_to_articles_mapping = get_book_to_articles_mapping(self.gap)
+        embeddings_2d, _pc_variances, _ = _compute_base_projection(
+            'LPP', all_embeddings, item_types, all_items,
+            book_to_articles_mapping, neighbor_data, self.gap, self.books, self.articles
+        )
+        return embeddings_2d, None
+
+
+def find_gaps_for_topic(
+    books: SubCloud,
+    articles: SubCloud,
+    radius_fraction: float,
+    k: int = 1,
+    is_intra_cloud: bool = False
+):
+    """Return gaps for the given books/articles subclouds and parameters."""
+    return kball_gaps(
+        ambient=articles,
+        landmark=books,
+        query=articles,
+        radius_fraction=radius_fraction,
+        k=k,
+        is_intra_cloud=is_intra_cloud
+    )
+
+def write_gaps(
+    cloud: Cloud,
+    topic_name: str,
+    topic_id: str,
+    radius_fraction: float,
+    num_gaps: int,
+    requested_num_prompt_articles: int,
+    requested_num_prompt_books: int,
+    cell_type: str,
+    generate_plots: bool = True,
+):
+    """Analyze the top gaps for a topic, write artifacts, and record results.
+
+    Requires explicit requested_num_prompt_* values. No defaults.
+
+    TODO: cell_type isn't being used!
     """
-    # Create subclouds for books and articles
-    books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.BOOK.value))
-    articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_type=WorkType.ARTICLE.value))
-    
-    denoiser = cloud.denoiser if cloud.denoiser is not None else "NONE"
-    drop_k = cloud.drop_k
+    if cell_type != 'kball':
+        raise NotImplementedError("Only cell_type='kball' is currently implemented.")
+    # Build subclouds and topic stats
+    books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
     num_articles = len(articles.embeddings())
-    
     LOGGER.info(f"Topic {topic_name}: {num_books} books, {num_articles} articles")
+
+    # Centralized analysis configuration
+    gap_config = GapConfiguration(
+        denoiser=cloud.denoiser,
+        drop_k=cloud.drop_k,
+        radius_fraction=radius_fraction,
+        cell_type=cell_type,
+    )
     
+    llm_config = LLMConfiguration(
+        requested_num_prompt_articles=requested_num_prompt_articles,
+        requested_num_prompt_books=requested_num_prompt_books,
+    )
+    
+    analysis_config = AnalysisConfiguration.from_components(gap_config, llm_config)
+
     if num_articles == 0:
-        LOGGER.info(f"No articles found for topic {topic_id}, skipping gap analysis")
+        LOGGER.info(f"No articles found for topic {topic_id}, recording empty gaps")
+        results = GapResults(analysis_config=analysis_config)
         for gap_idx in range(num_gaps):
-            Results.add_row(topic_name, topic_id, denoiser, drop_k, gap_idx, num_books, num_articles, 0)
+            results.add_row(
+                topic_name=topic_name,
+                topic_id=topic_id,
+                gap_idx=gap_idx,
+                gap_size=0,
+                gap_size_percentile=float("nan"),
+                gap_zscore=float("nan"),
+                shapiro_log10_pval=float("nan"),
+                num_articles=num_articles,
+                num_books=num_books,
+                actual_num_prompt_articles=0,
+                actual_num_prompt_books=0,
+            )
         return
-    
-    # Find the top gaps
-    gap_generator = gaps(articles, books, radius_fraction=radius_fraction)
+
+    # Book gap sizes for statistics
+    book_gap_sizes = [
+        len(g.dists_idxs.idxs)
+        for g in kball_gaps(
+            ambient=articles,
+            landmark=books,
+            query=books,
+            radius_fraction=radius_fraction,
+            k=1,
+            is_intra_cloud=True,
+        )
+    ]
+    # TODO: cell_type='voronoi' would use something like this:
+    # book_gap_sizes = actual_voronoi_coverage(ambient=articles.embeddings(), landmark=books.index(), ambient_is_landmark=False)
+
+    # Q-Q plots
+    create_book_gap_sizes_qqplot(
+        book_gap_sizes, topic_name, topic_id, analysis_config, num_books=num_books, num_articles=num_articles
+    )
+
+    # Top gaps over articles
+    gap_generator = kball_gaps(
+        ambient=articles, landmark=books, query=articles, radius_fraction=radius_fraction, k=1, is_intra_cloud=False
+    )
+    # TODO: cell_type='voronoi' would use something like this:
+    # gap_generator = voronoi_gaps(ambient=articles, landmark=books, query=articles)
+
     for gap_idx in range(num_gaps):
         try:
             gap = next(gap_generator)
         except StopIteration:
-            LOGGER.warning(f"No gap {gap_idx} found for topic {topic_name} ({topic_id}) - generator exhausted")
-            # Add empty entries for remaining gaps
-            for remaining_gap_idx in range(gap_idx, num_gaps):
-                Results.add_row(topic_name, topic_id, denoiser, drop_k, remaining_gap_idx, num_books, num_articles, 0)
+            LOGGER.warning(
+                f"No gap {gap_idx} found for topic {topic_name} ({topic_id}) - generator exhausted"
+            )
             break
-        
-        # Process this gap
-        write_single_gap(gap, gap_idx, topic_name, topic_id, denoiser, drop_k, 
-                        radius_fraction, num_books, num_articles, books, articles)
 
-        # Generate LLM prompt for book proposal
-        write_llm_prompt(gap, gap_idx, topic_name, topic_id, denoiser, drop_k, 
-                        radius_fraction, num_books, num_articles, books, articles)
+        # Write artifacts and row
+        write_single_kball_gap(
+            gap, gap_idx, topic_name, topic_id, analysis_config, books, articles, book_gap_sizes
+        )
 
-        # Plot the gap visualization
-        plot_gap_visualization(gap, gap_idx, topic_name, topic_id, denoiser, drop_k, 
-                              radius_fraction, num_books, num_articles, books, articles)
-
+        # Plot the gap visualization (if enabled)
+        if generate_plots:
+            PCAGapPlotter(gap, gap_idx, topic_name, topic_id, analysis_config, books, articles).plot_and_save()
+        else:
+            LOGGER.info(f"Skipping plot generation for gap {gap_idx} of topic {topic_name}")
 
 
+
+
+def save_gap_plot_with_proposals(
+    gap: KballGap | VoronoiGap,
+    gap_idx: int,
+    topic_name: str,
+    topic_id: str,
+    analysis_config: AnalysisConfiguration,
+    books: 'SubCloud',
+    articles: 'SubCloud',
+    method: str,
+    proposal_embeddings: list,
+    proposal_labels: Optional[list[str]] = None,
+) -> Path:
+    # Collect base visualization data (append proposals into the data collection)
+    num_books = len(books.embeddings())
+    data = prepare_gap_visualization_data(gap, gap_idx, num_books, books, articles, proposal_embeddings=proposal_embeddings)
+    if not data or data[0] is None:
+        LOGGER.warning(f"Skipping {method} overlay - insufficient data")
+        raise ValueError("Insufficient data for plotting")
+    (
+        base_embeddings,
+        item_types,
+        all_items,
+        gap_article_positions_map,
+        all_book_positions_map,
+        neighbor_data,
+        proposal_embeddings_arr,
+    ) = data
+
+    # Compute projection using base + proposals (PCA fits on both if proposals provided)
+    book_to_articles_mapping = get_book_to_articles_mapping(gap)
+    embeddings_2d_all, pc_variances, transform_fn = _compute_base_projection(
+        method, base_embeddings, item_types, all_items,
+        book_to_articles_mapping, neighbor_data, gap, books, articles,
+        proposal_embeddings=proposal_embeddings_arr
+    )
+
+    # Split projections into base items and proposals using the length of base_embeddings
+    base_n = len(base_embeddings)
+    if embeddings_2d_all.shape[0] < base_n:
+        # Fallback: nothing to plot
+        embeddings_2d = embeddings_2d_all
+        proposals_2d = None
+    else:
+        embeddings_2d = embeddings_2d_all[:base_n]
+        proposals_2d = embeddings_2d_all[base_n:] if embeddings_2d_all.shape[0] > base_n else None
+
+    # Create plot with base items and proposals
+    fig, ax = PlotManager.create_figure(figsize=FIGURE_SIZE_LARGE)
+    _create_gap_plot(
+        embeddings_2d,
+        item_types[:len(embeddings_2d)],
+        all_items[:len(embeddings_2d)],
+        gap_article_positions_map,
+        all_book_positions_map,
+        None,  # No longer need covered_points_analysis
+        neighbor_data,
+        gap,
+        topic_name,
+        gap_idx,
+        method.upper(),
+        pc_variances,
+        ax=ax,
+        proposals_2d=proposals_2d,
+    )
+
+    # Save alongside existing plots
+    # Use LLM-specific plots directory since this plot includes proposals
+    plots_dir = GapDirectoryManager.get_plots_llm_dir(analysis_config, gap_idx)
+    plot_file = plots_dir / f"{create_unicode_safe_filename(topic_name)}_gap_{gap_idx}_{method.lower()}_visualization_with_proposals.png"
+    PlotManager.save_and_close(fig, plot_file)
+    LOGGER.info(f"{method.upper()} gap visualization with proposals saved to {plot_file}")
+    return plot_file
+
+
+def save_gap_books_vs_proposals_plot(
+    gap: KballGap | VoronoiGap,
+    gap_idx: int,
+    topic_name: str,
+    topic_id: str,
+    analysis_config: AnalysisConfiguration,
+    books: 'SubCloud',
+    articles: 'SubCloud',
+    method: str,
+    proposal_embeddings: list,
+    proposal_labels: Optional[list[str]] = None,
+) -> Path:
+    """Save a plot comparing gap articles' proximity to neighboring books vs proposals.
+
+    Requirements:
+    - Proposals must be provided (non-empty).
+    - Plots gap articles, neighboring books (that cover gap articles), and proposals.
+    - Articles colored by nearest neighbor class in the ORIGINAL embedding space:
+        * If closer to a neighboring book than to the nearest proposal -> color BOOK_COLOR.
+        * Otherwise -> color GAP_COLOR.
+    - Books are squares (marker='s') colored BOOK_COLOR.
+    - Proposals are squares (marker='s') colored GAP_COLOR with black border.
+    - Articles are circles (marker='o').
+    """
+    if proposal_embeddings is None or len(proposal_embeddings) == 0:
+        raise ValueError("proposal_embeddings must be provided and non-empty")
+
+    # Collect base data: gap articles and covering (neighboring) books
+    all_article_embeddings = articles.embeddings()
+    all_book_embeddings = books.embeddings()
+
+    gap_article_indices = gap.dists_idxs.idxs
+    covering_book_indices = get_covering_book_indices(gap)
+
+    # Build base items and embeddings (articles first, then books)
+    article_vecs = [all_article_embeddings[int(idx)] for idx in gap_article_indices]
+    book_vecs = [all_book_embeddings[int(idx)] for idx in covering_book_indices] if len(covering_book_indices) > 0 else []
+
+    base_items: list[tuple[str, int]] = [(
+        'article', int(idx)
+    ) for idx in gap_article_indices] + ([
+        ('book', int(idx)) for idx in covering_book_indices
+    ] if len(covering_book_indices) > 0 else [])
+
+    base_embeddings = np.vstack(article_vecs + (book_vecs if len(book_vecs) > 0 else [])) if len(article_vecs) + len(book_vecs) > 0 else None
+    if base_embeddings is None or base_embeddings.shape[0] < 3:
+        raise ValueError("Insufficient base items to plot")
+
+    # Prepare proposals array (required)
+    proposals_arr = np.vstack([np.asarray(pe) for pe in proposal_embeddings])
+
+    # Compute projection using base + proposals (PCA fits on both if proposals provided)
+    # Build minimal placeholders for parameters not used by PCA path
+    item_types = ['article'] * len(gap_article_indices) + ['book'] * len(covering_book_indices)
+    neighbor_data = _perform_gap_neighbor_searches(gap, books, articles, k=5)
+    book_to_articles_mapping = get_book_to_articles_mapping(gap)
+    embeddings_2d_all, pc_variances, _ = _compute_base_projection(
+        method, base_embeddings, item_types, base_items,
+        book_to_articles_mapping, neighbor_data, gap, books, articles,
+        proposal_embeddings=proposals_arr
+    )
+
+    # Split projections into base items and proposals using the length of base_embeddings
+    base_n = len(base_embeddings)
+    embeddings_2d = embeddings_2d_all[:base_n]
+    proposals_2d = embeddings_2d_all[base_n:]
+
+    # Determine counts and slices
+    num_articles = len(gap_article_indices)
+    num_books = len(covering_book_indices)
+    article_pos = np.arange(num_articles)
+    book_pos = np.arange(num_articles, num_articles + num_books) if num_books > 0 else np.array([], dtype=int)
+
+    # Classify each article by nearest in ORIGINAL space: book vs proposal
+    A = np.vstack(article_vecs)  # (A, d)
+    B = np.vstack(book_vecs) if len(book_vecs) > 0 else None  # (B, d) or None
+    P = proposals_arr  # (P, d)
+
+    # Distances to books
+    if B is not None and B.shape[0] > 0:
+        # Compute squared distances (A,B)
+        ab_diffs = A[:, None, :] - B[None, :, :]
+        ab_sq_dists = np.einsum('ijk,ijk->ij', ab_diffs, ab_diffs)
+        min_book_d = np.min(ab_sq_dists, axis=1)
+    else:
+        # No books; set +inf so proposals always closer
+        min_book_d = np.full(A.shape[0], np.inf, dtype=float)
+
+    # Distances to proposals (always present)
+    ap_diffs = A[:, None, :] - P[None, :, :]
+    ap_sq_dists = np.einsum('ijk,ijk->ij', ap_diffs, ap_diffs)
+    min_prop_d = np.min(ap_sq_dists, axis=1)
+
+    closer_to_book_mask = min_book_d < min_prop_d
+    closer_to_prop_mask = ~closer_to_book_mask
+
+    # Create plot
+    fig, ax = PlotManager.create_figure(figsize=FIGURE_SIZE_LARGE)
+
+    handles = []
+    labels = []
+
+    # Plot books (neighboring)
+    if num_books > 0:
+        h_books = ax.scatter(
+            embeddings_2d[book_pos, 0], embeddings_2d[book_pos, 1],
+            c=BOOK_COLOR, s=80, marker='s', edgecolors='black', linewidths=1.2,
+            alpha=0.8, label='Book', zorder=2
+        )
+        handles.append(h_books)
+        labels.append('Book')
+
+    # Plot proposals (squares, GAP_COLOR, black border)
+    if proposals_2d is not None and len(proposals_2d) > 0:
+        h_props = ax.scatter(
+            proposals_2d[:, 0], proposals_2d[:, 1],
+            c=GAP_COLOR, s=80, marker='s', edgecolors='black', linewidths=1.2,
+            alpha=0.8, label='Proposal', zorder=2
+        )
+        handles.append(h_props)
+        labels.append('Proposal')
+
+    # Plot articles classified by nearest
+    if np.any(closer_to_book_mask):
+        idx = article_pos[closer_to_book_mask]
+        h_ab = ax.scatter(
+            embeddings_2d[idx, 0], embeddings_2d[idx, 1],
+            c=BOOK_COLOR, s=70, marker='o', alpha=0.85,
+            label='Gap Article (closer to existing book)', zorder=1
+        )
+        handles.append(h_ab)
+        labels.append('Gap Article (closer to existing book)')
+
+    if np.any(closer_to_prop_mask):
+        idx = article_pos[closer_to_prop_mask]
+        h_ap = ax.scatter(
+            embeddings_2d[idx, 0], embeddings_2d[idx, 1],
+            c=GAP_COLOR, s=70, marker='o', alpha=0.85,
+            label='Gap Articles (closer to proposal)', zorder=1
+        )
+        handles.append(h_ap)
+        labels.append('Gap Articles (closer to proposal)')
+
+    # Compute reassignment stats for title
+    num_reassigned = int(np.sum(closer_to_prop_mask))
+    reassigned_pct = (100.0 * num_reassigned / num_articles) if num_articles > 0 else 0.0
+
+    # Title without variance; axes with PCA variances
+    title_core = f"Gap {gap_idx} - {topic_name} ({method.upper()}) | Books vs Proposals | Reassigned: {num_reassigned}/{num_articles} ({reassigned_pct:.1f}%)"
+    ax.set_title(title_core)
+    if method.upper() == 'PCA' and pc_variances is not None:
+        ax.set_xlabel(f"PC1 ({pc_variances[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({pc_variances[1]:.1%})")
+    else:
+        ax.set_xlabel('Component 1')
+        ax.set_ylabel('Component 2')
+    ax.grid(True, alpha=GRID_ALPHA)
+
+    if len(handles) > 0:
+        ax.legend()
+
+    # Save alongside existing plots
+    # Use LLM-specific plots directory since this plot includes proposals  
+    plots_dir = GapDirectoryManager.get_plots_llm_dir(analysis_config, gap_idx)
+    plot_file = plots_dir / f"{create_unicode_safe_filename(topic_name)}_gap_{gap_idx}_{method.lower()}_books_vs_proposals.png"
+    PlotManager.save_and_close(fig, plot_file)
+    LOGGER.info(f"{method.upper()} gap 'books vs proposals' plot saved to {plot_file}")
+    return plot_file
 
 
 def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplicator], radius_fraction: float, denoiser: str,
-         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int):
-
-    # Standard cloud configuration
-    if index_type == IndexType.HNSW:
-        index_info = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
-    else:
-        index_info = index_type.value()
-    # Use passed-in values for max_works, deduplicator, normalize_embeddings, denoiser, drop_k
-    # Create the AI cloud (subfield=AI, topic=None)
-    ai_filter_pair = FilterPair(Filter(subfield=SubField.AI.value), Filter())
-    ai_cloud = Cloud(
-        filter_pair=ai_filter_pair,
-        index_info=index_info,
+         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, generate_plots: bool,
+         requested_num_prompt_articles: int, requested_num_prompt_books: int, cell_type: str):
+    # Build the AI cloud using the helper
+    ai_cloud = build_cloud(
+        drop_k=drop_k,
         max_works=max_works,
         deduplicator=deduplicator,
-        normalize_embeddings=True,
-        denoiser=denoiser if denoiser != "NONE" else None,
-        drop_k=drop_k
+        denoiser=denoiser,
+        index_type=index_type,
+        hnsw_m=hnsw_m,
+        hnsw_efc=hnsw_efc,
+        hnsw_efs=hnsw_efs
     )
-    
-    
     subfields = pyalex.Subfields()
     ai_subfield: pyalex.Subfield = subfields[SubField.AI.value] # type: ignore
     topics: list = ai_subfield["topics"]
-
     for i, topic in enumerate(topics):
         topic_name = topic["display_name"]
         LOGGER.info(f"Analyzing topic {i + 1}/{len(topics)}: {topic_name} ({topic['id']})")
@@ -1143,10 +1484,14 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
             topic_name=topic_name,
             topic_id=topic_id,
             radius_fraction=radius_fraction,
-            num_gaps=1
+            num_gaps=1,
+            requested_num_prompt_articles=requested_num_prompt_articles,
+            requested_num_prompt_books=requested_num_prompt_books,
+            cell_type=cell_type,
+            generate_plots=generate_plots
         )
 
 
-if __name__ == "__main__":
-    setup_logging(log_name=Path(__file__).stem, explicit_args=get_explicit_args())
-    main(**vars(parse_args()))
+# if __name__ == "__main__":
+#     from nextbook.script_utils import run_script_main
+#     run_script_main(main, __file__, generate_plots=True)

@@ -15,8 +15,7 @@ from .batch_operations import (
     clean_latex_content,
     list_batch_jobs,
     get_batch_status,
-    process_completed_batch,
-    BATCH_DIR
+    GAPS_DIR
 )
 
 __all__ = [
@@ -26,6 +25,5 @@ __all__ = [
     'clean_latex_content',
     'list_batch_jobs',
     'get_batch_status',
-    'process_completed_batch',
-    'BATCH_DIR'
+    'GAPS_DIR'
 ]

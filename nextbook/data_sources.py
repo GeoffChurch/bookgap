@@ -30,14 +30,16 @@ import pandas as pd
 from scipy import sparse
 
 from nextbook.cloud import Cloud, SubCloud, WorkDenoisers
-from nextbook.cloud_index import get_avgrefs, get_ball_coverage, faiss_search_outside_epsilon
+from nextbook.cloud_index import get_avgrefs, get_kball_coverage, knn, batch_range_search_individual_radii
 from nextbook.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
 from nextbook.parse_args import get_explicit_args, parse_args
 from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
 from nextbook.mp_ks_test import ks_2samp
+from nextbook.deduplicators import FractionalDeduplicator, SqDistDeduplicator
+# Import plotting utilities to eliminate duplication  
+from nextbook.plot_utils import PlotManager, StatisticalPlotUtils, DPI
 
 FIGSIZE = (10, 6)
-DPI = 150
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
 
@@ -116,10 +118,11 @@ def get_nearest_neighbor(index_cloud: Cloud, query_cloud: Cloud, min_dist: float
         # The original return signature is preserved for the caller in main().
         return Dnn, I
     else:
-        res = faiss_search_outside_epsilon(index_cloud, query_cloud, 1, min_dist)
+        res = knn(index_cloud, query_cloud, radius_of_exclusion=min_dist)
         LOGGER.info(f"{index_cloud.name} -- Nearest neighbor search took {time.time() - start_time:.2f} seconds")
-        Dnn, = res.D_outside.T
-        I = res.I_outside
+        # Dnn, = res.D_outside.T
+        # I = res.I_outside
+        Dnn, I = res.sq_dists.squeeze(1), res.I.squeeze(1)
     return Dnn, I
 
 @TIMER.time()
@@ -171,13 +174,16 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
         LOGGER.info(f"{selfcloud.name} -- Range searching for all points in {othercloud.name} < distance to nearest neighbor")
         closer_points_file.unlink(missing_ok=True)
         start_time = time.time()
-        closer_points = []
-        for point, dist_ub in tqdm.tqdm(zip(selfcloud.embeddings(), Dnn), total=len(Dnn), desc=f"Range search in {othercloud.name} of {selfcloud.name} points"):
-            lims, dists, ids = othercloud.index().range_search(point[np.newaxis], dist_ub) # type: ignore
-            zero, num = lims
-            assert zero == 0, f"Range search lims[0] != 0: {zero}"
-            assert num == len(dists) == len(ids), f"Range search: not {num=} == {len(dists)=} == {len(ids)=}"
-            closer_points.append(ids.tolist())
+        
+        # Use consolidated batch range search function
+        result = batch_range_search_individual_radii(
+            othercloud, 
+            selfcloud.embeddings(), 
+            Dnn.astype(np.float32), 
+            progress_desc=f"Range search in {othercloud.name} of {selfcloud.name} points"
+        )
+        closer_points = result.all_neighbor_ids
+        
         LOGGER.info(f"{selfcloud.name} -- Range searching took {time.time() - start_time:.2f} seconds")
         # Save range search results
         with closer_points_file.open("w") as f:
@@ -211,7 +217,7 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
     #              f"Num points in other cloud: {len(othercloud.items)}\n")
     counts = np.bincount(num_closer)
     # Build histogram of num_closer
-    fig, hist_ax = plt.subplots(figsize=FIGSIZE)
+    fig, hist_ax = PlotManager.create_figure(figsize=FIGSIZE)
     hist_ax.bar(range(len(counts)), counts)
     hist_ax.set_xlabel(f"Number of {othercloud} works between neighboring {selfcloud} works")
     hist_ax.set_ylabel("Count")
@@ -227,8 +233,7 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
     x = np.linspace(0, len(counts), 1000)
     kde_ax.plot(x, kde(x), color="red", label="KDE")
     # kde_ax.legend()
-    fig.savefig(artifacts_dir / f"hist.png", dpi=DPI)
-    plt.close(fig)
+    PlotManager.save_and_close(fig, artifacts_dir / f"hist.png")
 
     # Save ids
     with selfcloud_ids_file.open("w") as sci_f, othercloud_ids_file.open("w") as oci_f:
@@ -275,7 +280,9 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     artifacts_dir = ARTIFACTS_DIR / str(query_cloud.filter_pair) / "avgref_analysis"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     
-    avgref_embeddings, avgref_ids = get_avgrefs(index_clouds, query_cloud, normalize_avgref_embeddings=query_cloud.normalize_embeddings)
+    avgref_result = get_avgrefs(index_clouds, query_cloud, normalize_avgref_embeddings=query_cloud.normalize_embeddings)
+    avgref_embeddings = avgref_result.avgref_embeddings
+    avgref_idxs = avgref_result.corresponding_query_idxs
     
     # avgref_norms = np.linalg.norm(avgref_embeddings, axis=1, keepdims=True)
     # LOGGER.info(f"{query_cloud.name} -- Avgref norms: {get_stats(avgref_norms)}")
@@ -291,15 +298,13 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     #         avgref_embeddings /= avgref_norms
 
     LOGGER.info(f"{query_cloud.name} -- Found {len(avgref_embeddings)} avgrefs for {len(query_cloud.works())} query works ({len(avgref_embeddings) / len(query_cloud.works()) * 100:.2f}%)")
-    id_to_idx = {work["id"]: i for i, work in enumerate(query_cloud.works())}
-    avgref_idxs = [id_to_idx[ref_id] for ref_id in avgref_ids if ref_id in id_to_idx]
     embeddings_with_avgrefs = query_cloud.embeddings()[avgref_idxs]
 
     # Average distance from centroid
     centroid = np.mean(embeddings_with_avgrefs, axis=0)
     embedding_dists_to_centroid = np.linalg.norm(embeddings_with_avgrefs - centroid, axis=1)
     avgref_dists_to_centroid = np.linalg.norm(avgref_embeddings - centroid, axis=1) ** 2
-    fig, ax = plt.subplots(figsize=FIGSIZE)
+    fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
     all_data = np.concatenate([embedding_dists_to_centroid, avgref_dists_to_centroid])
     bins = np.histogram_bin_edges(all_data, bins=200)
     ax.stairs(*np.histogram(embedding_dists_to_centroid, bins=bins, density=False), fill=True, color='lightblue', alpha=0.7, label='Squared distance from works to centroid of works')
@@ -308,12 +313,11 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     ax.set_ylabel("Count")
     ax.set_title(f"Squared Euclidean distance to centroid for {query_cloud.name}")
     ax.legend()
-    fig.savefig(artifacts_dir / "squared_distance_to_centroid.png", dpi=DPI)
-    plt.close(fig)
+    PlotManager.save_and_close(fig, artifacts_dir / "squared_distance_to_centroid.png")
 
     # Distribution of squared distances to avgref
     sq_dists = np.linalg.norm(embeddings_with_avgrefs - avgref_embeddings, axis=1) ** 2
-    fig, ax = plt.subplots(figsize=FIGSIZE)
+    fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
     ax.hist(sq_dists, bins=50, density=False, alpha=0.7, color='green', label='Squared Distance to avgref')
 
     # Overlay histogram of randomized permutation of idxs
@@ -373,7 +377,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     key_columns = [
         'topic',
         'index_info',
-        'duplicate_expectation',
+        'deduplicator',
         'normalize_embeddings',
         'drop_k',
         'denoiser',
@@ -393,7 +397,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     row = {
         'topic': str(query_cloud.filter_pair),
         'index_info': str(index_info),
-        'duplicate_expectation': query_cloud.duplicate_expectation,
+        'deduplicator': str(query_cloud.deduplicator) if query_cloud.deduplicator else 'None',
         'normalize_embeddings': query_cloud.normalize_embeddings,
         'drop_k': query_cloud.drop_k,
         'denoiser': str(query_cloud.denoiser),
@@ -433,7 +437,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     cumsum_random = np.cumsum(np.bincount(random_ranks.astype(np.int64))) / len(random_ranks)
 
     # Plot CDF of ranks
-    fig, ax = plt.subplots(figsize=FIGSIZE)
+    fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
     # ax.plot(np.arange(len(cumsum)), cumsum, label='Rank of avgref', color='green')
     # ax.plot(np.arange(len(cumsum_random)), cumsum_random, label='Rank of random avgref', color='orange')
     ax.scatter(np.arange(len(cumsum)), cumsum, label='Rank of avgref', color='green', s=10, zorder=2)
@@ -470,7 +474,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     plt.close(fig)
 
     
-    fig, ax = plt.subplots(figsize=FIGSIZE)
+    fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
     
     # ax.hist(ranks, bins=200, density=False, alpha=0.7, color='green', label='Rank of avgref')
     # ax.hist(random_ranks, bins=200, density=False, alpha=0.5, color='orange', label='Rank of random avgref')
@@ -524,88 +528,6 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     # ax.set_yscale("log")
     # fig.savefig(artifacts_dir / "sanity_rank_distribution_log.png", dpi=DPI)
     # plt.close(fig)
-
-
-@dataclass
-class GetBallCoverageResult:
-    index_works_per_query_work: NDArray
-    ball_counts: NDArray # Number of index works within the ball for each query work
-    covered_points: list[tuple[NDArray, NDArray]] # List of (dists, ids) tuples
-
-# @TIMER.time()
-# @MEMORY.cache
-# def get_ball_coverage(index_cloud: Union[Cloud, SubCloud], query_cloud: Union[Cloud, SubCloud], radius_fraction: float):
-#     assert index_cloud.work_filter == query_cloud.work_filter, f"Topic mismatch: {index_cloud.work_filter} != {query_cloud.work_filter}"
-#     topic = index_cloud.work_filter
-#     index_work_type = index_cloud
-#     query_work_type = query_cloud
-#     LOGGER.info(f"{topic} -- Finding closest {query_work_type} to each {index_work_type} (each {query_workType} gets a voronoi cell of {index_work_type}s)")
-    
-#     # For each article (index_cloud), find the nearest book (query_cloud).
-#     res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
-#     D = res.D_outside.squeeze(1) # Distances to nearest book, shape: (num_articles,)
-#     I = res.I_outside.squeeze(1) # Indices of nearest book, shape: (num_articles,)
-
-#     # Count, for each book, how many articles have it as their nearest neighbor.
-#     index_works_per_query_work = np.bincount(I, minlength=query_cloud.index().ntotal)
-    
-#     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type} (radius fraction: {radius_fraction})"
-#     LOGGER.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
-
-#     # Now, for each article, count how many other articles are within a radius defined by its distance to the nearest book.
-#     D_scaled = D * radius_fraction
-#     # The query and radii must correspond. We query with articles and use the radii calculated for each article.
-#     res = range_search_radii_(index_cloud.index(), index_cloud.embeddings(), D_scaled)
-#     assert res.lims is not None and res.dists is not None and res.ids is not None # For type checking
-#     ball_counts = res.lims[1:] - res.lims[:-1]
-#     LOGGER.info(f"Number of {index_work_type}s covered by each {index_work_type} (ball):\n{get_stats(ball_counts)}")
-
-#     # The `range_search_radii_` function already provides all the necessary information.
-#     # The manual loop below is redundant and has been replaced by unpacking the result.
-#     dists_list = from_flat_with_lims(FlatWithLims(res.dists, res.lims))
-#     ids_list = from_flat_with_lims(FlatWithLims(res.ids, res.lims))
-#     covered_points = list(zip(dists_list, ids_list))
-
-#     return GetBallCoverageResult(
-#         index_works_per_query_work=index_works_per_query_work,
-#         ball_counts=ball_counts,
-#         covered_points=covered_points)
-# # def get_ball_coverage(index_cloud: Cloud, query_cloud: Cloud, radius_fraction: float):
-# #     assert index_cloud.topic == query_cloud.topic, f"Topic mismatch: {index_cloud.topic} != {query_cloud.topic}"
-# #     topic = index_cloud.topic
-# #     index_work_type = index_cloud.work_type
-# #     query_work_type = query_cloud.work_type
-# #     logger.info(f"{topic} -- Finding closest {query_work_type} to each {index_work_type} (each {query_work_type} gets a voronoi cell of {index_work_type}s)")
-# #     res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
-# #     D = res.D_outside.squeeze(1)
-# #     I = res.I_outside.squeeze(1)
-# #     Ip1 = np.ones(index_cloud.index().ntotal, dtype=np.int32) # Increment each index work by 1 so that np.unique counts even empty cells
-# #     Ip1[I] += 1 # Each index work is counted once for itself
-# #     _idxs, index_works_per_query_work_p1 = np.unique(Ip1, return_counts=True)
-# #     index_works_per_query_work = index_works_per_query_work_p1 - 1 # Decrement back to original counts, leaving 0 for empty cells
-# #     title = f"{topic} - Number of {index_work_type}s covered by each {query_work_type}"
-# #     logger.info(f"{title} (voronoi):\n{get_stats(index_works_per_query_work)}")
-    
-    
-
-# #     # Now get stats for the balls
-# #     D_scaled = D * radius_fraction
-# #     res = range_search_radii_(index_cloud.index(), query_cloud.embeddings(), D_scaled)
-# #     ball_counts = res.lims[1:] - res.lims[:-1]
-# #     logger.info(f"{title} (ball):\n{get_stats(ball_counts)}")
-
-# #     covered_points = []
-# #     index_cloud_index = index_cloud.index()
-# #     for point, embedding in enumerate(tqdm.tqdm(index_cloud.embeddings(), desc=f"Ball coverage (for each {index_work_type}, count the number of {index_work_type}s within {radius_fraction} * distance to nearest {query_work_type})")):
-# #         lims, dists, ids = index_cloud_index.range_search(embedding[np.newaxis], D_scaled[point]) # type: ignore
-# #         zero, num = lims
-# #         assert zero == 0, f"Range search lims[0] != 0: {zero}"
-# #         assert num == len(dists) == len(ids), f"Range search: not {num=} == {len(dists)=} == {len(ids)=}"
-# #         covered_points.append((dists, ids))
-# #     return GetBallCoverageResult(
-# #         index_works_per_query_work=index_works_per_query_work,
-# #         ball_counts=ball_counts,
-# #         covered_points=covered_points)
 
 
 class InferenceManager:
@@ -721,8 +643,8 @@ def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_
         book_to_nearest_inball = defaultdict(list)
         book_to_idx: dict[str, int] = dict()
         for in_ball_id in covered_ids:
-            book_res = faiss_search_outside_epsilon(query_cloud, index_cloud, k=1, epsilon=0)
-            nearest_book_idx = book_res.I_outside[in_ball_id, 0]
+            book_res = knn(query_cloud, index_cloud)
+            nearest_book_idx = book_res.I[in_ball_id, 0]
             nearest_book = query_cloud.works()[nearest_book_idx]
             book_to_nearest_inball[nearest_book['id']].append(in_ball_id)
             if nearest_book['id'] not in book_to_idx:
@@ -805,8 +727,8 @@ def output_covered_points(hole_rank: int, highest_coverage_id: np.intp, covered_
 @MEMORY.cache
 def get_points_by_coverage_ball(cloud: Cloud, index_work_type: str, query_work_type: str, radius_fraction: float):
     # Create SubClouds for the two work types
-    index_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_type=index_work_type))
-    query_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_type=query_work_type))
+    index_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_types=(index_work_type,)))
+    query_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_types=(query_work_type,)))
     
     filter_pair = cloud.filter_pair
     artifacts_dir = ARTIFACTS_DIR / f"{filter_pair}" / f"{index_work_type}s covered by {query_work_type}s"
@@ -838,25 +760,23 @@ def get_points_by_coverage_ball(cloud: Cloud, index_work_type: str, query_work_t
     # ball_counts = res.lims[1:] - res.lims[:-1]
     # logger.info(f"{title} (ball):\n{get_stats(ball_counts)}")
 
-    res = get_ball_coverage(index_subcloud, query_subcloud, radius_fraction)
-    index_works_per_query_work = res.index_works_per_query_work
-    ball_counts = res.ball_counts
-    covered_points = res.covered_points
-    title = f"{filter_pair} - Number of {index_work_type}s covered by each {query_work_type}"
+    covered_points = get_kball_coverage(ambient=index_subcloud, landmark=query_subcloud, 
+                                        query=index_subcloud, radius_fraction=radius_fraction, 
+                                        k=1, is_intra_cloud=False)
+    # title = f"{filter_pair} - Number of {index_work_type}s covered by each {query_work_type}"
 
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-
-    all_data = np.concatenate([index_works_per_query_work, ball_counts])
-    bins = np.histogram_bin_edges(all_data, bins=50)
-    ax.stairs(*np.histogram(index_works_per_query_work, bins=bins), color="lightblue", fill=True, zorder=1, label=f"Number of {index_work_type}s covered by each {query_work_type} (voronoi)")
-    ax.stairs(*np.histogram(ball_counts, bins=bins), color="orange", fill=False, zorder=2, label=f"Number of {index_work_type}s covered by each {index_work_type} (ball of radius {radius_fraction} * dist to nearest {query_work_type})")
-    ax.set_xlabel(f"Number of {index_work_type}s covered")
-    ax.set_ylabel(f"Frequency")
-    ax.set_title(title)
-    ax.set_yscale("log")
-    ax.legend(loc="upper right")
-    fig.savefig(artifacts_dir / f"{index_work_type}s covered per {query_work_type}.png", dpi=DPI)
-    plt.close(fig)
+    # fig, ax = plt.subplots(figsize=FIGSIZE)
+    # all_data = np.concatenate([index_works_per_query_work, ball_counts])
+    # bins = np.histogram_bin_edges(all_data, bins=50)
+    # ax.stairs(*np.histogram(index_works_per_query_work, bins=bins), color="lightblue", fill=True, zorder=1, label=f"Number of {index_work_type}s covered by each {query_work_type} (voronoi)")
+    # ax.stairs(*np.histogram(ball_counts, bins=bins), color="orange", fill=False, zorder=2, label=f"Number of {index_work_type}s covered by each {index_work_type} (ball of radius {radius_fraction} * dist to nearest {query_work_type})")
+    # ax.set_xlabel(f"Number of {index_work_type}s covered")
+    # ax.set_ylabel(f"Frequency")
+    # ax.set_title(title)
+    # ax.set_yscale("log")
+    # ax.legend(loc="upper right")
+    # fig.savefig(artifacts_dir / f"{index_work_type}s covered per {query_work_type}.png", dpi=DPI)
+    # plt.close(fig)
 
 
     # Iterate over the top 10 points, deleting covered points from the list
@@ -885,7 +805,7 @@ def get_points_by_coverage_ball(cloud: Cloud, index_work_type: str, query_work_t
         coverages.append(coverage(covered_points))
 
     # Plot a histogram comparing old to new ball coverages
-    fig, ax = plt.subplots(figsize=FIGSIZE)
+    fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
     # pruned_coverage = np.array([len(ids) for _dists, ids in covered_points])
     # all_data = np.concatenate([original_coverage, pruned_coverage])
     all_data = np.concatenate(coverages)
@@ -966,7 +886,7 @@ def export_avgref_stats_to_latex():
         subtable.drop(columns=key_columns).rename(columns=col_map).to_latex(tex_path, index=False, float_format="%.1f", escape=False)
         LOGGER.info(f"Exported LaTeX to {tex_path}")
         LOGGER.info(f"Exporting plot for combination {combo}")
-        fig, ax = plt.subplots(figsize=FIGSIZE)
+        fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
         for denoiser, group in subtable.groupby(plot_series_column):
             group = group.sort_values(by=plot_x_column)
             ax.plot(group[plot_x_column], group[plot_y_column], marker='o', alpha=0.7, label=denoiser)
@@ -974,8 +894,7 @@ def export_avgref_stats_to_latex():
         ax.set_ylabel(col_map[plot_y_column])
         ax.set_title(f"{combo.topic} - {col_map[plot_x_column]} vs {col_map[plot_y_column]} by {col_map[plot_series_column]}")
         ax.legend(title=col_map[plot_series_column])
-        fig.savefig(directory / f"avgref_rank_stats_{'_'.join(map(str, combo))}.png", dpi=DPI)
-        plt.close(fig)
+        PlotManager.save_and_close(fig, directory / f"avgref_rank_stats_{'_'.join(map(str, combo))}.png")
     # # De-dup based on key columns
     # df = df.drop_duplicates(subset=["topic", "drop_k", "denoiser"])
 
@@ -1099,13 +1018,12 @@ def plot_norms(clouds: Collection[Cloud]) -> None:
                 f"\tstd: {norms.std()}\n"
                 )
     assert norms.shape == (embeddings.shape[0],)
-    fig, ax = plt.subplots(figsize=FIGSIZE)
+    fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
     ax.hist(norms, bins=100)
     ax.set_xlabel("Norm")
     ax.set_ylabel("Count")
     ax.set_title("Histogram of Norms of Embeddings")
-    fig.savefig(ARTIFACTS_DIR / "norms_histogram.png", dpi=DPI)
-    plt.close(fig)
+    PlotManager.save_and_close(fig, ARTIFACTS_DIR / "norms_histogram.png")
 
 def do_embedding_plots(config, clouds):
     color_f = lambda colors: [lang if lang in {"en", "fr", "ja", "ko", "nl", "ru", "tr"} else "other" for lang in colors]
@@ -1203,16 +1121,21 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
 
     export_avgref_stats_to_latex()
 
+    # Create appropriate deduplicator based on parameters
+    if config.min_sqdist is not None:
+        deduplicator = SqDistDeduplicator(min_sqdist=config.min_sqdist)
+    else:
+        deduplicator = FractionalDeduplicator(duplicate_fraction=config.duplicate_expectation)
+
     clouds = {
         topic: Cloud(
             filter_pair=topic.value,
             index_info=config.index_info,
             max_works=config.max_works,
-            duplicate_expectation=config.duplicate_expectation,
+            deduplicator=deduplicator,
             normalize_embeddings=config.normalize_embeddings,
             denoiser=config.denoiser,
             drop_k=config.drop_k,
-            min_sqdist=config.min_sqdist,
         )
         for topic in Filters
     }
@@ -1263,7 +1186,7 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
         cloud = clouds[topic]
         referenced_work_counts = np.array([len(work["referenced_works"]) for work in cloud.works()])
         LOGGER.info(f"Number of referenced works in {topic} - {work_type}:\n{get_stats(referenced_work_counts)}")
-        fig, ax = plt.subplots(figsize=FIGSIZE)
+        fig, ax = PlotManager.create_figure(figsize=FIGSIZE)
         ax.hist(referenced_work_counts, bins=100, color="lightblue", alpha=0.7)
         ax.set_xlabel("Number of referenced works")
         ax.set_ylabel("Frequency")
@@ -1280,5 +1203,5 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
     # do_inference()
 
 if __name__ == "__main__":
-    setup_logging(log_name=f"{Path(__file__).stem}", explicit_args=get_explicit_args())
-    main(**vars(parse_args()))
+    from nextbook.script_utils import run_script_main
+    run_script_main(main, __file__)

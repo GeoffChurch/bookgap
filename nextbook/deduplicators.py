@@ -12,6 +12,31 @@ from nextbook.index import IndexInfo, range_search_, range_search_with_
 from nextbook.util import TIMER, LOGGER
 
 
+def _validate_embeddings_and_log_input(embeddings: NDArray, method_name: str) -> bool:
+    """
+    Shared validation and logging for deduplication input. 
+    Returns True if deduplication should proceed, False for early return.
+    """
+    LOGGER.info(f"{method_name}: Processing {len(embeddings)} embeddings")
+    
+    if len(embeddings) <= 1:
+        LOGGER.info(f"{method_name}: Only {len(embeddings)} points, no deduplication needed")
+        return False
+    return True
+
+
+def _log_deduplication_results(retained_count: int, total_count: int, method_name: str) -> None:
+    """Shared logging for deduplication results."""
+    removed_count = total_count - retained_count
+    removal_rate = (removed_count / total_count * 100) if total_count > 0 else 0
+    LOGGER.info(f"{method_name}: Retained {retained_count}/{total_count} points (removed {removed_count}, {removal_rate:.1f}%)")
+
+
+def _create_retained_indices(embeddings_count: int) -> NDArray[np.uint64]:
+    """Create indices array for no-op deduplication."""
+    return np.arange(embeddings_count, dtype=np.uint64)
+
+
 @dataclass(frozen=True)
 class Deduplicator(ABC):
     """Abstract base class for deduplication strategies."""
@@ -41,14 +66,20 @@ class FractionalDeduplicator(Deduplicator):
     duplicate_fraction: float
     
     def __post_init__(self):
-        assert 0 <= self.duplicate_fraction <= 1, f"duplicate_fraction must be in [0, 1], got {self.duplicate_fraction}"
+        if not (0 <= self.duplicate_fraction <= 1):
+            raise ValueError(f"duplicate_fraction must be in [0, 1], got {self.duplicate_fraction}")
     
     @TIMER.time(formatters=dict(undeduped_embeddings=lambda embeddings: f"<shape={embeddings.shape}>"))
     def deduplicate(self, undeduped_embeddings: NDArray, index_info: IndexInfo):
+        if not _validate_embeddings_and_log_input(undeduped_embeddings, "FractionalDeduplicator"):
+            return _create_retained_indices(len(undeduped_embeddings))
+            
         num_to_drop = int(self.duplicate_fraction * (len(undeduped_embeddings) - 1))
-        LOGGER.info(f"Using duplicate_fraction={self.duplicate_fraction}, dropping {num_to_drop} points")
+        LOGGER.info(f"FractionalDeduplicator: Using duplicate_fraction={self.duplicate_fraction}, will drop {num_to_drop} points")
 
-        if num_to_drop > 0 and len(undeduped_embeddings) > 1:
+        if num_to_drop == 0:
+            retained_indices = _create_retained_indices(len(undeduped_embeddings))
+        else:
             # Compute distances to nearest older neighbor
             dist_to_nearest_older = []
             # Build index incrementally, but in batches for efficiency
@@ -88,14 +119,13 @@ class FractionalDeduplicator(Deduplicator):
                     main_index.add(query_batch) # type: ignore
                     pbar.update(len(query_batch))
 
-            assert len(dist_to_nearest_older) == len(undeduped_embeddings) - 1, f"Expected {len(undeduped_embeddings) - 1} distances, got {len(dist_to_nearest_older)}"
+            if len(dist_to_nearest_older) != len(undeduped_embeddings) - 1:
+                raise ValueError(f"Expected {len(undeduped_embeddings) - 1} distances, got {len(dist_to_nearest_older)}")
 
             argsort = np.argsort(dist_to_nearest_older)
             retained_indices = np.concatenate(([0], argsort[num_to_drop:] + 1), dtype=np.uint64)  # +1 because we dropped the first element
-        else:
-            retained_indices = np.arange(len(undeduped_embeddings), dtype=np.uint64)
 
-        LOGGER.info(f"Retaining {len(retained_indices)} points out of {len(undeduped_embeddings)}")
+        _log_deduplication_results(len(retained_indices), len(undeduped_embeddings), "FractionalDeduplicator")
         return retained_indices
 
 
@@ -105,18 +135,18 @@ class SqDistDeduplicator(Deduplicator):
     min_sqdist: float
     
     def __post_init__(self):
-        assert self.min_sqdist >= 0, f"min_sqdist must be non-negative, got {self.min_sqdist}"
+        if self.min_sqdist < 0:
+            raise ValueError(f"min_sqdist must be non-negative, got {self.min_sqdist}")
     
     def description(self) -> str:
         return f"squared distance deduplication (min_sqdist={self.min_sqdist})"
     
     @TIMER.time(formatters=dict(undeduped_embeddings=lambda embeddings: f"<shape={embeddings.shape}>"))
     def deduplicate(self, undeduped_embeddings: NDArray, index_info: IndexInfo):
-        LOGGER.info(f"Using min_sqdist={self.min_sqdist}")
+        if not _validate_embeddings_and_log_input(undeduped_embeddings, "SqDistDeduplicator"):
+            return _create_retained_indices(len(undeduped_embeddings))
 
-        if len(undeduped_embeddings) <= 1:
-            LOGGER.info(f"Only {len(undeduped_embeddings)} points, no deduplication needed")
-            return np.arange(len(undeduped_embeddings), dtype=np.uint64)
+        LOGGER.info(f"SqDistDeduplicator: Using min_sqdist={self.min_sqdist}")
 
         # Build index with all points
         index = index_info.index_type.build(undeduped_embeddings, index_info)
@@ -139,6 +169,6 @@ class SqDistDeduplicator(Deduplicator):
         range_search_with_(index, undeduped_embeddings, self.min_sqdist, process_neighbors)
         
         retained_indices = np.where(points_to_keep)[0]
-        LOGGER.info(f"Retaining {len(retained_indices)} points out of {len(undeduped_embeddings)}")
+        _log_deduplication_results(len(retained_indices), len(undeduped_embeddings), "SqDistDeduplicator")
         
         return retained_indices.astype(np.uint64)

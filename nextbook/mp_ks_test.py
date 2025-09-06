@@ -17,9 +17,6 @@ class KstestResult:
         self.statistic_location = statistic_location
         self.statistic_sign = statistic_sign
 
-    # def log_pvalue(self) -> float:
-    #     return math.log(self.pvalue.numerator) - math.log(self.pvalue.denominator)
-
     def __repr__(self):
         return (f"KstestResult(statistic={self.statistic}, "
                 f"log10_pvalue={self.log10_pvalue}, "

@@ -28,29 +28,30 @@ def adj(A):
     return A.conj().T
 
 def scatter(M: NDArray) -> NDArray:
-    M_centered = M - M.mean(axis=0, keepdims=True)
-    n = M.shape[0]
-    if n <= 1:
-        # Avoid division by zero for single-sample case
-        return M_centered.T @ M_centered
-    return M_centered.T @ M_centered / (n - 1)
+    # M_centered = M - M.mean(axis=0, keepdims=True)
+    # n = M.shape[0]
+    # if n <= 1:
+    #     # Avoid division by zero for single-sample case
+    #     return M_centered.T @ M_centered
+    # return M_centered.T @ M_centered / (n - 1)
+    return adj(M) @ M / M.shape[0]
 
-def orthonormalize(P: NDArray) -> NDArray:
-    Q: NDArray
-    R: NDArray
-    Q, R = qr(P, mode='economic') # type: ignore
+# def orthonormalize(P: NDArray) -> NDArray:
+#     Q: NDArray
+#     R: NDArray
+#     Q, R = qr(P, mode='economic') # type: ignore
     
-    assert Q.shape == P.shape, f"{Q.shape=} != expected {P.shape=}"
+#     assert Q.shape == P.shape, f"{Q.shape=} != expected {P.shape=}"
     
-    # Check for numerical issues in R diagonal
-    r_diag = np.abs(np.diag(R))
-    tol = max(1e-12, r_diag[0] * 1e-12) if len(r_diag) > 0 else 1e-12
-    n_flat_dimensions = np.sum(r_diag < tol)
+#     # Check for numerical issues in R diagonal
+#     r_diag = np.abs(np.diag(R))
+#     tol = max(1e-12, r_diag[0] * 1e-12) if len(r_diag) > 0 else 1e-12
+#     n_flat_dimensions = np.sum(r_diag < tol)
     
-    if n_flat_dimensions:
-        LOGGER.warning(f"Found {n_flat_dimensions} additional flat dimensions in projector, which may indicate numerical instability.")
+#     if n_flat_dimensions:
+#         LOGGER.warning(f"Found {n_flat_dimensions} additional flat dimensions in projector, which may indicate numerical instability.")
     
-    return Q
+#     return Q
 
 # def get_coordinate_transform(P: NDArray) -> NDArray:
 #     return P @ np.linalg.inv(P.T @ P)
@@ -169,11 +170,11 @@ def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: Op
         else:
             raise
     
-    # If this was a generalized eigenvalue problem, orthogonalize the result
-    if b_matrix is not None:
-        LOGGER.info(f"Orthogonalizing generalized eigenvectors from shape {P_or_U.shape}")
-        P_or_U = orthonormalize(P_or_U)
-        LOGGER.info(f"Orthogonalized projector shape: {P_or_U.shape}")
+    # # If this was a generalized eigenvalue problem, orthogonalize the result
+    # if b_matrix is not None:
+    #     LOGGER.info(f"Orthogonalizing generalized eigenvectors from shape {P_or_U.shape}")
+    #     P_or_U = orthonormalize(P_or_U)
+    #     LOGGER.info(f"Orthogonalized projector shape: {P_or_U.shape}")
     
     LOGGER.info(f"{eigvals.shape=} {P_or_U.shape=}")
     return SolveEighRobustlyResult(eigvals=eigvals, P_or_U=P_or_U)
@@ -768,8 +769,9 @@ class JADDenoiser:
         P_final = P_full_basis[:, best_indices]
         scores_final = all_scores[best_indices]
 
-        P_final_orthonormalized = orthonormalize(P_final)
+        # P_final_orthonormalized = orthonormalize(P_final)
+        # return P_final_orthonormalized, scores_final
         
         LOGGER.info(f"JAD: Final projection shape {P_final.shape}, quality scores: {scores_final}")
+        return P_final, scores_final
         
-        return P_final_orthonormalized, scores_final

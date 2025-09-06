@@ -17,7 +17,7 @@ def main(
     hnsw_m: int,
     hnsw_efc: int,
     hnsw_efs: int,
-    denoiser: Optional[str],
+    denoiser: str,
     drop_k: int,
     radius_fraction: float,  # Not used here, but for CLI compatibility
 ):
@@ -56,5 +56,5 @@ def main(
     print(f"Max works: {max_works}")
 
 if __name__ == "__main__":
-    setup_logging(log_name=Path(__file__).stem, explicit_args=get_explicit_args())
-    main(**vars(parse_args()))
+    from nextbook.script_utils import run_script_main
+    run_script_main(main, __file__)

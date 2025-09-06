@@ -46,6 +46,32 @@ class TestDenoiserContext(DenoiserContext):
     
     def num_subsets(self) -> int:
         return len(self._subsets)
+    
+    # Backward compatibility methods for 2-subset case
+    def X1(self) -> NDArray:
+        """Legacy method for first subset"""
+        if self.num_subsets() < 1:
+            raise ValueError("No first subset available")
+        return self.X_n(0)
+    
+    def X2(self) -> NDArray:
+        """Legacy method for second subset"""
+        if self.num_subsets() < 2:
+            raise ValueError("No second subset available")
+        return self.X_n(1)
+    
+    def S_B(self) -> NDArray:
+        """Legacy method for between-subset scatter matrix"""
+        if self.num_subsets() != 2:
+            raise ValueError("S_B is only defined for exactly 2 subsets")
+        
+        # Compute means of each subset
+        mean1 = np.mean(self.X_n(0), axis=0, keepdims=True)  # 1 x d
+        mean2 = np.mean(self.X_n(1), axis=0, keepdims=True)  # 1 x d
+        
+        # Between-subset scatter
+        diff = mean1 - mean2  # 1 x d
+        return diff.T @ diff  # d x d
 
 
 def create_synthetic_data(n_samples: int = 300, n_features: int = 50, n_subsets: int = 3, random_seed: int = 42):

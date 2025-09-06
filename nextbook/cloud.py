@@ -1,4 +1,3 @@
-from abc import ABC
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 import enum
@@ -6,9 +5,10 @@ from functools import lru_cache
 import itertools
 import json
 import matplotlib.pyplot as plt
+from nextbook.plot_utils import PlotManager
 import re
 import time
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional, Protocol, TypeVar, runtime_checkable
 import faiss
 import numpy as np
 from numpy.typing import NDArray
@@ -18,9 +18,45 @@ import scipy.linalg
 from sentence_transformers import SentenceTransformer
 import tqdm
 import nextbook.denoisers as denoisers
-from nextbook.index import IndexInfo, build_index
-from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
+from nextbook.index import IndexInfo, build_index, HNSW, IndexType
+from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, SubField, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
 from nextbook.deduplicators import Deduplicator
+
+T = TypeVar('T', bound=np.generic)
+
+def get_embedding_model() -> SentenceTransformer:
+    """Get a fresh instance of the embedding model used throughout the system."""
+    return SentenceTransformer('avsolatorio/GIST-small-Embedding-v0')
+
+def compute_embeddings_for_works(works: List[Dict[str, Any]], model: Optional[SentenceTransformer] = None) -> NDArray:
+    """
+    Compute embeddings for a list of works.
+    
+    Args:
+        works: List of work dictionaries containing 'display_name' and 'abstract' fields
+        model: Optional SentenceTransformer model. If None, a new model will be created.
+        
+    Returns:
+        NDArray of embeddings with shape (len(works), embedding_dim)
+    """
+    if not works:
+        # Return empty array with correct shape for the model
+        if model is None:
+            model = get_embedding_model()
+        # Get embedding dimension by encoding a dummy text
+        dummy_embedding = model.encode(["dummy"], show_progress_bar=False)
+        return np.empty((0, dummy_embedding.shape[1]), dtype=np.float32)
+    
+    if model is None:
+        model = get_embedding_model()
+    
+    # Create input texts from display_name and abstract
+    inputs = [f"{work['display_name']}\n{work['abstract']}" for work in works]
+    
+    # Compute embeddings
+    embeddings = model.encode(inputs, batch_size=512, show_progress_bar=False)
+    
+    return embeddings
 
 @dataclass(frozen=True)
 class CloudData:
@@ -36,15 +72,15 @@ class Cloud:
     max_works: Optional[int]
     deduplicator: Optional[Deduplicator]
     normalize_embeddings: bool
-    denoiser: Optional[str]
+    denoiser: str
     drop_k: int
 
     def __post_init__(self):
         assert self.drop_k >= 0
-        if self.denoiser is None:
-            assert self.drop_k == 0, f"If denoiser is NONE, drop_k must be 0 (got {self.drop_k})"
-        # else:
-        #     assert self.drop_k > 0, f"If denoiser is not NONE, drop_k must be > 0 (got {self.drop_k})"
+        # Validate denoiser is a valid WorkDenoiser name
+        valid_denoisers = [d.name for d in WorkDenoisers]
+        if self.denoiser not in valid_denoisers:
+            raise ValueError(f"denoiser must be one of {valid_denoisers}, got '{self.denoiser}'")
 
     def works(self) -> List[Dict[str, Any]]:
         return get_cloud_works(self)
@@ -58,7 +94,7 @@ class Cloud:
     def index(self) -> faiss.Index:
         return get_cloud_index(self)
     
-    def embeddings(self) -> NDArray:
+    def embeddings(self):
         return get_cloud_embeddings(self)
 
     def name(self) -> str:
@@ -82,9 +118,6 @@ def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
     retained_idxs = retained_idxs[mask]
     LOGGER.info(f"Retained {len(retained_idxs)} works after post-filtering")
 
-    # embeddings = get_denoised_embeddings(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
-
-    # return CloudData(works=works, embeddings=embeddings)
     return retained_idxs
 
 @lru_cache(maxsize=1)
@@ -115,10 +148,11 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 @lru_cache(maxsize=1)
 @TIMER.time()
 @MEMORY.cache
-def get_cloud_embeddings(cloud: Cloud) -> NDArray:
+def get_cloud_embeddings(cloud: Cloud):
     works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
     retained_idxs = get_cloud_retained_idxs(cloud)
-    return get_denoised_embeddings(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
+    denoiser = WorkDenoisers[cloud.denoiser]
+    return denoiser.value.denoise(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
 
 class CloudDenoiserContext(denoisers.DenoiserContext):
     def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, *filters: Filter):
@@ -156,65 +190,120 @@ class CloudDenoiserContext(denoisers.DenoiserContext):
         """Get a boolean mask for works that match the filter."""
         return np.array([filter.check_work(work) for work in self.works], dtype=bool)
     
-class WorkDenoiser(ABC):
+@runtime_checkable
+class WorkDenoiser(Protocol):
+    """Protocol for denoising embeddings."""
+    def denoise(self, cloud: 'Cloud', works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+        """Apply denoising to embeddings and return final denoised embeddings."""
+        ...
+
+class NoneDenoiser:
+    """No-op denoiser that returns original embeddings unchanged."""
+    
+    def denoise(self, cloud: 'Cloud', works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+        if cloud.drop_k != 0:
+            raise ValueError(f"NoneDenoiser requires drop_k=0, got drop_k={cloud.drop_k}")
+        
+        LOGGER.info(f"NONE denoiser: returning original embeddings unchanged")
+        return embeddings
+
+class ProjectiveDenoiser:
+    """Projective denoiser with full orchestration including plotting and analysis."""
+    
     def __init__(self, denoiser_impl, *filters: Filter):
         self.denoiser_impl = denoiser_impl
         self.filters = filters
 
-    def projector(self, works: List[Dict[str, Any]], embeddings: NDArray, n_components: int) -> NDArray:
-        # 1. Instantiate the context object.
-        context = CloudDenoiserContext(works, embeddings, *self.filters)
+    def denoise(self, cloud: 'Cloud', works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+        """Apply projective denoising with full orchestration."""
+        cloud_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre) / f"{cloud.denoiser} drop_k={cloud.drop_k}"
+        cloud_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Pass it to the denoiser strategy.
+        # Pre-projection PCA for baseline singular values
+        s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0))  # type: ignore
+        
+        LOGGER.info(f"Cloud {cloud.name()} -- Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
+
+        # Dimensionality reduction/cleaning
+        n_components = embeddings.shape[1] - cloud.drop_k
+        LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
+        
+        # Get projector from the denoiser implementation
+        context = CloudDenoiserContext(works, embeddings, *self.filters)
         P, _eigvals = self.denoiser_impl.projector(context, n_components)
-        return P
+        
+        # Apply projection
+        denoised_embeddings: NDArray[T] = embeddings @ P
+
+        s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0))  # type: ignore
+        
+        # Plot singular value comparison        
+        fig, ax = PlotManager.create_figure(figsize=(12, 5))
+        
+        # Scatter plot for original and post-denoising singular values
+        ax.scatter(np.arange(len(s_orig)), s_orig, color='b', label='Original', alpha=0.7)
+        ax.scatter(np.arange(len(s_post)), s_post, color='r', label='Post-denoising', alpha=0.7)
+        ax.set_xlabel('Component Index')
+        ax.set_ylabel('Singular Value')
+        ax.set_title('Singular Values')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Calculate variance decay
+        total_variance_orig = np.sum(s_orig**2)
+        total_variance_post = np.sum(s_post**2)
+        variance_retained = total_variance_post / total_variance_orig
+        
+        fig.suptitle(f'{cloud.denoiser} drop_k={cloud.drop_k} Denoising: {variance_retained:.2%} variance retained')
+        
+        plt.tight_layout()
+        PlotManager.save_and_close(fig, cloud_dir / f"singular_values_comparison.png")
+        
+        LOGGER.info(f"Cloud {cloud.name()} -- Variance retained after denoising: {variance_retained:.2%}")
+        LOGGER.info(f"Cloud {cloud.name()} -- Saved singular value analysis to {cloud_dir}")
+            
+        return denoised_embeddings
 
 class WorkDenoisers(enum.Enum):
+    # No-op denoiser
+    NONE = NoneDenoiser()
+    
     # Simple denoisers
-    PCA = WorkDenoiser(denoisers.PCADenoiser())
-    GPCA = WorkDenoiser(denoisers.GPCADenoiser())
-    REL_AMP = WorkDenoiser(denoisers.RelAmpDenoiser())
-    # NEIGHBOR_DIST_MIN = WorkDenoiser(denoisers.NeighborDistMinDenoiser())
-    LPP = WorkDenoiser(denoisers.LPPDenoiser())
-    AUG_LPP = WorkDenoiser(denoisers.AugmentedLPPDenoiser())
-    ORTHO_MANIFOLD = WorkDenoiser(denoisers.OrthogonalManifoldDenoiser())
-    NORM_LPP = WorkDenoiser(denoisers.NormalizedLPPDenoiser())
-    # W = WorkDenoiser(denoisers.WDenoiser())
-    # LDA = WorkDenoiser(denoisers.LDADenoiser())
-    # SYM_LDA = WorkDenoiser(denoisers.SymmetrizedLDADenoiser())
-    PLS = WorkDenoiser(denoisers.PLSModeADenoiser())
-    CCA = WorkDenoiser(denoisers.PLSModeBDenoiser())
-    # W_LPP = WorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()))
-    # W_NEIGHBOR_DIST_MIN = WorkDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()))
+    PCA = ProjectiveDenoiser(denoisers.PCADenoiser())
+    GPCA = ProjectiveDenoiser(denoisers.GPCADenoiser())
+    REL_AMP = ProjectiveDenoiser(denoisers.RelAmpDenoiser())
+    # NEIGHBOR_DIST_MIN = ProjectiveDenoiser(denoisers.NeighborDistMinDenoiser())
+    LPP = ProjectiveDenoiser(denoisers.LPPDenoiser())
+    AUG_LPP = ProjectiveDenoiser(denoisers.AugmentedLPPDenoiser())
+    ORTHO_MANIFOLD = ProjectiveDenoiser(denoisers.OrthogonalManifoldDenoiser())
+    NORM_LPP = ProjectiveDenoiser(denoisers.NormalizedLPPDenoiser())
+    # W = ProjectiveDenoiser(denoisers.WDenoiser())
+    # LDA = ProjectiveDenoiser(denoisers.LDADenoiser())
+    # SYM_LDA = ProjectiveDenoiser(denoisers.SymmetrizedLDADenoiser())
+    PLS = ProjectiveDenoiser(denoisers.PLSModeADenoiser())
+    CCA = ProjectiveDenoiser(denoisers.PLSModeBDenoiser())
+    # W_LPP = ProjectiveDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()))
+    # W_NEIGHBOR_DIST_MIN = ProjectiveDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()))
     
-    ANTI_CSP = WorkDenoiser(denoisers.AntiCSPDenoiser())
+    ANTI_CSP = ProjectiveDenoiser(denoisers.AntiCSPDenoiser())
 
-    # Work-aware denoisers
-    ANTI_LDA = WorkDenoiser(
-        denoisers.AntiLDADenoiser(),
-        Filter(work_type=WorkType.BOOK.value), 
-        Filter(work_type=WorkType.ARTICLE.value)
-    )
-    DOM_INVAR = WorkDenoiser(
-        denoisers.DomainInvariantDenoiser(),
-        Filter(work_type=WorkType.BOOK.value), 
-        Filter(work_type=WorkType.ARTICLE.value)
-    ) 
+    ANTI_LDA = ProjectiveDenoiser(denoisers.AntiLDADenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    DOM_INVAR = ProjectiveDenoiser(denoisers.DomainInvariantDenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,))) 
     
-    CCLIP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.5), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    CCLIP_1 = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.1), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    CCLIP_01 = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    CCP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    LIP = WorkDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    CCLIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCLIP_1 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCLIP_01 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    LIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
     
     # Joint Approximate Diagonalization denoisers
-    # JAD_1_4 = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.25, wsubset2=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))  # Optimal 1:4 book:article ratio
-    # JAD_EQUAL = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, wsubset1=1.0, wsubset2=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))  # Pre-sample-covariance optimal
-    # JAD_PRIO_T = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.5, wsubset2=0.5), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))  # Equal emphasis
-    JAD_EQUAL = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    JAD_HALF_L = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    JAD_CCP = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
-    JAD_LIP = WorkDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0), Filter(work_type=WorkType.BOOK.value), Filter(work_type=WorkType.ARTICLE.value))
+    # JAD_1_4 = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.25, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Optimal 1:4 book:article ratio
+    # JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, wsubset1=1.0, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pre-sample-covariance optimal
+    # JAD_PRIO_T = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.5, wsubset2=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Equal emphasis
+    JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_HALF_L = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_CCP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_LIP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
 
     def __str__(self):
         return self.name
@@ -247,66 +336,6 @@ def load_works(filter: Filter, max_works: Optional[int]):
         work["abstract"] = WHITESPACE_PAT.sub(" ", work["abstract"])
 
     return works, undeduped_embeddings
-
-@TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>", embeddings=lambda embeddings: f"<{embeddings.shape}>"))
-def get_denoised_embeddings(cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray) -> NDArray:
-    def maybe_normalize(embeddings):
-        if cloud.normalize_embeddings:
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            return embeddings / np.where(norms == 0, 1, norms)
-        return embeddings
-    
-    if cloud.denoiser is None:
-        return maybe_normalize(embeddings)
-    
-    cloud_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre) / f"{cloud.denoiser} drop_k={cloud.drop_k}"
-    cloud_dir.mkdir(parents=True, exist_ok=True)
-
-    # Pre-projection PCA for baseline singular values
-    s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0)) # type: ignore
-    
-    LOGGER.info(f"Cloud {cloud.name()} -- Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
-
-    # Dimensionality reduction/cleaning
-    n_components = embeddings.shape[1] - cloud.drop_k # TODO where should we make sure this is >= 1 or 0?
-    LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
-    denoiser = WorkDenoisers[cloud.denoiser]
-
-    P = denoiser.value.projector(works, embeddings, n_components)
-    assert np.allclose(P.T @ P, np.eye(P.shape[1]), atol=1e-6), f"Projector {denoiser} did not produce orthogonal matrix P! {np.linalg.norm(P.T @ P - np.eye(P.shape[1]))=:.6f}"
-    
-    denoised_embeddings = embeddings @ P
-
-    s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0)) # type: ignore
-    
-    # Plot singular value comparison        
-    fig, ax = plt.subplots(figsize=(12, 5))
-    
-    # Scatter plot for original and post-denoising singular values
-    ax.scatter(np.arange(len(s_orig)), s_orig, color='b', label='Original', alpha=0.7)
-    ax.scatter(np.arange(len(s_post)), s_post, color='r', label='Post-denoising', alpha=0.7)
-    ax.set_xlabel('Component Index')
-    ax.set_ylabel('Singular Value')
-    ax.set_title('Singular Values')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Calculate variance decay
-    total_variance_orig = np.sum(s_orig**2)
-    total_variance_post = np.sum(s_post**2)
-    variance_retained = total_variance_post / total_variance_orig
-    
-    fig.suptitle(f'{cloud.denoiser} drop_k={cloud.drop_k} Denoising: {variance_retained:.2%} variance retained')
-    
-    plt.tight_layout()
-    plt.savefig(cloud_dir / f"singular_values_comparison.png", dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    LOGGER.info(f"Cloud {cloud.name()} -- Variance retained after denoising: {variance_retained:.2%}")
-    LOGGER.info(f"Cloud {cloud.name()} -- Saved singular value analysis to {cloud_dir}")
-        
-
-    return maybe_normalize(denoised_embeddings)
 
 @TIMER.time(formatters=dict(embeddings=lambda embeddings: f"<{embeddings.shape}>"))
 @MEMORY.cache(ignore=["embeddings"]) # embeddings are ignored by the cache key because hashing is too slow. Use embeddings_key to disambiguate.
@@ -455,6 +484,7 @@ class ShortFieldFilter:
 
 class WorkFilter(enum.Enum):
     BINDER_NAME_CANCEL_CREATE_EXPORT      = RegexFilter(r"BinderNameCancelCreateExport")
+    NO_ABSTRACT_AVAILABLE                 = RegexFilter(r"No abstract available")
     ABSTRACT_NOT_AVAILABLE                = RegexFilter(r"An abstract is not available")
     SEARCH_FOR_OTHER_WORKS_BY_THIS_AUTHOR = RegexFilter(r"Search for other works by this author")
     RUSSIAN_TEXT_IGNORED                  = RegexFilter(r"Russian Text Ignored")
@@ -622,15 +652,13 @@ def embed_works(work_filter: Filter):
         model = None # Lazy load the model in case `works` is already exhausted
         start_time = time.time()
         batch_size = 512
-        seen_new = 0
         LOGGER.info(f"Embedding {work_filter} works")
+        seen_new = 0
         for batch in batched(works, batch_size):
             if model is None:
-                # model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-                model = SentenceTransformer('avsolatorio/GIST-small-Embedding-v0')
-            # Embed batch
-            inputs = [f"{work['display_name']}\n{work['abstract']}" for work in batch]
-            embeddings = model.encode(inputs, batch_size=batch_size, show_progress_bar=False)
+                model = get_embedding_model()
+            # Embed batch using the new function
+            embeddings = compute_embeddings_for_works(list(batch), model)
             # Save batch
             with (emb_cache_dir / f"batch_{i}_embeddings.npy").open("wb") as embeddings_f, (emb_cache_dir / f"batch_{i}_ids.json").open("w") as ids_f:
                 np.save(embeddings_f, embeddings)
@@ -667,7 +695,7 @@ class SubCloud:
     def index(self) -> faiss.Index:
         return get_subcloud_index(self)
     
-    def embeddings(self) -> NDArray:
+    def embeddings(self):
         return get_subcloud_embeddings(self)
     
     @property
@@ -711,19 +739,36 @@ def get_subcloud_index(subcloud: SubCloud) -> faiss.Index:
 
 @lru_cache(maxsize=2)
 @MEMORY.cache
-def get_subcloud_embeddings(subcloud: SubCloud) -> NDArray:
+def get_subcloud_embeddings(subcloud: SubCloud):
     parent_embeddings = subcloud.parent.embeddings()
     retained_idxs = get_subcloud_retained_idxs(subcloud)
     return parent_embeddings[retained_idxs]
 
 
 def get_query(work_filter: Filter) -> pyalex.Works:
-    # .sort(publication_date="asc", display_name="asc") 
-    return pyalex.Works() \
-            .filter(has_abstract=True,
-                    # language="en",
-                    **work_filter.to_dict()) \
-            .select(", ".join(["display_name", "type", "publication_date", "ids", "language", "abstract_inverted_index", "referenced_works", "primary_topic"]))
+    params = work_filter.to_dict()
+    type_param = params.pop("type", None)
+
+    # Build the query in one shot:
+    # - If multiple types, use filter_or with all params so lists join with '|'
+    # - If single type or no type, use standard AND filter
+    if isinstance(type_param, list):
+        if len(type_param) > 1:
+            q = pyalex.Works().filter_or(has_abstract=True, type=type_param, **params)
+        elif len(type_param) == 1:
+            params["type"] = type_param[0]
+            q = pyalex.Works().filter(has_abstract=True, **params)
+        else:
+            q = pyalex.Works().filter(has_abstract=True, **params)
+    else:
+        q = pyalex.Works().filter(has_abstract=True, **params)
+
+    LOGGER.info(f"Query url: '{q.url}'")
+    return q.select(
+        ", ".join([
+            "display_name", "type", "publication_date", "ids", "language", "abstract_inverted_index", "referenced_works", "primary_topic"
+        ])
+    )
 
 def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]]) -> str:
     pos_to_word = {}
@@ -735,3 +780,39 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
     max_pos = max(pos_to_word.keys())
     words = [pos_to_word.get(i, "[[MISSING]]") for i in range(max_pos + 1)]
     return " ".join(words)
+
+def build_cloud(
+    drop_k: int,
+    max_works: Optional[int],
+    deduplicator: Optional[Deduplicator],
+    denoiser: str,
+    index_type: IndexType,
+    hnsw_m: int,
+    hnsw_efc: int,
+    hnsw_efs: int
+) -> Cloud:
+    """Build and return a Cloud object with the given parameters."""
+    if index_type == IndexType.HNSW:
+        index_info = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
+    else:
+        index_info = index_type.value()
+    ai_filter_pair = FilterPair(
+        Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
+        Filter()
+    )
+    return Cloud(
+        filter_pair=ai_filter_pair,
+        index_info=index_info,
+        max_works=max_works,
+        deduplicator=deduplicator,
+        normalize_embeddings=True,
+        denoiser=denoiser,
+        drop_k=drop_k
+    )
+
+
+def get_subclouds_for_topic(cloud: Cloud, topic_id: Optional[str]) -> tuple:
+    """Return (books, articles) SubClouds for the given topic_id."""
+    books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=(WorkType.BOOK.value,)))
+    articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=(WorkType.ARTICLE.value,)))
+    return books, articles

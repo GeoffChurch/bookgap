@@ -15,7 +15,7 @@ class Args:
     max_works: Optional[int]
     deduplicator: Optional[Deduplicator]
     radius_fraction: float
-    denoiser: Optional[str]
+    denoiser: str
     index_type: IndexType
     hnsw_m: int
     hnsw_efc: int
@@ -29,7 +29,7 @@ def _get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duplicate_fraction", type=float, default=None, help="Value in [0, 1] for fraction of duplicates (removed by semantic distance percentile). This is more computationally expensive than min_sqdist.")
     parser.add_argument("--min_sqdist", type=float, default=0.01, help="Minimum squared distance for deduplication using range search")
     parser.add_argument("--radius_fraction", type=float, default=0.75, help="Radius fraction for ball coverage")
-    parser.add_argument("--denoiser", type=str, choices=[d.name for d in WorkDenoisers], default=None, help=f"Denoiser method.")
+    parser.add_argument("--denoiser", type=str, choices=[d.name for d in WorkDenoisers], default=WorkDenoisers.NONE.name, help=f"Denoiser method.")
     parser.add_argument("--index_type", type=IndexType._member_map_.__getitem__, choices=list(IndexType), default=IndexType.HNSW, help=f"Faiss index type. Choices: {', '.join(map(str, IndexType))}")
     # HNSW specific arguments
     parser.add_argument("--hnsw_m", type=int, default=16, help="HNSW M parameter")

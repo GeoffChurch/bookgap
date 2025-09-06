@@ -77,16 +77,24 @@ class WorkType(enum.Enum):
 class Filter:
     subfield: Optional[str] = None
     topic: Optional[str] = None
-    work_type: Optional[str] = None
+    # Multiple work types are supported; callers must pass a tuple[str, ...]
+    work_types: Optional[tuple[str, ...]] = None
 
-    def to_dict(self) -> dict[str, str]:
-        ret = {}
+    def __post_init__(self):
+        # Enforce that work_types is either None or a tuple[str, ...]
+        if self.work_types is not None:
+            assert type(self.work_types) is tuple, "work_types must be a tuple of strings"
+            assert all(isinstance(wt, str) for wt in self.work_types), "Each work type must be a string"
+
+    def to_dict(self):
+        ret: dict[str, str | list[str]] = {}
         if self.topic is not None:
             ret["primary_topic.id"] = self.topic
         if self.subfield is not None:
             ret["primary_topic.subfield.id"] = self.subfield
-        if self.work_type is not None:
-            ret["type"] = self.work_type
+        if self.work_types is not None:
+            # pyalex expects a list when using OR; we'll apply filter_or in get_query
+            ret["type"] = list(self.work_types)
         return ret
     
     def check_work(self, work: dict[str, Any]) -> bool:
@@ -95,8 +103,10 @@ class Filter:
             return False
         if self.subfield is not None and work["primary_topic"]["subfield"]["id"] != f"https://openalex.org/subfields/{self.subfield}":
             return False
-        if self.work_type is not None and work["type"] != self.work_type:
-            return False
+        if self.work_types is not None:
+            wtype = work.get("type")
+            if wtype not in self.work_types:
+                return False
         return True
     
     def __str__(self) -> str:
@@ -105,8 +115,12 @@ class Filter:
             parts.append(f"topic={self.topic}")
         if self.subfield is not None:
             parts.append(f"subfield={self.subfield}")
-        if self.work_type is not None:
-            parts.append(f"work_type={self.work_type}")
+        if self.work_types is not None:
+            wt = self.work_types
+            if len(wt) == 1:
+                parts.append(f"work_type={wt[0]}")
+            else:
+                parts.append(f"work_types=[{','.join(wt)}]")
         return ", ".join(parts) if parts else "no filter"
     
     def __repr__(self) -> str:
@@ -118,9 +132,12 @@ class FilterPair:
     post: Filter
 
     def __post_init__(self):
-        if self.pre.work_type is not None and self.post.work_type is not None:
-            if self.pre.work_type != self.post.work_type:
-                raise ValueError("Pre-filter and post-filter work types do not match")
+        # Allow subset relationship for work types
+        if self.pre.work_types is not None and self.post.work_types is not None:
+            pre_set = set(self.pre.work_types)
+            post_set = set(self.post.work_types)
+            if not post_set.issubset(pre_set):
+                raise ValueError("Post-filter work types must be a subset of pre-filter work types")
         if self.pre.subfield is not None and self.post.subfield is not None:
             if self.pre.subfield != self.post.subfield:
                 raise ValueError("Pre-filter and post-filter subfields do not match")
@@ -130,19 +147,19 @@ class FilterPair:
             
     def merged_name(self) -> str:
         """Return a merged name for the filter pair."""
-        parts = {}
+        parts: dict[str, str | list[str]] = {}
         if self.pre.topic is not None:
             parts["topic"] = self.pre.topic
         if self.pre.subfield is not None:
             parts["subfield"] = self.pre.subfield
-        if self.pre.work_type is not None:
-            parts["work_type"] = self.pre.work_type
+        if self.pre.work_types is not None:
+            parts["work_types"] = list(self.pre.work_types)
         if self.post.topic is not None:
             parts["post_topic"] = self.post.topic
         if self.post.subfield is not None:
             parts["post_subfield"] = self.post.subfield
-        if self.post.work_type is not None:
-            parts["post_work_type"] = self.post.work_type
+        if self.post.work_types is not None:
+            parts["post_work_types"] = list(self.post.work_types)
         return "(" + ", ".join(f"{k}={v}" for k, v in parts.items()) + ")"
             
 class Filters(enum.Enum):
@@ -151,13 +168,15 @@ class Filters(enum.Enum):
     NLP = FilterPair(Filter(subfield=SubField.AI.value), Filter(topic=Topic.NLP.value))
     # AI = (TopicPreFilter(topic=None, subfield="1702"), lambda _: True)
 
-    def work_type(self) -> str:
-        """Return the work type for this filter."""
-        if self.value.pre.work_type is not None:
-            return self.value.pre.work_type
-        if self.value.post.work_type is not None:
-            return self.value.post.work_type
-        raise ValueError("No work type defined for this filter")
+    # def work_type(self) -> str:
+    #     """Return the single work type for this filter if uniquely defined; else raise."""
+    #     pre = set(self.value.pre.work_types or [])
+    #     post = set(self.value.post.work_types or [])
+    #     s = pre or post
+    #     if len(s) == 1:
+    #         ret, = s
+    #         return ret
+    #     raise ValueError("No single work type defined for this filter")
 
     def __str__(self) -> str:
         return self.name
@@ -166,9 +185,9 @@ class Filters(enum.Enum):
         return str(self)
 
     def _validate(self):
-        if self.value.pre.work_type is not None and self.value.post.work_type is not None:
-            if self.value.pre.work_type != self.value.post.work_type:
-                raise ValueError("Pre-filter and post-filter work types do not match")
+        if self.value.pre.work_types is not None and self.value.post.work_types is not None:
+            if not set(self.value.post.work_types).issubset(set(self.value.pre.work_types)):
+                raise ValueError("Post-filter work types must be a subset of pre-filter work types")
         if self.value.pre.subfield is not None and self.value.post.subfield is not None:
             if self.value.pre.subfield != self.value.post.subfield:
                 raise ValueError("Pre-filter and post-filter subfields do not match")
