@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Union, Tuple
 from dataclasses import dataclass
 
-from nextbook.cloud import build_cloud
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.gap_finder import main as gap_finder_main
-from nextbook.batch_utils.batch_operations import (
+from bookgap.cloud import build_cloud
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.gap_finder import main as gap_finder_main
+from bookgap.batch_utils.batch_operations import (
     GAPS_DIR, get_client, estimate_batch_cost,
     extract_textbook_proposals, 
     find_batch_request_files_for_config, find_batch_results_files_for_config, find_prompt_files_for_config,
@@ -32,7 +32,7 @@ from nextbook.batch_utils.batch_operations import (
     create_batch_requests_from_prompts, 
     create_batch_file_from_requests, upload_and_submit_batch,
 )
-from nextbook.util import LOGGER
+from bookgap.util import LOGGER
 
 @dataclass(frozen=True)
 class InteractiveLLMConfiguration:
@@ -342,7 +342,7 @@ def step_4_monitor_batch_job(batch_id: Optional[str] = None) -> bool:
     
     try:
         # Import here to use the monitoring function
-        from nextbook.batch_utils.batch_operations import monitor_batch_job
+        from bookgap.batch_utils.batch_operations import monitor_batch_job
         assert type(batch_id) is str, f"Expected str, got {type(batch_id)}"
         final_status: Optional[Any] = monitor_batch_job(batch_id, poll_interval=poll_interval)
         
@@ -534,7 +534,7 @@ def step_6_generate_tex_files(downloaded_results_file: Optional[Path], config: A
 
 def _show_existing_files_summary(extracted_proposals):
     """Show summary of existing extracted files."""
-    from nextbook.batch_utils.batch_operations import GAPS_DIR
+    from bookgap.batch_utils.batch_operations import GAPS_DIR
     
     # Check if all.tex files exist
     all_tex_files = []
@@ -553,7 +553,7 @@ def _show_existing_files_summary(extracted_proposals):
         LOGGER.info(f"Found {len(all_tex_files)} compilation files (all.tex) ready for use.")
     else:
         LOGGER.info("Compilation files missing. Regenerating...")
-        from nextbook.batch_utils.batch_operations import create_all_tex_files_in_gaps
+        from bookgap.batch_utils.batch_operations import create_all_tex_files_in_gaps
         all_tex_count = create_all_tex_files_in_gaps()
         if all_tex_count > 0:
             LOGGER.info(f"✓ Created {all_tex_count} compilation files")
@@ -573,7 +573,7 @@ def _show_extraction_summary(stats: Optional[Dict[str, Any]] = None) -> None:
                - latex_table_paths: List of generated LaTeX table files
                - all_tex_count: Number of all.tex compilation files created
     """
-    from nextbook.batch_utils.batch_operations import GAPS_DIR
+    from bookgap.batch_utils.batch_operations import GAPS_DIR
     
     # Show information from extraction stats if provided
     if stats:
@@ -611,7 +611,7 @@ def _show_extraction_summary(stats: Optional[Dict[str, Any]] = None) -> None:
 def interactive_workflow(drop_k: int, max_works: Optional[int], deduplicator, radius_fraction: float, denoiser: str, index_type, hnsw_m: int, hnsw_efc: int, hnsw_efs: int) -> None:
     """Run the interactive batch workflow."""
     LOGGER.info("=" * 60)
-    LOGGER.info("     NEXTBOOK BATCH WORKFLOW")
+    LOGGER.info("     BOOKGAP BATCH WORKFLOW")
     LOGGER.info("     Automated Textbook Proposal Generation")
     LOGGER.info("=" * 60)
 
@@ -750,5 +750,5 @@ def main(drop_k: int, max_works: Optional[int], deduplicator, radius_fraction: f
 
 
 if __name__ == "__main__":
-    from nextbook.script_utils import run_script_main
+    from bookgap.script_utils import run_script_main
     run_script_main(main, __file__)

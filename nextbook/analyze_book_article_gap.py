@@ -15,12 +15,12 @@ import pyalex
 import plotly.express as px
 import plotly.graph_objects as go
 
-from nextbook.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers, get_subclouds_for_topic
-from nextbook.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
-from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.util import Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
-from nextbook.deduplicators import Deduplicator
-from nextbook.index import HNSW, IndexType
+from bookgap.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers, get_subclouds_for_topic
+from bookgap.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
+from bookgap.parse_args import get_explicit_args, parse_args
+from bookgap.util import Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
+from bookgap.deduplicators import Deduplicator
+from bookgap.index import HNSW, IndexType
 
 # Define allowed denoisers using actual enum members for better static checking
 ALLOWED_WORK_DENOISERS = [
@@ -39,8 +39,8 @@ ALLOWED_DENOISER_NAMES = ['NONE'] + [wd.name for wd in ALLOWED_WORK_DENOISERS]
 FONT_SIZE = 7
 
 # Import plotting utilities to eliminate duplication
-from nextbook.plot_utils import PlotManager
-from nextbook.results_manager import BookArticleResults
+from bookgap.plot_utils import PlotManager
+from bookgap.results_manager import BookArticleResults
 
 def get_denoiser_display_name(denoiser: str) -> str:
     """Map denoiser names to display-friendly names with LaTeX math notation."""
@@ -1243,7 +1243,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         _book_article_results.add_row(**result_row)
         if (i+1) % 20 == 0 or i == len(topics) - 1:
             do_plots(ARTIFACTS_DIR)
-# python -c "from nextbook.analyze_book_article_gap import many_main; many_main()"
+# python -c "from bookgap.analyze_book_article_gap import many_main; many_main()"
 def many_main():
     explicit_args = get_explicit_args()
     setup_logging(log_name=__name__.split('.')[-1], explicit_args=explicit_args)
@@ -1276,5 +1276,5 @@ def many_main():
             main(**args, denoiser=denoiser, drop_k=drop_k)
 
 if __name__ == "__main__":
-    from nextbook.script_utils import run_script_main
+    from bookgap.script_utils import run_script_main
     run_script_main(main, __file__)

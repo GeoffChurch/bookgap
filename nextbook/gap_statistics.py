@@ -13,10 +13,10 @@ from typing import Optional, Union, List
 import matplotlib.pyplot as plt
 from scipy import stats
 
-from nextbook.util import LOGGER, create_unicode_safe_filename
-from nextbook.plot_utils import PlotManager, FIGURE_SIZE_MEDIUM, GRID_ALPHA
-from nextbook.config_manager import AnalysisConfiguration
-from nextbook.gap_directory_manager import GapDirectoryManager
+from bookgap.util import LOGGER, create_unicode_safe_filename
+from bookgap.plot_utils import PlotManager, FIGURE_SIZE_MEDIUM, GRID_ALPHA
+from bookgap.config_manager import AnalysisConfiguration
+from bookgap.gap_directory_manager import GapDirectoryManager
 
 
 # Constants for statistical analysis
@@ -205,8 +205,8 @@ def create_negative_hypergeometric_qqplot(
         return None
 
 
-from nextbook.gap_directory_manager import GapDirectoryManager  
-from nextbook.config_manager import AnalysisConfiguration
+from bookgap.gap_directory_manager import GapDirectoryManager  
+from bookgap.config_manager import AnalysisConfiguration
 
 def create_book_gap_sizes_qqplot(
     book_gap_sizes: Union[List[int], NDArray[np.intp]], 

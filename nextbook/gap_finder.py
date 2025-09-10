@@ -11,26 +11,26 @@ import random
 import matplotlib.axes
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from nextbook.denoisers import LPPDenoiser
-from nextbook.cloud import Cloud, SubCloud, build_cloud, get_subclouds_for_topic
-from nextbook.cloud_index import knn
-from nextbook.deduplicators import Deduplicator
-from nextbook.index import IndexType
-from nextbook.util import LOGGER, SubField, create_unicode_safe_filename
-from nextbook.gap_directory_manager import GapDirectoryManager
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.llm.gap_algorithms.kball_algorithm import KballGap, DistsAndIdxs
-from nextbook.llm.gap_algorithms.voronoi_algorithm import VoronoiGap
-from nextbook.llm.llm_implementation import Implementation, get_generator
-from nextbook.types import CellType
-from nextbook.llm.protocols import ProposalResult
-from nextbook.llm.context_builder import build_proposal_context
-from nextbook.plot_utils import (
+from bookgap.denoisers import LPPDenoiser
+from bookgap.cloud import Cloud, SubCloud, build_cloud, get_subclouds_for_topic
+from bookgap.cloud_index import knn
+from bookgap.deduplicators import Deduplicator
+from bookgap.index import IndexType
+from bookgap.util import LOGGER, SubField, create_unicode_safe_filename
+from bookgap.gap_directory_manager import GapDirectoryManager
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.llm.gap_algorithms.kball_algorithm import KballGap, DistsAndIdxs
+from bookgap.llm.gap_algorithms.voronoi_algorithm import VoronoiGap
+from bookgap.llm.llm_implementation import Implementation, get_generator
+from bookgap.types import CellType
+from bookgap.llm.protocols import ProposalResult
+from bookgap.llm.context_builder import build_proposal_context
+from bookgap.plot_utils import (
     PlotManager, FIGURE_SIZE_LARGE, GRID_ALPHA,
     BOOK_COLOR, GAP_COLOR
 )
-from nextbook.results_manager import GapResults
-from nextbook.gap_statistics import compute_gap_statistics, create_book_gap_sizes_qqplot
+from bookgap.results_manager import GapResults
+from bookgap.gap_statistics import compute_gap_statistics, create_book_gap_sizes_qqplot
 import abc
 
 # Machine learning and algorithmic constants
@@ -1310,5 +1310,5 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
 
 
 # if __name__ == "__main__":
-#     from nextbook.script_utils import run_script_main
+#     from bookgap.script_utils import run_script_main
 #     run_script_main(main, __file__, generate_plots=True)

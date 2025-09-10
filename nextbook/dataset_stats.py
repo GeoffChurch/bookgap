@@ -3,11 +3,11 @@
 Report the number of articles and books in the AI subfield cloud.
 """
 from pathlib import Path
-from nextbook.cloud import Cloud
-from nextbook.util import Filter, FilterPair, SubField, WorkType, setup_logging, LOGGER
-from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.index import HNSW, IndexType
-from nextbook.deduplicators import Deduplicator
+from bookgap.cloud import Cloud
+from bookgap.util import Filter, FilterPair, SubField, WorkType, setup_logging, LOGGER
+from bookgap.parse_args import get_explicit_args, parse_args
+from bookgap.index import HNSW, IndexType
+from bookgap.deduplicators import Deduplicator
 from typing import Optional
 
 def main(
@@ -56,5 +56,5 @@ def main(
     print(f"Max works: {max_works}")
 
 if __name__ == "__main__":
-    from nextbook.script_utils import run_script_main
+    from bookgap.script_utils import run_script_main
     run_script_main(main, __file__)

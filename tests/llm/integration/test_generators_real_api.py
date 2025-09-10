@@ -13,12 +13,12 @@ from unittest.mock import patch
 
 import pytest
 
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.llm.llm_implementation import Implementation
-from nextbook.types import CellType
-from nextbook.llm.protocols import ProposalContext
-from nextbook.llm.generators.openai_generator import OpenAIProposalGenerator
-from nextbook.llm.generators.json_prompt_generator import JSONPromptProposalGenerator
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.llm.llm_implementation import Implementation
+from bookgap.types import CellType
+from bookgap.llm.protocols import ProposalContext
+from bookgap.llm.generators.openai_generator import OpenAIProposalGenerator
+from bookgap.llm.generators.json_prompt_generator import JSONPromptProposalGenerator
 
 
 # Sample data for testing
@@ -97,7 +97,7 @@ class TestGeneratorsWithRealAPI:
         test_results_dir.mkdir(parents=True, exist_ok=True)
         
         try:
-            with patch('nextbook.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
+            with patch('bookgap.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
                 result = generator.generate(SAMPLE_CONTEXT)
                 
                 # Verify result structure
@@ -164,7 +164,7 @@ class TestGeneratorsWithRealAPI:
         test_results_dir.mkdir(parents=True, exist_ok=True)
         
         try:
-            with patch('nextbook.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
+            with patch('bookgap.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
                 result = generator.generate(SAMPLE_CONTEXT)
                 
                 # Verify result structure

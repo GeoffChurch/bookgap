@@ -1,4 +1,4 @@
-"""Nextbook package
+"""BookGap package
 
 Core modules for gap analysis, configuration, results management, and utilities.
 

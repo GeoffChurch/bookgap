@@ -5,15 +5,15 @@ import pandas as pd
 import pandas.testing as pdt
 import pytest
 
-from nextbook.config_manager import AnalysisConfiguration
-from nextbook.results_manager import GapResults
+from bookgap.config_manager import AnalysisConfiguration
+from bookgap.results_manager import GapResults
 
 
 def test_gapresults_csv_roundtrip_preserves_schema_and_rows():
     # Build analysis configuration
-    from nextbook.config_manager import GapConfiguration, LLMConfiguration
-    from nextbook.types import CellType
-    from nextbook.llm.llm_implementation import Implementation
+    from bookgap.config_manager import GapConfiguration, LLMConfiguration
+    from bookgap.types import CellType
+    from bookgap.llm.llm_implementation import Implementation
     
     gap_config = GapConfiguration(
         denoiser="JAD_EQUAL",

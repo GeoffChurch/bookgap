@@ -21,7 +21,7 @@ BookGap works by:
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd nextbook
+cd bookgap
 
 # Create and activate conda environment
 conda env create -f environment.yml  # if available
@@ -95,14 +95,14 @@ BookGap includes comprehensive test coverage for all major components. See [`TES
 
 BookGap follows a modular architecture:
 
-- **`nextbook/config_manager.py`**: Configuration management and validation
-- **`nextbook/types.py`**: Core type definitions and enums
-- **`nextbook/llm/`**: LLM integration and proposal generation
+- **`bookgap/config_manager.py`**: Configuration management and validation
+- **`bookgap/types.py`**: Core type definitions and enums
+- **`bookgap/llm/`**: LLM integration and proposal generation
   - `llm_implementation.py`: Implementation enum and generator factory
   - `generators/`: OpenAI generator implementations
   - `gap_algorithms/`: K-ball and Voronoi gap detection algorithms
-- **`nextbook/gap_finder.py`**: Main gap analysis workflow
-- **`nextbook/cloud.py`**: Embedding and data management
+- **`bookgap/gap_finder.py`**: Main gap analysis workflow
+- **`bookgap/cloud.py`**: Embedding and data management
 - **`tests/`**: Comprehensive test suite
 
 ### Configuration
@@ -110,9 +110,9 @@ BookGap follows a modular architecture:
 BookGap uses strongly-typed configuration classes:
 
 ```python
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.types import CellType
-from nextbook.llm.llm_implementation import Implementation
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.types import CellType
+from bookgap.llm.llm_implementation import Implementation
 
 # Create configuration
 gap_config = GapConfiguration(

@@ -37,7 +37,7 @@ class Timer:
         return decorator
 
 
-LOGGER = logging.getLogger("nextbook")
+LOGGER = logging.getLogger("bookgap")
 
 TIMER = Timer(print=LOGGER.info)
 

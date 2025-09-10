@@ -1,7 +1,7 @@
 """
 Shared utilities for script execution and main function patterns.
 
-This module consolidates the common patterns found across all nextbook scripts:
+This module consolidates the common patterns found across all bookgap scripts:
 - Standard logging setup with explicit args
 - Main function execution with parsed arguments
 - Script name derivation from file paths
@@ -9,8 +9,8 @@ This module consolidates the common patterns found across all nextbook scripts:
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.util import setup_logging
+from bookgap.parse_args import get_explicit_args, parse_args
+from bookgap.util import setup_logging
 
 
 def run_script_main(main_func: Callable[..., Any], script_path: str, **extra_kwargs: Any) -> None:

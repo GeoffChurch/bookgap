@@ -1,8 +1,8 @@
 """Quick integration test for the LLM generators."""
 
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.llm.llm_implementation import Implementation, get_generator
-from nextbook.types import CellType
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.llm.llm_implementation import Implementation, get_generator
+from bookgap.types import CellType
 
 # Test generator registration
 def test_registration():

@@ -4,10 +4,10 @@ from typing import Optional
 
 import numpy as np
 from numpy.typing import NDArray
-from nextbook.cloud import SubCloud
-from nextbook.cloud_index import get_kball_coverage, knn
-from nextbook.index import hypothetical_voronoi_coverage
-from nextbook.util import LOGGER
+from bookgap.cloud import SubCloud
+from bookgap.cloud_index import get_kball_coverage, knn
+from bookgap.index import hypothetical_voronoi_coverage
+from bookgap.util import LOGGER
 
 
 @dataclass(frozen=True)

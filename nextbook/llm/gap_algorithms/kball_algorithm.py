@@ -4,9 +4,9 @@ K-ball gap finding algorithm implementation.
 from collections import defaultdict
 from dataclasses import dataclass
 import numpy as np
-from nextbook.cloud import SubCloud
-from nextbook.cloud_index import get_kball_coverage, knn
-from nextbook.util import LOGGER
+from bookgap.cloud import SubCloud
+from bookgap.cloud_index import get_kball_coverage, knn
+from bookgap.util import LOGGER
 
 
 @dataclass(frozen=True)

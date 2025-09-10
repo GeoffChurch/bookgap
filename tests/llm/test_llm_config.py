@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from nextbook.config_manager import LLMConfiguration
-from nextbook.llm.llm_implementation import Implementation
+from bookgap.config_manager import LLMConfiguration
+from bookgap.llm.llm_implementation import Implementation
 
 
 @pytest.fixture(autouse=True)

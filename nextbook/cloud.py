@@ -5,7 +5,7 @@ from functools import lru_cache
 import itertools
 import json
 import matplotlib.pyplot as plt
-from nextbook.plot_utils import PlotManager
+from bookgap.plot_utils import PlotManager
 import re
 import time
 from typing import Any, Dict, Generator, List, Optional, Protocol, TypeVar, runtime_checkable
@@ -17,10 +17,10 @@ from scipy import sparse as sp
 import scipy.linalg
 from sentence_transformers import SentenceTransformer
 import tqdm
-import nextbook.denoisers as denoisers
-from nextbook.index import IndexInfo, build_index, HNSW, IndexType
-from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, SubField, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
-from nextbook.deduplicators import Deduplicator
+import bookgap.denoisers as denoisers
+from bookgap.index import IndexInfo, build_index, HNSW, IndexType
+from bookgap.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, SubField, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
+from bookgap.deduplicators import Deduplicator
 
 T = TypeVar('T', bound=np.generic)
 

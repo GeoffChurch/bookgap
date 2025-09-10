@@ -29,15 +29,15 @@ from typing import Collection, Dict, Iterable, List, Optional, Literal, Union#, 
 import pandas as pd
 from scipy import sparse
 
-from nextbook.cloud import Cloud, SubCloud, WorkDenoisers
-from nextbook.cloud_index import get_avgrefs, get_kball_coverage, knn, batch_range_search_individual_radii
-from nextbook.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
-from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.util import ARTIFACTS_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
-from nextbook.mp_ks_test import ks_2samp
-from nextbook.deduplicators import FractionalDeduplicator, SqDistDeduplicator
+from bookgap.cloud import Cloud, SubCloud, WorkDenoisers
+from bookgap.cloud_index import get_avgrefs, get_kball_coverage, knn, batch_range_search_individual_radii
+from bookgap.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
+from bookgap.parse_args import get_explicit_args, parse_args
+from bookgap.util import ARTIFACTS_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
+from bookgap.mp_ks_test import ks_2samp
+from bookgap.deduplicators import FractionalDeduplicator, SqDistDeduplicator
 # Import plotting utilities to eliminate duplication  
-from nextbook.plot_utils import PlotManager, StatisticalPlotUtils, DPI
+from bookgap.plot_utils import PlotManager, StatisticalPlotUtils, DPI
 
 FIGSIZE = (10, 6)
 
@@ -1203,5 +1203,5 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
     # do_inference()
 
 if __name__ == "__main__":
-    from nextbook.script_utils import run_script_main
+    from bookgap.script_utils import run_script_main
     run_script_main(main, __file__)

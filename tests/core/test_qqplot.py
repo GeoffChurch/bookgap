@@ -4,8 +4,8 @@ Test script to verify Q-Q plot generation for book gap sizes.
 """
 
 import numpy as np
-from nextbook.gap_statistics import create_book_gap_sizes_qqplot
-from nextbook.config_manager import AnalysisConfiguration
+from bookgap.gap_statistics import create_book_gap_sizes_qqplot
+from bookgap.config_manager import AnalysisConfiguration
 
 def test_qqplot():
     print("Testing Q-Q plot generation...")
@@ -20,9 +20,9 @@ def test_qqplot():
     print(f"  Std: {np.std(book_gap_sizes, ddof=1):.2f}")
     
     # Create consolidated analysis configuration
-    from nextbook.config_manager import GapConfiguration, LLMConfiguration
-    from nextbook.types import CellType
-    from nextbook.llm.llm_implementation import Implementation
+    from bookgap.config_manager import GapConfiguration, LLMConfiguration
+    from bookgap.types import CellType
+    from bookgap.llm.llm_implementation import Implementation
     
     gap_config = GapConfiguration(
         denoiser="NONE",

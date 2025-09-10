@@ -42,13 +42,13 @@ BookGap uses mypy for static type checking:
 python -m mypy .
 
 # Check specific modules
-python -m mypy nextbook/
+python -m mypy bookgap/
 
 # Check with missing import stubs ignored
-python -m mypy nextbook/ --ignore-missing-imports
+python -m mypy bookgap/ --ignore-missing-imports
 
 # Check specific files
-python -m mypy nextbook/config_manager.py nextbook/llm/llm_implementation.py
+python -m mypy bookgap/config_manager.py bookgap/llm/llm_implementation.py
 ```
 
 Note: Some mypy warnings related to third-party libraries (faiss, sklearn, tqdm) are expected and can be ignored.

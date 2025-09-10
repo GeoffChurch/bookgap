@@ -14,12 +14,12 @@ from unittest.mock import patch, Mock
 
 import pytest
 
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.llm.llm_implementation import Implementation
-from nextbook.types import CellType
-from nextbook.llm.protocols import ProposalContext, ProposalGenerationError
-from nextbook.llm.generators.openai_generator import OpenAIProposalGenerator
-from nextbook.llm.generators.json_prompt_generator import JSONPromptProposalGenerator
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.llm.llm_implementation import Implementation
+from bookgap.types import CellType
+from bookgap.llm.protocols import ProposalContext, ProposalGenerationError
+from bookgap.llm.generators.openai_generator import OpenAIProposalGenerator
+from bookgap.llm.generators.json_prompt_generator import JSONPromptProposalGenerator
 
 
 # Sample data for testing
@@ -128,7 +128,7 @@ class TestOpenAIProposalGenerator:
         config = create_test_config()
         
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
-            with patch('nextbook.llm.generators.openai_generator.OpenAI', side_effect=Exception("Client error")):
+            with patch('bookgap.llm.generators.openai_generator.OpenAI', side_effect=Exception("Client error")):
                 with pytest.raises(ProposalGenerationError, match="Failed to initialize OpenAI client"):
                     OpenAIProposalGenerator(config)
     
@@ -137,7 +137,7 @@ class TestOpenAIProposalGenerator:
         config = create_test_config()
         
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
-            with patch('nextbook.llm.generators.openai_generator.OpenAI'):
+            with patch('bookgap.llm.generators.openai_generator.OpenAI'):
                 generator = OpenAIProposalGenerator(config)
                 prompt = generator._build_prompt(SAMPLE_CONTEXT)
                 
@@ -149,7 +149,7 @@ class TestOpenAIProposalGenerator:
                 assert "Pattern Recognition and Machine Learning" in prompt
                 assert "3-4 chapters" in prompt  # Updated to match create_test_config()
     
-    @patch('nextbook.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir')
+    @patch('bookgap.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir')
     def test_generate_handles_api_failure(self, mock_get_dir):
         """Test that generator handles API failures gracefully."""
         config = create_test_config()
@@ -159,13 +159,13 @@ class TestOpenAIProposalGenerator:
             mock_client = Mock()
             mock_client.beta.chat.completions.parse.side_effect = Exception("API Error")
             
-            with patch('nextbook.llm.generators.openai_generator.OpenAI', return_value=mock_client):
+            with patch('bookgap.llm.generators.openai_generator.OpenAI', return_value=mock_client):
                 generator = OpenAIProposalGenerator(config)
                 
                 with pytest.raises(ProposalGenerationError, match="Unexpected error during proposal generation"):
                     generator.generate(SAMPLE_CONTEXT)
     
-    @patch('nextbook.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir')
+    @patch('bookgap.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir')
     def test_generate_validates_chapter_count(self, mock_get_dir):
         """Test that generator validates chapter count bounds."""
         config = create_test_config()
@@ -188,7 +188,7 @@ class TestOpenAIProposalGenerator:
             mock_client = Mock()
             mock_client.beta.chat.completions.parse.return_value = mock_response
             
-            with patch('nextbook.llm.generators.openai_generator.OpenAI', return_value=mock_client):
+            with patch('bookgap.llm.generators.openai_generator.OpenAI', return_value=mock_client):
                 generator = OpenAIProposalGenerator(config)
                 
                 with pytest.raises(ProposalGenerationError, match="Chapter count 5 outside bounds"):
@@ -216,7 +216,7 @@ class TestJSONPromptProposalGenerator:
         config = create_test_config()
         
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
-            with patch('nextbook.llm.generators.json_prompt_generator.OpenAI'):
+            with patch('bookgap.llm.generators.json_prompt_generator.OpenAI'):
                 generator = JSONPromptProposalGenerator(config)
                 prompt = generator._build_prompt_with_json_format(SAMPLE_CONTEXT)
                 
@@ -233,7 +233,7 @@ class TestJSONPromptProposalGenerator:
         config = create_test_config()
         
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
-            with patch('nextbook.llm.generators.json_prompt_generator.OpenAI'):
+            with patch('bookgap.llm.generators.json_prompt_generator.OpenAI'):
                 generator = JSONPromptProposalGenerator(config)
                 
                 raw_json = '''
@@ -254,7 +254,7 @@ class TestJSONPromptProposalGenerator:
         config = create_test_config()
         
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
-            with patch('nextbook.llm.generators.json_prompt_generator.OpenAI'):
+            with patch('bookgap.llm.generators.json_prompt_generator.OpenAI'):
                 generator = JSONPromptProposalGenerator(config)
                 
                 raw_content = '''
@@ -280,13 +280,13 @@ class TestJSONPromptProposalGenerator:
         config = create_test_config()
         
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
-            with patch('nextbook.llm.generators.json_prompt_generator.OpenAI'):
+            with patch('bookgap.llm.generators.json_prompt_generator.OpenAI'):
                 generator = JSONPromptProposalGenerator(config)
                 
                 with pytest.raises(ProposalGenerationError, match="No JSON object found"):
                     generator._clean_json_content("This is just text without JSON")
     
-    @patch('nextbook.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir')
+    @patch('bookgap.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir')
     def test_generate_handles_invalid_json_response(self, mock_get_dir):
         """Test that generator handles invalid JSON responses."""
         config = create_test_config()
@@ -303,13 +303,13 @@ class TestJSONPromptProposalGenerator:
             mock_client = Mock()
             mock_client.chat.completions.create.return_value = mock_response
             
-            with patch('nextbook.llm.generators.json_prompt_generator.OpenAI', return_value=mock_client):
+            with patch('bookgap.llm.generators.json_prompt_generator.OpenAI', return_value=mock_client):
                 generator = JSONPromptProposalGenerator(config)
                 
                 with pytest.raises(ProposalGenerationError, match="No JSON object found"):
                     generator.generate(SAMPLE_CONTEXT)
     
-    @patch('nextbook.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir')
+    @patch('bookgap.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir')
     def test_generate_handles_malformed_json(self, mock_get_dir):
         """Test that generator handles malformed JSON."""
         config = create_test_config()
@@ -326,7 +326,7 @@ class TestJSONPromptProposalGenerator:
             mock_client = Mock()
             mock_client.chat.completions.create.return_value = mock_response
             
-            with patch('nextbook.llm.generators.json_prompt_generator.OpenAI', return_value=mock_client):
+            with patch('bookgap.llm.generators.json_prompt_generator.OpenAI', return_value=mock_client):
                 generator = JSONPromptProposalGenerator(config)
                 
                 with pytest.raises(ProposalGenerationError, match="Failed to parse JSON response"):
@@ -348,7 +348,7 @@ class TestGeneratorsWithRealAPI:
         test_results_dir.mkdir(exist_ok=True)
         
         try:
-            with patch('nextbook.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
+            with patch('bookgap.llm.generators.openai_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
                 result = generator.generate(SAMPLE_CONTEXT)
                 
                 # Verify result structure
@@ -415,7 +415,7 @@ class TestGeneratorsWithRealAPI:
         test_results_dir.mkdir(exist_ok=True)
         
         try:
-            with patch('nextbook.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
+            with patch('bookgap.llm.generators.json_prompt_generator.GapDirectoryManager.get_prompts_llm_dir', return_value=test_results_dir):
                 result = generator.generate(SAMPLE_CONTEXT)
                 
                 # Verify result structure

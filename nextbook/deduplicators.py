@@ -8,8 +8,8 @@ import numpy as np
 from numpy.typing import NDArray
 import tqdm
 
-from nextbook.index import IndexInfo, range_search_, range_search_with_
-from nextbook.util import TIMER, LOGGER
+from bookgap.index import IndexInfo, range_search_, range_search_with_
+from bookgap.util import TIMER, LOGGER
 
 
 def _validate_embeddings_and_log_input(embeddings: NDArray, method_name: str) -> bool:

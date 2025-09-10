@@ -7,7 +7,7 @@ properly load and instantiate generators.
 
 from enum import Enum
 
-from nextbook.llm.llm_implementation import Implementation, get_generator
+from bookgap.llm.llm_implementation import Implementation, get_generator
 
 
 class TestImplementation:
@@ -55,5 +55,5 @@ class TestRegistryIntegration:
         assert generator is not None
         
         # Should have the expected type
-        from nextbook.llm.generators.openai_generator import OpenAIProposalGenerator
+        from bookgap.llm.generators.openai_generator import OpenAIProposalGenerator
         assert isinstance(generator, OpenAIProposalGenerator)

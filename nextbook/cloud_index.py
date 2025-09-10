@@ -7,9 +7,9 @@ import scipy.sparse as sp
 import json
 import tqdm
 
-from nextbook.cloud import Cloud, SubCloud
-from nextbook.index import range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims, kballs_with
-from nextbook.util import TIMER, MEMORY, LOGGER, get_stats
+from bookgap.cloud import Cloud, SubCloud
+from bookgap.index import range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims, kballs_with
+from bookgap.util import TIMER, MEMORY, LOGGER, get_stats
 
 @MEMORY.cache
 def get_kball_coverage(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 

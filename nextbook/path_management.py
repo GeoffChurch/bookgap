@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Path and filename management utilities for nextbook analysis.
+Path and filename management utilities for bookgap analysis.
 
 This module handles all path construction, parsing, and filename operations
 without depending on LLM types, avoiding circular dependencies.
@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-from nextbook.util import create_unicode_safe_filename
+from bookgap.util import create_unicode_safe_filename
 
 
 class CustomIdComponents(NamedTuple):

@@ -8,7 +8,7 @@ mkdir() patterns and ensuring consistent directory structure.
 
 from pathlib import Path
 from typing import Optional, Union
-from nextbook.config_manager import AnalysisConfiguration
+from bookgap.config_manager import AnalysisConfiguration
 
 
 class GapDirectoryManager:

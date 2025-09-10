@@ -4,8 +4,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 import random
 
-from nextbook.llm.context_builder import build_proposal_context
-from nextbook.llm.protocols import ProposalContext
+from bookgap.llm.context_builder import build_proposal_context
+from bookgap.llm.protocols import ProposalContext
 
 
 class TestBuildProposalContext:
@@ -37,7 +37,7 @@ class TestBuildProposalContext:
         mock_cloud.works.return_value = works
         return mock_cloud
     
-    @patch('nextbook.gap_finder.group_gap_articles_by_covering_books')
+    @patch('bookgap.gap_finder.group_gap_articles_by_covering_books')
     def test_successful_context_building(self, mock_group_books):
         """Test successful context building."""
         # Set up mocks
@@ -95,7 +95,7 @@ class TestBuildProposalContext:
         
         assert "contains no articles" in str(exc_info.value)
     
-    @patch('nextbook.gap_finder.group_gap_articles_by_covering_books')
+    @patch('bookgap.gap_finder.group_gap_articles_by_covering_books')
     def test_deterministic_sampling(self, mock_group_books):
         """Test that sampling is deterministic for same inputs."""
         mock_group_books.return_value = {}  # No book coverage
@@ -130,7 +130,7 @@ class TestBuildProposalContext:
         assert context1.sampled_articles == context2.sampled_articles
         assert context1.covering_books == context2.covering_books
     
-    @patch('nextbook.gap_finder.group_gap_articles_by_covering_books')
+    @patch('bookgap.gap_finder.group_gap_articles_by_covering_books')
     def test_different_seeds_give_different_results(self, mock_group_books):
         """Test that different topic_id or gap_idx gives different results."""
         mock_group_books.return_value = {}
@@ -177,7 +177,7 @@ class TestBuildProposalContext:
         
         assert "missing required fields" in str(exc_info.value)
     
-    @patch('nextbook.gap_finder.group_gap_articles_by_covering_books')
+    @patch('bookgap.gap_finder.group_gap_articles_by_covering_books')
     def test_book_validation_skips_invalid(self, mock_group_books):
         """Test that books with missing fields are skipped, not failed."""
         # Set up book coverage
@@ -211,7 +211,7 @@ class TestBuildProposalContext:
         assert context.covering_books[1]['display_name'] == 'Valid Book 2'
         assert context.counts["num_books_for_llm"] == 2
     
-    @patch('nextbook.gap_finder.group_gap_articles_by_covering_books')  
+    @patch('bookgap.gap_finder.group_gap_articles_by_covering_books')  
     def test_no_book_coverage(self, mock_group_books):
         """Test handling when no books cover the gap articles."""
         mock_group_books.return_value = {}  # No coverage
@@ -230,7 +230,7 @@ class TestBuildProposalContext:
         assert context.counts["num_books_for_llm"] == 0
         assert len(context.sampled_articles) == 3  # Articles still sampled
     
-    @patch('nextbook.gap_finder.group_gap_articles_by_covering_books')
+    @patch('bookgap.gap_finder.group_gap_articles_by_covering_books')
     def test_sampling_limits(self, mock_group_books):
         """Test that sampling respects configured limits."""
         mock_group_books.return_value = {}

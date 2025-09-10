@@ -11,14 +11,14 @@ import sys
 # Configuration flags
 ENABLE_CDOPT = False  # Set to False to disable slow cdopt_rnojd benchmarking
 
-from nextbook.cloud import Cloud, WorkDenoisers, CloudDenoiserContext
-from nextbook.denoisers import JADDenoiser
-from nextbook.util import Filter, WorkType, LOGGER, TIMER, setup_logging
-from nextbook.parse_args import get_explicit_args, parse_args
+from bookgap.cloud import Cloud, WorkDenoisers, CloudDenoiserContext
+from bookgap.denoisers import JADDenoiser
+from bookgap.util import Filter, WorkType, LOGGER, TIMER, setup_logging
+from bookgap.parse_args import get_explicit_args, parse_args
 
 # Try importing RNOJD functions for detailed benchmarking
 try:
-    from nextbook.rsdc import rnojd, offdiag_frobenius_square, manopt_rnojd, cdopt_rnojd, ffdiag_rnojd
+    from bookgap.rsdc import rnojd, offdiag_frobenius_square, manopt_rnojd, cdopt_rnojd, ffdiag_rnojd
     DETAILED_BENCHMARKING = True
     LOGGER.info("Full RNOJD benchmarking available")
 except ImportError as e:
@@ -38,9 +38,9 @@ def test_jad_performance_basic():
     """Basic test to verify JAD performance testing infrastructure is working"""
     
     # Test that we can import the necessary modules
-    from nextbook.cloud import Cloud, WorkDenoisers, CloudDenoiserContext
-    from nextbook.denoisers import JADDenoiser
-    from nextbook.util import Filter, WorkType, LOGGER, TIMER, setup_logging
+    from bookgap.cloud import Cloud, WorkDenoisers, CloudDenoiserContext
+    from bookgap.denoisers import JADDenoiser
+    from bookgap.util import Filter, WorkType, LOGGER, TIMER, setup_logging
     
     # Test time_function helper
     def dummy_function(x):
@@ -62,8 +62,8 @@ def _test_jad_performance_full(max_works, deduplicator, index_type, hnsw_m, hnsw
     LOGGER.info("Loading AI cloud data...")
     
     # Use AI subfield as done in analyze_book_article_gap.py
-    from nextbook.util import FilterPair, SubField
-    from nextbook.index import HNSW, IndexType
+    from bookgap.util import FilterPair, SubField
+    from bookgap.index import HNSW, IndexType
     
     # Standard cloud configuration (same as analyze_book_article_gap.py)
     if index_type == IndexType.HNSW:
@@ -246,5 +246,5 @@ def main(drop_k, max_works, deduplicator, radius_fraction, denoiser,
         traceback.print_exc()
 
 if __name__ == "__main__":
-    from nextbook.script_utils import run_script_main
+    from bookgap.script_utils import run_script_main
     run_script_main(main, __file__)

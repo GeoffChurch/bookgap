@@ -1,7 +1,7 @@
 /.venv
 /.conda
 /misc
-/nextbook.egg-info
+/bookgap.egg-info
 /cache
 /logs
 __pycache__/

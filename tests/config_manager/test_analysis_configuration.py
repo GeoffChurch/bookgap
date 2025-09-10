@@ -9,9 +9,9 @@ AnalysisConfiguration class that replaces GapConfiguration + LLMConfiguration.
 import pytest
 import tempfile
 from pathlib import Path
-from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from nextbook.types import CellType
-from nextbook.llm.llm_implementation import Implementation
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.types import CellType
+from bookgap.llm.llm_implementation import Implementation
 
 
 def create_analysis_config(denoiser="NONE", drop_k=0, radius_fraction=0.75, 

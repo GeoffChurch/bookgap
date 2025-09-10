@@ -8,8 +8,8 @@ from scipy.linalg import eigh, svd, qr
 import scipy.sparse as sp
 from sklearn.decomposition import PCA
 from numpy.linalg import pinv, LinAlgError, lstsq
-from nextbook.rsdc import rnojd, manopt_rnojd
-from nextbook.util import TIMER, LOGGER
+from bookgap.rsdc import rnojd, manopt_rnojd
+from bookgap.util import TIMER, LOGGER
 from abc import ABC, abstractmethod
 
 # Import RNOJD from the submodule

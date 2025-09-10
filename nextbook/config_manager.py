@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Configuration management for nextbook analysis.
+Configuration management for bookgap analysis.
 
 This module provides centralized configuration classes for gap analysis and LLM proposal generation.
 """
@@ -8,10 +8,10 @@ This module provides centralized configuration classes for gap analysis and LLM 
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from nextbook.types import CellType
-from nextbook.llm.llm_implementation import Implementation
-from nextbook.cloud import WorkDenoisers
-from nextbook.util import create_unicode_safe_filename
+from bookgap.types import CellType
+from bookgap.llm.llm_implementation import Implementation
+from bookgap.cloud import WorkDenoisers
+from bookgap.util import create_unicode_safe_filename
 
 
 @dataclass(frozen=True)

@@ -9,12 +9,12 @@ import random
 import hashlib
 from typing import TYPE_CHECKING
 
-from nextbook.cloud import SubCloud
-from nextbook.config_manager import AnalysisConfiguration
+from bookgap.cloud import SubCloud
+from bookgap.config_manager import AnalysisConfiguration
 from .protocols import ProposalContext
 
 if TYPE_CHECKING:
-    from nextbook.gap_finder import GapProtocol
+    from bookgap.gap_finder import GapProtocol
 
 
 def build_proposal_context(
@@ -73,7 +73,7 @@ def build_proposal_context(
     
     # Analyze book coverage and select top covering books
     # Import here to avoid circular import
-    from nextbook.gap_finder import group_gap_articles_by_covering_books
+    from bookgap.gap_finder import group_gap_articles_by_covering_books
     
     covering_books = []
     book_coverage = group_gap_articles_by_covering_books(gap)

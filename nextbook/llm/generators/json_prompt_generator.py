@@ -13,9 +13,9 @@ import re
 from openai import OpenAI
 from pydantic import ValidationError
 
-from nextbook.config_manager import AnalysisConfiguration
-from nextbook.gap_directory_manager import GapDirectoryManager
-from nextbook.util import create_unicode_safe_filename, LOGGER
+from bookgap.config_manager import AnalysisConfiguration
+from bookgap.gap_directory_manager import GapDirectoryManager
+from bookgap.util import create_unicode_safe_filename, LOGGER
 from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Proposal, ProposalCounts, ProposalMetadata
 
 

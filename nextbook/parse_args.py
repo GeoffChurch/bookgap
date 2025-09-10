@@ -3,9 +3,9 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Optional
 
-from nextbook.cloud import WorkDenoisers
-from nextbook.index import IndexType
-from nextbook.deduplicators import Deduplicator, FractionalDeduplicator, SqDistDeduplicator
+from bookgap.cloud import WorkDenoisers
+from bookgap.index import IndexType
+from bookgap.deduplicators import Deduplicator, FractionalDeduplicator, SqDistDeduplicator
 
 
 @dataclass(frozen=True)

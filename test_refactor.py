@@ -8,9 +8,9 @@ from pathlib import Path
 # Add the package to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from nextbook.config_manager import CellType, AnalysisConfiguration, GapConfiguration, LLMConfiguration, Implementation
-from nextbook.gap_finder import get_gap_algorithm, register_gap_algorithms, kball_gaps, voronoi_gaps
-from nextbook.llm.protocols import ProposalCounts, ProposalMetadata, ProposalResult
+from bookgap.config_manager import CellType, AnalysisConfiguration, GapConfiguration, LLMConfiguration, Implementation
+from bookgap.gap_finder import get_gap_algorithm, register_gap_algorithms, kball_gaps, voronoi_gaps
+from bookgap.llm.protocols import ProposalCounts, ProposalMetadata, ProposalResult
 
 
 def test_gap_algorithm_enum():

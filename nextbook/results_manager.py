@@ -2,7 +2,7 @@
 Unified Results Management Framework
 
 This module provides a consolidated framework for managing results across all 
-nextbook operations, replacing scattered Results classes with a unified system.
+bookgap operations, replacing scattered Results classes with a unified system.
 
 Key Components:
 - BaseResults: Abstract base class for all result types

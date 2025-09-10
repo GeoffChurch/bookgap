@@ -6,7 +6,7 @@ Test script demonstrating the generalized JADDenoiser with multiple subsets.
 import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
-from nextbook.denoisers import DenoiserContext, JADDenoiser
+from bookgap.denoisers import DenoiserContext, JADDenoiser
 
 
 class TestDenoiserContext(DenoiserContext):

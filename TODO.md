@@ -7,12 +7,12 @@
 ### Current Issue
 We have retained hideous `if TYPE_CHECKING` workarounds to avoid circular dependencies in multiple places:
 
-1. **`nextbook/llm/llm_implementation.py`**: 
+1. **`bookgap/llm/llm_implementation.py`**: 
    - Uses `TYPE_CHECKING` imports for generator classes
    - `Implementation` enum uses string values instead of direct class mapping like `CellType`
    - Circular dependency from `config_manager → llm_implementation → generators → config_manager`
    
-2. **`nextbook/llm/context_builder.py`**: Uses `TYPE_CHECKING` to import `GapProtocol` and string annotation `gap: "GapProtocol"` due to circular import between LLM module and `gap_finder.py`
+2. **`bookgap/llm/context_builder.py`**: Uses `TYPE_CHECKING` to import `GapProtocol` and string annotation `gap: "GapProtocol"` due to circular import between LLM module and `gap_finder.py`
 
 Both issues stem from tight coupling between modules that should be more loosely connected.
 
@@ -81,8 +81,8 @@ The `DistsAndIdxs` dataclass is duplicated identically in both gap algorithm fil
 - **`voronoi_algorithm.py`**: Lines 15-18 define identical `DistsAndIdxs`
 
 This should be moved to a shared location, such as:
-- Create `nextbook/llm/gap_algorithms/types.py` and import from both algorithm files
-- Move to `nextbook/types.py` alongside other core types
+- Create `bookgap/llm/gap_algorithms/types.py` and import from both algorithm files
+- Move to `bookgap/types.py` alongside other core types
 - Move to `gap_finder.py` where `GapProtocol` is defined and import from algorithm files
 
 The shared class should maintain the same interface to avoid breaking changes.
@@ -134,7 +134,7 @@ Rename and split monolithic type definition files to prevent circular dependenci
 **Pattern to follow**: Use specific, descriptive names that indicate the domain/purpose rather than generic names like `types.py`, `enums.py`, `utils.py`, etc.
 
 ### Remove Duplicate Path Management Code
-The file `nextbook/path_management.py` appears to be unused but **is NOT a true duplicate** of `config_manager.py`:
+The file `bookgap/path_management.py` appears to be unused but **is NOT a true duplicate** of `config_manager.py`:
 
 **Key differences**:
 - `path_management.py`: Takes raw string parameters (`gap_config_str: str, llm_subdir_str: str`)

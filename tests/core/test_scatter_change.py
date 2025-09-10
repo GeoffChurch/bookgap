@@ -4,7 +4,7 @@ Quick test to verify that the scatter matrix change doesn't significantly affect
 """
 
 import numpy as np
-from nextbook.denoisers import scatter
+from bookgap.denoisers import scatter
 
 # Test with sample data similar to your dataset sizes
 np.random.seed(42)

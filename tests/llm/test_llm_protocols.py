@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from nextbook.llm.protocols import (
+from bookgap.llm.protocols import (
     ProposalContext,
     ProposalResult,
     Chapter,

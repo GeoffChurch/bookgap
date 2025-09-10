@@ -7,11 +7,11 @@ import numpy as np
 import sys
 from pathlib import Path
 
-# Add the nextbook package to the path
+# Add the bookgap package to the path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from test_generalized_jad import TestDenoiserContext, create_synthetic_data
-from nextbook.denoisers import JADDenoiser
+from bookgap.denoisers import JADDenoiser
 
 
 def test_entropy_conflation():

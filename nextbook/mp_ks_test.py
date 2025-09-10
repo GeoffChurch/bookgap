@@ -2,7 +2,7 @@
 from fractions import Fraction
 import math
 import numpy as np
-from nextbook.util import LOGGER, TIMER
+from bookgap.util import LOGGER, TIMER
 
 """
 This module is adapted from `scipy.stats.ks_2samp` to use fractions.Fraction

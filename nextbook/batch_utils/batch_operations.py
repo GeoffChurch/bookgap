@@ -18,16 +18,16 @@ from openai import OpenAI
 from pylatexenc.latexencode import unicode_to_latex
 from dataclasses import dataclass
 
-from nextbook.cloud import get_embedding_model, Cloud, SubCloud, build_cloud, get_subclouds_for_topic
-from nextbook.index import IndexType
-from nextbook.cloud_index import compute_proposal_rankings_for_gap
-from nextbook.util import SubField, WorkType, Filter, FilterPair, LOGGER
-from nextbook.gap_finder import find_gaps_for_topic, save_gap_plot_with_proposals, save_gap_books_vs_proposals_plot
-from nextbook.gap_directory_manager import GapDirectoryManager
-from nextbook.results_manager import DataFrameResults
+from bookgap.cloud import get_embedding_model, Cloud, SubCloud, build_cloud, get_subclouds_for_topic
+from bookgap.index import IndexType
+from bookgap.cloud_index import compute_proposal_rankings_for_gap
+from bookgap.util import SubField, WorkType, Filter, FilterPair, LOGGER
+from bookgap.gap_finder import find_gaps_for_topic, save_gap_plot_with_proposals, save_gap_books_vs_proposals_plot
+from bookgap.gap_directory_manager import GapDirectoryManager
+from bookgap.results_manager import DataFrameResults
 
 # Import centralized configuration management
-from nextbook.config_manager import (
+from bookgap.config_manager import (
     AnalysisConfiguration,
     GapConfiguration,
     LLMConfiguration,
@@ -282,7 +282,7 @@ def upload_and_submit_batch(batch_file: Path, description: str = "Textbook propo
         completion_window="24h",  # Complete within 24 hours
         metadata={
             "description": description,
-            "project": "nextbook"
+            "project": "bookgap"
         }
     )
     

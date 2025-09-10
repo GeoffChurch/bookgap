@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
-from nextbook.cloud import SubCloud
-from nextbook.cloud_index import knn
-from nextbook.index import hypothetical_voronoi_coverage
+from bookgap.cloud import SubCloud
+from bookgap.cloud_index import knn
+from bookgap.index import hypothetical_voronoi_coverage
 
 
 @dataclass(frozen=True)
