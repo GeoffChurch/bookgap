@@ -33,3 +33,9 @@ dev = [
 
 [tool.setuptools]
 packages = ["nextbook"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration tests that may incur costs (run with '--integration')",
+]
+addopts = "-m 'not integration'"

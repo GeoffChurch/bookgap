@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
 """
-Centralized Configuration Management for NextBook.
+Configuration management for nextbook analysis.
 
-This module provides unified configuration handling for gap analysis, batch operations,
-and path management throughout the NextBook system. It replaces scattered configuration
-string building and parsing logic with a clean, fail-fast approach.
-
-Key classes:
-- AnalysisConfiguration: Consolidated configuration for all gap analysis parameters
-- CustomIdComponents: Components for batch operation custom IDs
-- CustomIdManager: Handles custom ID creation and parsing
-- TopicPathManager: Manages topic names and path sanitization
-- ConfigPathParser: Parses configuration from file paths
+This module provides centralized configuration classes for gap analysis and LLM proposal generation.
 """
 
 from dataclasses import dataclass
 from typing import NamedTuple
-import re
 
-# Import the existing function from util instead of duplicating it
+from nextbook.types import CellType
+from nextbook.llm.llm_implementation import Implementation
 from nextbook.cloud import WorkDenoisers
 from nextbook.util import create_unicode_safe_filename
 
@@ -36,7 +27,7 @@ class GapConfiguration:
     denoiser: str
     drop_k: int
     radius_fraction: float
-    cell_type: str  # 'kball' or 'voronoi'
+    cell_type: CellType
     
     def __post_init__(self) -> None:
         """Validate gap configuration parameters."""
@@ -49,13 +40,13 @@ class GapConfiguration:
         if not (0.0 <= self.radius_fraction <= 1.0):
             raise ValueError(f"radius_fraction must be in [0.0, 1.0], got {self.radius_fraction}")
         
-        # Cell type validation
-        if self.cell_type not in ("kball", "voronoi"):
-            raise ValueError(f"cell_type must be either 'kball' or 'voronoi', got '{self.cell_type}'")
+        # CellType validation is handled by the enum type
+        if not isinstance(self.cell_type, CellType):
+            raise ValueError(f"cell_type must be a CellType enum, got {type(self.cell_type)}")
     
     def to_directory_name(self) -> str:
         """Convert to directory name format."""
-        return f"{self.denoiser}_k={self.drop_k}_radiusfrac={self.radius_fraction:.2f}_{self.cell_type}"
+        return f"{self.denoiser}_k={self.drop_k}_radiusfrac={self.radius_fraction:.2f}_{self.cell_type.name.lower()}"
     
     @classmethod
     def from_directory_name(cls, dir_name: str) -> "GapConfiguration":
@@ -100,9 +91,13 @@ class GapConfiguration:
             radius_fraction = float(parts[k_idx + 1][len("radiusfrac="):])
             
             # Cell type
-            cell_type = parts[k_idx + 2]
-            if cell_type not in ("kball", "voronoi"):
-                raise ValueError(f"Cell type must be 'kball' or 'voronoi', got: {cell_type}")
+            cell_type_str = parts[k_idx + 2]
+            if cell_type_str == "kball":
+                cell_type = CellType.KBALL
+            elif cell_type_str == "voronoi":
+                cell_type = CellType.VORONOI
+            else:
+                raise ValueError(f"Cell type must be 'kball' or 'voronoi', got: {cell_type_str}")
             
             return cls(
                 denoiser=denoiser,
@@ -125,10 +120,17 @@ class LLMConfiguration:
     These parameters determine how research gaps are turned into LLM prompts.
     They correspond to the subdirectory structure level: prompts/{llm_config}/
     
-    String format: "articles_{requested_num_prompt_articles}_books_{requested_num_prompt_books}"
+    String format: "llm_{implementation}_{articles}_{books}" (breaking change from old format)
     """
-    requested_num_prompt_articles: int
-    requested_num_prompt_books: int
+    implementation: Implementation
+    provider: str = "openai"  # Currently only openai supported
+    model: str = "gpt-5"  # Default model (supports structured outputs)
+    temperature: float = 0.2  # Default temperature
+    max_tokens: int = 2000  # Default max tokens
+    chapters_min: int = 10  # Minimum chapters in proposal
+    chapters_max: int = 15  # Maximum chapters in proposal
+    requested_num_prompt_articles: int = 10  # Articles to include in prompt
+    requested_num_prompt_books: int = 5  # Books to include in prompt
     
     def __post_init__(self) -> None:
         """Validate LLM configuration parameters."""
@@ -136,18 +138,31 @@ class LLMConfiguration:
             raise ValueError(f"requested_num_prompt_articles must be non-negative, got {self.requested_num_prompt_articles}")
         if self.requested_num_prompt_books < 0:
             raise ValueError(f"requested_num_prompt_books must be non-negative, got {self.requested_num_prompt_books}")
+        if self.provider != "openai":
+            raise ValueError(f"Only 'openai' provider is currently supported, got '{self.provider}'")
+        if not (0.0 <= self.temperature <= 2.0):
+            raise ValueError(f"temperature must be in [0.0, 2.0], got {self.temperature}")
+        if self.max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {self.max_tokens}")
+        if not (1 <= self.chapters_min <= self.chapters_max <= 50):
+            raise ValueError(f"chapters must satisfy 1 <= min <= max <= 50, got min={self.chapters_min}, max={self.chapters_max}")
+        
+        # Validate that implementation is correct type (will be checked after registry is imported)
+        # We defer this validation since Implementation enum may not be available yet
     
     def to_subdir_name(self) -> str:
         """Convert to LLM subdirectory name format."""
-        return f"articles_{self.requested_num_prompt_articles}_books_{self.requested_num_prompt_books}"
+        return f"llm_{self.implementation.name.lower()}_articles_{self.requested_num_prompt_articles}_books_{self.requested_num_prompt_books}"
     
     @classmethod
     def from_subdir_name(cls, subdir_name: str) -> "LLMConfiguration":
         """
         Parse LLM configuration from subdirectory name format.
         
+        Expected format: "llm_{implementation}_articles_{X}_books_{Y}"
+        
         Args:
-            subdir_name: Subdirectory name like "articles_10_books_5"
+            subdir_name: Subdirectory name like "llm_structured_articles_10_books_5"
             
         Returns:
             LLMConfiguration instance
@@ -156,25 +171,38 @@ class LLMConfiguration:
             ValueError: If subdirectory name format is invalid
         """
         parts = subdir_name.split("_")
-        if len(parts) != 4:
-            raise ValueError(f"Invalid LLM configuration subdirectory format. Expected 4 parts, got {len(parts)}: {subdir_name}")
+        
+        if len(parts) != 6:
+            raise ValueError(f"Invalid LLM configuration subdirectory format. Expected 6 parts (llm_impl_articles_X_books_Y), got {len(parts)}: {subdir_name}")
         
         try:
-            # Expected format: "articles_X_books_Y"
-            if parts[0] != "articles":
-                raise ValueError(f"Expected subdirectory to start with 'articles', got: {parts[0]}")
-            if parts[2] != "books":
-                raise ValueError(f"Expected third part to be 'books', got: {parts[2]}")
+            # Expected format: "llm_structured_articles_X_books_Y"
+            if parts[0] != "llm":
+                raise ValueError(f"Expected subdirectory to start with 'llm', got: {parts[0]}")
+            if parts[2] != "articles":
+                raise ValueError(f"Expected third part to be 'articles', got: {parts[2]}")
+            if parts[4] != "books":
+                raise ValueError(f"Expected fifth part to be 'books', got: {parts[4]}")
             
-            requested_num_prompt_articles = int(parts[1])
-            requested_num_prompt_books = int(parts[3])
+            # Parse implementation
+            impl_name = parts[1].upper()
+            try:
+                implementation = Implementation[impl_name]
+            except KeyError:
+                raise ValueError(f"Unknown implementation: {impl_name}. Valid options: {[e.name for e in Implementation]}")
+            
+            requested_num_prompt_articles = int(parts[3])
+            requested_num_prompt_books = int(parts[5])
             
             return cls(
+                implementation=implementation,
                 requested_num_prompt_articles=requested_num_prompt_articles,
                 requested_num_prompt_books=requested_num_prompt_books
             )
             
         except (ValueError, IndexError) as e:
+            if "Invalid LLM configuration subdirectory format" in str(e):
+                raise  # Re-raise our custom message
             raise ValueError(f"Invalid LLM configuration subdirectory format: {subdir_name}. Error: {e}")
 
 

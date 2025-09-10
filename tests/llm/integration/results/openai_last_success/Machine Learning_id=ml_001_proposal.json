@@ -1,0 +1,22 @@
+{
+  "title": "Foundations of Deep Learning for Computer Vision: From Pattern Recognition to Attention",
+  "abstract": "This textbook builds a rigorous path from classic pattern recognition principles to modern deep learning methods for computer vision, culminating in attention-based and transformer architectures. It emphasizes the mathematical foundations, practical implementation skills, and experimental methodology needed to read, reproduce, and critique current research. Students learn to connect core concepts such as probabilistic modeling and optimization with convolutional networks, attention mechanisms, and state-of-the-art vision pipelines. The book balances theory with hands-on guidance, preparing readers to understand and engage with contemporary research literature.",
+  "chapters": [
+    {
+      "chapter_title": "Pattern Recognition Foundations for Vision",
+      "chapter_description": "Introduces probability, linear algebra, optimization, and generalization theory as the basis for learning systems, linking classical feature-based methods to modern representation learning."
+    },
+    {
+      "chapter_title": "Deep Learning Basics: From MLPs to Convolutional Networks",
+      "chapter_description": "Covers neural network fundamentals, backpropagation, regularization, and optimization, then develops convolutional architectures and training workflows tailored to vision tasks."
+    },
+    {
+      "chapter_title": "Attention Mechanisms and Transformers in Vision",
+      "chapter_description": "Presents the intuition and mathematics of attention (self-, cross-, and multi-head), positional encodings, and transformer architectures, with applications such as Vision Transformers and hybrid CNN–attention models."
+    },
+    {
+      "chapter_title": "Reading, Reproducing, and Evaluating Vision Research",
+      "chapter_description": "Focuses on datasets, metrics, experimental design, ablations, and reproducibility, and provides a framework for critically reading papers and translating research into robust implementations."
+    }
+  ]
+}

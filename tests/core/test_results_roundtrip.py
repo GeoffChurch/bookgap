@@ -11,18 +11,40 @@ from nextbook.results_manager import GapResults
 
 def test_gapresults_csv_roundtrip_preserves_schema_and_rows():
     # Build analysis configuration
-    config = AnalysisConfiguration(
-        denoiser="JAD",
+    from nextbook.config_manager import GapConfiguration, LLMConfiguration
+    from nextbook.types import CellType
+    from nextbook.llm.llm_implementation import Implementation
+    
+    gap_config = GapConfiguration(
+        denoiser="JAD_EQUAL",
         drop_k=10,
         radius_fraction=0.40,
-        cell_type="kball",
+        cell_type=CellType.KBALL
+    )
+    
+    llm_config = LLMConfiguration(
+        implementation=Implementation.STRUCTURED,
+        provider="openai",
+        model="gpt-4",
+        temperature=0.2,
+        max_tokens=2000,
+        chapters_min=10,
+        chapters_max=15,
         requested_num_prompt_articles=30,
-        requested_num_prompt_books=7,
+        requested_num_prompt_books=7
+    )
+    
+    config = AnalysisConfiguration(
+        gap_config=gap_config,
+        llm_config=llm_config
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_dir = Path(tmpdir)
+        csv_path = config_dir / "gap_analysis.csv"
+        
         results = GapResults(config)
+        results.csv_path = csv_path  # Override the default path
 
         # Add two realistic rows
         results.add_row(
@@ -75,10 +97,9 @@ def test_gapresults_csv_roundtrip_preserves_schema_and_rows():
             "actual_num_prompt_books",
         }
         assert expected_cols.issubset(set(df_written.columns))
-        assert (df_written["cell_type"] == config.cell_type).all()
+        assert (df_written["cell_type"] == config.gap_config.cell_type.name.lower()).all()
 
         # CSV path and existence
-        csv_path = config_dir / "gap_analysis.csv"
         assert csv_path.exists()
 
         # Load back via API and compare frames (ignore dtypes)
@@ -94,6 +115,6 @@ def test_gapresults_csv_roundtrip_preserves_schema_and_rows():
         )
 
         # Extra: verify requested/actual columns retained correctly
-        assert (df_loaded["requested_num_prompt_articles"] == config.requested_num_prompt_articles).all()
-        assert (df_loaded["requested_num_prompt_books"] == config.requested_num_prompt_books).all()
+        assert (df_loaded["requested_num_prompt_articles"] == config.llm_config.requested_num_prompt_articles).all()
+        assert (df_loaded["requested_num_prompt_books"] == config.llm_config.requested_num_prompt_books).all()
         assert set(df_loaded["actual_num_prompt_books"]) == {6, 7}

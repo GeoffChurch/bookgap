@@ -3,13 +3,11 @@
 Analyze the gap between books and articles across different filters.
 """
 
-from functools import lru_cache
 import pandas as pd
 import numpy as np
-from numpy.typing import NDArray
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Collection, Optional, Union
+from typing import Collection, Optional
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 
@@ -17,11 +15,10 @@ import pyalex
 import plotly.express as px
 import plotly.graph_objects as go
 
-from nextbook.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers, build_cloud, get_subclouds_for_topic
-from nextbook.gap_finder import find_gaps_for_topic
+from nextbook.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers, get_subclouds_for_topic
 from nextbook.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
 from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.util import TIMER, Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
+from nextbook.util import Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
 from nextbook.deduplicators import Deduplicator
 from nextbook.index import HNSW, IndexType
 
@@ -42,7 +39,7 @@ ALLOWED_DENOISER_NAMES = ['NONE'] + [wd.name for wd in ALLOWED_WORK_DENOISERS]
 FONT_SIZE = 7
 
 # Import plotting utilities to eliminate duplication
-from nextbook.plot_utils import PlotManager, StatisticalPlotUtils, DPI
+from nextbook.plot_utils import PlotManager
 from nextbook.results_manager import BookArticleResults
 
 def get_denoiser_display_name(denoiser: str) -> str:

@@ -1,37 +1,36 @@
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable, Tuple, Protocol, Union
-import os
 import abc
-import json
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 import pyalex
 import random
 import matplotlib.axes
-import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-import scipy.sparse as sp
-from scipy import stats
-from nextbook.denoisers import LPPDenoiser, DenoiserContext
+from nextbook.denoisers import LPPDenoiser
 from nextbook.cloud import Cloud, SubCloud, build_cloud, get_subclouds_for_topic
-from nextbook.cloud_index import knn, get_kball_coverage
+from nextbook.cloud_index import knn
 from nextbook.deduplicators import Deduplicator
-from nextbook.index import HNSW, IndexType, actual_voronoi_coverage, hypothetical_voronoi_coverage
-from nextbook.parse_args import get_explicit_args, parse_args
-from nextbook.util import LOGGER, Filter, FilterPair, SubField, WorkType, create_unicode_safe_filename, setup_logging
+from nextbook.index import IndexType
+from nextbook.util import LOGGER, SubField, create_unicode_safe_filename
 from nextbook.gap_directory_manager import GapDirectoryManager
 from nextbook.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from nextbook.llm.gap_algorithms.kball_algorithm import KballGap, DistsAndIdxs
+from nextbook.llm.gap_algorithms.voronoi_algorithm import VoronoiGap
+from nextbook.llm.llm_implementation import Implementation, get_generator
+from nextbook.types import CellType
+from nextbook.llm.protocols import ProposalResult
+from nextbook.llm.context_builder import build_proposal_context
 from nextbook.plot_utils import (
-    PlotManager, GapPlotUtils, StatisticalPlotUtils, 
-    DPI, FIGURE_SIZE_LARGE, FIGURE_SIZE_MEDIUM, BBOX_INCHES_SETTING, GRID_ALPHA,
-    BOOK_COLOR, GAP_COLOR, PROPOSAL_COLOR
+    PlotManager, FIGURE_SIZE_LARGE, GRID_ALPHA,
+    BOOK_COLOR, GAP_COLOR
 )
 from nextbook.results_manager import GapResults
-from nextbook.gap_statistics import compute_gap_statistics, create_book_gap_sizes_qqplot, GAP_STATISTICS_COLUMNS, GAP_STATISTICS_COLUMN_NAMES
+from nextbook.gap_statistics import compute_gap_statistics, create_book_gap_sizes_qqplot
 import abc
 
 # Machine learning and algorithmic constants
@@ -46,11 +45,6 @@ MIN_REQUIRED_DIMENSION = 1  # Minimum required dimension for distance arrays
 CENTER_ARTICLE_DISTANCE = 0  # Expected squared distance for center article (self-distance)
 INVALID_LANDMARK_INDEX = -1   # Indicator for no nearest landmark found
 
-@dataclass(frozen=True)
-class DistsAndIdxs:
-    """Container for squared distances and corresponding indices."""
-    sqdists: NDArray[np.float32]  # Squared distances
-    idxs: NDArray[np.intp]      # Corresponding indices
 
 
 class GapProtocol(Protocol):
@@ -130,200 +124,9 @@ class GapVisualizationData:
         nearest_books = self.gap_article_to_book_search[gap_position]
         return nearest_books[0] if len(nearest_books) > 0 else None
 
-@dataclass(frozen=True)
-class KballGap:
-    ambient: SubCloud  # The ambient space to count points in (e.g., articles)
-    landmark: SubCloud  # The landmarks used to define distances (e.g., books)
-    query: SubCloud  # The query points to analyze for gaps (e.g., articles)
-    radius_fraction: float
-    k: int  # Which nearest landmark to use
-    dists_idxs: DistsAndIdxs  # Squared distances and indices of the ambient points that are in the gap.
-
-    @dataclass(frozen=True)
-    class CoveredPoints:
-        ambient: SubCloud
-        landmark: SubCloud
-        query: SubCloud
-        radius_fraction: float
-        landmark_to_covered_ambient_points: dict[np.intp, DistsAndIdxs]  # List of squared distances and idxs for each ambient point covered by the corresponding landmark point.
-    def closest_query_points(self):
-        landmark_to_covered_ambient_idxs = defaultdict(list)
-        landmark_to_covered_ambient_dists = defaultdict(list)
-        res = knn(index=self.landmark, query=self.ambient, k=1)
-        closest_landmark_to_each_ambient = res.I[self.dists_idxs.idxs].squeeze(1)
-        if np.any(closest_landmark_to_each_ambient < 0):
-            assert np.all(closest_landmark_to_each_ambient < 0)
-            return KballGap.CoveredPoints(
-                ambient=self.ambient,
-                landmark=self.landmark,
-                query=self.query,
-                radius_fraction=self.radius_fraction,
-                landmark_to_covered_ambient_points={}
-            )
-
-        closest_landmark_sqdists = res.sq_dists[self.dists_idxs.idxs].squeeze(1)
-
-        for dist, ambient_idx, landmark_idx in zip(closest_landmark_sqdists, self.dists_idxs.idxs, closest_landmark_to_each_ambient):
-            landmark_to_covered_ambient_idxs[landmark_idx].append(ambient_idx)
-            landmark_to_covered_ambient_dists[landmark_idx].append(dist)
-        landmark_idxs = np.unique(closest_landmark_to_each_ambient).tolist()  # Ensure landmark_idxs are unique
-        assert set(landmark_idxs) == set(closest_landmark_to_each_ambient)
-        assert set(landmark_idxs) == set(landmark_to_covered_ambient_idxs.keys())
-        assert set(landmark_idxs) == set(landmark_to_covered_ambient_dists.keys())
-        landmark_to_covered_ambient_points = {landmark_idx: DistsAndIdxs(sqdists=np.array(landmark_to_covered_ambient_dists[landmark_idx], dtype=np.float32),
-                                             idxs=np.array(landmark_to_covered_ambient_idxs[landmark_idx], dtype=np.intp))
-                            for landmark_idx in landmark_idxs}  # Exclude -1 indices which indicate no nearest landmark point found
-        return KballGap.CoveredPoints(
-            ambient=self.ambient,
-            landmark=self.landmark,
-            query=self.query,
-            radius_fraction=self.radius_fraction,
-            landmark_to_covered_ambient_points=landmark_to_covered_ambient_points
-        )
-
-    def __post_init__(self):
-        if not np.all(np.diff(self.dists_idxs.sqdists) >= 0):
-            raise ValueError("Squared distances must be sorted in non-decreasing order")
-        if not self.dists_idxs.sqdists.ndim == 1:
-            raise ValueError("Squared distances must be a 1D array")
-        if not self.dists_idxs.sqdists.shape == self.dists_idxs.idxs.shape:
-            raise ValueError("Squared distances and indices must have the same shape")
-        if self.query == self.ambient and not self.dists_idxs.sqdists[0] == 0:
-            raise ValueError("The closest point in the gap must have squared distance 0 (it is the center point)")
-
-    def get_covering_book_indices(self) -> list[np.intp]:
-        """Get the indices of books that cover articles in the gap."""
-        covered_points_analysis = self.closest_query_points()
-        return list(covered_points_analysis.landmark_to_covered_ambient_points.keys())
-
-    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
-        """Get mapping from book indices to their covered articles with distances."""
-        return self.closest_query_points().landmark_to_covered_ambient_points
 
 
-def _select_gap_algorithm(config: AnalysisConfiguration):
-    """
-    Select the appropriate gap finding algorithm based on cell type.
-    
-    Args:
-        config: Analysis configuration containing cell_type
-        
-    Returns:
-        Gap finding function (kball_gaps or voronoi_gaps)
-        
-    Raises:
-        ValueError: If cell_type is not supported
-    """
-    if config.cell_type == "kball":
-        return kball_gaps
-    elif config.cell_type == "voronoi":
-        return voronoi_gaps
-    else:
-        raise ValueError(f"Unsupported cell_type: {config.cell_type}")
 
-
-def kball_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 
-         radius_fraction: float, k: int, is_intra_cloud: bool):
-    """
-    Find gaps: query points where there are many closer ambient points than the nearest landmark points.
-    
-    Args:
-        ambient: The ambient space to count points in (e.g., articles)
-        landmark: The landmarks used to define distances (e.g., books)
-        query: The query points to analyze for gaps (e.g., articles)
-        radius_fraction: Fraction of distance to k-th nearest landmark to use as radius
-        k: Which nearest landmark to use (1 = nearest, 2 = second nearest, etc.)
-        is_intra_cloud: Whether landmark and query are the same cloud
-    """
-    covered_ambient_points = get_kball_coverage(ambient=ambient, landmark=landmark,
-                                                query=query, radius_fraction=radius_fraction,
-                                                k=k, is_intra_cloud=is_intra_cloud)
-    while True:
-        if len(covered_ambient_points) == 0:
-            LOGGER.info("No gaps found")
-            break
-        highest_coverage_query = np.argmax([len(idxs) for _dists, idxs in covered_ambient_points])
-        dists, idxs = covered_ambient_points[highest_coverage_query]
-        if len(idxs) == 0:
-            LOGGER.info("No more gaps found")
-            break
-        order = np.argsort(dists)
-        dists = dists[order]
-        idxs = idxs[order]
-
-        if query == ambient:
-            assert idxs[0] == highest_coverage_query
-            assert dists[0] == 0
-        
-        yield KballGap(
-            ambient=ambient,
-            landmark=landmark,
-            query=query,
-            radius_fraction=radius_fraction,
-            k=k,
-            dists_idxs=DistsAndIdxs(sqdists=dists, idxs=idxs))
-
-        # Prune the gap
-        for idx, (dists_, idxs_) in enumerate(covered_ambient_points):
-            # Remove all covered ambient points from other query point coverages (this completely zeros out the current gap)
-            mask = np.isin(idxs_, idxs, invert=True)
-            covered_ambient_points[idx] = (dists_[mask], idxs_[mask])
-
-@dataclass(frozen=True)
-class VoronoiGap:
-    ambient: SubCloud
-    landmark: SubCloud
-    query: SubCloud
-    ambient_idxs: NDArray[np.intp]
-    ambient_to_nearest_landmark_idxs: NDArray[np.intp]
-    ambient_to_query_sqdists: NDArray[np.float32]  # Squared distances from query point to ambient points (sorted)
-    query_idx: Optional[int] = None  # Index of the query point that defines this gap (if applicable)
-        
-    @property
-    def dists_idxs(self) -> DistsAndIdxs:
-        # Return the pre-computed sorted squared distances and indices
-        return DistsAndIdxs(
-            sqdists=self.ambient_to_query_sqdists,
-            idxs=self.ambient_idxs
-        )
-        
-    def get_covering_book_indices(self) -> list[np.intp]:
-        """Get the indices of books that cover articles in the gap."""
-        return list(np.unique(self.ambient_to_nearest_landmark_idxs))
-
-    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
-        """Get mapping from book indices to their covered articles with distances."""
-        book_to_articles = {}
-        book_coverage = defaultdict(list)
-        
-        # Group articles by covering books
-        for gap_pos, landmark_idx in enumerate(self.ambient_to_nearest_landmark_idxs):
-            article_idx = self.ambient_idxs[gap_pos]
-            book_coverage[landmark_idx].append(article_idx)
-        
-        # Get embeddings for proper distance calculations
-        landmark_embeddings = self.landmark.embeddings()
-        ambient_embeddings = self.ambient.embeddings()
-        
-        # Compute actual book→article distances (not query→article!)
-        for book_idx, article_indices in book_coverage.items():
-            book_embedding = landmark_embeddings[book_idx] if book_idx >= 0 else np.full(ambient_embeddings.shape[1], np.nan)
-            article_embeddings = ambient_embeddings[article_indices]
-            
-            # Compute squared distances from book to covered articles
-            book_to_article_sqdists = np.sum((article_embeddings - book_embedding) ** 2, axis=1)
-            
-            # Sort by distance
-            order = np.argsort(book_to_article_sqdists)
-            sorted_sqdists = book_to_article_sqdists[order].astype(np.float32)
-            sorted_idxs = np.array(article_indices, dtype=np.intp)[order]
-            
-            book_to_articles[book_idx] = DistsAndIdxs(
-                sqdists=sorted_sqdists,
-                idxs=sorted_idxs
-            )
-        
-        return book_to_articles
 
 def get_covering_book_indices(gap: GapProtocol) -> list[np.intp]:
     """Get the indices of books that cover articles in the gap."""
@@ -339,49 +142,6 @@ def group_gap_articles_by_covering_books(gap: GapProtocol) -> dict[np.intp, list
     """Group gap articles by their covering books (simplified version without distances)."""
     book_to_articles = get_book_to_articles_mapping(gap)
     return {book_idx: dists_idxs.idxs.tolist() for book_idx, dists_idxs in book_to_articles.items()}
-
-
-def voronoi_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud):
-    assert query != landmark, "Use actual_voronoi_coverage when query and landmark are the same cloud"
-    query_embeddings = query.embeddings()
-    cell_sizes = hypothetical_voronoi_coverage(
-        ambient  = ambient.index(),
-        landmark = landmark.index(),
-        query    = query_embeddings,
-        ambient_is_landmark = ambient==landmark)
-    
-    # Find nearest landmark to each ambient point
-    k = 2 if landmark == ambient else 1  # Exclude self-neighbor if landmark and ambient are the same
-    res = knn(index=landmark, query=ambient, k=k)
-    ambient_to_nearest_landmark_sqdist = res.sq_dists[:, -1]
-    ambient_nearest_landmark = res.I[:, -1]
-
-    ambient_embeddings = ambient.embeddings()
-    argsort = np.argsort(-cell_sizes)  # Descending order of voronoi cell sizes
-    for query_idx in argsort:
-        _count = cell_sizes[query_idx]
-        embedding = query_embeddings[query_idx]
-        
-        # Find the ambient points that are closer to this query point than to any landmark
-        ambient_sq_dist_to_query = np.sum((ambient_embeddings - embedding) ** 2, axis=1)
-        reassigned_idxs = np.where(ambient_sq_dist_to_query < ambient_to_nearest_landmark_sqdist)[0]
-        reassigned_dists = ambient_sq_dist_to_query[reassigned_idxs]
-        
-        order = np.argsort(reassigned_dists)
-        reassigned_idxs = reassigned_idxs[order]
-        reassigned_dists = reassigned_dists[order]
-        
-        if query == ambient:
-            assert reassigned_idxs[0] == query_idx, f"Expected the closest ambient point to be the query point itself, got {reassigned_idxs[0]} instead"
-            assert reassigned_dists[0] == 0, f"Expected the squared distance to the query point to be 0, got {reassigned_dists[0]} instead"
-        
-        
-        yield VoronoiGap(
-            ambient=ambient, landmark=landmark, query=query,
-            ambient_idxs=reassigned_idxs,
-            ambient_to_nearest_landmark_idxs=ambient_nearest_landmark[reassigned_idxs],
-            ambient_to_query_sqdists=reassigned_dists,
-            query_idx=query_idx)
 
 
 ARTIFACTS_DIR = GapDirectoryManager.get_base_artifacts_dir()
@@ -442,10 +202,12 @@ def write_single_kball_gap(
     LOGGER.info(f"Found gap {gap_idx} for topic {topic_name} with {gap_size} articles "
                 f"(percentile: {gap_size_percentile:.3f}, z-score: {gap_zscore:.3f})")
 
-    # Generate LLM prompt and capture actual prompt counts used
-    actual_num_prompt_articles, actual_num_prompt_books = write_llm_prompt(
+    # Generate LLM proposal and capture actual prompt counts used
+    proposal_result = generate_book_proposal(
         gap, gap_idx, topic_name, topic_id, analysis_config, books, articles
     )
+    actual_num_prompt_articles = proposal_result.counts.num_articles_for_llm
+    actual_num_prompt_books = proposal_result.counts.num_books_for_llm
 
     # Results CSV
     results = GapResults(analysis_config=analysis_config)
@@ -659,6 +421,55 @@ def write_llm_prompt(gap: GapProtocol, gap_idx: int, topic_name: str, topic_id: 
     num_articles_for_llm = len(sampled_articles)
     num_books_for_llm = len(covering_books)
     return num_articles_for_llm, num_books_for_llm
+
+
+def generate_book_proposal(
+    gap: GapProtocol, 
+    gap_idx: int, 
+    topic_name: str, 
+    topic_id: str, 
+    analysis_config: AnalysisConfiguration, 
+    books: SubCloud, 
+    articles: SubCloud
+) -> ProposalResult:
+    """Generate a textbook proposal using the configured LLM generator.
+    
+    This function replaces write_llm_prompt with a clean architecture that uses
+    the configured generator implementation (structured or prompt-based).
+    
+    Args:
+        gap: The gap analysis result
+        gap_idx: Index of this gap (0-based)
+        topic_name: Human-readable topic name
+        topic_id: Unique topic identifier
+        analysis_config: Analysis configuration including LLM settings
+        books: SubCloud of books for this topic
+        articles: SubCloud of articles for this topic
+        
+    Returns:
+        ProposalResult with generated proposal and metadata
+        
+    Raises:
+        ProposalGenerationError: If generation fails for any reason
+    """
+    # Build the proposal context using deterministic sampling
+    context = build_proposal_context(
+        gap=gap,
+        gap_idx=gap_idx,
+        topic_name=topic_name,
+        topic_id=topic_id,
+        analysis_config=analysis_config,
+        books=books,
+        articles=articles
+    )
+    
+    # Get the appropriate generator for the configured implementation
+    generator = get_generator(analysis_config.llm_config.implementation, analysis_config)
+    
+    # Generate the proposal
+    result = generator.generate(context)
+    
+    return result
 
 
 def _perform_gap_neighbor_searches(gap: GapProtocol, books: SubCloud, articles: SubCloud, k: int = 5) -> GapVisualizationData:
@@ -1092,10 +903,11 @@ def find_gaps_for_topic(
     articles: SubCloud,
     radius_fraction: float,
     k: int = 1,
-    is_intra_cloud: bool = False
+    is_intra_cloud: bool = False,
+    cell_type: CellType = CellType.KBALL # TODO this is leading to incorrect usage in batch_operations.py
 ):
     """Return gaps for the given books/articles subclouds and parameters."""
-    return kball_gaps(
+    return cell_type.value.find_gaps(
         ambient=articles,
         landmark=books,
         query=articles,
@@ -1118,11 +930,15 @@ def write_gaps(
     """Analyze the top gaps for a topic, write artifacts, and record results.
 
     Requires explicit requested_num_prompt_* values. No defaults.
-
-    TODO: cell_type isn't being used!
     """
-    if cell_type != 'kball':
-        raise NotImplementedError("Only cell_type='kball' is currently implemented.")
+    # Convert string cell_type to enum
+    if cell_type == 'kball':
+        cell_type_enum = CellType.KBALL
+    elif cell_type == 'voronoi':
+        cell_type_enum = CellType.VORONOI
+    else:
+        raise ValueError(f"Unsupported cell_type: {cell_type}")
+        
     # Build subclouds and topic stats
     books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
@@ -1134,10 +950,11 @@ def write_gaps(
         denoiser=cloud.denoiser,
         drop_k=cloud.drop_k,
         radius_fraction=radius_fraction,
-        cell_type=cell_type,
+        cell_type=cell_type_enum,
     )
     
     llm_config = LLMConfiguration(
+        implementation=Implementation.PROMPT,  # Default to prompt implementation for now
         requested_num_prompt_articles=requested_num_prompt_articles,
         requested_num_prompt_books=requested_num_prompt_books,
     )
@@ -1166,7 +983,7 @@ def write_gaps(
     # Book gap sizes for statistics
     book_gap_sizes = [
         len(g.dists_idxs.idxs)
-        for g in kball_gaps(
+        for g in cell_type_enum.value.find_gaps(
             ambient=articles,
             landmark=books,
             query=books,
@@ -1175,7 +992,7 @@ def write_gaps(
             is_intra_cloud=True,
         )
     ]
-    # TODO: cell_type='voronoi' would use something like this:
+    # TODO: cell_type='voronoi' would use something like this (maybe this is already working - need to check):
     # book_gap_sizes = actual_voronoi_coverage(ambient=articles.embeddings(), landmark=books.index(), ambient_is_landmark=False)
 
     # Q-Q plots
@@ -1184,10 +1001,10 @@ def write_gaps(
     )
 
     # Top gaps over articles
-    gap_generator = kball_gaps(
+    gap_generator = cell_type_enum.value.find_gaps(
         ambient=articles, landmark=books, query=articles, radius_fraction=radius_fraction, k=1, is_intra_cloud=False
     )
-    # TODO: cell_type='voronoi' would use something like this:
+    # TODO: cell_type='voronoi' would use something like this (maybe this is already working - need to check):
     # gap_generator = voronoi_gaps(ambient=articles, landmark=books, query=articles)
 
     for gap_idx in range(num_gaps):

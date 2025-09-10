@@ -20,13 +20,32 @@ def test_qqplot():
     print(f"  Std: {np.std(book_gap_sizes, ddof=1):.2f}")
     
     # Create consolidated analysis configuration
-    analysis_config = AnalysisConfiguration(
-        denoiser="TEST",
+    from nextbook.config_manager import GapConfiguration, LLMConfiguration
+    from nextbook.types import CellType
+    from nextbook.llm.llm_implementation import Implementation
+    
+    gap_config = GapConfiguration(
+        denoiser="NONE",
         drop_k=0,
         radius_fraction=0.1,
-        cell_type="kball",
+        cell_type=CellType.KBALL
+    )
+    
+    llm_config = LLMConfiguration(
+        implementation=Implementation.STRUCTURED,
+        provider="openai",
+        model="gpt-4",
+        temperature=0.2,
+        max_tokens=2000,
+        chapters_min=10,
+        chapters_max=15,
         requested_num_prompt_articles=10,
         requested_num_prompt_books=3
+    )
+    
+    analysis_config = AnalysisConfiguration(
+        gap_config=gap_config,
+        llm_config=llm_config
     )
     
     create_book_gap_sizes_qqplot(

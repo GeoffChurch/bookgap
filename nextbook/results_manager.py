@@ -432,7 +432,7 @@ class GapResults(BaseResults):
             'denoiser': self.analysis_config.gap_config.denoiser,
             'drop_k': self.analysis_config.gap_config.drop_k,
             'radius_fraction': self.analysis_config.gap_config.radius_fraction,
-            'cell_type': self.analysis_config.gap_config.cell_type,
+            'cell_type': self.analysis_config.gap_config.cell_type.name.lower(),
             'gap_idx': gap_idx,
             'topic_id': topic_id,
             'topic_name': topic_name,

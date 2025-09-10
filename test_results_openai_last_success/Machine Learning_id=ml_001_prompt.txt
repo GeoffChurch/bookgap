@@ -1,0 +1,20 @@
+Based on the research articles and related books provided below, please propose a title, abstract, and table of contents for a textbook that would prepare students to understand research in this area.
+
+## Sample Articles
+
+**Article 1**: Deep Learning for Computer Vision
+	*Abstract*: This paper presents novel approaches to computer vision using deep neural networks.
+
+**Article 2**: Attention Mechanisms in Neural Networks
+	*Abstract*: We explore attention mechanisms and their applications in various neural network architectures.
+
+## Related Existing Books
+
+**Book 1**: Pattern Recognition and Machine Learning
+	*Abstract*: A comprehensive introduction to pattern recognition and machine learning techniques.
+
+## Guidelines
+
+- Include 3-4 chapters.
+- Build up systematically from basic to advanced concepts.
+- Each chapter should have a clear title and description of concepts covered.
