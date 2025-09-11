@@ -902,9 +902,9 @@ def find_gaps_for_topic(
     books: SubCloud,
     articles: SubCloud,
     radius_fraction: float,
+    cell_type: CellType,
     k: int = 1,
     is_intra_cloud: bool = False,
-    cell_type: CellType = CellType.KBALL # TODO this is leading to incorrect usage in batch_operations.py
 ):
     """Return gaps for the given books/articles subclouds and parameters."""
     return cell_type.value.find_gaps(
@@ -924,21 +924,13 @@ def write_gaps(
     num_gaps: int,
     requested_num_prompt_articles: int,
     requested_num_prompt_books: int,
-    cell_type: str,
+    cell_type: CellType,
     generate_plots: bool = True,
 ):
     """Analyze the top gaps for a topic, write artifacts, and record results.
 
     Requires explicit requested_num_prompt_* values. No defaults.
     """
-    # Convert string cell_type to enum
-    if cell_type == 'kball':
-        cell_type_enum = CellType.KBALL
-    elif cell_type == 'voronoi':
-        cell_type_enum = CellType.VORONOI
-    else:
-        raise ValueError(f"Unsupported cell_type: {cell_type}")
-        
     # Build subclouds and topic stats
     books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
@@ -950,7 +942,7 @@ def write_gaps(
         denoiser=cloud.denoiser,
         drop_k=cloud.drop_k,
         radius_fraction=radius_fraction,
-        cell_type=cell_type_enum,
+        cell_type=cell_type,
     )
     
     llm_config = LLMConfiguration(
@@ -983,7 +975,7 @@ def write_gaps(
     # Book gap sizes for statistics
     book_gap_sizes = [
         len(g.dists_idxs.idxs)
-        for g in cell_type_enum.value.find_gaps(
+        for g in cell_type.value.find_gaps(
             ambient=articles,
             landmark=books,
             query=books,
@@ -1001,7 +993,7 @@ def write_gaps(
     )
 
     # Top gaps over articles
-    gap_generator = cell_type_enum.value.find_gaps(
+    gap_generator = cell_type.value.find_gaps(
         ambient=articles, landmark=books, query=articles, radius_fraction=radius_fraction, k=1, is_intra_cloud=False
     )
     # TODO: cell_type='voronoi' would use something like this (maybe this is already working - need to check):
@@ -1276,7 +1268,7 @@ def save_gap_books_vs_proposals_plot(
 
 def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplicator], radius_fraction: float, denoiser: str,
          index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, generate_plots: bool,
-         requested_num_prompt_articles: int, requested_num_prompt_books: int, cell_type: str):
+         requested_num_prompt_articles: int, requested_num_prompt_books: int, cell_type: CellType):
     # Build the AI cloud using the helper
     ai_cloud = build_cloud(
         drop_k=drop_k,

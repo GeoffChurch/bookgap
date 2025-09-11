@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 from bookgap.cloud import build_cloud
 from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.types import CellType
+from bookgap.llm.llm_implementation import Implementation
 from bookgap.gap_finder import main as gap_finder_main
 from bookgap.batch_utils.batch_operations import (
     GAPS_DIR, get_client, estimate_batch_cost,
@@ -41,7 +43,7 @@ class InteractiveLLMConfiguration:
     requested_num_prompt_books: int
 
 
-def get_llm_configuration() -> tuple[InteractiveLLMConfiguration, str]:
+def get_llm_configuration() -> tuple[InteractiveLLMConfiguration, CellType]:
     """
     Prompt the user for LLM-specific configuration parameters.
     
@@ -53,18 +55,20 @@ def get_llm_configuration() -> tuple[InteractiveLLMConfiguration, str]:
     LOGGER.info("="*50)
     LOGGER.info("The following parameters are needed for batch LLM requests:")
     
-    # Get cell type
-    cell_types: Tuple[str, ...] = ('kball', 'voronoi')
-    default_cell_type: str = 'kball'
-    cell_type: str
+    # Get cell type - derive valid options from the enum
+    cell_type_options = [cell_type.name for cell_type in CellType]
+    default_cell_type_str: str = CellType.KBALL.name
+    cell_type: CellType
     while True:
         LOGGER.info("\nCell type determines the gap detection algorithm:")
         LOGGER.info("  - kball: Uses k-nearest neighbors with radius-based ball cells")  
         LOGGER.info("  - voronoi: Uses Voronoi diagram partitioning")
-        cell_type = input(f"Enter cell type ({'/'.join(cell_types)}, default: {default_cell_type}): ").lower().strip() or default_cell_type
-        if cell_type in cell_types:
+        cell_type_input = input(f"Enter cell type ({'/'.join(cell_type_options)}, default: {default_cell_type_str}): ").strip() or default_cell_type_str
+        if cell_type_input in cell_type_options:
+            # Convert string back to enum
+            cell_type = CellType[cell_type_input]
             break
-        LOGGER.warning(f"Please enter one of: {', '.join(cell_types)}.")
+        LOGGER.warning(f"Please enter one of: {', '.join(cell_type_options)}.")
     
     # Get number of articles
     default_num_articles: int = 10
@@ -106,7 +110,7 @@ def get_llm_configuration() -> tuple[InteractiveLLMConfiguration, str]:
     
 
     LOGGER.info(f"\n✓ LLM Configuration:")
-    LOGGER.info(f"  Cell type: {cell_type}")
+    LOGGER.info(f"  Cell type: {cell_type.name}")
     LOGGER.info(f"  Articles: {num_articles}")
     LOGGER.info(f"  Books: {num_books}")
     # LOGGER.info(f"  Book coverage: {prompt_book_min_coverage:.2f}")
@@ -144,7 +148,7 @@ def list_available_batches() -> List[dict]:
 
 
 def step_1_generate_prompts(drop_k: int, max_works: Optional[int], deduplicator, radius_fraction: float, denoiser: str,
-         index_type, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, cell_type: str, llm_config: InteractiveLLMConfiguration, 
+         index_type, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, cell_type: CellType, llm_config: InteractiveLLMConfiguration, 
          config: AnalysisConfiguration):
     """Step 1: Generate prompts using gap_finder."""
     LOGGER.info("\n" + "="*50)
@@ -627,6 +631,7 @@ def interactive_workflow(drop_k: int, max_works: Optional[int], deduplicator, ra
     )
     
     config_llm_config = LLMConfiguration(
+        implementation=Implementation.STRUCTURED,  # Default to structured implementation
         requested_num_prompt_articles=llm_config.requested_num_prompt_articles,
         requested_num_prompt_books=llm_config.requested_num_prompt_books
     )

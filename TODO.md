@@ -48,17 +48,54 @@ Address the following test warnings (from running `pytest tests/`):
 
 ## Code Quality and Architecture Issues
 
-### Fix find_gaps_for_topic Algorithm Selection
-The `find_gaps_for_topic` function defaults to `CellType.KBALL` but has two problematic usages in `batch_operations.py`:
+### Unify Generator Usage Between Real-time and Batch API
+The codebase currently has two separate approaches for LLM proposal generation that should be unified:
 
-1. **Line 1086**: `gaps_iter = find_gaps_for_topic(books, articles, config.gap_config.radius_fraction)` - should pass `config.gap_config.cell_type`
-2. **Line 1475**: `topic_gaps = find_gaps_for_topic(books, articles, radius_fraction)` - should determine correct `cell_type` from context
+**Current State**:
+- **Real-time generation**: `gap_finder.py` → `get_generator()` → `generator.generate()` (uses proper LLM configuration)
+- **Batch generation**: `batch_workflow.py` → `batch_operations.py` → Direct batch API requests (bypasses generators, hardcodes parameters)
 
-These calls ignore the user's configured algorithm choice and always use K-ball. The function should either:
-- Remove the default parameter to force explicit specification
-- Use the algorithm from available configuration context
+**Problem**: 
+- `create_batch_requests_from_prompts()` in `batch_operations.py` was hardcoding API parameters instead of using LLM configuration
+- This was recently fixed but highlights the architectural duplication
+- Two separate code paths for prompt building and API parameter management
 
-Maybe it should accept the config object directly?
+**Solution**:
+1. **Add `generate_batch_request()` method** to generator classes (`OpenAIProposalGenerator`, `JSONPromptProposalGenerator`)
+2. **Modify `batch_operations.py`** to use generators instead of direct request building
+3. **Centralize prompt building logic** in generators
+
+**Benefits**:
+- Single source of truth for API parameters (temperature, model, max_tokens)
+- Consistent prompt building logic between real-time and batch
+- Better maintainability and reduced duplication
+- Automatic consistency when LLM configuration changes
+
+### Replace Dict Return with Dataclass in ConfigPathParser
+The `parse_prompt_file_path()` method in `ConfigPathParser` currently returns a dictionary, which lacks type safety and IDE support:
+
+**Current State**:
+```python
+def parse_prompt_file_path(prompt_file_path: str, gaps_base_dir: str) -> dict:
+    # Returns dict with keys: gap_config, llm_config, topic_name, topic_id, gap_idx, filename, etc.
+```
+
+**Problem**:
+- No type safety for return value fields
+- No IDE autocompletion for accessing returned data
+- Prone to typos in dictionary key names
+- Difficult to track what fields are available
+
+**Solution**:
+1. **Create `PromptFilePathComponents` dataclass** similar to existing `CustomIdComponents`
+2. **Update return type** to `PromptFilePathComponents`
+3. **Update callers** to use dataclass field access instead of dictionary keys
+
+**Benefits**:
+- Type safety and IDE support
+- Clear documentation of available fields
+- Consistent with other parsing methods in the class
+- Catches field access errors at type-check time
 
 ### Fix Gap Classes Type Conformance  
 `KballGap` and `VoronoiGap` classes should explicitly implement the `GapProtocol` interface to resolve mypy type issues in `gap_finder.py`:
@@ -102,7 +139,7 @@ This should be simplified by:
 - Removing the `kball_gaps` method entirely
 - This matches the pattern used by `VoronoiAlgorithm.find_gaps` which contains the full implementation
 
-### Remove .lower() from Enum Name Usage
+### Remove .lower() from Enum Name Usage (PARTIALLY DONE)
 The code currently uses `self.analysis_config.gap_config.cell_type.name.lower()` in `results_manager.py` line 435, but this should be changed to use the exact enum name:
 
 **Current**: `'cell_type': self.analysis_config.gap_config.cell_type.name.lower(),`

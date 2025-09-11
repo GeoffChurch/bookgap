@@ -10,18 +10,16 @@ import json
 import time
 import pandas as pd
 import os
-import re
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, NamedTuple, Callable
+from typing import Any, Optional, Callable
 from openai import OpenAI
 from pylatexenc.latexencode import unicode_to_latex
 from dataclasses import dataclass
 
-from bookgap.cloud import get_embedding_model, Cloud, SubCloud, build_cloud, get_subclouds_for_topic
-from bookgap.index import IndexType
+from bookgap.cloud import get_embedding_model, Cloud, get_subclouds_for_topic
 from bookgap.cloud_index import compute_proposal_rankings_for_gap
-from bookgap.util import SubField, WorkType, Filter, FilterPair, LOGGER
+from bookgap.util import LOGGER
 from bookgap.gap_finder import find_gaps_for_topic, save_gap_plot_with_proposals, save_gap_books_vs_proposals_plot
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.results_manager import DataFrameResults
@@ -83,7 +81,7 @@ def process_dataframe_numeric_columns(df: pd.DataFrame, significant_figures: int
 
 
 def export_dataframe_with_unified_patterns(df: pd.DataFrame, base_path: Path, 
-                                           formats: List[str] = ['csv', 'json', 'parquet']) -> List[Path]:
+                                           formats: list[str] = ['csv', 'json', 'parquet']) -> list[Path]:
     """
     Export DataFrame using unified framework patterns.
     
@@ -152,13 +150,13 @@ def get_config_dir_from_results_file(results_file: Path) -> Path:
         return get_config_dir_from_custom_id(result['custom_id'])
 
 
-def find_prompt_files() -> List[Path]:
+def find_prompt_files() -> list[Path]:
     """Find all _prompt.txt files in the gaps directory."""
     prompt_files = []
     if not GAPS_DIR.exists():
         return prompt_files
     
-    for root, dirs, files in os.walk(GAPS_DIR):
+    for root, _dirs, files in os.walk(GAPS_DIR):
         for file in files:
             if file.endswith("_prompt.txt"):
                 prompt_files.append(Path(root) / file)
@@ -171,7 +169,7 @@ def read_prompt_content(prompt_file: Path) -> str:
         return f.read().strip()
 
 
-def create_batch_requests_from_prompts(prompt_files: List[Path]) -> List[Dict[str, Any]]:
+def create_batch_requests_from_prompts(prompt_files: list[Path]) -> list[dict[str, Any]]:
     """
     Create batch request objects for OpenAI API from prompt files.
     
@@ -210,15 +208,15 @@ def create_batch_requests_from_prompts(prompt_files: List[Path]) -> List[Dict[st
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": {
-                "model": "gpt-4.1",  # Best model for complex academic synthesis
+                "model": llm_configuration.model,
                 "messages": [
                     {
                         "role": "user",
                         "content": prompt_content
                     }
                 ],
-                "max_tokens": 2000,  # Sufficient for textbook proposals
-                "temperature": 0.7   # Some creativity for textbook proposals
+                "max_tokens": llm_configuration.max_tokens,
+                "temperature": llm_configuration.temperature
             }
         }
         requests.append(request)
@@ -226,7 +224,7 @@ def create_batch_requests_from_prompts(prompt_files: List[Path]) -> List[Dict[st
     return requests
 
 
-def create_batch_file_from_requests(requests: List[Dict[str, Any]], config: AnalysisConfiguration) -> Path:
+def create_batch_file_from_requests(requests: list[dict[str, Any]], config: AnalysisConfiguration) -> Path:
     """
     Create a JSONL file with all batch requests.
     
@@ -291,7 +289,7 @@ def upload_and_submit_batch(batch_file: Path, description: str = "Textbook propo
     return batch_id
 
 
-def estimate_batch_cost(prompt_lengths: List[int]) -> None:
+def estimate_batch_cost(prompt_lengths: list[int]) -> None:
     """
     Estimate the cost of the batch job based on actual prompt lengths.
     
@@ -342,7 +340,7 @@ def estimate_batch_cost(prompt_lengths: List[int]) -> None:
     LOGGER.info(f"Note: Batch API provides 50% discount, so actual cost: ${total_cost * 0.5:.3f}")
 
 
-def extract_proposal_data_from_result(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def extract_proposal_data_from_result(result: dict[str, Any]) -> Optional[dict[str, Any]]:
     """
     Extract proposal data (title, abstract) and parsed custom_id from a batch result.
     
@@ -384,7 +382,7 @@ def extract_proposal_data_from_result(result: Dict[str, Any]) -> Optional[Dict[s
     
     return proposal_data
 
-def find_batch_request_files_for_config(config: AnalysisConfiguration) -> List[Path]:
+def find_batch_request_files_for_config(config: AnalysisConfiguration) -> list[Path]:
     """Find batch request files for a specific configuration."""
     batch_requests_dir = GapDirectoryManager.get_batch_requests_dir(config)
     
@@ -395,7 +393,7 @@ def find_batch_request_files_for_config(config: AnalysisConfiguration) -> List[P
     batch_files = list(batch_requests_dir.glob(pattern))
     return sorted(batch_files, key=lambda x: x.stat().st_mtime)
 
-def find_batch_results_files_for_config(config: AnalysisConfiguration) -> List[Path]:
+def find_batch_results_files_for_config(config: AnalysisConfiguration) -> list[Path]:
     """Find batch results files for a specific configuration."""
     batch_results_dir = GapDirectoryManager.get_batch_results_dir(config)
     
@@ -406,7 +404,7 @@ def find_batch_results_files_for_config(config: AnalysisConfiguration) -> List[P
     results_files = list(batch_results_dir.glob(pattern))
     return sorted(results_files, key=lambda x: x.stat().st_mtime)
 
-def find_prompt_files_for_config(config: AnalysisConfiguration) -> List[Path]:
+def find_prompt_files_for_config(config: AnalysisConfiguration) -> list[Path]:
     """Find prompt files for a specific configuration."""
     config_dir = GapDirectoryManager.get_config_dir(config)
     prompt_files = []
@@ -425,7 +423,7 @@ def find_prompt_files_for_config(config: AnalysisConfiguration) -> List[Path]:
     
     return sorted(prompt_files)
 
-def find_all_batch_request_files() -> List[Path]:
+def find_all_batch_request_files() -> list[Path]:
     """Find all batch request files across all configurations and LLM settings."""
     batch_files = []
     if not GAPS_DIR.exists():
@@ -445,7 +443,7 @@ def find_all_batch_request_files() -> List[Path]:
     
     return sorted(batch_files, key=lambda x: x.stat().st_mtime)
 
-def find_all_batch_results_files() -> List[Path]:
+def find_all_batch_results_files() -> list[Path]:
     """Find all batch results files across all configurations and LLM settings."""
     results_files = []
     if not GAPS_DIR.exists():
@@ -670,7 +668,8 @@ def clean_latex_content(content: str) -> str:
     
     return content.strip()
 
-def create_gap_analysis_with_proposals_csv(results_file: Path, cloud: Cloud, radius_fraction: float, generate_latex_table: bool = True,
+def create_gap_analysis_with_proposals_csv(results_file: Path, cloud: Cloud, config: AnalysisConfiguration,
+                                           generate_latex_table: bool = True,
                                            config_dir: Optional[Path] = None,
                                            precomputed_proposals_df: Optional[pd.DataFrame] = None) -> Path:
     """
@@ -688,7 +687,7 @@ def create_gap_analysis_with_proposals_csv(results_file: Path, cloud: Cloud, rad
     # Use LLM-specific directory for output (same as gap_analysis.csv location)
     llm_specific_dir = gap_analysis_csv.parent
     output_path = llm_specific_dir / "gap_analysis_with_proposals.csv"
-    return _merge_gap_analysis_with_proposals(gap_analysis_csv, results_file, output_path, cloud, radius_fraction, generate_latex_table, precomputed_proposals_df)
+    return _merge_gap_analysis_with_proposals(gap_analysis_csv, results_file, output_path, cloud, config, generate_latex_table, precomputed_proposals_df)
 
 def _get_gap_analysis_csv_path(results_file: Path) -> Path:
     """
@@ -719,9 +718,9 @@ def _get_gap_analysis_csv_path(results_file: Path) -> Path:
         
         return GapDirectoryManager.get_gap_analysis_file(analysis_config)
 
-def create_latex_table_from_csv(csv_path: Path, columns: Optional[List[str]] = None, 
+def create_latex_table_from_csv(csv_path: Path, columns: Optional[list[str]] = None, 
                                max_rows: Optional[int] = None,# caption: Optional[str] = None, 
-                               generate_standalone: bool = True, column_renames: Optional[Dict[str, str]] = None,
+                               generate_standalone: bool = True, column_renames: Optional[dict[str, str]] = None,
                                transform_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
                                column_alignment: Optional[str] = None, label: Optional[str] = None) -> Path:
     """
@@ -922,7 +921,7 @@ def create_latex_table_from_csv(csv_path: Path, columns: Optional[List[str]] = N
     
     # Create standalone LaTeX file if requested
     if generate_standalone:
-        standalone_lines = []
+        standalone_lines: list[str] = []
         
         # Document structure
         standalone_lines.append("\\documentclass{article}")
@@ -954,7 +953,7 @@ def create_latex_table_from_csv(csv_path: Path, columns: Optional[List[str]] = N
     return includable_path
 
 
-def extract_textbook_proposals(results_file: Path, config: AnalysisConfiguration, cloud: Cloud, extract_responses: bool = True) -> Dict[str, Any]:
+def extract_textbook_proposals(results_file: Path, config: AnalysisConfiguration, cloud: Cloud, extract_responses: bool = True) -> dict[str, Any]:
     """
     Extract and save individual textbook proposals from batch results to the gaps directory structure.
     
@@ -985,10 +984,10 @@ def extract_textbook_proposals(results_file: Path, config: AnalysisConfiguration
     successful_count = 0
     failed_count = 0
 
-    grouped_proposals: Dict[Tuple[str, int], List[Tuple[str, str]]] = {}
-    grouped_topic_name: Dict[Tuple[str, int], str] = {}
+    grouped_proposals: dict[tuple[str, int], list[tuple[str, str]]] = {}
+    grouped_topic_name: dict[tuple[str, int], str] = {}
     embedding_model = get_embedding_model()
-    precomputed_rows: List[Dict[str, Any]] = []
+    precomputed_rows: list[dict[str, Any]] = []
 
     with open(results_file, 'r', encoding='utf-8') as f:
         for line in f:
@@ -1071,8 +1070,8 @@ def extract_textbook_proposals(results_file: Path, config: AnalysisConfiguration
                     json.dump(result, ef, indent=2)
 
     # Build lookup for overlays
-    precomputed_by_key: Dict[Tuple[str, int], List[np.ndarray]] = {}
-    labels_by_key: Dict[Tuple[str, int], List[str]] = {}
+    precomputed_by_key: dict[tuple[str, int], list[np.ndarray]] = {}
+    labels_by_key: dict[tuple[str, int], list[str]] = {}
     for r in precomputed_rows:
         key = (r['topic_id'], r['gap_idx'])
         precomputed_by_key.setdefault(key, []).append(r['embedding'])
@@ -1083,7 +1082,7 @@ def extract_textbook_proposals(results_file: Path, config: AnalysisConfiguration
         for (topic_id, gap_idx), embeddings_list in precomputed_by_key.items():
             books, articles = get_subclouds_for_topic(cloud, topic_id)
             topic_name = grouped_topic_name.get((topic_id, gap_idx), topic_id)
-            gaps_iter = find_gaps_for_topic(books, articles, config.gap_config.radius_fraction)
+            gaps_iter = find_gaps_for_topic(books, articles, config.gap_config.radius_fraction, cell_type=config.gap_config.cell_type)
             gap = next(g for i, g in enumerate(gaps_iter) if i == gap_idx)
             args = {
                 'gap': gap,
@@ -1126,7 +1125,7 @@ def extract_textbook_proposals(results_file: Path, config: AnalysisConfiguration
     # Create the gap_analysis_with_proposals.csv
     LOGGER.info("\nCreating gap_analysis_with_proposals.csv...")
     precomputed_df = pd.DataFrame(precomputed_rows) if precomputed_rows else None
-    csv_path = create_gap_analysis_with_proposals_csv(results_file, cloud, config.gap_config.radius_fraction, precomputed_proposals_df=precomputed_df)
+    csv_path = create_gap_analysis_with_proposals_csv(results_file, cloud, config, precomputed_proposals_df=precomputed_df)
     if csv_path:
         LOGGER.info(f"Gap analysis with proposals CSV created at: {csv_path}")
         stats['csv_path'] = csv_path
@@ -1308,7 +1307,7 @@ def get_batch_status(batch_id: str) -> Any:
     
     return batch
 
-def _merge_gap_analysis_with_proposals(gap_analysis_csv_path: Path, results_jsonl_path: Path, output_path: Path, cloud: Cloud, radius_fraction: float, generate_latex_table: bool = True,
+def _merge_gap_analysis_with_proposals(gap_analysis_csv_path: Path, results_jsonl_path: Path, output_path: Path, cloud: Cloud, config: AnalysisConfiguration, generate_latex_table: bool = True,
                                        precomputed_proposals_df: Optional[pd.DataFrame] = None) -> Path:
     """
     Shared function to merge gap analysis CSV with batch results and create the combined CSV.
@@ -1318,7 +1317,7 @@ def _merge_gap_analysis_with_proposals(gap_analysis_csv_path: Path, results_json
         results_jsonl_path: Path to batch results JSONL file
         output_path: Path where to save the merged CSV
         cloud: Cloud object for ranking
-        radius_fraction: Explicit radius_fraction for validation
+        config: Analysis configuration
         generate_latex_table: If True, also generate a LaTeX table from the CSV
         
     Returns:
@@ -1350,7 +1349,7 @@ def _merge_gap_analysis_with_proposals(gap_analysis_csv_path: Path, results_json
         if not proposals_data:
             raise ValueError("No proposal data extracted from batch results")
         proposals_df = pd.DataFrame(proposals_data)
-        proposals_df['radius_fraction'] = radius_fraction
+        proposals_df['radius_fraction'] = config.gap_config.radius_fraction
         proposals_df['embedding'] = None
         LOGGER.info(f"Extracted {len(proposals_df)} proposal entries")
 
@@ -1365,7 +1364,7 @@ def _merge_gap_analysis_with_proposals(gap_analysis_csv_path: Path, results_json
     merged_df['proposal_abstract'] = merged_df['proposal_abstract'].fillna('')
 
     LOGGER.info("Computing proposal rankings...")
-    rankings_df = compute_proposal_rankings(results_jsonl_path, cloud, radius_fraction, precomputed_proposals_df=proposals_df)
+    rankings_df = compute_proposal_rankings(results_jsonl_path, cloud, config, precomputed_proposals_df=proposals_df)
     merged_df = merged_df.merge(rankings_df, on=key_columns, how='left')
 
     merged_df['proposal_book_rank_fraction'] = merged_df.apply(
@@ -1447,13 +1446,13 @@ class ProposalRanking:
     book_rank: int
     article_rank: int
 
-def compute_proposal_rankings(results_file: Path, cloud: Cloud, radius_fraction: float, precomputed_proposals_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+def compute_proposal_rankings(results_file: Path, cloud: Cloud, config: AnalysisConfiguration, precomputed_proposals_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Compute proposal rankings using FAISS range searches.
     
     Args:
         results_file: Path to results file (unused in current implementation)
         cloud: Cloud object for ranking computations
-        radius_fraction: Radius fraction parameter
+        config: Analysis configuration (required)
         precomputed_proposals_df: DataFrame with precomputed proposals (required)
         
     Returns:
@@ -1468,11 +1467,16 @@ def compute_proposal_rankings(results_file: Path, cloud: Cloud, radius_fraction:
     LOGGER.info("Computing proposal rankings using FAISS range searches...")
     records = []
 
+    radius_fraction = config.gap_config.radius_fraction
+
     def resolve_gap(parsed_id: CustomIdComponents):
         if abs(parsed_id.radius_fraction - radius_fraction) > 1e-6:
             raise ValueError(f"radius_fraction mismatch: parsed_id={parsed_id.radius_fraction}, expected={radius_fraction}")
+        cell_type = config.gap_config.cell_type
+        if cell_type != GapConfiguration.from_directory_name(parsed_id.gap_config).cell_type:
+            raise ValueError(f"cell_type mismatch: parsed_id={parsed_id.gap_config}, expected={config.gap_config.cell_type}")
         books, articles = get_subclouds_for_topic(cloud, parsed_id.topic_id)
-        topic_gaps = find_gaps_for_topic(books, articles, radius_fraction)
+        topic_gaps = find_gaps_for_topic(books, articles, radius_fraction, cell_type=cell_type)
         gap = next(g for i, g in enumerate(topic_gaps) if i == parsed_id.gap_idx)
         return books, articles, gap
 
