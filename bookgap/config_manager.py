@@ -10,6 +10,7 @@ from typing import NamedTuple
 
 from bookgap.types import CellType
 from bookgap.llm.llm_implementation import Implementation
+from bookgap.llm.providers import ProviderType
 from bookgap.cloud import WorkDenoisers
 from bookgap.util import create_unicode_safe_filename
 
@@ -125,7 +126,7 @@ class LLMConfiguration:
     implementation: Implementation
     requested_num_prompt_articles: int  # Articles to include in prompt
     requested_num_prompt_books: int  # Books to include in prompt
-    provider: str = "openai"  # Currently only openai supported
+    provider: ProviderType = ProviderType.OPENAI  # Changed from str to enum
     model: str = "gpt-5"  # Default model (supports structured outputs)
     temperature: float = 0.2  # Default temperature
     max_tokens: int = 2000  # Default max tokens
@@ -138,8 +139,8 @@ class LLMConfiguration:
             raise ValueError(f"requested_num_prompt_articles must be non-negative, got {self.requested_num_prompt_articles}")
         if self.requested_num_prompt_books < 0:
             raise ValueError(f"requested_num_prompt_books must be non-negative, got {self.requested_num_prompt_books}")
-        if self.provider != "openai":
-            raise ValueError(f"Only 'openai' provider is currently supported, got '{self.provider}'")
+        if self.provider != ProviderType.OPENAI:  # Updated validation
+            raise ValueError(f"Only ProviderType.OPENAI is currently supported, got '{self.provider}'")
         if not (0.0 <= self.temperature <= 2.0):
             raise ValueError(f"temperature must be in [0.0, 2.0], got {self.temperature}")
         if self.max_tokens <= 0:

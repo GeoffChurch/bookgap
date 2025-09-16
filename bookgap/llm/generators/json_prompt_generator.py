@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
+from bookgap.llm.providers import ProviderType
 from bookgap.util import create_unicode_safe_filename, LOGGER
 from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Proposal, ProposalCounts, ProposalMetadata
 
@@ -35,10 +36,10 @@ class JSONPromptProposalGenerator:
         self.llm_config = analysis_config.llm_config
         
         # Validate configuration
-        if self.llm_config.provider != "openai":
+        if self.llm_config.provider != ProviderType.OPENAI:
             raise ProposalGenerationError(
-                f"JSON prompt generator requires provider='openai', got '{self.llm_config.provider}'",
-                context={"provider": self.llm_config.provider}
+                f"JSON prompt generator requires provider=ProviderType.OPENAI, got '{self.llm_config.provider}'",
+                context={"provider": str(self.llm_config.provider)}
             )
         
         # Validate API key

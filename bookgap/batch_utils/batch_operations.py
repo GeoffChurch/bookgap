@@ -203,21 +203,50 @@ def create_batch_requests_from_prompts(prompt_files: list[Path]) -> list[dict[st
             LOGGER.error(f"Error reading {prompt_file}: {e}")
             continue
         
+        # Create request body with proper message structure
+        body = {
+            "model": llm_configuration.model,
+            "messages": [
+                {
+                    "role": "system", 
+                    "content": "You are a publishing expert and academic researcher."
+                },
+                {
+                    "role": "user",
+                    "content": prompt_content
+                }
+            ],
+            "max_completion_tokens": llm_configuration.max_tokens  # Updated to max_completion_tokens
+        }
+        
+        # Add temperature only for non-GPT-5 models
+        if not llm_configuration.model.startswith("gpt-5"):
+            body["temperature"] = llm_configuration.temperature
+        
+        # Add structured output format if using STRUCTURED implementation
+        if llm_configuration.implementation.value == "structured":
+            from openai.lib._pydantic import to_strict_json_schema
+            from bookgap.llm.protocols import create_proposal_model
+            
+            # Create dynamic proposal model with configuration-specific constraints
+            ProposalModel = create_proposal_model(llm_configuration.chapters_min, llm_configuration.chapters_max)
+            schema = to_strict_json_schema(ProposalModel)
+            
+            # Wrap in the format expected by batch API
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "textbook_proposal",
+                    "strict": True,
+                    "schema": schema
+                }
+            }
+        
         request = {
             "custom_id": build_custom_id(analysis_config, topic_name, topic_id, gap_idx),
             "method": "POST",
             "url": "/v1/chat/completions",
-            "body": {
-                "model": llm_configuration.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt_content
-                    }
-                ],
-                "max_tokens": llm_configuration.max_tokens,
-                "temperature": llm_configuration.temperature
-            }
+            "body": body
         }
         requests.append(request)
     

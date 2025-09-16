@@ -77,11 +77,28 @@ class Chapter(BaseModel):
     chapter_description: str = Field(..., min_length=1, description="Description of concepts covered in the chapter (1-2 sentences)")
 
 
-class Proposal(BaseModel):
-    """A complete textbook proposal with title, abstract, and chapters."""
-    title: str = Field(..., min_length=1, description="The proposed title of the textbook")
-    abstract: str = Field(..., min_length=1, description="Abstract describing the textbook's scope and approach")
-    chapters: list[Chapter] = Field(..., min_length=10, max_length=15, description="List of chapters for the textbook")
+def create_proposal_model(chapters_min: int = 10, chapters_max: int = 15) -> type[BaseModel]:
+    """Create a Proposal model with configurable chapter constraints.
+    
+    Args:
+        chapters_min: Minimum number of chapters
+        chapters_max: Maximum number of chapters
+        
+    Returns:
+        Dynamically created Proposal model class
+    """
+    class Proposal(BaseModel):
+        """A complete textbook proposal with title, abstract, and chapters."""
+        title: str = Field(..., min_length=1, description="The proposed title of the textbook")
+        abstract: str = Field(..., min_length=1, description="Abstract describing the textbook's scope and approach")
+        chapters: list[Chapter] = Field(
+            ..., 
+            min_length=chapters_min, 
+            max_length=chapters_max, 
+            description=f"List of {chapters_min}-{chapters_max} chapters for the textbook"
+        )
+    
+    return Proposal
 
 
 class ProposalGenerationError(Exception):

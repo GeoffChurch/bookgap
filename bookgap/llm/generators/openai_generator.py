@@ -10,12 +10,13 @@ import json
 import os
 
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
+from bookgap.llm.providers import ProviderType
 from bookgap.util import create_unicode_safe_filename, LOGGER
-from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Chapter, ProposalCounts, ProposalMetadata
+from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Chapter, ProposalCounts, ProposalMetadata, create_proposal_model
 
 
 class OpenAIProposalGenerator:
@@ -34,10 +35,10 @@ class OpenAIProposalGenerator:
         self.llm_config = analysis_config.llm_config
         
         # Validate configuration
-        if self.llm_config.provider != "openai":
+        if self.llm_config.provider != ProviderType.OPENAI:
             raise ProposalGenerationError(
-                f"OpenAI generator requires provider='openai', got '{self.llm_config.provider}'",
-                context={"provider": self.llm_config.provider}
+                f"OpenAI generator requires provider=ProviderType.OPENAI, got '{self.llm_config.provider}'",
+                context={"provider": str(self.llm_config.provider)}
             )
         
         # Validate API key
@@ -59,19 +60,7 @@ class OpenAIProposalGenerator:
     
     def _create_dynamic_proposal_model(self) -> type[BaseModel]:
         """Create a Pydantic model with dynamic chapter constraints."""
-        
-        class DynamicProposal(BaseModel):
-            """A complete textbook proposal with title, abstract, and chapters."""
-            title: str = Field(..., min_length=1, description="The proposed title of the textbook")
-            abstract: str = Field(..., min_length=1, description="Abstract describing the textbook's scope and approach")
-            chapters: list[Chapter] = Field(
-                ..., 
-                min_length=self.llm_config.chapters_min, 
-                max_length=self.llm_config.chapters_max, 
-                description=f"List of {self.llm_config.chapters_min}-{self.llm_config.chapters_max} chapters for the textbook"
-            )
-        
-        return DynamicProposal
+        return create_proposal_model(self.llm_config.chapters_min, self.llm_config.chapters_max)
     
     def generate(self, context: ProposalContext) -> ProposalResult:
         """Generate a textbook proposal using OpenAI Structured Outputs.
