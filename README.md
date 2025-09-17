@@ -47,7 +47,7 @@ python batch_workflow.py \
 
 #### Key Parameters
 
-- `--subfield`: OpenAlex concept ID (e.g., 1702 for Computer Science)
+- `--subfield`: OpenAlex concept ID (e.g., 1702 for Artificial Intelligence)
 - `--work_types`: Types of works to analyze (`book`, `article`, or both)
 - `--cell_type`: Gap detection algorithm (`kball` or `voronoi`)
 - `--radius_fraction`: Sensitivity of gap detection (0.1-1.0)

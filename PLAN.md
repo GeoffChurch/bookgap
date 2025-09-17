@@ -6,6 +6,29 @@ This plan implements a completely clean, batch-first architecture for LLM propos
 
 ## Code Removal Strategy (Clean Slate Approach)
 
+### 📁 **MOVE TO REFERENCE (Immediate):**
+```bash
+mv bookgap/batch_utils/ bookgap/batch_utils_OLD/  # Keep for business logic reference
+```
+- **Purpose**: Reference for understanding existing business logic and patterns
+- **Usage**: Look up specific implementation details during new development
+- **Benefit**: Complete design freedom for new implementation
+
+### 🏗️ **BUILD FROM SCRATCH:**
+- New batch generator system with clean functional architecture
+- Hydra configuration system designed from ground up
+- OpenAI batch integration using modern patterns
+- Pure functional pipeline without legacy constraints
+
+### 🗑️ **DELETE POST-IMPLEMENTATION:**
+- `bookgap/batch_utils_OLD/` - Remove after new system is validated
+- `bookgap/config_manager.py` - Replace with Hydra structured configs
+- All old configuration bridge code
+- Legacy interactive workflow patterns
+- String-based provider handling throughout codebase
+
+## Code Removal Strategy (Clean Slate Approach)
+
 ### � **MOVE TO REFERENCE (Immediate):**
 ```bash
 mv bookgap/batch_utils/ bookgap/batch_utils_OLD/  # Keep for business logic reference
@@ -69,6 +92,7 @@ bookgap/
 │   │   ├── openai_batch.py         # NEW: OpenAI batch implementation
 │   │   └── workflow_functions.py   # NEW: Pure pipeline functions
 │   └── protocols.py                # UPDATED: Add batch request types
+```
 
 **Type Definitions:**
 ```python
@@ -123,45 +147,74 @@ class BatchRequestData:
   - Example: If config JSON is 768 chars: `{"0": cfg_str[:512], "1": cfg_str[512:]}`
 
 **REMOVE ENTIRELY POST-IMPLEMENTATION:**
+```
 ├── batch_utils/                    # DELETE: Entire directory
 │   ├── batch_workflow.py           # DELETE: Interactive workflow superseded
 │   └── batch_operations.py         # DELETE: Replaced by clean functional approach
+├── config_manager.py               # DELETE: Replaced by Hydra ConfigStore system
+│   ├── GapConfiguration            # DELETE: Legacy config class (replaced by GapConfig)
+│   ├── LLMConfiguration            # DELETE: Legacy config class (replaced by LLMConfig)
+│   └── AnalysisConfiguration       # DELETE: Legacy config class (replaced by ExperimentConfig)
 └── types.py                        # UPDATED: Clean type definitions
 ```
 
 ## Phase 1: Core Infrastructure (Week 1)
 
-### 1.1 Hydra Structured Configs
+### 1.1 Hydra Structured Configs ✅ **COMPLETE**
 
-Create pure dataclass configuration system:
+Create pure dataclass configuration system with ConfigStore presets:
 
 **Core Configuration Classes:**
-- `GapConfig` - Gap detection parameters
+- `GapConfig` - Gap detection parameters (all required, no defaults)
   - `cell_type: CellType` (enum: KBALL, VORONOI) 
   - `radius_fraction: float`, `drop_k: int`
   - `denoiser: WorkDenoisers` ✅ **EXISTS** - Import from `bookgap.cloud`
   - `index_type: IndexType` ✅ **EXISTS** - Import from `bookgap.index` (HNSW, FLAT_L2)
   - `hnsw_m: int`, `hnsw_efc: int`, `hnsw_efs: int` - HNSW parameters
-- `LLMConfig` - Model settings
-  - `implementation: Implementation` (enum: STRUCTURED, PROMPT)
-  - `model: str`, `max_tokens: int`, `temperature: float`
-  - `provider: ProviderType` (enum: TODO - create OPENAI, etc.)
-- `DataConfig` - Data source settings
-  - `subfield: int`, `max_works: Optional[int]`
-  - `work_types: list[WorkType]` ✅ **EXISTS** - Import from `bookgap.util` (BOOK, ARTICLE, etc.)
-  - `deduplicator: Optional[Deduplicator]` - Deduplication strategy (SqDistDeduplicator, FractionalDeduplicator)
-  - `work_filters: list[WorkFilter]` ✅ **EXISTS** - Data quality filters from `bookgap.cloud`
+- `LLMConfig` - Model settings (all required, no defaults)
+  - `provider_type: ProviderType` ✅ **EXISTS** - (OPENAI, etc.)
+  - `model_name: str`, `max_tokens: int`, `temperature: float`
+  - `chapters_min: int`, `chapters_max: int` - From config_manager.py
+  - `num_articles: int`, `num_books: int` - From batch_workflow.py
+- `DataConfig` - Data source settings (all required, no defaults)
+  - `subfield: SubField`, `max_works: Optional[int]`
+  - `work_types: Tuple[WorkType, ...]` ✅ **EXISTS** - Import from `bookgap.util` (BOOK, ARTICLE, etc.)
+  - `deduplicator: Optional[Deduplicator]` - Deduplication strategy
+  - `work_filters: Tuple[WorkFilter, ...]` ✅ **EXISTS** - Data quality filters
   - `filter_preset: Optional[Filters]` ✅ **EXISTS** - Predefined filter combinations (NLP)
-- `BatchConfig` - Batch processing options
+- `BatchConfig` - Batch processing options (all required, no defaults)
   - `num_gaps: int`, `generate_plots: bool`
   - `completion_window: str`
-- `OutputConfig` - Output format preferences
-  - `export_formats: list[ExportFormat]` (enum: TODO - CSV, JSON, PARQUET)
-- `ExperimentConfig` - Top-level experiment container with all sub-configs
+- `OutputConfig` - Output format preferences (all required, no defaults)
+  - `export_formats: Tuple[ExportFormat, ...]` ✅ **EXISTS** - (CSV, JSON, PARQUET)
+- `ExperimentConfig` - Top-level experiment container (all required, no defaults)
 
-**Config Store Registration:**
-- Register base configuration and variants (kball_default, kball_sensitive, voronoi_default)
-- Register LLM presets (structured_fast, structured_quality, prompt_fallback)
+**ConfigStore Registration:** ✅ **COMPLETE**
+- `production` - Uses existing codebase defaults (parse_args.py, batch_workflow.py, config_manager.py)
+- `debug` - Fast settings for development
+- `high_quality` - Thorough analysis with creative LLM settings
+- Individual component presets: `gap/production`, `llm/creative`, etc.
+- **Design**: No dataclass defaults, all values explicit in ConfigStore presets
+
+**✅ IMPLEMENTATION STATUS:**
+- ✅ All config dataclasses created with required parameters only
+- ✅ ConfigStore registration with 3 preset experiments + component presets
+- ✅ Existing codebase defaults preserved in `production` preset
+- ✅ Clean directory structure: `bookgap/configs/` (no `experiments/` directory)
+- ✅ Legacy compatibility methods removed (no tech debt)
+- ✅ Comprehensive test coverage: 20/20 tests passing
+- ✅ ExportFormat enum with CSV, JSON, PARQUET, JSONL
+- ✅ Integration with all existing enum types
+- ✅ Immutable frozen dataclasses for thread safety
+
+**Usage Examples:**
+```bash
+python script.py config=production              # Existing codebase defaults
+python script.py config=debug                   # Fast development settings  
+python script.py config=high_quality           # Thorough analysis
+python script.py config=production gap=debug   # Mix component presets
+python script.py config=production gap.radius_fraction=0.8  # Override values
+```
 - Use `_target_` pattern for generator factory instantiation
 - Provide preset batch configurations (small_test, production, debug)
 
@@ -183,8 +236,8 @@ Create pure dataclass configuration system:
 - `Filters` ✅ **EXISTS** - Import from `bookgap.util` (NLP) - Predefined filter combinations
 - `WorkFilter` ✅ **EXISTS** - Import from `bookgap.cloud` - Data quality filters
 - `ResultType` ✅ **EXISTS** - Import from `bookgap.results_manager` (GAP_ANALYSIS, BOOK_ARTICLE, etc.)
-- `ProviderType` ⚠️ **TODO** - Create enum (OPENAI, future providers)
-- `ExportFormat` ⚠️ **TODO** - Create enum (CSV, JSON, PARQUET)
+- `ProviderType` ✅ **EXISTS** - Import from `bookgap.llm.providers` (OPENAI, future providers)
+- `ExportFormat` ✅ **EXISTS** - Import from `bookgap.configs.output.export_formats` (CSV, JSON, PARQUET)
 
 ### 1.2 Simplified Generator Architecture
 
@@ -469,7 +522,7 @@ Simplified structure leveraging Hydra's automatic output directories:
 Use existing enums with proper type annotations:
 - **Core Enums**: `CellType`, `Implementation`, `WorkDenoisers`, `IndexType`, `WorkType`
 - **Specialized Enums**: `SubField`, `Topic`, `Filters`, `WorkFilter`, `ResultType`, `Deduplicator`
-- **TODO**: Create `ProviderType`, `ExportFormat` enums
+- **✅ COMPLETE**: `ProviderType`, `ExportFormat` enums created
 - **Critical**: All configuration fields must use proper enum types, never raw strings
 
 ### Context Building

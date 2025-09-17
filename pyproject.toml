@@ -10,6 +10,7 @@ dependencies = [
     "accelerate",
     "bitsandbytes",
     "faiss-cpu",
+    "hydra-core",
     "matplotlib",
     "numpy",
     "openai",
