@@ -96,7 +96,7 @@ bookgap/
 
 **Type Definitions:**
 ```python
-from bookgap.llm.protocols import ProposalContext
+from bookgap.llm.protocols import ProposalContext, Article, Book, ProposalCounts
 
 @dataclass(frozen=True)
 class ChatMessage:
@@ -120,7 +120,18 @@ class BatchRequestData:
     url: str     # Always "/v1/chat/completions" 
     body: ChatCompletionBody
 
-# ProposalContext is imported from existing codebase:
+# Research data types for type safety:
+@dataclass(frozen=True)
+class Article:
+    display_name: str
+    abstract: str
+
+@dataclass(frozen=True)
+class Book:
+    display_name: str
+    abstract: str
+
+# ProposalContext uses typed dataclasses:
 # @dataclass(frozen=True)
 # class ProposalContext:
 #     topic_name: str
@@ -128,9 +139,9 @@ class BatchRequestData:
 #     gap_idx: int
 #     requested_num_prompt_articles: int
 #     requested_num_prompt_books: int
-#     sampled_articles: list[dict[str, Any]]
-#     covering_books: list[dict[str, Any]]
-#     counts: dict[str, int]
+#     sampled_articles: list[Article]      # Typed instead of dict
+#     covering_books: list[Book]           # Typed instead of dict
+#     counts: ProposalCounts               # Typed instead of dict
 ```
 
 **Custom ID Strategy Options:**
@@ -243,12 +254,20 @@ python script.py config=production gap.radius_fraction=0.8  # Override values
 
 **Core Generator Interface:**
 - `BatchProposalGenerator` - ABC defining the batch generator interface
-- Simple method signatures returning basic types
+- ✅ **DECIDED: PromptPair dataclass** for system/user message return type
+- ✅ **DECIDED: OpenAI model enum** for type-safe model handling
+
+**Type Safety Enhancements:**
+- ✅ **DECIDED: Comprehensive dataclass types** - Replace all dict usage with typed dataclasses
+- `Article` and `Book` dataclasses for research data (no more `.get()` calls)
+- `ProposalCounts` dataclass instead of dict for counts
+- `OpenAIModel` enum for model-specific behavior (temperature support detection)
+- `PromptPair` dataclass for clean system/user prompt handling
 
 **Core Methods:**
 - `generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]` - Main method
-- `_build_prompt(context: ProposalContext, config: ExperimentConfig) -> str` - Abstract method for prompt construction
-- `_create_request_from_prompt(prompt: str, context: ProposalContext, config: ExperimentConfig) -> BatchRequestData` - Abstract method for request formatting
+- `_build_prompt(context: ProposalContext, config: ExperimentConfig) -> PromptPair` - Abstract method for system/user prompt construction
+- `_create_request_from_prompt(prompts: PromptPair, context: ProposalContext, config: ExperimentConfig) -> BatchRequestData` - Abstract method for request formatting
 
 ### 1.3 OpenAI Batch Implementation
 
@@ -259,18 +278,20 @@ python script.py config=production gap.radius_fraction=0.8  # Override values
 - Builds OpenAI batch API requests with proper formatting and custom IDs
 
 **Key Features:**
+- ✅ **DECIDED: System/user message format** for native batch API compatibility
+- ✅ **DECIDED: OpenAI model enum** for type-safe model handling with temperature support detection
+- ✅ **DECIDED: Typed research data** using `Article`, `Book`, and `ProposalCounts` dataclasses
 - Supports both structured and prompt-based implementations
-- Handles GPT-5 temperature exclusion
-- Integrates with existing CustomIdManager for request tracking
-- Creates proper batch API request format with system/user messages
+- Handles GPT-5 temperature exclusion via model enum properties
+- ✅ **DECIDED: Simple custom IDs** with batch-level metadata storage
+- Creates proper batch API request format with separate system/user messages
 
 **Metadata Storage Strategy:**
-- **Option A (Current)**: Full config in each custom_id (long strings)
-- **Option B (Proposed)**: Batch-level metadata with config-free custom_ids
+- ✅ **DECIDED: Batch-level metadata with config-free custom_ids**
   - Store `ExperimentConfig` as JSON string in batch metadata
   - Split into 512-character chunks with numeric keys: `"0"`, `"1"`, `"2"`, etc.
   - Example: `{"0": json_config[:512], "1": json_config[512:1024], "2": json_config[1024:]}`
-  - Custom IDs still identify requests but contain no configuration data
+  - Custom IDs use simple format: `"gap_{gap_idx}_topic_{topic_id}"`
   - Retrieve full config by concatenating metadata chunks when processing results
 
 ## Phase 2: Workflow Management (Week 1-2)
@@ -349,18 +370,34 @@ Replace `batch_operations.py` with clean new architecture:
 - Old file-based resumption logic
 - `InteractiveLLMConfiguration` class - replaced by Hydra configs
 - String-based provider handling - replaced by `ProviderType` enum
+- `bookgap/config_manager.py` - **DELETE ENTIRELY** (CustomIdManager, AnalysisConfiguration, etc.)
+- `bookgap/gap_directory_manager.py` - **REPLACE** with Hydra output directory management
+- **Individual Generator Architecture - DELETE ENTIRELY:**
+  - `bookgap/llm/generators/openai_generator.py` - Individual request generator
+  - `bookgap/llm/generators/json_prompt_generator.py` - Prompt-based generator  
+  - `bookgap/llm/llm_implementation.py` - Manual factory pattern (`Implementation` enum, `get_generator()`)
+  - `bookgap/llm/generators/__init__.py` - Individual generator exports
+- **Individual Generator Tests - DELETE ENTIRELY:**
+  - `tests/test_llm_generators.py` - Individual generator tests
+  - `tests/llm/test_llm_generators.py` - Individual generator unit tests
+  - `tests/llm/integration/test_generators_real_api.py` - Individual generator integration tests
+  - All tests using `get_generator()` factory pattern
+- **Legacy Gap Finder Integration - DELETE:**
+  - `gap_finder.py` usage of individual generators (replace with batch workflow)
+  - `generate_book_proposal()` function (replaced by batch pipeline)
 
 **REPLACE COMPLETELY:**
 - `bookgap/batch_utils/batch_operations.py` - Rewrite with clean functional approach
-- Existing configuration bridge logic - direct Hydra config usage
-- File-based workflow detection - replaced by pure functional pipeline
-- Custom ID management for compatibility - simplified for batch-first design
+- Generator file output patterns - use Hydra output directories instead of complex directory structures
+- Configuration management - eliminate `AnalysisConfiguration` entirely
+- Results processing - streamline for batch-first workflow
+- **Gap finding workflow** - Replace individual generator calls with batch pipeline
+- Error handling - remove interactive recovery, implement batch-appropriate patterns
 
 **MODIFY WITHOUT COMPATIBILITY:**
 - Generator factory pattern - use Hydra `_target_` exclusively
-- Configuration management - eliminate `AnalysisConfiguration` entirely
-- Results processing - streamline for batch-first workflow
-- Error handling - remove interactive recovery, implement batch-appropriate patterns
+- File path management - replace `GapDirectoryManager` with simple Hydra output patterns
+- Custom ID management - eliminate complex parsing, use simple IDs + batch metadata
 
 ### 4.2 Simplified Architecture Post-Cleanup
 
@@ -382,9 +419,11 @@ bookgap/
 
 **REPLACE ENTIRELY:**
 - `AnalysisConfiguration`, `GapConfiguration`, `LLMConfiguration` - Replace with pure Hydra dataclass configs
+- `CustomIdManager` and `GapDirectoryManager` - Replace with simple Hydra output directory patterns
 - All `.from_components()`, `.from_directory_name()` methods - Replaced by Hydra instantiation
 - Configuration validation in `__post_init__` - Move to Hydra validators
 - String-based configuration parsing - Use structured configs exclusively
+- Complex directory structure management - Use Hydra's automatic output directories
 
 **NEW APPROACH:**
 ```python
@@ -404,6 +443,8 @@ def main(cfg: ExperimentConfig) -> None:
 - File-path-based configuration parsing
 - Manual configuration validation
 - Configuration compatibility methods
+- `CustomIdManager` and complex custom ID parsing
+- `GapDirectoryManager` complex directory structure management
 
 ### 4.4 Generator System Simplification
 

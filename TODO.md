@@ -48,29 +48,6 @@ Address the following test warnings (from running `pytest tests/`):
 
 ## Code Quality and Architecture Issues
 
-### Unify Generator Usage Between Real-time and Batch API
-The codebase currently has two separate approaches for LLM proposal generation that should be unified:
-
-**Current State**:
-- **Real-time generation**: `gap_finder.py` → `get_generator()` → `generator.generate()` (uses proper LLM configuration)
-- **Batch generation**: `batch_workflow.py` → `batch_operations.py` → Direct batch API requests (bypasses generators, hardcodes parameters)
-
-**Problem**: 
-- `create_batch_requests_from_prompts()` in `batch_operations.py` was hardcoding API parameters instead of using LLM configuration
-- This was recently fixed but highlights the architectural duplication
-- Two separate code paths for prompt building and API parameter management
-
-**Solution**:
-1. **Add `generate_batch_request()` method** to generator classes (`OpenAIProposalGenerator`, `JSONPromptProposalGenerator`)
-2. **Modify `batch_operations.py`** to use generators instead of direct request building
-3. **Centralize prompt building logic** in generators
-
-**Benefits**:
-- Single source of truth for API parameters (temperature, model, max_tokens)
-- Consistent prompt building logic between real-time and batch
-- Better maintainability and reduced duplication
-- Automatic consistency when LLM configuration changes
-
 ### Replace Dict Return with Dataclass in ConfigPathParser
 The `parse_prompt_file_path()` method in `ConfigPathParser` currently returns a dictionary, which lacks type safety and IDE support:
 
