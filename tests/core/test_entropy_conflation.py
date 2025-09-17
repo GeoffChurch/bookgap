@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Quick test of the updated JAD denoiser with normalized entropy conflation measure.
 """

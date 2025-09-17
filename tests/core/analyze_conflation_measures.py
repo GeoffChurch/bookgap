@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Analysis of different conflation measures for the JAD denoiser.
 """

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Analyze the gap between books and articles across different filters.
 """

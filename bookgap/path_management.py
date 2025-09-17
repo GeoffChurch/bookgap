@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Path and filename management utilities for bookgap analysis.
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Test script to verify Q-Q plot generation for book gap sizes.
 """

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Core types and enums for bookgap analysis.
 

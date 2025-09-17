@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Report the number of articles and books in the AI subfield cloud.
 """

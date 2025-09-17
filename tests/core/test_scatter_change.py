@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Quick test to verify that the scatter matrix change doesn't significantly affect JAD results.
 """

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Test script demonstrating the generalized JADDenoiser with multiple subsets.
 """

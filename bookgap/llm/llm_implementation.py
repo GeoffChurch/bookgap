@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 LLM implementation enum with direct class mapping.
 

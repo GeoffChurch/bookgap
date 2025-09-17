@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Quick test to verify find_gaps_for_topic algorithm selection fix.
 """
