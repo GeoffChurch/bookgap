@@ -20,6 +20,7 @@ from bookgap.types import CellType
 from bookgap.cloud import WorkDenoisers
 from bookgap.index import IndexType
 from bookgap.llm.providers import ProviderType
+from bookgap.llm.protocols import OpenAIModel
 from bookgap.util import WorkType, SubField, Filters
 
 
@@ -84,8 +85,9 @@ def register_configs():
     
     # Production LLM config (from config_manager.py + batch_workflow.py)
     production_llm = LLMConfig(
+        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
         provider_type=ProviderType.OPENAI,
-        model_name="gpt-5",  # From config_manager.py
+        model_name=OpenAIModel.GPT_5,  # From config_manager.py
         num_articles=10,  # From batch_workflow.py
         num_books=5,  # From batch_workflow.py
         temperature=0.2,  # From config_manager.py
@@ -100,8 +102,9 @@ def register_configs():
     
     # Debug LLM config (cheaper/faster)
     debug_llm = LLMConfig(
+        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
         provider_type=ProviderType.OPENAI,
-        model_name="gpt-4o-mini",  # Cheaper model
+        model_name=OpenAIModel.GPT_4O_MINI,  # Cheaper model
         num_articles=5,  # Fewer articles for speed
         num_books=3,  # Fewer books for speed
         temperature=0.2,
@@ -116,8 +119,9 @@ def register_configs():
     
     # Creative LLM config (more exploratory)
     creative_llm = LLMConfig(
+        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
         provider_type=ProviderType.OPENAI,
-        model_name="gpt-5",
+        model_name=OpenAIModel.GPT_5,
         num_articles=15,  # More context
         num_books=8,  # More context
         temperature=0.8,  # More creative

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from bookgap.llm.llm_implementation import Implementation
 from bookgap.llm.providers import ProviderType
+from bookgap.llm.protocols import OpenAIModel
 
 
 @dataclass(frozen=True)
@@ -18,9 +19,12 @@ class LLMConfig:
     Compatible with existing LLMConfiguration in config_manager.py.
     """
     
+    # Hydra instantiation target
+    _target_: str
+    
     # Provider settings
     provider_type: ProviderType
-    model_name: str
+    model_name: OpenAIModel
     
     # Prompt content
     num_articles: int

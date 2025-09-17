@@ -8,8 +8,69 @@ here to avoid circular dependencies.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Any
+from typing import Protocol, Any, Literal
+from enum import Enum
 from pydantic import BaseModel, Field
+
+
+class OpenAIModel(Enum):
+    """OpenAI model variants with their string representations."""
+    GPT_4O_MINI = "gpt-4o-mini"
+    GPT_4O = "gpt-4o"
+    GPT_4 = "gpt-4"
+    GPT_5 = "gpt-5"
+    
+    @property
+    def supports_temperature(self) -> bool:
+        """Whether this model supports temperature parameter."""
+        return self != OpenAIModel.GPT_5
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    """OpenAI chat message structure for batch requests."""
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+@dataclass(frozen=True)
+class Article:
+    """Research article data structure."""
+    display_name: str
+    abstract: str
+
+
+@dataclass(frozen=True)  
+class Book:
+    """Book data structure."""
+    display_name: str
+    abstract: str
+
+
+@dataclass(frozen=True)
+class PromptPair:
+    """System and user prompts for batch request generation."""
+    system_prompt: str
+    user_prompt: str
+
+
+@dataclass(frozen=True) 
+class ChatCompletionBody:
+    """OpenAI chat completion request body for batch API."""
+    model: str
+    messages: list[ChatMessage]
+    temperature: float | None = None
+    max_tokens: int | None = None
+    response_format: dict[str, Any] | None = None  # For structured outputs
+
+
+@dataclass(frozen=True)
+class BatchRequestData:
+    """OpenAI batch API request structure."""
+    custom_id: str
+    body: ChatCompletionBody
+    method: Literal["POST"] = "POST"
+    url: Literal["/v1/chat/completions"] = "/v1/chat/completions"
 
 
 class ProposalGenerator(Protocol):
@@ -31,6 +92,13 @@ class ProposalGenerator(Protocol):
 
 
 @dataclass(frozen=True)
+class ProposalCounts:
+    """Counts of items used in proposal generation."""
+    num_articles_for_llm: int
+    num_books_for_llm: int
+
+
+@dataclass(frozen=True)
 class ProposalContext:
     """Context information for generating a textbook proposal."""
     topic_name: str
@@ -38,16 +106,9 @@ class ProposalContext:
     gap_idx: int
     requested_num_prompt_articles: int
     requested_num_prompt_books: int
-    sampled_articles: list[dict[str, Any]]
-    covering_books: list[dict[str, Any]]
-    counts: dict[str, int]  # {"num_articles_for_llm": int, "num_books_for_llm": int}
-
-
-@dataclass(frozen=True)
-class ProposalCounts:
-    """Counts of items used in proposal generation."""
-    num_articles_for_llm: int
-    num_books_for_llm: int
+    sampled_articles: list[Article]
+    covering_books: list[Book]
+    counts: ProposalCounts
 
 
 @dataclass(frozen=True)

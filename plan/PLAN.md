@@ -250,49 +250,60 @@ python script.py config=production gap.radius_fraction=0.8  # Override values
 - `ProviderType` ✅ **EXISTS** - Import from `bookgap.llm.providers` (OPENAI, future providers)
 - `ExportFormat` ✅ **EXISTS** - Import from `bookgap.configs.output.export_formats` (CSV, JSON, PARQUET)
 
-### 1.2 Simplified Generator Architecture
+### 1.2 Simplified Generator Architecture ✅ **COMPLETE**
 
 **Core Generator Interface:**
-- `BatchProposalGenerator` - ABC defining the batch generator interface
-- ✅ **DECIDED: PromptPair dataclass** for system/user message return type
-- ✅ **DECIDED: OpenAI model enum** for type-safe model handling
+- ✅ `BatchProposalGenerator` - ABC defining the batch generator interface
+- ✅ **IMPLEMENTED: PromptPair dataclass** for system/user message return type
+- ✅ **IMPLEMENTED: OpenAI model enum** for type-safe model handling
 
 **Type Safety Enhancements:**
-- ✅ **DECIDED: Comprehensive dataclass types** - Replace all dict usage with typed dataclasses
-- `Article` and `Book` dataclasses for research data (no more `.get()` calls)
-- `ProposalCounts` dataclass instead of dict for counts
-- `OpenAIModel` enum for model-specific behavior (temperature support detection)
-- `PromptPair` dataclass for clean system/user prompt handling
+- ✅ **IMPLEMENTED: Comprehensive dataclass types** - Replace all dict usage with typed dataclasses
+- ✅ `Article` and `Book` dataclasses for research data (no more `.get()` calls)
+- ✅ `ProposalCounts` dataclass instead of dict for counts
+- ✅ `OpenAIModel` enum for model-specific behavior (temperature support detection)
+- ✅ `PromptPair` dataclass for clean system/user prompt handling
 
 **Core Methods:**
-- `generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]` - Main method
-- `_build_prompt(context: ProposalContext, config: ExperimentConfig) -> PromptPair` - Abstract method for system/user prompt construction
-- `_create_request_from_prompt(prompts: PromptPair, context: ProposalContext, config: ExperimentConfig) -> BatchRequestData` - Abstract method for request formatting
+- ✅ `generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]` - Main method
+- ✅ `_build_prompt(context: ProposalContext, config: ExperimentConfig) -> PromptPair` - Abstract method for system/user prompt construction
+- ✅ `_create_request_from_prompt(prompts: PromptPair, context: ProposalContext, config: ExperimentConfig) -> BatchRequestData` - Abstract method for request formatting
 
-### 1.3 OpenAI Batch Implementation
+### 1.3 OpenAI Batch Implementation ✅ **COMPLETE**
 
 **Core Implementation:**
-- `OpenAIBatchGenerator(BatchProposalGenerator)` - OpenAI-specific batch generator
-- Implements structured outputs support using `openai.lib._pydantic.to_strict_json_schema()`
-- Reuses existing prompt building logic from current generators
-- Builds OpenAI batch API requests with proper formatting and custom IDs
+- ✅ `OpenAIBatchGenerator(BatchProposalGenerator)` - OpenAI-specific batch generator
+- ✅ Implements structured outputs support using `openai.lib._pydantic.to_strict_json_schema()`
+- ✅ Reuses existing prompt building logic from current generators
+- ✅ Builds OpenAI batch API requests with proper formatting and custom IDs
 
 **Key Features:**
-- ✅ **DECIDED: System/user message format** for native batch API compatibility
-- ✅ **DECIDED: OpenAI model enum** for type-safe model handling with temperature support detection
-- ✅ **DECIDED: Typed research data** using `Article`, `Book`, and `ProposalCounts` dataclasses
-- Supports both structured and prompt-based implementations
-- Handles GPT-5 temperature exclusion via model enum properties
-- ✅ **DECIDED: Simple custom IDs** with batch-level metadata storage
-- Creates proper batch API request format with separate system/user messages
+- ✅ **IMPLEMENTED: System/user message format** for native batch API compatibility
+- ✅ **IMPLEMENTED: OpenAI model enum** for type-safe model handling with temperature support detection
+- ✅ **IMPLEMENTED: Typed research data** using `Article`, `Book`, and `ProposalCounts` dataclasses
+- ✅ Supports both structured and prompt-based implementations
+- ✅ Handles GPT-5 temperature exclusion via model enum properties
+- ✅ **IMPLEMENTED: Simple custom IDs** with batch-level metadata storage
+- ✅ Creates proper batch API request format with separate system/user messages
 
 **Metadata Storage Strategy:**
-- ✅ **DECIDED: Batch-level metadata with config-free custom_ids**
+- ✅ **IMPLEMENTED: Batch-level metadata with config-free custom_ids**
   - Store `ExperimentConfig` as JSON string in batch metadata
   - Split into 512-character chunks with numeric keys: `"0"`, `"1"`, `"2"`, etc.
   - Example: `{"0": json_config[:512], "1": json_config[512:1024], "2": json_config[1024:]}`
   - Custom IDs use simple format: `"gap_{gap_idx}_topic_{topic_id}"`
   - Retrieve full config by concatenating metadata chunks when processing results
+
+**✅ IMPLEMENTATION STATUS:**
+- ✅ All batch request data types defined in `bookgap/llm/protocols.py`
+- ✅ OpenAIModel enum with temperature support detection
+- ✅ Article, Book, ProposalCounts dataclasses for type safety
+- ✅ ProposalContext updated to use typed dataclasses
+- ✅ LLMConfig updated to use OpenAIModel enum
+- ✅ ConfigStore presets updated to use enum values
+- ✅ Comprehensive test coverage: 37/37 tests passing
+- ✅ All data structures are immutable (frozen dataclasses)
+- ✅ Full integration with existing Hydra configuration system
 
 ## Phase 2: Workflow Management (Week 1-2)
 
@@ -548,9 +559,19 @@ Use Hydra's `_target_` pattern for clean instantiation in dataclass configs:
 ```python
 @dataclass
 class LLMConfig:
-    _target_: str = "bookgap.llm.generators.openai_batch.OpenAIBatchGenerator"
+    _target_: str  # Required field, set in ConfigStore presets
     model: str = "gpt-4o-mini"
     # ... other fields
+
+# ConfigStore preset example:
+cs.store(
+    group="llm",
+    name="openai",
+    node=LLMConfig(
+        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
+        model="gpt-4o-mini"
+    )
+)
 ```
 
 ### Output Directory Structure  
