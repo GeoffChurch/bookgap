@@ -1,0 +1,213 @@
+"""Tests for batch proposal generators."""
+
+import os
+import pytest
+from unittest.mock import patch
+
+from bookgap.llm.providers import ProviderType
+from bookgap.llm.protocols import (
+    OpenAIModel, ProposalContext, Article, Book, ProposalCounts,
+    ProposalGenerationError, BatchRequestData, PromptPair
+)
+from bookgap.llm.generators.openai_batch import OpenAIBatchGenerator
+
+
+class TestOpenAIBatchGenerator:
+    """Tests for OpenAI batch generator."""
+    
+    @pytest.fixture
+    def mock_config(self):
+        """Create a mock experiment configuration."""
+        # Create a minimal mock config structure
+        class MockLLMConfig:
+            def __init__(self):
+                self.provider_type = ProviderType.OPENAI
+                self.model_name = OpenAIModel.GPT_4O_MINI
+                self.temperature = 0.7
+                self.max_tokens = 4000
+                self.use_structured_output = True
+                self.chapters_min = 10
+                self.chapters_max = 15
+        
+        class MockConfig:
+            def __init__(self):
+                self.llm = MockLLMConfig()
+        
+        return MockConfig()
+    
+    @pytest.fixture
+    def sample_context(self):
+        """Create a sample proposal context."""
+        articles = [
+            Article(display_name="Quantum Computing Basics", abstract="Introduction to quantum computing principles"),
+            Article(display_name="Quantum Algorithms", abstract="Advanced quantum algorithm design")
+        ]
+        books = [
+            Book(display_name="Quantum Physics Textbook", abstract="Comprehensive quantum physics reference")
+        ]
+        counts = ProposalCounts(num_articles_for_llm=2, num_books_for_llm=1)
+        
+        return ProposalContext(
+            topic_name="Quantum Computing",
+            topic_id="quantum_001",
+            gap_idx=5,
+            requested_num_prompt_articles=2,
+            requested_num_prompt_books=1,
+            sampled_articles=articles,
+            covering_books=books,
+            counts=counts
+        )
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_initialization_success(self, mock_config):
+        """Test successful generator initialization."""
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        assert generator.config == mock_config
+        assert generator.model_enum == OpenAIModel.GPT_4O_MINI
+        assert generator.model == "gpt-4o-mini"
+        assert generator.temperature == 0.7
+        assert generator.max_tokens == 4000
+        assert generator.use_structured is True
+    
+    def test_initialization_wrong_provider(self, mock_config):
+        """Test initialization fails with wrong provider."""
+        # Use a string that's not a valid ProviderType
+        mock_config.llm.provider_type = "invalid_provider"
+        
+        with pytest.raises(ProposalGenerationError) as exc_info:
+            OpenAIBatchGenerator(mock_config)
+        
+        assert "OpenAI generator requires provider_type=ProviderType.OPENAI" in str(exc_info.value)
+        assert exc_info.value.context["provider"] == "invalid_provider"
+    
+    @patch.dict(os.environ, {}, clear=True)
+    def test_initialization_missing_api_key(self, mock_config):
+        """Test initialization fails without API key."""
+        with pytest.raises(ProposalGenerationError) as exc_info:
+            OpenAIBatchGenerator(mock_config)
+        
+        assert "OPENAI_API_KEY environment variable is required" in str(exc_info.value)
+        assert exc_info.value.context["provider"] == "openai"
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_build_prompt(self, mock_config, sample_context):
+        """Test prompt building functionality."""
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        prompts = generator._build_prompt(sample_context)
+        
+        assert isinstance(prompts, PromptPair)
+        assert "publishing expert and academic researcher" in prompts.system_prompt
+        assert "Quantum Computing" in prompts.user_prompt
+        assert "Quantum Computing Basics" in prompts.user_prompt
+        assert "Quantum Algorithms" in prompts.user_prompt
+        assert "Quantum Physics Textbook" in prompts.user_prompt
+        assert "10-15 chapters" in prompts.user_prompt
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_create_request_from_prompt(self, mock_config, sample_context):
+        """Test batch request creation from prompts."""
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        prompts = PromptPair(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Generate a textbook proposal."
+        )
+        
+        request = generator._create_request_from_prompt(prompts, sample_context)
+        
+        assert isinstance(request, BatchRequestData)
+        assert request.custom_id == "gap_5_topic_quantum_001"
+        assert request.body.model == "gpt-4o-mini"
+        assert len(request.body.messages) == 2
+        assert request.body.messages[0].role == "system"
+        assert request.body.messages[1].role == "user"
+        assert request.body.temperature == 0.7  # GPT-4O-MINI supports temperature
+        assert request.body.max_tokens == 4000
+        assert request.body.response_format is not None  # Structured output enabled
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_temperature_handling_for_gpt5(self, mock_config, sample_context):
+        """Test that GPT-5 doesn't include temperature parameter."""
+        mock_config.llm.model_name = OpenAIModel.GPT_5
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        prompts = PromptPair(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Generate a textbook proposal."
+        )
+        
+        request = generator._create_request_from_prompt(prompts, sample_context)
+        
+        assert request.body.model == "gpt-5"
+        assert request.body.temperature is None  # GPT-5 doesn't support temperature
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_structured_output_disabled(self, mock_config, sample_context):
+        """Test request creation with structured output disabled."""
+        mock_config.llm.use_structured_output = False
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        prompts = PromptPair(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Generate a textbook proposal."
+        )
+        
+        request = generator._create_request_from_prompt(prompts, sample_context)
+        
+        assert request.body.response_format is None  # No structured output
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_generate_batch_requests(self, mock_config):
+        """Test end-to-end batch request generation."""
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        # Create multiple contexts
+        articles1 = [Article(display_name="AI Article 1", abstract="AI research")]
+        articles2 = [Article(display_name="ML Article 1", abstract="ML research")]
+        counts = ProposalCounts(num_articles_for_llm=1, num_books_for_llm=0)
+        
+        contexts = [
+            ProposalContext(
+                topic_name="AI", topic_id="ai_001", gap_idx=1,
+                requested_num_prompt_articles=1, requested_num_prompt_books=0,
+                sampled_articles=articles1, covering_books=[], counts=counts
+            ),
+            ProposalContext(
+                topic_name="ML", topic_id="ml_001", gap_idx=2,
+                requested_num_prompt_articles=1, requested_num_prompt_books=0,
+                sampled_articles=articles2, covering_books=[], counts=counts
+            )
+        ]
+        
+        requests = generator.generate_batch_requests(contexts)
+        
+        assert len(requests) == 2
+        assert requests[0].custom_id == "gap_1_topic_ai_001"
+        assert requests[1].custom_id == "gap_2_topic_ml_001"
+        assert all(isinstance(req, BatchRequestData) for req in requests)
+    
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_prompt_formatting_no_books(self, mock_config):
+        """Test prompt formatting when no books are provided."""
+        generator = OpenAIBatchGenerator(mock_config)
+        
+        articles = [Article(display_name="Test Article", abstract="Test abstract")]
+        counts = ProposalCounts(num_articles_for_llm=1, num_books_for_llm=0)
+        
+        context = ProposalContext(
+            topic_name="Test Topic", topic_id="test_001", gap_idx=1,
+            requested_num_prompt_articles=1, requested_num_prompt_books=0,
+            sampled_articles=articles, covering_books=[], counts=counts
+        )
+        
+        prompts = generator._build_prompt(context)
+        
+        # Should not mention books in the introduction
+        assert " and related books" not in prompts.user_prompt
+        # Should not have a books section
+        assert "## Related Existing Books" not in prompts.user_prompt
+        # Should still have articles section
+        assert "## Sample Articles" in prompts.user_prompt
+        assert "Test Article" in prompts.user_prompt
