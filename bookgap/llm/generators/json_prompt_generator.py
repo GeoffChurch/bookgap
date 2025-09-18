@@ -17,7 +17,7 @@ from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.llm.providers import ProviderType
 from bookgap.util import create_unicode_safe_filename, LOGGER
-from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Proposal, ProposalCounts, ProposalMetadata
+from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, ProposalCounts, ProposalMetadata, create_proposal_model
 
 
 class JSONPromptProposalGenerator:
@@ -144,6 +144,8 @@ class JSONPromptProposalGenerator:
             
             # Validate with Pydantic
             try:
+                # Create the Proposal model class with default chapter constraints
+                Proposal = create_proposal_model()
                 proposal = Proposal.model_validate(proposal_dict)
             except ValidationError as e:
                 raise ProposalGenerationError(
@@ -191,8 +193,8 @@ class JSONPromptProposalGenerator:
                 prompt_path=prompt_path,
                 raw_response_path=raw_response_path,
                 counts=ProposalCounts(
-                    num_articles_for_llm=context.counts["num_articles_for_llm"],
-                    num_books_for_llm=context.counts["num_books_for_llm"]
+                    num_articles_for_llm=context.counts.num_articles_for_llm,
+                    num_books_for_llm=context.counts.num_books_for_llm
                 ),
                 metadata=ProposalMetadata(
                     provider="openai",
