@@ -46,7 +46,7 @@ def build_proposal_context(
     Raises:
         ValueError: If gap contains no articles or critical data is missing
     """
-    gap_size = len(gap.dists_idxs.idxs)
+    gap_size = len(gap.get_dists_idxs().idxs)
     if gap_size == 0:
         raise ValueError(f"Gap {gap_idx} for topic {topic_id} contains no articles")
     
@@ -64,7 +64,7 @@ def build_proposal_context(
     requested_articles = analysis_config.llm_config.requested_num_prompt_articles
     sample_size = min(requested_articles, gap_size)
     sampled_indices = rng.sample(range(gap_size), sample_size)
-    sampled_articles = [article_works[gap.dists_idxs.idxs[i]] for i in sampled_indices]
+    sampled_articles = [article_works[gap.get_dists_idxs().idxs[i]] for i in sampled_indices]
     
     # Validate sampled articles have required fields
     for i, article in enumerate(sampled_articles):

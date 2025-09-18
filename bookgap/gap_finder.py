@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable, Tuple, Protocol, Union
+from typing import Optional, Callable, Tuple, Protocol
 import abc
 import numpy as np
 import pandas as pd
@@ -19,7 +19,8 @@ from bookgap.index import IndexType
 from bookgap.util import LOGGER, SubField, create_unicode_safe_filename
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from bookgap.llm.gap_algorithms.kball_algorithm import KballGap, DistsAndIdxs
+from bookgap.gap_types import DistsAndIdxs
+from bookgap.llm.gap_algorithms.kball_algorithm import KballGap
 from bookgap.llm.gap_algorithms.voronoi_algorithm import VoronoiGap
 from bookgap.llm.llm_implementation import Implementation, get_generator
 from bookgap.types import CellType
@@ -54,18 +55,15 @@ class GapProtocol(Protocol):
     that both KballGap and VoronoiGap must implement.
     """
     
-    @property
-    def dists_idxs(self) -> DistsAndIdxs:
+    def get_dists_idxs(self) -> DistsAndIdxs:
         """Return the distances and indices of articles in the gap."""
         ...
     
-    @property 
-    def ambient(self) -> 'SubCloud':
+    def get_ambient(self) -> SubCloud:
         """Return the ambient space (articles)."""
         ...
         
-    @property
-    def landmark(self) -> 'SubCloud':  
+    def get_landmark(self) -> SubCloud:  
         """Return the landmark space (books)."""
         ...
     
@@ -197,7 +195,7 @@ def write_single_kball_gap(
     and topic totals, computes statistics, writes artifacts, and records a row in results CSV.
     """
     # Compute gap size and statistics
-    gap_size = len(gap.dists_idxs.idxs)
+    gap_size = len(gap.get_dists_idxs().idxs)
     gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
     LOGGER.info(f"Found gap {gap_idx} for topic {topic_name} with {gap_size} articles "
                 f"(percentile: {gap_size_percentile:.3f}, z-score: {gap_zscore:.3f})")
@@ -258,10 +256,10 @@ def write_single_kball_gap(
         f.write("=" * 80 + "\n\n")
 
         # Center article
-        assert np.argmin(gap.dists_idxs.sqdists) == 0, (
-            f"Expected the closest article to be the first one in the gap, got {np.argmin(gap.dists_idxs.sqdists)}"
+        assert np.argmin(gap.get_dists_idxs().sqdists) == 0, (
+            f"Expected the closest article to be the first one in the gap, got {np.argmin(gap.get_dists_idxs().sqdists)}"
         )
-        # center_article_idx = gap.dists_idxs.idxs[0]  # Center is the first article
+        # center_article_idx = gap.get_dists_idxs().idxs[0]  # Center is the first article
         # if len(book_works) > 0:
         #     # Find the book that covers the center article
         #     closest_book_idx = None
@@ -285,21 +283,21 @@ def write_single_kball_gap(
         # List the top articles closest to the center of the gap
         closest_n = min(TOP_ARTICLES_TO_DISPLAY, gap_size)
         f.write(f"{closest_n} most central articles in the gap:\n\n")
-        for i, article_idx in enumerate(gap.dists_idxs.idxs[:closest_n]):
+        for i, article_idx in enumerate(gap.get_dists_idxs().idxs[:closest_n]):
             article_work = article_works[article_idx]
             f.write(
                 f"Article {i + 1} - {article_work.get('id', 'N/A')} - {article_work.get('display_name', 'N/A')} - "
-                f"squared distance: {gap.dists_idxs.sqdists[i]:.4f}\n"
+                f"squared distance: {gap.get_dists_idxs().sqdists[i]:.4f}\n"
             )
             f.write(f"  Abstract: {article_work.get('abstract', 'N/A')}\n\n")
 
         f.write("Furthest article from the center of the gap:\n\n")
-        furthest_idx = int(np.argmax(gap.dists_idxs.sqdists))
-        furthest_article_idx = gap.dists_idxs.idxs[furthest_idx]
+        furthest_idx = int(np.argmax(gap.get_dists_idxs().sqdists))
+        furthest_article_idx = gap.get_dists_idxs().idxs[furthest_idx]
         furthest_article_work = article_works[furthest_article_idx]
         f.write(
             f"Furthest article - Id: {furthest_article_work.get('id', 'N/A')} - Title: {furthest_article_work.get('display_name', 'N/A')} - "
-            f"Squared distance from center: {gap.dists_idxs.sqdists[furthest_idx]:.4f}\n"
+            f"Squared distance from center: {gap.get_dists_idxs().sqdists[furthest_idx]:.4f}\n"
         )
         f.write(f"  Abstract: {furthest_article_work.get('abstract', 'N/A')}\n\n")
 
@@ -341,7 +339,7 @@ def write_llm_prompt(gap: GapProtocol, gap_idx: int, topic_name: str, topic_id: 
     Returns:
         Tuple[int, int]: (num_articles_for_llm, num_books_for_llm)
     """
-    gap_size = len(gap.dists_idxs.idxs)
+    gap_size = len(gap.get_dists_idxs().idxs)
     
     # Get work metadata
     article_works = articles.works()
@@ -350,7 +348,7 @@ def write_llm_prompt(gap: GapProtocol, gap_idx: int, topic_name: str, topic_id: 
     # Sample random articles from the gap (up to configured limit)
     sample_size = min(analysis_config.llm_config.requested_num_prompt_articles, gap_size)
     sampled_indices = random.sample(range(gap_size), sample_size)
-    sampled_articles = [article_works[gap.dists_idxs.idxs[i]] for i in sampled_indices]
+    sampled_articles = [article_works[gap.get_dists_idxs().idxs[i]] for i in sampled_indices]
     
     # Analyze book coverage using the configured minimum coverage threshold
     covering_books = []
@@ -474,7 +472,7 @@ def generate_book_proposal(
 
 def _perform_gap_neighbor_searches(gap: GapProtocol, books: SubCloud, articles: SubCloud, k: int = 5) -> GapVisualizationData:
     """Perform the four FAISS neighbor searches for gap visualization."""
-    gap_article_indices = gap.dists_idxs.idxs
+    gap_article_indices = gap.get_dists_idxs().idxs
     covering_book_indices = get_covering_book_indices(gap)
     
     # 1. Nearest articles to in-gap articles
@@ -532,7 +530,7 @@ def _collect_visualization_data(gap: GapProtocol, gap_idx: int, books: SubCloud,
     Returns:
         tuple: (base_embeddings, item_types, all_items, gap_article_positions_map, all_book_positions_map, neighbor_data, proposal_embeddings_array)
     """
-    gap_size = len(gap.dists_idxs.idxs)
+    gap_size = len(gap.get_dists_idxs().idxs)
     
     if gap_size == 0:
         return None, None, None, None, None, None, None, None
@@ -542,7 +540,7 @@ def _collect_visualization_data(gap: GapProtocol, gap_idx: int, books: SubCloud,
     all_book_embeddings = books.embeddings()
     
     # Get gap articles
-    gap_article_indices = gap.dists_idxs.idxs
+    gap_article_indices = gap.get_dists_idxs().idxs
     
     # Get covered points analysis to find books covering the gap
     covering_book_indices = get_covering_book_indices(gap)
@@ -651,9 +649,9 @@ def _create_gap_plot(
     # Highlight gap articles (center and others)
     if len(gap_positions) > 0:
         ax.scatter(emb[gap_positions, 0], emb[gap_positions, 1], c=GAP_COLOR, s=90, alpha=0.8, marker='o', label='Gap Articles', zorder=2)
-        # Mark center article specially (first in gap.dists_idxs.idxs)
+        # Mark center article specially (first in gap.get_dists_idxs().idxs)
         try:
-            center_global_idx = gap.dists_idxs.idxs[0]
+            center_global_idx = gap.get_dists_idxs().idxs[0]
             center_pos = gap_article_positions_map.get(int(center_global_idx), None)
             if center_pos is not None and center_pos < n:
                 ax.scatter(emb[center_pos, 0], emb[center_pos, 1], marker='*', c=GAP_COLOR, s=120, edgecolors='k', linewidths=1.2, label='Gap Center', zorder=4)
@@ -780,7 +778,7 @@ def _compute_base_projection(
 
     if method_upper == 'LPP':
         raise NotImplementedError("LPP projection is not yet implemented in this context.")
-        gap_article_indices = gap.dists_idxs.idxs
+        gap_article_indices = gap.get_dists_idxs().idxs
         covering_book_indices = list(book_to_articles_mapping.keys())
         k = 5
         item_neighbors = defaultdict(set)
@@ -1127,7 +1125,7 @@ def save_gap_books_vs_proposals_plot(
     all_article_embeddings = articles.embeddings()
     all_book_embeddings = books.embeddings()
 
-    gap_article_indices = gap.dists_idxs.idxs
+    gap_article_indices = gap.get_dists_idxs().idxs
     covering_book_indices = get_covering_book_indices(gap)
 
     # Build base items and embeddings (articles first, then books)

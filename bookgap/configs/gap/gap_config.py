@@ -1,7 +1,6 @@
 """Gap detection configuration."""
 
 from dataclasses import dataclass
-from typing import List
 
 from bookgap.types import CellType
 from bookgap.cloud import WorkDenoisers
@@ -16,9 +15,7 @@ class GapConfig:
     Compatible with existing GapConfiguration in config_manager.py.
     """
     
-    # Basic parameters
-    subfield: int
-    work_types: List[str]
+    # Gap detection algorithm
     cell_type: CellType
     
     # Spatial parameters

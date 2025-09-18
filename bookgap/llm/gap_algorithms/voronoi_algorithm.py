@@ -9,14 +9,8 @@ import numpy as np
 from numpy.typing import NDArray
 from bookgap.cloud import SubCloud
 from bookgap.cloud_index import knn
+from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import hypothetical_voronoi_coverage
-
-
-@dataclass(frozen=True)
-class DistsAndIdxs:
-    """Container for squared distances and indices."""
-    sqdists: np.ndarray  # squared distances
-    idxs: np.ndarray  # indices
 
 
 class VoronoiAlgorithm:
@@ -87,6 +81,18 @@ class VoronoiGap:
             sqdists=self.ambient_to_query_sqdists,
             idxs=self.ambient_idxs
         )
+
+    def get_dists_idxs(self) -> DistsAndIdxs:
+        """Return the distances and indices of articles in the gap."""
+        return self.dists_idxs
+    
+    def get_ambient(self) -> SubCloud:
+        """Return the ambient space (articles)."""
+        return self.ambient
+        
+    def get_landmark(self) -> SubCloud:
+        """Return the landmark space (books)."""
+        return self.landmark
         
     def get_covering_book_indices(self) -> list[np.intp]:
         """Get the indices of books that cover articles in the gap."""

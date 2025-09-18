@@ -6,14 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 from bookgap.cloud import SubCloud
 from bookgap.cloud_index import get_kball_coverage, knn
+from bookgap.gap_types import DistsAndIdxs
 from bookgap.util import LOGGER
-
-
-@dataclass(frozen=True)
-class DistsAndIdxs:
-    """Container for squared distances and indices."""
-    sqdists: np.ndarray  # squared distances
-    idxs: np.ndarray  # indices
 
 
 class KballAlgorithm:
@@ -97,6 +91,18 @@ class KballGap:
     radius_fraction: float
     k: int  # Which nearest landmark to use
     dists_idxs: DistsAndIdxs  # Squared distances and indices of the ambient points that are in the gap.
+
+    def get_dists_idxs(self) -> DistsAndIdxs:
+        """Return the distances and indices of articles in the gap."""
+        return self.dists_idxs
+    
+    def get_ambient(self) -> SubCloud:
+        """Return the ambient space (articles)."""
+        return self.ambient
+        
+    def get_landmark(self) -> SubCloud:
+        """Return the landmark space (books)."""
+        return self.landmark
 
     @dataclass(frozen=True)
     class CoveredPoints:

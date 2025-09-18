@@ -31,8 +31,6 @@ class TestGapConfig:
     def test_gap_config_creation(self):
         """Test basic GapConfig creation with required parameters."""
         config = GapConfig(
-            subfield=1702,
-            work_types=["book", "article"],
             cell_type=CellType.KBALL,
             k=10,
             radius_fraction=0.75,
@@ -45,8 +43,6 @@ class TestGapConfig:
             num_gaps=1
         )
         
-        assert config.subfield == 1702
-        assert config.work_types == ["book", "article"]
         assert config.cell_type == CellType.KBALL
         assert config.radius_fraction == 0.75
         assert config.denoiser == WorkDenoisers.NONE
@@ -55,8 +51,6 @@ class TestGapConfig:
     def test_gap_config_frozen(self):
         """Test that GapConfig is immutable (frozen)."""
         config = GapConfig(
-            subfield=1702,
-            work_types=["book", "article"],
             cell_type=CellType.KBALL,
             k=10,
             radius_fraction=0.75,
@@ -129,19 +123,12 @@ class TestDataConfig:
     def test_data_config_creation(self):
         """Test basic DataConfig creation."""
         config = DataConfig(
-            subfield=SubField.AI,
             max_works=None,
-            work_types=(WorkType.BOOK, WorkType.ARTICLE),
-            work_filters=(),
-            filter_preset=Filters.NLP,
-            custom_filter=None,
             deduplicator=None
         )
         
-        assert config.subfield == SubField.AI
         assert config.max_works is None
-        assert config.work_types == (WorkType.BOOK, WorkType.ARTICLE)
-        assert config.filter_preset == Filters.NLP
+        assert config.deduplicator is None
     
     def test_data_config_with_max_works(self):
         """Test DataConfig with work limit."""

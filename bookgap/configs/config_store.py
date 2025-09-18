@@ -21,7 +21,7 @@ from bookgap.cloud import WorkDenoisers
 from bookgap.index import IndexType
 from bookgap.llm.providers import ProviderType
 from bookgap.llm.protocols import OpenAIModel
-from bookgap.util import WorkType, SubField, Filters
+from bookgap.deduplicators import SqDistDeduplicator
 
 
 def register_configs():
@@ -32,8 +32,6 @@ def register_configs():
     
     # Production gap config (from parse_args.py + batch_workflow.py)
     production_gap = GapConfig(
-        subfield=1702,  # Artificial Intelligence
-        work_types=["book", "article"],
         cell_type=CellType.KBALL,  # From batch_workflow.py
         k=10,  # From parse_args.py
         radius_fraction=0.75,  # From parse_args.py
@@ -49,8 +47,6 @@ def register_configs():
     
     # Debug gap config (faster settings)
     debug_gap = GapConfig(
-        subfield=1702,
-        work_types=["book", "article"],
         cell_type=CellType.KBALL,
         k=5,  # Smaller k for speed
         radius_fraction=0.5,  # Smaller radius for speed
@@ -66,8 +62,6 @@ def register_configs():
     
     # High quality gap config (thorough settings)
     high_quality_gap = GapConfig(
-        subfield=1702,
-        work_types=["book", "article"],
         cell_type=CellType.VORONOI,  # More thorough algorithm
         k=20,  # Larger k for more thorough analysis
         radius_fraction=0.9,  # Larger radius for more coverage
@@ -138,27 +132,24 @@ def register_configs():
     
     # Standard data config
     standard_data = DataConfig(
-        subfield=SubField.AI,
         max_works=None,  # No limit
-        work_types=(WorkType.BOOK, WorkType.ARTICLE),
-        work_filters=(),  # No additional filters
-        filter_preset=Filters.NLP,
-        custom_filter=None,
         deduplicator=None
     )
     cs.store(group="data", name="standard", node=standard_data)
     
     # Debug data config (limited works for speed)
     debug_data = DataConfig(
-        subfield=SubField.AI,
         max_works=1000,  # Limited for speed
-        work_types=(WorkType.BOOK, WorkType.ARTICLE),
-        work_filters=(),
-        filter_preset=Filters.NLP,
-        custom_filter=None,
         deduplicator=None
     )
     cs.store(group="data", name="debug", node=debug_data)
+    
+    # Data config with deduplication (demonstrates SqDistDeduplicator usage)
+    deduped_data = DataConfig(
+        max_works=None,
+        deduplicator=SqDistDeduplicator(min_sqdist=0.01)  # Default from parse_args.py
+    )
+    cs.store(group="data", name="deduped", node=deduped_data)
     
     # ===== BATCH CONFIGURATIONS =====
     
