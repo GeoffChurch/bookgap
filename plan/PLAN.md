@@ -301,7 +301,10 @@ python script.py config=production gap.radius_fraction=0.8  # Override values
 - ✅ ProposalContext updated to use typed dataclasses
 - ✅ LLMConfig updated to use OpenAIModel enum
 - ✅ ConfigStore presets updated to use enum values
-- ✅ Comprehensive test coverage: 37/37 tests passing
+- ✅ BatchProposalGenerator ABC implemented (`bookgap/llm/generators/batch_generator.py`)
+- ✅ OpenAIBatchGenerator implementation (`bookgap/llm/generators/openai_batch.py`)
+- ✅ Workflow functions implemented (`bookgap/llm/generators/workflow_functions.py`)
+- ✅ Comprehensive test coverage: 29/29 tests passing
 - ✅ All data structures are immutable (frozen dataclasses)
 - ✅ Full integration with existing Hydra configuration system
 
@@ -312,7 +315,7 @@ python script.py config=production gap.radius_fraction=0.8  # Override values
 **Direct Function Pipeline:**
 - `find_gaps_for_config(config: ExperimentConfig) -> list[Gap]` - Find gaps (cached)
 - `build_contexts_for_gaps(gaps: list[Gap], config: ExperimentConfig) -> list[ProposalContext]` - Build contexts (cached) from gap sampling  
-- `generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]` - Generate prompts and create batch requests, **save batch JSONL file for inspection**
+- ✅ `generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]` - Generate prompts and create batch requests, **save batch JSONL file for inspection** ✅ **IMPLEMENTED**
 - `submit_batch_job(batch_requests: list[BatchRequestData], config: ExperimentConfig) -> str` - Submit and return job ID
 - `monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) -> BatchResults` - Wait for completion and download
 
