@@ -43,4 +43,3 @@ class LLMConfig:
     
     # Prompt optimization
     use_structured_output: bool
-    include_citations: bool

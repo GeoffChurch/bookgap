@@ -89,8 +89,7 @@ def register_configs():
         chapters_min=10,  # From config_manager.py
         chapters_max=15,  # From config_manager.py
         min_book_coverage=0.5,
-        use_structured_output=True,
-        include_citations=True
+        use_structured_output=True
     )
     cs.store(group="llm", name="production", node=production_llm)
     
@@ -106,8 +105,7 @@ def register_configs():
         chapters_min=5,  # Shorter proposals
         chapters_max=8,
         min_book_coverage=0.3,  # Lower threshold for speed
-        use_structured_output=True,
-        include_citations=False  # Skip citations for speed
+        use_structured_output=True
     )
     cs.store(group="llm", name="debug", node=debug_llm)
     
@@ -123,8 +121,7 @@ def register_configs():
         chapters_min=12,  # Longer proposals
         chapters_max=20,
         min_book_coverage=0.4,
-        use_structured_output=True,
-        include_citations=True
+        use_structured_output=True
     )
     cs.store(group="llm", name="creative", node=creative_llm)
     

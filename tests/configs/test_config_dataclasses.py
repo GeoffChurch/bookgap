@@ -13,6 +13,7 @@ from bookgap.configs.config import ExperimentConfig
 from bookgap.configs.gap.gap_config import GapConfig
 from bookgap.configs.llm.llm_config import LLMConfig
 from bookgap.configs.data.data_config import DataConfig
+from bookgap.llm.protocols import OpenAIModel
 from bookgap.configs.batch.batch_config import BatchConfig
 from bookgap.configs.output.output_config import OutputConfig
 from bookgap.configs.output.export_formats import ExportFormat
@@ -75,7 +76,8 @@ class TestLLMConfig:
         """Test basic LLMConfig creation with required parameters."""
         config = LLMConfig(
             provider_type=ProviderType.OPENAI,
-            model_name="gpt-5",
+            model_name=OpenAIModel.GPT_4O_MINI,
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
             num_articles=10,
             num_books=5,
             temperature=0.2,
@@ -83,12 +85,11 @@ class TestLLMConfig:
             chapters_min=10,
             chapters_max=15,
             min_book_coverage=0.5,
-            use_structured_output=True,
-            include_citations=True
+            use_structured_output=True
         )
         
         assert config.provider_type == ProviderType.OPENAI
-        assert config.model_name == "gpt-5"
+        assert config.model_name == OpenAIModel.GPT_4O_MINI
         assert config.num_articles == 10
         assert config.num_books == 5
         assert config.temperature == 0.2
@@ -101,7 +102,8 @@ class TestLLMConfig:
         """Test that LLMConfig is immutable (frozen)."""
         config = LLMConfig(
             provider_type=ProviderType.OPENAI,
-            model_name="gpt-5",
+            model_name=OpenAIModel.GPT_4O_MINI,
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
             num_articles=10,
             num_books=5,
             temperature=0.2,
@@ -109,8 +111,7 @@ class TestLLMConfig:
             chapters_min=10,
             chapters_max=15,
             min_book_coverage=0.5,
-            use_structured_output=True,
-            include_citations=True
+            use_structured_output=True
         )
         
         with pytest.raises(FrozenInstanceError):
@@ -133,12 +134,7 @@ class TestDataConfig:
     def test_data_config_with_max_works(self):
         """Test DataConfig with work limit."""
         config = DataConfig(
-            subfield=SubField.AI,
             max_works=1000,
-            work_types=(WorkType.BOOK, WorkType.ARTICLE),
-            work_filters=(),
-            filter_preset=Filters.NLP,
-            custom_filter=None,
             deduplicator=None
         )
         
@@ -201,8 +197,6 @@ class TestExperimentConfig:
     def test_experiment_config_creation(self):
         """Test complete ExperimentConfig creation."""
         gap_config = GapConfig(
-            subfield=1702,
-            work_types=["book", "article"],
             cell_type=CellType.KBALL,
             k=10,
             radius_fraction=0.75,
@@ -216,8 +210,9 @@ class TestExperimentConfig:
         )
         
         llm_config = LLMConfig(
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
             provider_type=ProviderType.OPENAI,
-            model_name="gpt-5",
+            model_name=OpenAIModel.GPT_4O_MINI,
             num_articles=10,
             num_books=5,
             temperature=0.2,
@@ -226,16 +221,10 @@ class TestExperimentConfig:
             chapters_max=15,
             min_book_coverage=0.5,
             use_structured_output=True,
-            include_citations=True
         )
         
         data_config = DataConfig(
-            subfield=SubField.AI,
             max_works=None,
-            work_types=(WorkType.BOOK, WorkType.ARTICLE),
-            work_filters=(),
-            filter_preset=Filters.NLP,
-            custom_filter=None,
             deduplicator=None
         )
         
@@ -274,22 +263,22 @@ class TestExperimentConfig:
         """Test that ExperimentConfig is immutable."""
         # Create minimal configs for testing
         gap_config = GapConfig(
-            subfield=1702, work_types=["book"], cell_type=CellType.KBALL,
+            cell_type=CellType.KBALL,
             k=10, radius_fraction=0.75, drop_k=0, hnsw_m=16, hnsw_efc=512,
             hnsw_efs=1024, denoiser=WorkDenoisers.NONE, index_type=IndexType.HNSW,
             num_gaps=1
         )
         
         llm_config = LLMConfig(
-            provider_type=ProviderType.OPENAI, model_name="gpt-5",
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
+            provider_type=ProviderType.OPENAI, model_name=OpenAIModel.GPT_4O_MINI,
             num_articles=10, num_books=5, temperature=0.2, max_tokens=2000,
             chapters_min=10, chapters_max=15, min_book_coverage=0.5,
-            use_structured_output=True, include_citations=True
+            use_structured_output=True
         )
         
         data_config = DataConfig(
-            subfield=SubField.AI, max_works=None, work_types=(WorkType.BOOK,),
-            work_filters=(), filter_preset=Filters.NLP, custom_filter=None,
+            max_works=None,
             deduplicator=None
         )
         

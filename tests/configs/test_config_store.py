@@ -18,7 +18,7 @@ from bookgap.types import CellType
 from bookgap.cloud import WorkDenoisers
 from bookgap.index import IndexType
 from bookgap.llm.providers import ProviderType
-from bookgap.util import WorkType, SubField, Filters
+from bookgap.llm.protocols import OpenAIModel
 
 
 class TestConfigStoreRegistration:
@@ -46,8 +46,6 @@ class TestProductionPresets:
         # Manually create the production gap config to test values
         # (This mirrors what's in config_store.py)
         production_gap = GapConfig(
-            subfield=1702,  # Artificial Intelligence
-            work_types=["book", "article"],
             cell_type=CellType.KBALL,  # From batch_workflow.py
             k=10,  # From parse_args.py
             radius_fraction=0.75,  # From parse_args.py
@@ -61,7 +59,6 @@ class TestProductionPresets:
         )
         
         # Test that it matches expected existing defaults
-        assert production_gap.subfield == 1702
         assert production_gap.cell_type == CellType.KBALL
         assert production_gap.radius_fraction == 0.75  # parse_args.py default
         assert production_gap.hnsw_efc == 512  # parse_args.py default
@@ -75,8 +72,9 @@ class TestProductionPresets:
         """Test production LLM config uses existing codebase defaults."""
         # Manually create the production LLM config to test values
         production_llm = LLMConfig(
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
             provider_type=ProviderType.OPENAI,
-            model_name="gpt-5",  # From config_manager.py
+            model_name=OpenAIModel.GPT_4O_MINI,  # From config_manager.py
             num_articles=10,  # From batch_workflow.py
             num_books=5,  # From batch_workflow.py
             temperature=0.2,  # From config_manager.py
@@ -85,11 +83,10 @@ class TestProductionPresets:
             chapters_max=15,  # From config_manager.py
             min_book_coverage=0.5,
             use_structured_output=True,
-            include_citations=True
         )
         
         # Test that it matches expected existing defaults
-        assert production_llm.model_name == "gpt-5"  # config_manager.py default
+        assert production_llm.model_name == OpenAIModel.GPT_4O_MINI  # config_manager.py default
         assert production_llm.temperature == 0.2  # config_manager.py default
         assert production_llm.max_tokens == 2000  # config_manager.py default
         assert production_llm.num_articles == 10  # batch_workflow.py default
@@ -104,8 +101,6 @@ class TestDebugPresets:
     def test_debug_gap_config_fast_settings(self):
         """Test debug gap config uses faster settings."""
         debug_gap = GapConfig(
-            subfield=1702,
-            work_types=["book", "article"],
             cell_type=CellType.KBALL,
             k=5,  # Smaller k for speed
             radius_fraction=0.5,  # Smaller radius for speed
@@ -128,8 +123,9 @@ class TestDebugPresets:
     def test_debug_llm_config_cheap_settings(self):
         """Test debug LLM config uses cheaper/faster settings."""
         debug_llm = LLMConfig(
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
             provider_type=ProviderType.OPENAI,
-            model_name="gpt-4o-mini",  # Cheaper model
+            model_name=OpenAIModel.GPT_4O_MINI,  # Cheaper model
             num_articles=5,  # Fewer articles for speed
             num_books=3,  # Fewer books for speed
             temperature=0.2,
@@ -138,17 +134,15 @@ class TestDebugPresets:
             chapters_max=8,
             min_book_coverage=0.3,  # Lower threshold for speed
             use_structured_output=True,
-            include_citations=False  # Skip citations for speed
         )
         
         # Test that debug settings are cheaper/faster than production
-        assert debug_llm.model_name == "gpt-4o-mini"  # Cheaper than "gpt-5"
+        assert debug_llm.model_name == OpenAIModel.GPT_4O_MINI  # Cheaper than gpt-4o
         assert debug_llm.num_articles == 5  # Fewer than production (10)
         assert debug_llm.num_books == 3  # Fewer than production (5)
         assert debug_llm.max_tokens == 1000  # Fewer than production (2000)
         assert debug_llm.chapters_min == 5  # Shorter than production (10)
         assert debug_llm.chapters_max == 8  # Shorter than production (15)
-        assert debug_llm.include_citations is False  # Faster than production (True)
 
 
 class TestHighQualityPresets:
@@ -157,8 +151,6 @@ class TestHighQualityPresets:
     def test_high_quality_gap_config_thorough_settings(self):
         """Test high quality gap config uses more thorough settings."""
         high_quality_gap = GapConfig(
-            subfield=1702,
-            work_types=["book", "article"],
             cell_type=CellType.VORONOI,  # More thorough algorithm
             k=20,  # Larger k for more thorough analysis
             radius_fraction=0.9,  # Larger radius for more coverage
@@ -184,8 +176,9 @@ class TestHighQualityPresets:
     def test_creative_llm_config_exploratory_settings(self):
         """Test creative LLM config uses more exploratory settings."""
         creative_llm = LLMConfig(
+            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
             provider_type=ProviderType.OPENAI,
-            model_name="gpt-5",
+            model_name=OpenAIModel.GPT_4O,
             num_articles=15,  # More context
             num_books=8,  # More context
             temperature=0.8,  # More creative
@@ -194,7 +187,6 @@ class TestHighQualityPresets:
             chapters_max=20,
             min_book_coverage=0.4,
             use_structured_output=True,
-            include_citations=True
         )
         
         # Test that creative settings are more exploratory than production
