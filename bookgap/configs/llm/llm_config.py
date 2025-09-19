@@ -6,8 +6,6 @@ Defines model settings, provider configuration, and output constraints.
 
 from dataclasses import dataclass
 
-from bookgap.llm.llm_implementation import Implementation
-from bookgap.llm.providers import ProviderType
 from bookgap.llm.protocols import OpenAIModel
 
 
@@ -19,27 +17,23 @@ class LLMConfig:
     Compatible with existing LLMConfiguration in config_manager.py.
     """
     
-    # Hydra instantiation target
-    _target_: str
+    # Hydra instantiation target - specifies which generator class to use
+    _target_: str  # e.g., "bookgap.llm.generators.openai_batch.OpenAIBatchGenerator"
     
     # Provider settings
-    provider_type: ProviderType
-    model_name: OpenAIModel
+    model: OpenAIModel  # OpenAI model to use (GPT_4O, GPT_4O_MINI, GPT_5, etc.) 
     
-    # Prompt content
-    num_articles: int
-    num_books: int
+    # Prompt content control - determines how much research context to include
+    num_articles: int  # Number of gap articles to sample for each prompt (default: 10)
+    num_books: int     # Number of covering books to sample for each prompt (default: 5)
     
-    # Generation parameters
-    temperature: float
-    max_tokens: int
+    # Generation parameters - control LLM behavior and output quality
+    temperature: float  # Sampling temperature 0.0-2.0, lower=more focused (default: 0.2)
+    max_tokens: int    # Maximum tokens in generated response (default: 2000)
     
-    # Output structure (from config_manager.py)
-    chapters_min: int
-    chapters_max: int
+    # Output structure constraints - define textbook proposal format
+    chapters_min: int  # Minimum number of chapters required in proposal (default: 10)
+    chapters_max: int  # Maximum number of chapters allowed in proposal (default: 15)
     
-    # Quality control
-    min_book_coverage: float
-    
-    # Prompt optimization
-    use_structured_output: bool
+    # Prompt optimization - choose between structured vs text-based output
+    use_structured_output: bool  # Whether to use JSON schema for structured responses (default: True)

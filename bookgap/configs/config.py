@@ -19,21 +19,12 @@ class ExperimentConfig:
     """Top-level configuration for a complete BookGap batch experiment.
     
     All parameters are required - use ConfigStore presets for common configurations.
+    Combines all sub-configurations into a complete experiment specification.
     """
     
-    # Core configuration components
-    gap: GapConfig
-    llm: LLMConfig
-    data: DataConfig
-    batch: BatchConfig
-    output: OutputConfig
-    
-    # Experiment metadata
-    experiment_name: str
-    description: str = "BookGap batch analysis experiment"
-    
-    def __post_init__(self):
-        """Validate overall experiment configuration."""
-        # Cross-component validation can go here
-        # For example, ensuring LLM chapter constraints are reasonable for the dataset
-        pass
+    # Core configuration components - each controls a different aspect of the analysis pipeline
+    gap: GapConfig      # Gap detection algorithm parameters and spatial search settings
+    llm: LLMConfig      # Language model configuration, prompt structure, and generation settings  
+    data: DataConfig    # Data source parameters, dataset scope, and deduplication strategy
+    batch: BatchConfig  # Batch processing control, OpenAI API settings, and job execution options
+    output: OutputConfig # Output formatting, export options, and file organization preferences

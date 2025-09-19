@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from bookgap.configs.llm.llm_config import LLMConfig
 from bookgap.llm.llm_implementation import Implementation
-from bookgap.llm.providers import ProviderType
 from bookgap.llm.protocols import OpenAIModel
 
 
@@ -30,49 +29,6 @@ def reset_enum_values():
 
 class TestLLMConfiguration:
     """Tests for the updated LLMConfig class."""
-    
-    def test_basic_creation_structured(self):
-        """Test basic LLMConfig creation with structured implementation."""
-        config = LLMConfig(
-            _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
-            provider_type=ProviderType.OPENAI,
-            model_name=OpenAIModel.GPT_4O,
-            num_articles=10,
-            num_books=5,
-            temperature=0.7,
-            max_tokens=8000,
-            chapters_min=3,
-            chapters_max=8,
-            min_book_coverage=0.5,
-            use_structured_output=True,
-        )
-        
-        assert config.provider_type == ProviderType.OPENAI
-        assert config.model_name == OpenAIModel.GPT_4O
-        assert config.temperature == 0.7
-        assert config.max_tokens == 8000
-        assert config.chapters_min == 3
-        assert config.chapters_max == 8
-    
-    def test_basic_creation_prompt(self):
-        """Test basic LLMConfiguration creation with prompt implementation."""
-        config = LLMConfiguration(
-            implementation=Implementation.PROMPT,
-            provider='openai',
-            model='gpt-3.5-turbo',
-            temperature=0.9,
-            max_tokens=4000,
-            chapters_min=2,
-            chapters_max=12
-        )
-        
-        assert config.implementation == Implementation.PROMPT
-        assert config.provider == 'openai'
-        assert config.model == 'gpt-3.5-turbo'
-        assert config.temperature == 0.9
-        assert config.max_tokens == 4000
-        assert config.chapters_min == 2
-        assert config.chapters_max == 12
     
     def test_chapters_min_validation(self):
         """Test that chapters_min must be at least 1."""

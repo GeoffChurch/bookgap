@@ -36,6 +36,171 @@ Consider making the implementation classes more focused on just generating the d
 ### Migrate to Hydra Structured Configs
 Replace current CLI argument parsing with Hydra structured configs.
 
+### Refactor Configuration Parameter Grouping
+**Current Issue**: The `GapConfig` contains low-level implementation details that should be encapsulated within their respective component configurations:
+
+**Current scattered parameters in `GapConfig`:**
+```python
+# Embedding preprocessing
+drop_k: int              # Number of components to drop (denoiser parameter)
+denoiser: WorkDenoisers  # Denoising method enum
+
+# Index implementation details  
+index_type: IndexType    # HNSW vs FLAT_L2
+hnsw_m: int             # HNSW connectivity parameter
+hnsw_efc: int           # HNSW construction candidates  
+hnsw_efs: int           # HNSW search candidates
+```
+
+**Target Design**: Encapsulate parameters within instantiable component configs:
+
+```python
+@dataclass(frozen=True)
+class DenoiserConfig:
+    _target_: str           # e.g., "bookgap.denoisers.PCADenoiser"
+    drop_k: int            # Moved from GapConfig
+    # Other denoiser-specific parameters as needed
+
+@dataclass(frozen=True) 
+class HNSWIndexConfig:
+    _target_: str = field(default="bookgap.index.HNSWIndex", init=False)  # Hardcoded, immutable
+    # HNSW-specific parameters
+    hnsw_m: int
+    hnsw_efc: int
+    hnsw_efs: int
+
+@dataclass(frozen=True)
+class FlatIndexConfig:
+    _target_: str = field(default="bookgap.index.FlatIndex", init=False)  # Hardcoded, immutable
+    # Flat index has no additional parameters
+
+@dataclass(frozen=True)
+class GapConfig:
+    # Only gap detection algorithm parameters
+    cell_type: CellType
+    radius_fraction: float
+    
+    # Component configurations
+    denoiser: DenoiserConfig
+    index: Union[HNSWIndexConfig, FlatIndexConfig]  # Type-safe index selection
+```
+
+**Benefits:**
+- Cleaner separation of concerns (gap detection vs embedding preprocessing vs indexing)
+- Type safety for component-specific parameters (only HNSW params with HNSW config)
+- Easier to add new denoiser/index types without cluttering `GapConfig`
+- Follows Hydra's compositional configuration pattern
+- Eliminates invalid parameter combinations (HNSW params can't be used with Flat index)
+- Hardcoded `_target_` prevents configuration errors and simplifies usage
+
+**Implementation Notes:**
+- Use Hydra's `_target_` pattern for instantiation, but hardcode targets in dataclass definitions
+- Create separate config groups: `denoiser/pca`, `denoiser/none`, `index/hnsw`, `index/flat`
+- Add shared base class/protocol when multiple index types exist: `IndexConfigProtocol`
+- Update `build_cloud()` to accept component instances instead of scattered parameters
+
+**Example Usage After Refactoring:**
+```bash
+# Current (scattered parameters)
+python batch_generator.py gap.denoiser=PCA gap.drop_k=5 gap.index_type=HNSW gap.hnsw_m=32
+
+# Target (compositional with type-safe configs)  
+python batch_generator.py gap.denoiser=pca_5_components gap.index=hnsw_high_quality
+```
+
+**Future Extensibility:**
+When adding new index types, create new specific config classes:
+```python
+@dataclass(frozen=True)
+class IVFIndexConfig:
+    _target_: str = field(default="bookgap.index.IVFIndex", init=False)
+    nlist: int
+    nprobe: int
+
+# All index configs would implement IndexConfigProtocol
+```
+
+### Refactor Cloud/SubCloud Architecture to Compositional Configuration
+**Current Issue**: The batch system has a rigid, single-configuration approach that limits flexibility:
+
+**Current limitations:**
+```python
+# BatchConfig controls everything globally
+batch.num_gaps: int  # Single number for ALL topics
+
+# GapConfig applies same settings to all gaps
+gap.cell_type: CellType        # Same algorithm for all
+gap.radius_fraction: float     # Same radius for all
+gap.denoiser: WorkDenoisers    # Same preprocessing for all
+```
+
+**Target Design**: Make Cloud and SubCloud instantiable configurations with per-topic/per-gap control:
+
+```python
+@dataclass(frozen=True)
+class KBallCellConfig:
+    _target_: str = field(default="bookgap.gap_algorithms.KBallCell", init=False)
+    radius_fraction: float
+
+@dataclass(frozen=True)
+class VoronoiCellConfig:  
+    _target_: str = field(default="bookgap.gap_algorithms.VoronoiCell", init=False)
+    # Voronoi-specific parameters
+
+@dataclass(frozen=True)
+class SubCloudConfig:
+    _target_: str = field(default="bookgap.cloud.SubCloud", init=False)
+    topic_id: str                    # Which AI topic to analyze
+    cell_config: Union[KBallCellConfig, VoronoiCellConfig]  # Algorithm per SubCloud
+    num_gaps: int                    # Number of gaps to extract from this SubCloud
+    denoiser: DenoiserConfig         # Preprocessing per SubCloud
+    index: Union[HNSWIndexConfig, FlatIndexConfig]  # Index per SubCloud
+
+@dataclass(frozen=True)
+class CloudConfig:
+    _target_: str = field(default="bookgap.cloud.Cloud", init=False)
+    subclouds: List[SubCloudConfig]  # Explicit list of what to analyze
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    cloud: CloudConfig               # Replaces both BatchConfig and GapConfig
+    llm: LLMConfig
+    data: DataConfig  
+    output: OutputConfig
+```
+
+**Benefits:**
+- **Per-topic control**: Different algorithms/parameters for different research areas
+- **Flexible gap counts**: `num_gaps=5` for quantum computing, `num_gaps=2` for robotics  
+- **Mixed algorithms**: Use KBALL for some topics, Voronoi for others
+- **Heterogeneous preprocessing**: Different denoisers optimal for different domains
+- **Explicit targeting**: No more "find N gaps across all 77 topics" - specify exactly what you want
+- **Compositionality**: Mix and match any combination of algorithms and parameters
+
+**Example Usage After Refactoring:**
+```bash
+# Current (global settings)
+python batch_generator.py batch.num_gaps=10 gap.cell_type=KBALL gap.radius_fraction=0.75
+
+# Target (explicit per-topic control)
+python batch_generator.py cloud=quantum_computing_focus
+# or
+python batch_generator.py cloud.subclouds=[quantum_5gaps_kball,robotics_2gaps_voronoi,nlp_3gaps_kball]
+```
+
+**Potential Simplifications:**
+- **Remove BatchConfig**: Replaced by CloudConfig.subclouds specification
+- **Remove/Simplify GapConfig**: Gap algorithm parameters move to cell configs  
+- **Streamline cloud.py**: Make Cloud/SubCloud instantiable via Hydra rather than factory functions
+- **Cleaner workflow**: `workflow_functions.py` gets explicit SubCloud instances instead of building them
+
+**Implementation Considerations:**
+- Major refactoring of `cloud.py` to support instantiable Cloud/SubCloud classes
+- Update `workflow_functions.find_gaps_for_config()` to iterate over explicit subclouds
+- Create config presets like `cloud/ai_comprehensive`, `cloud/quantum_focus`, `cloud/debug_single`
+- Potential breaking changes to existing gap finder interfaces
+- May require rethinking the relationship between topics, subclouds, and gap extraction
+
 ## Test and Code Quality Issues
 
 ### Fix Pytest Warnings

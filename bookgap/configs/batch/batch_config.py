@@ -12,18 +12,19 @@ class BatchConfig:
     """Configuration for batch processing parameters.
     
     All parameters are required - use ConfigStore presets for common configurations.
+    Controls batch job execution and OpenAI API integration.
     """
     
-    # Processing scope
-    num_gaps: int
+    # Processing scope - control how many research gaps to analyze in this batch
+    num_gaps: int  # Total number of gaps to process across all topics (1-77, default: 1)
     
-    # OpenAI batch API settings
-    completion_window: str
+    # OpenAI batch API settings - control job execution timing and priority
+    completion_window: str  # Time window for batch completion ("24h" only supported option)
     
-    # Output generation
-    generate_plots: bool
-    save_prompts: bool
-    save_batch_file: bool
+    # Output generation - control what auxiliary files to generate during processing
+    generate_plots: bool     # Whether to create visualization plots for gaps (default: True)
+    save_prompts: bool       # Whether to save individual prompt files for inspection (default: True)
+    save_batch_file: bool    # Whether to save the JSONL batch request file (default: True)
     
     def __post_init__(self):
         """Validate batch configuration parameters."""

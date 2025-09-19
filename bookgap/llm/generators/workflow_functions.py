@@ -446,7 +446,6 @@ def generate_batch_requests(contexts: List[ProposalContext], config: ExperimentC
         config = ExperimentConfig(
             llm=LLMConfig(
                 _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
-                provider_type=ProviderType.OPENAI,
                 model_name=OpenAIModel.GPT_4O_MINI,
                 # ... other required fields
             ),
@@ -459,19 +458,16 @@ def generate_batch_requests(contexts: List[ProposalContext], config: ExperimentC
         return []
     
     try:
-        # Instantiate generator using Hydra's _target_ pattern
-        # The LLM config contains _target_ field pointing to the generator class
-        generator = instantiate(config.llm, _config=config)
+        generator = instantiate(config.llm)
         
         # Generate batch requests
         return generator.generate_batch_requests(contexts)
         
-    except Exception as e:
+    except Exception as e: # TODO: Why don't we just let the exception propagate? Do we need ProposalGenerationError at all?
         # Wrap any errors in ProposalGenerationError with context
         error_context = {
             "num_contexts": len(contexts),
-            "provider": str(config.llm.provider_type),
-            "model": str(config.llm.model_name),
+            "model": str(config.llm.model),
             "target": config.llm._target_
         }
         

@@ -15,13 +15,17 @@ class DataConfig:
     """Configuration for data source parameters.
     
     All parameters are required - use ConfigStore presets for common configurations.
+    Controls dataset scope and deduplication strategy for OpenAlex research data.
     """
     
-    # Dataset scope
-    max_works: Optional[int]
+    # Dataset scope - limit data volume for development and testing
+    max_works: Optional[int]  # Maximum papers/books to fetch (None=unlimited, useful for debugging)
     
-    # Deduplication settings
-    deduplicator: Optional[Deduplicator]
+    # Deduplication settings - remove semantically similar papers to improve gap quality
+    deduplicator: Optional[Deduplicator]  # Strategy for removing duplicate works:
+                                         # - SqDistDeduplicator(min_sqdist=0.01): Fast range-based dedup
+                                         # - FractionalDeduplicator(fraction=0.1): Percentile-based dedup
+                                         # - None: No deduplication
     
     def __post_init__(self):
         """Validate data configuration parameters."""

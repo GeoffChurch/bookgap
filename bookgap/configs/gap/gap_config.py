@@ -15,22 +15,18 @@ class GapConfig:
     Compatible with existing GapConfiguration in config_manager.py.
     """
     
-    # Gap detection algorithm
-    cell_type: CellType
+    # Gap detection algorithm - determines which spatial algorithm to use
+    cell_type: CellType  # KBALL or VORONOI cell algorithm for finding research gaps
     
-    # Spatial parameters
-    k: int
-    radius_fraction: float
-    drop_k: int
+    # Spatial parameters - control gap detection sensitivity and coverage
+    radius_fraction: float  # Fraction of k-NN distance for gap radius (0.0-1.0, default: 0.75)
+    drop_k: int            # Number of top embedding components to drop for noise reduction (default: 0)
     
-    # HNSW index parameters
-    hnsw_m: int
-    hnsw_efc: int
-    hnsw_efs: int
+    # HNSW index parameters - control vector search performance vs accuracy tradeoffs
+    hnsw_m: int    # Number of bidirectional links for each node (default: 16, higher=better recall)
+    hnsw_efc: int  # Size of candidate list during construction (default: 512, higher=better quality)
+    hnsw_efs: int  # Size of candidate list during search (default: 1024, higher=better recall)
     
-    # Data processing
-    denoiser: WorkDenoisers
-    index_type: IndexType
-    
-    # Analysis control
-    num_gaps: int
+    # Data processing - control embedding transformation and indexing strategy
+    denoiser: WorkDenoisers  # Embedding denoising method (NONE, PCA, GPCA, REL_AMP, LPP, etc.)
+    index_type: IndexType    # Vector index type (HNSW for large datasets, FLAT_L2 for exact search)

@@ -19,7 +19,6 @@ from .output.export_formats import ExportFormat
 from bookgap.types import CellType
 from bookgap.cloud import WorkDenoisers
 from bookgap.index import IndexType
-from bookgap.llm.providers import ProviderType
 from bookgap.llm.protocols import OpenAIModel
 from bookgap.deduplicators import SqDistDeduplicator
 
@@ -30,121 +29,41 @@ def register_configs():
     
     # ===== GAP CONFIGURATIONS =====
     
-    # Production gap config (from parse_args.py + batch_workflow.py)
+    # Production gap config - matches existing codebase defaults from parse_args.py
     production_gap = GapConfig(
-        cell_type=CellType.KBALL,  # From batch_workflow.py
-        k=10,  # From parse_args.py
-        radius_fraction=0.75,  # From parse_args.py
-        drop_k=0,  # From parse_args.py
-        hnsw_m=16,  # From parse_args.py
-        hnsw_efc=512,  # From parse_args.py
-        hnsw_efs=1024,  # From parse_args.py
-        denoiser=WorkDenoisers.NONE,  # From parse_args.py
-        index_type=IndexType.HNSW,  # From parse_args.py
-        num_gaps=1
+        cell_type=CellType.KBALL,           # K-ball algorithm (vs VORONOI) - from batch_workflow.py
+        radius_fraction=0.75,               # Gap radius = 75% of k-NN distance - from parse_args.py  
+        drop_k=0,                          # No PCA dropping (keep all dimensions) - from parse_args.py
+        hnsw_m=16,                         # HNSW connectivity (16 = good quality/speed balance) - from parse_args.py
+        hnsw_efc=512,                      # HNSW construction candidates (512 = high quality) - from parse_args.py
+        hnsw_efs=1024,                     # HNSW search candidates (1024 = high recall) - from parse_args.py
+        denoiser=WorkDenoisers.NONE,       # No embedding denoising (raw embeddings) - from parse_args.py
+        index_type=IndexType.HNSW          # HNSW index (fast approximate search) - from parse_args.py
     )
     cs.store(group="gap", name="production", node=production_gap)
     
-    # Debug gap config (faster settings)
-    debug_gap = GapConfig(
-        cell_type=CellType.KBALL,
-        k=5,  # Smaller k for speed
-        radius_fraction=0.5,  # Smaller radius for speed
-        drop_k=0,
-        hnsw_m=8,  # Smaller m for speed
-        hnsw_efc=200,  # Lower efc for speed
-        hnsw_efs=400,  # Lower efs for speed
-        denoiser=WorkDenoisers.NONE,
-        index_type=IndexType.HNSW,
-        num_gaps=1
-    )
-    cs.store(group="gap", name="debug", node=debug_gap)
-    
-    # High quality gap config (thorough settings)
-    high_quality_gap = GapConfig(
-        cell_type=CellType.VORONOI,  # More thorough algorithm
-        k=20,  # Larger k for more thorough analysis
-        radius_fraction=0.9,  # Larger radius for more coverage
-        drop_k=0,
-        hnsw_m=32,  # Higher m for better quality
-        hnsw_efc=1000,  # Higher efc for better quality
-        hnsw_efs=2000,  # Higher efs for better quality
-        denoiser=WorkDenoisers.JAD_EQUAL,  # Apply denoising
-        index_type=IndexType.HNSW,
-        num_gaps=3  # Find more gaps
-    )
-    cs.store(group="gap", name="high_quality", node=high_quality_gap)
-    
     # ===== LLM CONFIGURATIONS =====
     
-    # Production LLM config (from config_manager.py + batch_workflow.py)
+    # Production LLM config - combines config_manager.py and batch_workflow.py defaults
     production_llm = LLMConfig(
-        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
-        provider_type=ProviderType.OPENAI,
-        model_name=OpenAIModel.GPT_5,  # From config_manager.py
-        num_articles=10,  # From batch_workflow.py
-        num_books=5,  # From batch_workflow.py
-        temperature=0.2,  # From config_manager.py
-        max_tokens=2000,  # From config_manager.py
-        chapters_min=10,  # From config_manager.py
-        chapters_max=15,  # From config_manager.py
-        min_book_coverage=0.5,
-        use_structured_output=True
+        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",  # Batch API generator
+        model=OpenAIModel.GPT_5,           # GPT-5 model (structured output support) - from config_manager.py
+        num_articles=10,                   # 10 gap articles per prompt - from batch_workflow.py
+        num_books=5,                       # 5 covering books per prompt - from batch_workflow.py
+        temperature=0.2,                   # Low temperature (focused responses) - from config_manager.py
+        max_tokens=2000,                   # 2000 token limit for proposals - from config_manager.py
+        chapters_min=10,                   # Minimum 10 chapters per textbook - from config_manager.py
+        chapters_max=15,                   # Maximum 15 chapters per textbook - from config_manager.py
+        use_structured_output=True         # Use JSON schema for structured responses - enables parsing
     )
     cs.store(group="llm", name="production", node=production_llm)
     
-    # Debug LLM config (cheaper/faster)
-    debug_llm = LLMConfig(
-        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
-        provider_type=ProviderType.OPENAI,
-        model_name=OpenAIModel.GPT_4O_MINI,  # Cheaper model
-        num_articles=5,  # Fewer articles for speed
-        num_books=3,  # Fewer books for speed
-        temperature=0.2,
-        max_tokens=1000,  # Fewer tokens for speed
-        chapters_min=5,  # Shorter proposals
-        chapters_max=8,
-        min_book_coverage=0.3,  # Lower threshold for speed
-        use_structured_output=True
-    )
-    cs.store(group="llm", name="debug", node=debug_llm)
-    
-    # Creative LLM config (more exploratory)
-    creative_llm = LLMConfig(
-        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
-        provider_type=ProviderType.OPENAI,
-        model_name=OpenAIModel.GPT_5,
-        num_articles=15,  # More context
-        num_books=8,  # More context
-        temperature=0.8,  # More creative
-        max_tokens=4000,  # Longer proposals
-        chapters_min=12,  # Longer proposals
-        chapters_max=20,
-        min_book_coverage=0.4,
-        use_structured_output=True
-    )
-    cs.store(group="llm", name="creative", node=creative_llm)
-    
     # ===== DATA CONFIGURATIONS =====
     
-    # Standard data config
-    standard_data = DataConfig(
-        max_works=None,  # No limit
-        deduplicator=None
-    )
-    cs.store(group="data", name="standard", node=standard_data)
-    
-    # Debug data config (limited works for speed)
-    debug_data = DataConfig(
-        max_works=1000,  # Limited for speed
-        deduplicator=None
-    )
-    cs.store(group="data", name="debug", node=debug_data)
-    
-    # Data config with deduplication (demonstrates SqDistDeduplicator usage)
+    # Data config with deduplication - removes semantically similar papers
     deduped_data = DataConfig(
-        max_works=None,
-        deduplicator=SqDistDeduplicator(min_sqdist=0.01)  # Default from parse_args.py
+        max_works=None,                                    # No limit on dataset size (use full OpenAlex data)
+        deduplicator=SqDistDeduplicator(min_sqdist=0.01)  # Remove papers with <1% embedding distance
     )
     cs.store(group="data", name="deduped", node=deduped_data)
     
@@ -152,79 +71,33 @@ def register_configs():
     
     # Standard batch config
     standard_batch = BatchConfig(
-        num_gaps=1,
-        completion_window="24h",
-        generate_plots=True,
-        save_prompts=True,
-        save_batch_file=True
+        num_gaps=77,                   # Process all 77 identified gaps
+        completion_window="24h",       # 24-hour completion window (only OpenAI supported option)
+        generate_plots=True,           # Create gap visualization plots for analysis
+        save_prompts=True,             # Save individual prompt files for debugging/inspection
+        save_batch_file=True           # Save JSONL batch request file for reuse/audit
     )
     cs.store(group="batch", name="standard", node=standard_batch)
-    
-    # Debug batch config
-    debug_batch = BatchConfig(
-        num_gaps=1,
-        completion_window="24h",
-        generate_plots=False,  # Skip plots for speed
-        save_prompts=True,
-        save_batch_file=False  # Skip batch file for speed
-    )
-    cs.store(group="batch", name="debug", node=debug_batch)
-    
+
     # ===== OUTPUT CONFIGURATIONS =====
     
-    # Standard output config
+    # Standard output config - comprehensive export formats for research use
     standard_output = OutputConfig(
-        export_formats=(ExportFormat.CSV, ExportFormat.JSON),
-        create_subdirectories=True,
-        include_metadata=True,
-        use_timestamp=True
+        export_formats=(ExportFormat.CSV, ExportFormat.JSON, ExportFormat.JSONL, ExportFormat.PARQUET),
+        create_subdirectories=True,    # Organize outputs by topic/gap for easy navigation
+        include_metadata=True,         # Include configuration details in output files
+        use_timestamp=True             # Add timestamps to filenames for version tracking
     )
     cs.store(group="output", name="standard", node=standard_output)
     
-    # Minimal output config
-    minimal_output = OutputConfig(
-        export_formats=(ExportFormat.JSON,),  # Just JSON
-        create_subdirectories=False,
-        include_metadata=False,
-        use_timestamp=False
-    )
-    cs.store(group="output", name="minimal", node=minimal_output)
-    
     # ===== FULL EXPERIMENT CONFIGURATIONS =====
     
-    # Production experiment (existing codebase defaults)
+    # Production experiment - uses existing codebase defaults from parse_args.py + config_manager.py
     production_experiment = ExperimentConfig(
-        gap=production_gap,
-        llm=production_llm,
-        data=standard_data,
-        batch=standard_batch,
-        output=standard_output,
-        experiment_name="production"
+        gap=production_gap,      # Standard gap detection with proven parameters
+        llm=production_llm,      # GPT-5 with structured output for high-quality proposals
+        data=deduped_data,       # Full dataset with deduplication for clean results
+        batch=standard_batch,    # Single gap processing for development/testing
+        output=standard_output,  # Comprehensive output formats for research analysis
     )
     cs.store(name="production", node=production_experiment)
-    
-    # Debug experiment (fast settings)
-    debug_experiment = ExperimentConfig(
-        gap=debug_gap,
-        llm=debug_llm,
-        data=debug_data,
-        batch=debug_batch,
-        output=minimal_output,
-        experiment_name="debug"
-    )
-    cs.store(name="debug", node=debug_experiment)
-    
-    # High quality experiment (thorough analysis)
-    high_quality_experiment = ExperimentConfig(
-        gap=high_quality_gap,
-        llm=creative_llm,
-        data=standard_data,
-        batch=standard_batch,
-        output=standard_output,
-        experiment_name="high_quality"
-    )
-    cs.store(name="high_quality", node=high_quality_experiment)
-
-
-# Register configs when module is imported
-register_configs()

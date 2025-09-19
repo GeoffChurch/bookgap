@@ -28,7 +28,7 @@ from bookgap.util import LOGGER
 register_configs()
 
 
-@hydra.main(version_base=None, config_path=None, config_name="production")
+@hydra.main(version_base=None, config_path="configs", config_name="production")
 def main(cfg: ExperimentConfig) -> None:
     """Main entry point for batch proposal generation.
     
@@ -39,8 +39,6 @@ def main(cfg: ExperimentConfig) -> None:
     LOGGER.info("=" * 60)
     LOGGER.info("BookGap Batch Proposal Generator")
     LOGGER.info("=" * 60)
-    LOGGER.info(f"Experiment: {cfg.experiment_name}")
-    LOGGER.info(f"Description: {cfg.description}")
     LOGGER.info(f"Working directory: {os.getcwd()}")
     LOGGER.info(f"Output directory: {HydraConfig.get().runtime.output_dir}")
     LOGGER.info("")

@@ -650,7 +650,6 @@ class TestGenerateBatchRequests:
         
         mock_contexts = [Mock()]
         mock_config = Mock()
-        mock_config.llm.provider_type = "OPENAI"
         mock_config.llm.model_name = "gpt-4o"
         mock_config.llm._target_ = "test.target"
         
@@ -661,7 +660,6 @@ class TestGenerateBatchRequests:
         # Verify error context
         assert "Failed to generate batch requests" in str(exc_info.value)
         assert exc_info.value.context["num_contexts"] == 1
-        assert exc_info.value.context["provider"] == "OPENAI"
 
 
 class TestValidateBatchRequests:

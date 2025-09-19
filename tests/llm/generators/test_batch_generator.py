@@ -4,7 +4,6 @@ import os
 import pytest
 from unittest.mock import patch
 
-from bookgap.llm.providers import ProviderType
 from bookgap.llm.protocols import (
     OpenAIModel, ProposalContext, Article, Book, ProposalCounts,
     ProposalGenerationError, BatchRequestData, PromptPair
@@ -21,7 +20,6 @@ class TestOpenAIBatchGenerator:
         # Create a minimal mock config structure
         class MockLLMConfig:
             def __init__(self):
-                self.provider_type = ProviderType.OPENAI
                 self.model_name = OpenAIModel.GPT_4O_MINI
                 self.temperature = 0.7
                 self.max_tokens = 4000
@@ -69,17 +67,6 @@ class TestOpenAIBatchGenerator:
         assert generator.temperature == 0.7
         assert generator.max_tokens == 4000
         assert generator.use_structured is True
-    
-    def test_initialization_wrong_provider(self, mock_config):
-        """Test initialization fails with wrong provider."""
-        # Use a string that's not a valid ProviderType
-        mock_config.llm.provider_type = "invalid_provider"
-        
-        with pytest.raises(ProposalGenerationError) as exc_info:
-            OpenAIBatchGenerator(mock_config)
-        
-        assert "OpenAI generator requires provider_type=ProviderType.OPENAI" in str(exc_info.value)
-        assert exc_info.value.context["provider"] == "invalid_provider"
     
     @patch.dict(os.environ, {}, clear=True)
     def test_initialization_missing_api_key(self, mock_config):

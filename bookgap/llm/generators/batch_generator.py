@@ -7,7 +7,7 @@ individual request patterns with OpenAI batch API integration.
 from abc import ABC, abstractmethod
 from typing import List
 
-from bookgap.configs.config import ExperimentConfig
+from bookgap.configs.llm.llm_config import LLMConfig
 from ..protocols import ProposalContext, BatchRequestData, PromptPair
 
 
@@ -15,16 +15,7 @@ class BatchProposalGenerator(ABC):
     """Abstract base class for batch proposal generators.
     
     Designed for batch processing of multiple contexts into batch API requests.
-    Replaces individual request pattern with batch-first approach.
     """
-    
-    def __init__(self, config: ExperimentConfig):
-        """Initialize generator with experiment configuration.
-        
-        Args:
-            config: Complete experiment configuration including LLM settings
-        """
-        self.config = config
     
     def generate_batch_requests(self, contexts: List[ProposalContext]) -> List[BatchRequestData]:
         """Generate batch API requests from proposal contexts.

@@ -22,7 +22,6 @@ def test_qqplot():
     from bookgap.config_manager import GapConfiguration, LLMConfiguration
     from bookgap.types import CellType
     from bookgap.llm.llm_implementation import Implementation
-    from bookgap.llm.providers import ProviderType
     
     gap_config = GapConfiguration(
         denoiser="NONE",
@@ -33,7 +32,6 @@ def test_qqplot():
     
     llm_config = LLMConfiguration(
         implementation=Implementation.STRUCTURED,
-        provider=ProviderType.OPENAI,
         model="gpt-4",
         temperature=0.2,
         max_tokens=2000,
