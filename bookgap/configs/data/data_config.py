@@ -4,10 +4,25 @@ Data source configuration for BookGap analysis.
 Defines dataset parameters and deduplication settings.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
-from bookgap.deduplicators import Deduplicator
+
+@dataclass(frozen=True)
+class SqDistDeduplicatorConfig:
+    """Configuration for SqDistDeduplicator.
+    
+    Removes semantically similar works based on squared embedding distance threshold.
+    Fast range-based deduplication suitable for large datasets.
+    """
+    
+    _target_: str = field(default="bookgap.deduplicators.SqDistDeduplicator", init=False)
+    min_sqdist: float  # Minimum squared distance threshold (e.g., 0.01 = 1% distance)
+    
+    def __post_init__(self):
+        """Validate SqDistDeduplicator configuration parameters."""
+        if self.min_sqdist <= 0:
+            raise ValueError(f"min_sqdist must be positive, got {self.min_sqdist}")
 
 
 @dataclass(frozen=True)
@@ -22,10 +37,9 @@ class DataConfig:
     max_works: Optional[int]  # Maximum papers/books to fetch (None=unlimited, useful for debugging)
     
     # Deduplication settings - remove semantically similar papers to improve gap quality
-    deduplicator: Optional[Deduplicator]  # Strategy for removing duplicate works:
-                                         # - SqDistDeduplicator(min_sqdist=0.01): Fast range-based dedup
-                                         # - FractionalDeduplicator(fraction=0.1): Percentile-based dedup
-                                         # - None: No deduplication
+    deduplicator: Optional[SqDistDeduplicatorConfig]  # Strategy for removing duplicate works:
+                                                     # - SqDistDeduplicatorConfig: Fast range-based dedup
+                                                     # - None: No deduplication
     
     def __post_init__(self):
         """Validate data configuration parameters."""

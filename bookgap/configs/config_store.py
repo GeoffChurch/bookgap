@@ -10,7 +10,7 @@ from hydra.core.config_store import ConfigStore
 from .config import ExperimentConfig
 from .gap.gap_config import GapConfig
 from .llm.llm_config import LLMConfig
-from .data.data_config import DataConfig
+from .data.data_config import DataConfig, SqDistDeduplicatorConfig
 from .batch.batch_config import BatchConfig
 from .output.output_config import OutputConfig
 from .output.export_formats import ExportFormat
@@ -20,7 +20,6 @@ from bookgap.types import CellType
 from bookgap.cloud import WorkDenoisers
 from bookgap.index import IndexType
 from bookgap.llm.protocols import OpenAIModel
-from bookgap.deduplicators import SqDistDeduplicator
 
 
 def register_configs():
@@ -62,20 +61,21 @@ def register_configs():
     
     # Data config with deduplication - removes semantically similar papers
     deduped_data = DataConfig(
-        max_works=None,                                    # No limit on dataset size (use full OpenAlex data)
-        deduplicator=SqDistDeduplicator(min_sqdist=0.01)  # Remove papers with <1% embedding distance
+        max_works=None,                    # No limit on dataset size (use full OpenAlex data)
+        deduplicator=SqDistDeduplicatorConfig(
+            min_sqdist=0.01                # Remove papers with <1% embedding distance
+        )
     )
     cs.store(group="data", name="deduped", node=deduped_data)
     
     # ===== BATCH CONFIGURATIONS =====
     
-    # Standard batch config
     standard_batch = BatchConfig(
-        num_gaps=77,                   # Process all 77 identified gaps
-        completion_window="24h",       # 24-hour completion window (only OpenAI supported option)
-        generate_plots=True,           # Create gap visualization plots for analysis
-        save_prompts=True,             # Save individual prompt files for debugging/inspection
-        save_batch_file=True           # Save JSONL batch request file for reuse/audit
+        num_gaps=1,
+        completion_window="24h",
+        generate_plots=True,
+        save_prompts=True,
+        save_batch_file=True
     )
     cs.store(group="batch", name="standard", node=standard_batch)
 
@@ -94,10 +94,10 @@ def register_configs():
     
     # Production experiment - uses existing codebase defaults from parse_args.py + config_manager.py
     production_experiment = ExperimentConfig(
-        gap=production_gap,      # Standard gap detection with proven parameters
-        llm=production_llm,      # GPT-5 with structured output for high-quality proposals
-        data=deduped_data,       # Full dataset with deduplication for clean results
-        batch=standard_batch,    # Single gap processing for development/testing
-        output=standard_output,  # Comprehensive output formats for research analysis
+        gap=production_gap,
+        llm=production_llm,
+        data=deduped_data,
+        batch=standard_batch,
+        output=standard_output,
     )
     cs.store(name="production", node=production_experiment)

@@ -50,7 +50,6 @@ def main(cfg: ExperimentConfig) -> None:
     
     try:
         # Run the complete batch workflow
-        LOGGER.info(f"Starting batch workflow with {cfg.batch.num_gaps} gaps...")
         results = run_batch_workflow(cfg)
         
         # Log completion

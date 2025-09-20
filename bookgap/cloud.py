@@ -763,7 +763,6 @@ def get_query(work_filter: Filter) -> pyalex.Works:
     else:
         q = pyalex.Works().filter(has_abstract=True, **params)
 
-    LOGGER.info(f"Query url: '{q.url}'")
     return q.select(
         ", ".join([
             "display_name", "type", "publication_date", "ids", "language", "abstract_inverted_index", "referenced_works", "primary_topic"

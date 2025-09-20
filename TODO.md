@@ -125,8 +125,8 @@ class IVFIndexConfig:
 
 **Current limitations:**
 ```python
-# BatchConfig controls everything globally
-batch.num_gaps: int  # Single number for ALL topics
+# BatchConfig controls everything globally  
+batch.num_gaps: int  # Per-topic limit (e.g., num_gaps=2 means 2 gaps from each topic)
 
 # GapConfig applies same settings to all gaps
 gap.cell_type: CellType        # Same algorithm for all

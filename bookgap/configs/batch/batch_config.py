@@ -16,7 +16,7 @@ class BatchConfig:
     """
     
     # Processing scope - control how many research gaps to analyze in this batch
-    num_gaps: int  # Total number of gaps to process across all topics (1-77, default: 1)
+    num_gaps: int  # Maximum number of gaps to process per topic (e.g., 2 = two gaps per topic)
     
     # OpenAI batch API settings - control job execution timing and priority
     completion_window: str  # Time window for batch completion ("24h" only supported option)

@@ -4,12 +4,13 @@ Pure functions for the batch processing pipeline using Hydra's instantiation sys
 """
 
 from dataclasses import dataclass
+from itertools import islice
 import json
 import os
 import random
 import time
 import tempfile
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
 
 from hydra.utils import instantiate
 from openai import OpenAI
@@ -17,6 +18,7 @@ import pyalex
 
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import build_cloud, get_subclouds_for_topic, SubCloud
+from bookgap.deduplicators import Deduplicator
 from bookgap.gap_finder import find_gaps_for_topic, GapProtocol
 from bookgap.util import LOGGER
 from ..protocols import (
@@ -51,11 +53,14 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
     """
     LOGGER.info(f"Building cloud with denoiser={config.gap.denoiser}")
     
+    deduplicator: Optional[Deduplicator] = None if config.data.deduplicator is None else instantiate(config.data.deduplicator)
+    assert deduplicator is None or isinstance(deduplicator, Deduplicator), f"deduplicator must be a Deduplicator instance or None. Got {deduplicator} of type {type(deduplicator)}"
+
     # Build cloud from data configuration
     cloud = build_cloud(
         drop_k=config.gap.drop_k,
         max_works=config.data.max_works,
-        deduplicator=config.data.deduplicator,
+        deduplicator=deduplicator,
         denoiser=config.gap.denoiser.name,  # Convert enum to string using .name
         index_type=config.gap.index_type,
         hnsw_m=config.gap.hnsw_m,
@@ -103,41 +108,26 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
             is_intra_cloud=False
         )
         
-        # Collect the requested number of gaps for this topic
-        topic_gaps_found = 0
-        gap_idx = 0
-        while topic_gaps_found < config.batch.num_gaps and len(gaps) < config.batch.num_gaps:
-            try:
-                gap = next(gap_generator)
-                
-                # Create context wrapper with global gap index
-                gap_with_context = GapWithContext(
-                    gap=gap,
-                    topic_name=topic_name,
-                    topic_id=topic_id,
-                    gap_idx=len(gaps),  # Use global gap index across all topics
-                    books=books,
-                    articles=articles
-                )
-                gaps.append(gap_with_context)
-                
-                gap_size = len(gap.dists_idxs.idxs)
-                LOGGER.info(f"Found gap {len(gaps)-1} in topic {topic_name} with {gap_size} articles")
-                
-                topic_gaps_found += 1
-                
-                # Stop if we've reached the total requested number of gaps
-                if len(gaps) >= config.batch.num_gaps:
-                    break
-                    
-            except StopIteration:
-                LOGGER.warning(f"Gap generator exhausted for topic {topic_name} at gap {gap_idx}")
-                break
+        # Take the requested number of gaps for this topic using itertools.islice
+        topic_gaps = [
+            GapWithContext(
+                gap=gap,
+                topic_name=topic_name,
+                topic_id=topic_id,
+                gap_idx=len(gaps),  # Use global gap index across all topics
+                books=books,
+                articles=articles
+            )
+            for gap in islice(gap_generator, config.batch.num_gaps)]
         
-        # Stop if we've found enough gaps total
-        if len(gaps) >= config.batch.num_gaps:
-            break
-    
+        
+        if len(topic_gaps) == 0:
+            LOGGER.warning(f"No gaps found for topic {topic_name}")
+        else:
+            LOGGER.info(f"Found {len(topic_gaps)} gaps for topic {topic_name}")
+        
+        gaps.extend(topic_gaps)
+ 
     LOGGER.info(f"Found {len(gaps)} gaps total")
     return gaps
 
