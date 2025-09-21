@@ -7,11 +7,9 @@ for configuration management and provides a simple CLI interface.
 
 Usage:
     python batch_generator.py                                     # Default (production) configuration
-    python batch_generator.py config=debug                        # Debug preset  
     python batch_generator.py config=production                   # Production preset (explicit)
-    python batch_generator.py config=high_quality                 # High quality preset
-    python batch_generator.py batch.num_gaps=50                   # Override specific values
-    python batch_generator.py gap=debug llm=creative              # Mix component presets
+    python batch_generator.py batch.num_gaps=5                    # Override specific values
+    python batch_generator.py gap=production llm=production       # Mix component presets
 """
 
 import hydra
@@ -56,9 +54,7 @@ def main(cfg: ExperimentConfig) -> None:
         LOGGER.info("=" * 60)
         LOGGER.info("WORKFLOW COMPLETED SUCCESSFULLY")
         LOGGER.info("=" * 60)
-        LOGGER.info(f"Batch ID: {results['batch_id']}")
-        LOGGER.info(f"Generated proposals: {results['num_results']}")
-        LOGGER.info(f"Request counts: {results['request_counts']}")
+        LOGGER.info(f"Generated proposals: {len(results.proposals)}")
         LOGGER.info(f"Output directory: {HydraConfig.get().runtime.output_dir}")
         
     except Exception as e:

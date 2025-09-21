@@ -31,9 +31,5 @@ class LLMConfig:
     temperature: float  # Sampling temperature 0.0-2.0, lower=more focused (default: 0.2)
     max_tokens: int    # Maximum tokens in generated response (default: 2000)
     
-    # Output structure constraints - define textbook proposal format
-    chapters_min: int  # Minimum number of chapters required in proposal (default: 10)
-    chapters_max: int  # Maximum number of chapters allowed in proposal (default: 15)
-    
     # Response format control - enables structured JSON output parsing
     use_structured_output: bool  # Use JSON schema for structured responses (default: True)

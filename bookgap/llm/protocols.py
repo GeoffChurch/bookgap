@@ -136,35 +136,25 @@ class ProposalResult:
     metadata: ProposalMetadata
 
 
-# Pydantic models for structured output validation
+# Pydantic models for structured output validation and data handling
 class Chapter(BaseModel):
     """A chapter in a textbook proposal."""
-    chapter_title: str = Field(..., min_length=1, description="The title of the chapter")
-    chapter_description: str = Field(..., min_length=1, description="Description of concepts covered in the chapter (1-2 sentences)")
+    chapter_title: str = Field(..., description="Chapter title")
+    chapter_topics: list[str] = Field(..., description="Chapter topics")
 
 
-def create_proposal_model(chapters_min: int = 10, chapters_max: int = 15) -> type[BaseModel]:
-    """Create a Proposal model with configurable chapter constraints.
-    
-    Args:
-        chapters_min: Minimum number of chapters
-        chapters_max: Maximum number of chapters
-        
-    Returns:
-        Dynamically created Proposal model class
-    """
-    class Proposal(BaseModel):
-        """A complete textbook proposal with title, abstract, and chapters."""
-        title: str = Field(..., min_length=1, description="The proposed title of the textbook")
-        abstract: str = Field(..., min_length=1, description="Abstract describing the textbook's scope and approach")
-        chapters: list[Chapter] = Field(
-            ..., 
-            min_length=chapters_min, 
-            max_length=chapters_max, 
-            description=f"List of {chapters_min}-{chapters_max} chapters for the textbook"
-        )
-    
-    return Proposal
+class Proposal(BaseModel):
+    """A complete textbook proposal with title, abstract, and chapters."""
+    title: str = Field(..., description="Textbook title")
+    abstract: str = Field(..., description="Textbook abstract")
+    chapters: list[Chapter] = Field(..., min_length=10, max_length=15, description="Textbook chapters")
+
+
+@dataclass(frozen=True)
+class ParsedProposal:
+    """Wrapper for a parsed proposal with metadata."""
+    proposal: Proposal
+    custom_id: str
 
 
 class ProposalGenerationError(Exception):

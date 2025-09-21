@@ -10,7 +10,7 @@ from openai.lib._pydantic import to_strict_json_schema
 
 from ..protocols import (
     ProposalContext, BatchRequestData, ChatMessage, ChatCompletionBody,
-    ProposalGenerationError, create_proposal_model, PromptPair, OpenAIModel
+    ProposalGenerationError, Proposal, PromptPair, OpenAIModel
 )
 from .batch_generator import BatchProposalGenerator
 
@@ -27,8 +27,6 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
                  num_books: int, 
                  temperature: float,
                  max_tokens: int,
-                 chapters_min: int,
-                 chapters_max: int,
                  use_structured_output: bool):
         """Initialize OpenAI batch generator with individual parameters.
         
@@ -38,8 +36,6 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
             num_books: Number of covering books per prompt
             temperature: Sampling temperature
             max_tokens: Token limit for responses
-            chapters_min: Minimum chapters per textbook
-            chapters_max: Maximum chapters per textbook
             use_structured_output: Whether to use structured JSON output
             
         Raises:
@@ -59,8 +55,6 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         self.num_books = num_books
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.chapters_min = chapters_min
-        self.chapters_max = chapters_max
         self.use_structured_output = use_structured_output
         
     def _build_prompt(self, context: ProposalContext) -> PromptPair:
@@ -98,15 +92,11 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         # Build structured output schema if enabled
         response_format = None
         if self.use_structured_output:
-            proposal_model = create_proposal_model(
-                chapters_min=self.chapters_min,
-                chapters_max=self.chapters_max
-            )
             response_format = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "textbook_proposal",
-                    "schema": to_strict_json_schema(proposal_model),
+                    "schema": to_strict_json_schema(Proposal),
                     "strict": True
                 }
             }
@@ -128,12 +118,12 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         )
     
     def _build_system_prompt(self) -> str:
-        """Build system prompt with role definition.
+        """Build system prompt with hardcoded chapter count guidance.
         
         Returns:
             System prompt string defining the AI's role
         """
-        return "You are a publishing expert and academic researcher specializing in textbook development."
+        return "You are an academic researcher and educator."
     
     def _build_user_prompt(self, context: ProposalContext) -> str:
         """Build user prompt from context with clean formatting.
@@ -153,8 +143,8 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         if context.covering_books:
             prompt_parts.append(" and related books")
         prompt_parts.append(
-            " provided below, please propose a title, abstract, and table of contents "
-            "for a textbook that would prepare students to understand research in this area.\n\n"
+            " provided below, please propose a title, abstract, and table of contents"
+            " for a textbook that would prepare students to understand research in this area.\n\n"
         )
         
         # Sample articles section

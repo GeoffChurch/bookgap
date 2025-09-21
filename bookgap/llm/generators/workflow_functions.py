@@ -3,7 +3,7 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from itertools import islice
 import json
 import os
@@ -22,10 +22,79 @@ from bookgap.deduplicators import Deduplicator
 from bookgap.gap_finder import find_gaps_for_topic, GapProtocol
 from bookgap.llm.generators.openai_batch import OpenAIBatchGenerator
 from bookgap.util import LOGGER
+from pydantic import ValidationError
 from ..protocols import (
     ProposalContext, BatchRequestData, ProposalGenerationError, 
-    Article, Book, OpenAIModel, ProposalCounts
+    Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
+
+
+@dataclass(frozen=True)
+class BatchResults:
+    """Immutable container for batch processing results."""
+    proposals: List[ParsedProposal]
+    metadata: ExperimentConfig
+
+
+class MetadataUtils:
+    """Static utilities for metadata chunking and parsing."""
+    
+    CHUNK_SIZE = 512  # OpenAI batch API metadata value limit
+    
+    @staticmethod
+    def serialize_config(config: ExperimentConfig) -> Dict[str, str]:
+        """Convert ExperimentConfig to chunked metadata dict for batch API.
+        
+        Args:
+            config: ExperimentConfig to serialize
+            
+        Returns:
+            Dictionary with chunked metadata (keys are string indices "0", "1", etc.)
+        """
+        config_dict = asdict(config)
+        config_json = json.dumps(config_dict, default=str, indent=None, separators=(',', ':'))
+        
+        # Split into chunks for metadata (512 char limit per key)
+        metadata = {}
+        for i, chunk_start in enumerate(range(0, len(config_json), MetadataUtils.CHUNK_SIZE)):
+            chunk = config_json[chunk_start:chunk_start + MetadataUtils.CHUNK_SIZE]
+            metadata[str(i)] = chunk
+        
+        return metadata
+    
+    @staticmethod
+    def deserialize_config(metadata: Dict[str, str]) -> ExperimentConfig:
+        """Parse chunked metadata dict back to ExperimentConfig object.
+        
+        Args:
+            metadata: Dictionary with chunked metadata from batch API
+            
+        Returns:
+            Reconstructed ExperimentConfig object
+            
+        Raises:
+            ProposalGenerationError: If parsing fails
+        """
+        try:
+            # Reconstruct config JSON from chunks
+            config_chunks = []
+            i = 0
+            while str(i) in metadata:
+                config_chunks.append(metadata[str(i)])
+                i += 1
+            
+            if not config_chunks:
+                raise ValueError("No config chunks found in metadata")
+            
+            config_json = ''.join(config_chunks)
+            metadata_dict = json.loads(config_json)
+            
+            # Reconstruct the config using hydra's instantiate
+            return instantiate(metadata_dict)
+            
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            LOGGER.error(f"Failed to parse metadata: {e}")
+            raise ProposalGenerationError(f"Invalid metadata format: {e}")
 
 @dataclass(frozen=True)
 class GapWithContext:
@@ -230,15 +299,8 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
     # Create JSONL content for batch API
     jsonl_lines = []
     
-    # Prepare batch metadata with config
-    config_json = json.dumps(config.__dict__, default=str)
-    
-    # Split config into chunks for metadata (512 char limit per key)
-    metadata = {}
-    chunk_size = 512
-    for i, chunk_start in enumerate(range(0, len(config_json), chunk_size)):
-        chunk = config_json[chunk_start:chunk_start + chunk_size]
-        metadata[str(i)] = chunk
+    # Prepare batch metadata with config using utility
+    metadata = MetadataUtils.serialize_config(config)
     
     # Determine the correct token parameter based on the model from config
     if config.llm.model.uses_max_completion_tokens:
@@ -303,7 +365,30 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
         os.unlink(temp_file_path)
 
 
-def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) -> Dict[str, Any]:
+def parse_batch_result_to_proposal(result: dict[str, Any]) -> ParsedProposal:
+    """Parse OpenAI batch result into ParsedProposal instance.
+    
+    Args:
+        result: Raw batch result dict from OpenAI API
+        
+    Returns:
+        ParsedProposal instance or None if parsing fails
+    """
+    # Extract the JSON content from OpenAI batch result structure
+    content = result["response"]["body"]["choices"][0]["message"]["content"]
+    
+    # Parse using Pydantic model for validation
+    proposal = Proposal.model_validate_json(content)
+    
+    # Wrap with metadata
+    parsed_proposal = ParsedProposal(
+        proposal=proposal,
+        custom_id=result["custom_id"]
+    )
+    
+    return parsed_proposal
+
+def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) -> BatchResults:
     """Monitor batch job and download results when complete.
     
     Args:
@@ -311,7 +396,7 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         config: Experiment configuration
         
     Returns:
-        Dictionary containing batch results and metadata
+        BatchResults frozen dataclass containing proposals and parsed config
         
     Raises:
         Exception: If monitoring or download fails
@@ -345,36 +430,30 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         result_file_response = client.files.content(batch.output_file_id)
         result_content = result_file_response.content.decode('utf-8')
         
-        # Parse JSONL results
+        # Parse JSONL results into ParsedProposal instances
         results = []
+        
         for line in result_content.strip().split('\n'):
             if line:
-                results.append(json.loads(line))
+                # Parse into ParsedProposal instance
+                parsed_proposal = parse_batch_result_to_proposal(json.loads(line))
+                results.append(parsed_proposal)
         
-        LOGGER.info(f"Downloaded {len(results)} results")
+        LOGGER.info(f"Downloaded and parsed {len(results)} proposals")
         
-        # Reconstruct config from metadata
+        # Parse original config from metadata using MetadataUtils
         metadata = batch.metadata or {}
-        config_chunks = []
-        i = 0
-        while str(i) in metadata:
-            config_chunks.append(metadata[str(i)])
-            i += 1
+        try:
+            parsed_config = MetadataUtils.deserialize_config(metadata)
+        except (ProposalGenerationError, KeyError):
+            # Fall back to the provided config if metadata parsing fails
+            LOGGER.warning("Failed to parse metadata, using provided config")
+            parsed_config = config
         
-        original_config_json = ''.join(config_chunks) if config_chunks else None
-        
-        return {
-            "batch_id": batch_job_id,
-            "status": batch.status,
-            "results": results,
-            "original_config": original_config_json,
-            "num_results": len(results),
-            "request_counts": {
-                "total": getattr(batch.request_counts, 'total', 0) if batch.request_counts else 0,
-                "completed": getattr(batch.request_counts, 'completed', 0) if batch.request_counts else 0,
-                "failed": getattr(batch.request_counts, 'failed', 0) if batch.request_counts else 0,
-            }
-        }
+        return BatchResults(
+            proposals=results,
+            metadata=parsed_config
+        )
     else:
         # Log detailed batch information for debugging
         LOGGER.error(f"Batch completed but no output file available. Batch info:")
@@ -401,7 +480,7 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
     
 
 
-def run_batch_workflow(config: ExperimentConfig) -> Dict[str, Any]:
+def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     """Run the complete batch workflow from gap finding to results.
     
     This is the main function that coordinates the entire pipeline.
@@ -410,9 +489,9 @@ def run_batch_workflow(config: ExperimentConfig) -> Dict[str, Any]:
         config: Experiment configuration
         
     Returns:
-        Dictionary containing batch results and metadata
+        BatchResults frozen dataclass containing proposals and metadata
     """
-    LOGGER.info(f"Starting batch workflow with {config.batch.num_gaps} gaps")
+    LOGGER.info(f"Starting batch workflow with {config.batch.num_gaps} gaps per topic")
     
     # Step 1: Find gaps
     gaps = find_gaps_for_config(config)
@@ -432,7 +511,7 @@ def run_batch_workflow(config: ExperimentConfig) -> Dict[str, Any]:
     
     # Step 5: Monitor and download results
     results = monitor_and_download_results(batch_job_id, config)
-    LOGGER.info(f"Completed! Generated {results['num_results']} proposals")
+    LOGGER.info(f"Completed! Generated {len(results.proposals)} proposals")
     
     return results
 

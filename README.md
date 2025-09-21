@@ -31,27 +31,45 @@ pip install -r requirements.txt
 
 ### Basic Usage
 
-The main entry point is `batch_workflow.py`, which runs the complete analysis pipeline:
+The main entry point is `batch_generator.py`, which uses Hydra for configuration management:
 
 ```bash
-python batch_workflow.py \
-    --subfield 1702 \
-    --work_types book,article \
-    --cell_type kball \
-    --radius_fraction 0.5 \
-    --num_gaps 10 \
-    --requested_num_prompt_articles 5 \
-    --requested_num_prompt_books 2 \
-    --implementation structured
+# Default configuration (production settings)
+python batch_generator.py
+
+# Use production preset explicitly
+python batch_generator.py config=production
+
+# Override specific parameters
+python batch_generator.py batch.num_gaps=5 gap.radius_fraction=0.3
+
+# Mix component presets
+python batch_generator.py gap=production llm=production batch=standard
 ```
 
-#### Key Parameters
+#### Configuration System
 
-- `--subfield`: OpenAlex concept ID (e.g., 1702 for Artificial Intelligence)
+BookGap uses Hydra's structured configuration system with presets:
+
+- `config=production`: Default production settings (1 gap per topic)
+
+Available component configurations:
+- `gap=production`: K-ball algorithm with HNSW indexing  
+- `llm=production`: GPT-5 with structured outputs
+- `batch=standard`: Standard batch processing settings
+- `data=deduped`: Deduplicated dataset with similarity filtering
+- `output=standard`: Comprehensive export formats
+
+#### Key Configuration Groups
+
+- `gap.*`: Gap detection settings (algorithm, radius, preprocessing)
+- `llm.*`: LLM settings (model, implementation, context size)
+- `batch.*`: Batch processing settings (gaps per topic, output paths)
+- `data.*`: Data source configuration (subclouds, filtering)
 - `--work_types`: Types of works to analyze (`book`, `article`, or both)
 - `--cell_type`: Gap detection algorithm (`kball` or `voronoi`)
 - `--radius_fraction`: Sensitivity of gap detection (0.1-1.0)
-- `--num_gaps`: Number of top gaps to analyze
+- `--num_gaps`: Number of gaps to analyze **per topic** (e.g., 10 gaps from each AI topic)
 - `--implementation`: LLM approach (`structured` for OpenAI Structured Outputs, `prompt` for JSON prompting)
 
 ## Generated Files
@@ -93,42 +111,74 @@ BookGap includes comprehensive test coverage for all major components. See [`TES
 
 ### Architecture Overview
 
-BookGap follows a modular architecture:
+BookGap follows a modular architecture with structured configuration:
 
-- **`bookgap/config_manager.py`**: Configuration management and validation
-- **`bookgap/types.py`**: Core type definitions and enums
+- **`bookgap/configs/`**: Hydra-based structured configuration system
+  - `config.py`: Core ExperimentConfig dataclass definition
+  - `config_store.py`: Configuration presets and registration
+  - Component configs: `gap/`, `llm/`, `batch/`, `data/`
 - **`bookgap/llm/`**: LLM integration and proposal generation
-  - `llm_implementation.py`: Implementation enum and generator factory
-  - `generators/`: OpenAI generator implementations
-  - `gap_algorithms/`: K-ball and Voronoi gap detection algorithms
+  - `protocols.py`: Static Pydantic models (Chapter, Proposal, ParsedProposal)
+  - `generators/`: OpenAI Batch API implementation with structured outputs
+  - `workflow_functions.py`: MetadataUtils and BatchResults for typed workflows
 - **`bookgap/gap_finder.py`**: Main gap analysis workflow
 - **`bookgap/cloud.py`**: Embedding and data management
 - **`tests/`**: Comprehensive test suite
 
 ### Configuration
 
-BookGap uses strongly-typed configuration classes:
+BookGap uses Hydra's structured configuration system with dataclasses:
 
 ```python
-from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from bookgap.types import CellType
-from bookgap.llm.llm_implementation import Implementation
+from bookgap.configs.config import ExperimentConfig, GapConfig, LLMConfig, BatchConfig
+from hydra import initialize, compose
 
-# Create configuration
-gap_config = GapConfiguration(
-    denoiser="NONE",
-    drop_k=0,
-    radius_fraction=0.5,
-    cell_type=CellType.KBALL
+# Load configuration with Hydra
+with initialize(config_path="bookgap/configs", version_base=None):
+    config = compose(config_name="config")  # Default configuration
+    
+# Or load specific presets
+with initialize(config_path="bookgap/configs", version_base=None):
+    config = compose(config_name="config", overrides=["config=debug"])
+
+# Configuration structure
+config = ExperimentConfig(
+    gap=GapConfig(
+        cell_type=CellType.KBALL,
+        radius_fraction=0.5,
+        denoiser=DenoisingConfig(...)
+    ),
+    llm=LLMConfig(
+        model=OpenAIModel.GPT_4O,
+        requested_num_prompt_articles=5,
+        requested_num_prompt_books=2
+    ),
+    batch=BatchConfig(num_gaps=10),
+    data=DataConfig(...)
 )
+```
 
-llm_config = LLMConfiguration(
-    implementation=Implementation.STRUCTURED,
-    requested_num_prompt_articles=5,
-    requested_num_prompt_books=2
+### Proposal Generation
+
+BookGap uses static Pydantic models for type-safe proposal generation:
+
+```python
+from bookgap.llm.protocols import Chapter, Proposal, ParsedProposal
+
+# Static validation with hardcoded constraints
+proposal = Proposal(
+    title="AI Safety Handbook",
+    author="Generated Author",
+    abstract="Comprehensive guide to AI safety principles...",
+    chapters=[
+        Chapter(
+            chapter_title="Introduction to AI Safety",
+            chapter_topics=["AI alignment", "Safety principles"],
+            abstract="Overview of fundamental safety concepts..."
+        )
+        # Requires 10-15 chapters (hardcoded validation)
+    ]
 )
-
-config = AnalysisConfiguration.from_components(gap_config, llm_config)
 ```
 
 ## Contributing
