@@ -17,8 +17,8 @@ class LLMConfig:
     Compatible with existing LLMConfiguration in config_manager.py.
     """
     
-    # Hydra instantiation target - specifies which generator class to use
-    _target_: str  # e.g., "bookgap.llm.generators.openai_batch.OpenAIBatchGenerator"
+    # Hydra instantiation target
+    _target_: str  # Target class path for Hydra instantiation
     
     # Provider settings
     model: OpenAIModel  # OpenAI model to use (GPT_4O, GPT_4O_MINI, GPT_5, etc.) 
@@ -35,5 +35,5 @@ class LLMConfig:
     chapters_min: int  # Minimum number of chapters required in proposal (default: 10)
     chapters_max: int  # Maximum number of chapters allowed in proposal (default: 15)
     
-    # Prompt optimization - choose between structured vs text-based output
-    use_structured_output: bool  # Whether to use JSON schema for structured responses (default: True)
+    # Response format control - enables structured JSON output parsing
+    use_structured_output: bool  # Use JSON schema for structured responses (default: True)

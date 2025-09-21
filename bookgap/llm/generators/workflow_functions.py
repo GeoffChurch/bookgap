@@ -20,6 +20,7 @@ from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import build_cloud, get_subclouds_for_topic, SubCloud
 from bookgap.deduplicators import Deduplicator
 from bookgap.gap_finder import find_gaps_for_topic, GapProtocol
+from bookgap.llm.generators.openai_batch import OpenAIBatchGenerator
 from bookgap.util import LOGGER
 from ..protocols import (
     ProposalContext, BatchRequestData, ProposalGenerationError, 
@@ -239,7 +240,14 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
         chunk = config_json[chunk_start:chunk_start + chunk_size]
         metadata[str(i)] = chunk
     
+    # Determine the correct token parameter based on the model from config
+    if config.llm.model.uses_max_completion_tokens:
+        token_param = "max_completion_tokens"
+    else:
+        token_param = "max_tokens"
+
     for request in batch_requests:
+        
         jsonl_line = {
             "custom_id": request.custom_id,
             "method": "POST",
@@ -250,7 +258,7 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
                     {"role": msg.role, "content": msg.content}
                     for msg in request.body.messages
                 ],
-                "max_tokens": request.body.max_tokens,
+                token_param: request.body.max_tokens,
             }
         }
         
@@ -368,7 +376,29 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
             }
         }
     else:
-        raise Exception("Batch completed but no output file available")
+        # Log detailed batch information for debugging
+        LOGGER.error(f"Batch completed but no output file available. Batch info:")
+        LOGGER.error(f"  Batch ID: {batch.id}")
+        LOGGER.error(f"  Status: {batch.status}")
+        LOGGER.error(f"  Input file ID: {batch.input_file_id}")
+        LOGGER.error(f"  Output file ID: {batch.output_file_id}")
+        LOGGER.error(f"  Error file ID: {getattr(batch, 'error_file_id', 'N/A')}")
+        if batch.request_counts:
+            LOGGER.error(f"  Request counts: total={batch.request_counts.total}, completed={batch.request_counts.completed}, failed={batch.request_counts.failed}")
+        
+        # Check if there's an error file available
+        if hasattr(batch, 'error_file_id') and batch.error_file_id:
+            LOGGER.error("Downloading error file for details...")
+            try:
+                error_file_response = client.files.content(batch.error_file_id)
+                error_content = error_file_response.content.decode('utf-8')
+                LOGGER.error(f"Error file content: {error_content}")
+            except Exception as e:
+                LOGGER.error(f"Failed to download error file: {e}")
+        
+        raise Exception(f"Batch {batch_job_id} completed but no output file available. Status: {batch.status}")
+    
+    
 
 
 def run_batch_workflow(config: ExperimentConfig) -> Dict[str, Any]:

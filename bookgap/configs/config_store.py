@@ -45,12 +45,12 @@ def register_configs():
     
     # Production LLM config - combines config_manager.py and batch_workflow.py defaults
     production_llm = LLMConfig(
-        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",  # Batch API generator
+        _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
         model=OpenAIModel.GPT_5,           # GPT-5 model (structured output support) - from config_manager.py
         num_articles=10,                   # 10 gap articles per prompt - from batch_workflow.py
         num_books=5,                       # 5 covering books per prompt - from batch_workflow.py
         temperature=0.2,                   # Low temperature (focused responses) - from config_manager.py
-        max_tokens=2000,                   # 2000 token limit for proposals - from config_manager.py
+        max_tokens=3000,                   # Token limit for proposals - originally 2000 from config_manager.py
         chapters_min=10,                   # Minimum 10 chapters per textbook - from config_manager.py
         chapters_max=15,                   # Maximum 15 chapters per textbook - from config_manager.py
         use_structured_output=True         # Use JSON schema for structured responses - enables parsing

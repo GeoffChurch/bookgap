@@ -24,6 +24,11 @@ class OpenAIModel(Enum):
     def supports_temperature(self) -> bool:
         """Whether this model supports temperature parameter."""
         return self != OpenAIModel.GPT_5
+    
+    @property
+    def uses_max_completion_tokens(self) -> bool:
+        """Whether this model uses max_completion_tokens instead of max_tokens."""
+        return self == OpenAIModel.GPT_5
 
 
 @dataclass(frozen=True)

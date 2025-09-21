@@ -8,10 +8,9 @@ import os
 
 from openai.lib._pydantic import to_strict_json_schema
 
-from bookgap.configs.llm.llm_config import LLMConfig
 from ..protocols import (
     ProposalContext, BatchRequestData, ChatMessage, ChatCompletionBody,
-    ProposalGenerationError, create_proposal_model, PromptPair
+    ProposalGenerationError, create_proposal_model, PromptPair, OpenAIModel
 )
 from .batch_generator import BatchProposalGenerator
 
@@ -22,11 +21,26 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
     Uses system/user message format and simple custom IDs.
     """
     
-    def __init__(self, llm_config: LLMConfig):
-        """Initialize OpenAI batch generator with LLM configuration.
+    def __init__(self, 
+                 model: OpenAIModel,
+                 num_articles: int,
+                 num_books: int, 
+                 temperature: float,
+                 max_tokens: int,
+                 chapters_min: int,
+                 chapters_max: int,
+                 use_structured_output: bool):
+        """Initialize OpenAI batch generator with individual parameters.
         
         Args:
-            llm_config: LLM configuration with OpenAI-specific settings
+            model: OpenAI model to use
+            num_articles: Number of gap articles per prompt
+            num_books: Number of covering books per prompt
+            temperature: Sampling temperature
+            max_tokens: Token limit for responses
+            chapters_min: Minimum chapters per textbook
+            chapters_max: Maximum chapters per textbook
+            use_structured_output: Whether to use structured JSON output
             
         Raises:
             ProposalGenerationError: If configuration is invalid
@@ -39,15 +53,15 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
                 context={"provider": "openai"}
             )
         
-        # Store configuration values for easy access
-        self.model_enum = llm_config.model  # Already an OpenAIModel enum
-        self.model = llm_config.model.value  # String value for API calls
-        
-        self.temperature = llm_config.temperature
-        self.max_tokens = llm_config.max_tokens
-        self.use_structured = llm_config.use_structured_output
-        self.chapters_min = llm_config.chapters_min
-        self.chapters_max = llm_config.chapters_max
+        # Store individual parameters
+        self.model = model
+        self.num_articles = num_articles
+        self.num_books = num_books
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.chapters_min = chapters_min
+        self.chapters_max = chapters_max
+        self.use_structured_output = use_structured_output
         
     def _build_prompt(self, context: ProposalContext) -> PromptPair:
         """Build system and user prompts separately for native message format.
@@ -79,11 +93,11 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         ]
         
         # Build request body with explicit parameters
-        temperature = self.temperature if self.model_enum.supports_temperature else None
+        temperature = self.temperature if self.model.supports_temperature else None
         
         # Build structured output schema if enabled
         response_format = None
-        if self.use_structured:
+        if self.use_structured_output:
             proposal_model = create_proposal_model(
                 chapters_min=self.chapters_min,
                 chapters_max=self.chapters_max
@@ -98,7 +112,7 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
             }
         
         body = ChatCompletionBody(
-            model=self.model,
+            model=self.model.value,
             messages=messages,
             temperature=temperature,
             max_tokens=self.max_tokens,
