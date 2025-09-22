@@ -3,7 +3,6 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
-from dataclasses import dataclass, asdict
 from itertools import islice
 import json
 import os
@@ -13,27 +12,22 @@ import tempfile
 from typing import List, Any, Dict, Optional
 
 from hydra.utils import instantiate
+from omegaconf import OmegaConf
 from openai import OpenAI
 import pyalex
 
 from bookgap.configs.config import ExperimentConfig
-from bookgap.cloud import build_cloud, get_subclouds_for_topic, SubCloud
+from bookgap.cloud import build_cloud, get_subclouds_for_topic
 from bookgap.deduplicators import Deduplicator
-from bookgap.gap_finder import find_gaps_for_topic, GapProtocol
-from bookgap.llm.generators.openai_batch import OpenAIBatchGenerator
+from bookgap.gap_finder import find_gaps_for_topic
+from bookgap.llm.data_structures import BatchResults, GapWithContext
 from bookgap.util import LOGGER
-from pydantic import ValidationError
 from ..protocols import (
     ProposalContext, BatchRequestData, ProposalGenerationError, 
     Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
+from .workflow_artifacts import generate_all_artifacts
 
-
-@dataclass(frozen=True)
-class BatchResults:
-    """Immutable container for batch processing results."""
-    proposals: List[ParsedProposal]
-    metadata: ExperimentConfig
 
 
 class MetadataUtils:
@@ -42,16 +36,18 @@ class MetadataUtils:
     CHUNK_SIZE = 512  # OpenAI batch API metadata value limit
     
     @staticmethod
-    def serialize_config(config: ExperimentConfig) -> Dict[str, str]:
-        """Convert ExperimentConfig to chunked metadata dict for batch API.
+    def serialize_config(config: Any) -> Dict[str, str]:
+        """Convert config to chunked metadata dict for batch API.
         
         Args:
-            config: ExperimentConfig to serialize
+            config: Configuration object
             
         Returns:
             Dictionary with chunked metadata (keys are string indices "0", "1", etc.)
         """
-        config_dict = asdict(config)
+        if not OmegaConf.is_config(config):
+            raise ValueError("Config must be an OmegaConf DictConfig or similar object")
+        config_dict = OmegaConf.to_container(config, resolve=True)
         config_json = json.dumps(config_dict, default=str, indent=None, separators=(',', ':'))
         
         # Split into chunks for metadata (512 char limit per key)
@@ -71,40 +67,22 @@ class MetadataUtils:
             
         Returns:
             Reconstructed ExperimentConfig object
-            
-        Raises:
-            ProposalGenerationError: If parsing fails
         """
-        try:
-            # Reconstruct config JSON from chunks
-            config_chunks = []
-            i = 0
-            while str(i) in metadata:
-                config_chunks.append(metadata[str(i)])
-                i += 1
-            
-            if not config_chunks:
-                raise ValueError("No config chunks found in metadata")
-            
-            config_json = ''.join(config_chunks)
-            metadata_dict = json.loads(config_json)
-            
-            # Reconstruct the config using hydra's instantiate
-            return instantiate(metadata_dict)
-            
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
-            LOGGER.error(f"Failed to parse metadata: {e}")
-            raise ProposalGenerationError(f"Invalid metadata format: {e}")
-
-@dataclass(frozen=True)
-class GapWithContext:
-    """Gap with additional context for workflow processing."""
-    gap: GapProtocol
-    topic_name: str
-    topic_id: str
-    gap_idx: int
-    books: SubCloud
-    articles: SubCloud
+        # Reconstruct config JSON from chunks
+        config_chunks = []
+        i = 0
+        while str(i) in metadata:
+            config_chunks.append(metadata[str(i)])
+            i += 1
+        
+        if not config_chunks:
+            raise ValueError("No config chunks found in metadata")
+        
+        config_json = ''.join(config_chunks)
+        metadata_dict = json.loads(config_json)
+        
+        # Reconstruct the config using hydra's instantiate
+        return instantiate(metadata_dict)
 
 
 def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
@@ -217,8 +195,8 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
     contexts = []
     
     for gap_with_context in gaps:
-        gap = gap_with_context.gap
-        gap_size = len(gap.get_dists_idxs().idxs)
+        gap_idxs = gap_with_context.gap.get_dists_idxs().idxs
+        gap_size = len(gap_idxs)
         
         # Get work metadata
         article_works = gap_with_context.articles.works()
@@ -227,13 +205,13 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
         # Sample random articles from the gap (up to configured limit)
         sample_size = min(config.llm.num_articles, gap_size)
         sampled_indices = random.sample(range(gap_size), sample_size)
-        sampled_article_works = [article_works[gap.get_dists_idxs().idxs[i]] for i in sampled_indices]
-        
+        sampled_article_works = [article_works[gap_idxs[i]] for i in sampled_indices]
+
         # Convert to Article dataclasses
         sampled_articles = [
             Article(
-                display_name=work.get('display_name', 'Unknown'),
-                abstract=work.get('abstract', '')
+                display_name=work['display_name'],
+                abstract=work['abstract']
             )
             for work in sampled_article_works
         ]
@@ -247,8 +225,8 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
             
             covering_books = [
                 Book(
-                    display_name=work.get('display_name', 'Unknown'),
-                    abstract=work.get('abstract', '')
+                    display_name=work['display_name'],
+                    abstract=work['abstract']
                 )
                 for work in sampled_book_works
             ]
@@ -489,7 +467,7 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         config: Experiment configuration
         
     Returns:
-        BatchResults frozen dataclass containing proposals and metadata
+        BatchResults frozen dataclass containing proposals, metadata, and artifact paths
     """
     LOGGER.info(f"Starting batch workflow with {config.batch.num_gaps} gaps per topic")
     
@@ -513,7 +491,15 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     results = monitor_and_download_results(batch_job_id, config)
     LOGGER.info(f"Completed! Generated {len(results.proposals)} proposals")
     
-    return results
+    # Step 6: Generate artifacts (Phase 1 only for now)
+    artifact_paths = generate_all_artifacts(gaps, results)
+    
+    # Return enhanced results with artifacts
+    return BatchResults(
+        proposals=results.proposals,
+        metadata=results.metadata,
+        artifact_paths=artifact_paths
+    )
 
 
 def generate_batch_requests(contexts: List[ProposalContext], config: ExperimentConfig) -> List[BatchRequestData]:
