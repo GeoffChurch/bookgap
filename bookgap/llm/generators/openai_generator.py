@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.util import create_unicode_safe_filename, LOGGER
-from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Chapter, ProposalCounts, ProposalMetadata, create_proposal_model
+from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Proposal, ProposalCounts, ProposalMetadata
 
 
 class OpenAIProposalGenerator:
@@ -49,10 +49,6 @@ class OpenAIProposalGenerator:
                 f"Failed to initialize OpenAI client: {e}",
                 context={"provider": "openai", "error": str(e)}
             ) from e
-    
-    def _create_dynamic_proposal_model(self) -> type[BaseModel]:
-        """Create a Pydantic model with dynamic chapter constraints."""
-        return create_proposal_model(self.llm_config.chapters_min, self.llm_config.chapters_max)
     
     def generate(self, context: ProposalContext) -> ProposalResult:
         """Generate a textbook proposal using OpenAI Structured Outputs.
@@ -88,13 +84,9 @@ class OpenAIProposalGenerator:
             # Call OpenAI API with structured outputs
             LOGGER.info(f"Calling OpenAI API for gap {context.gap_idx} with structured outputs")
             
-            # Create dynamic proposal model with configuration-specific constraints
-            ProposalModel = self._create_dynamic_proposal_model()
-            
-            # Prepare API parameters
-            api_params = {
-                "model": self.llm_config.model,
-                "messages": [
+            response = self.client.beta.chat.completions.parse(
+                model=self.llm_config.model,
+                messages=[
                     {
                         "role": "system",
                         "content": "You are a publishing expert and academic researcher."
@@ -104,15 +96,10 @@ class OpenAIProposalGenerator:
                         "content": prompt
                     }
                 ],
-                "response_format": ProposalModel,
-                "max_completion_tokens": self.llm_config.max_tokens
-            }
-            
-            # Only add temperature for models that support it (not GPT-5)
-            if not self.llm_config.model.startswith("gpt-5"):
-                api_params["temperature"] = self.llm_config.temperature
-            
-            response = self.client.beta.chat.completions.parse(**api_params)
+                response_format=Proposal,
+                max_completion_tokens=self.llm_config.max_tokens,
+                temperature=self.llm_config.temperature if not self.llm_config.model.startswith("gpt-5") else None
+            )
             
             # Extract the parsed proposal
             proposal = response.choices[0].message.parsed
@@ -149,15 +136,7 @@ class OpenAIProposalGenerator:
             with open(raw_response_path, 'w', encoding='utf-8') as f:
                 json.dump(response.model_dump(), f, indent=2, ensure_ascii=False)
             
-            # Prepare metadata
             usage = response.usage.model_dump() if response.usage else None
-            metadata = {
-                "provider": self.llm_config.provider,
-                "model": self.llm_config.model,
-                "implementation": "structured",
-                "request_id": getattr(response, 'id', None),
-                "usage": usage
-            }
             
             LOGGER.info(f"Generated proposal for gap {context.gap_idx} with {num_chapters} chapters")
             
@@ -166,15 +145,14 @@ class OpenAIProposalGenerator:
                 prompt_path=prompt_path,
                 raw_response_path=raw_response_path,
                 counts=ProposalCounts(
-                    num_articles_for_llm=context.counts["num_articles_for_llm"],
-                    num_books_for_llm=context.counts["num_books_for_llm"]
+                    num_articles_for_llm=context.counts.num_articles_for_llm,
+                    num_books_for_llm=context.counts.num_books_for_llm
                 ),
                 metadata=ProposalMetadata(
-                    provider="openai",
                     model=self.llm_config.model,
                     implementation="structured",
-                    request_id=metadata.get("request_id"),
-                    usage=metadata.get("usage")
+                    request_id=response.id,
+                    usage=usage
                 )
             )
             
@@ -213,8 +191,8 @@ class OpenAIProposalGenerator:
         # Sample articles section
         prompt_parts.append("## Sample Articles\n\n")
         for i, article in enumerate(context.sampled_articles, 1):
-            title = article.get('display_name', 'N/A')
-            abstract = article.get('abstract', 'N/A')
+            title = article.display_name
+            abstract = article.abstract
             prompt_parts.append(f"**Article {i}**: {title}\n")
             prompt_parts.append(f"\t*Abstract*: {abstract}\n\n")
         
@@ -222,8 +200,8 @@ class OpenAIProposalGenerator:
         if context.covering_books:
             prompt_parts.append("## Related Existing Books\n\n")
             for i, book in enumerate(context.covering_books, 1):
-                title = book.get('display_name', 'N/A')
-                abstract = book.get('abstract', 'N/A')
+                title = book.display_name
+                abstract = book.abstract
                 prompt_parts.append(f"**Book {i}**: {title}\n")
                 prompt_parts.append(f"\t*Abstract*: {abstract}\n\n")
         

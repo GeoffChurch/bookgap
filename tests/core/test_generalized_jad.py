@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from bookgap.denoisers import DenoiserContext, JADDenoiser
 
 
-class TestDenoiserContext(DenoiserContext):
+class DenoiserContextForTests(DenoiserContext):
     """
     Concrete implementation of DenoiserContext for testing multiple subsets.
     """
@@ -120,7 +120,7 @@ def test_generalized_jad():
     
     # Test with 3 subsets
     X, A, subset_indices = create_synthetic_data(n_samples=300, n_features=20, n_subsets=3)
-    context = TestDenoiserContext(X, A, subset_indices)
+    context = DenoiserContextForTests(X, A, subset_indices)
     
     print(f"Created synthetic data:")
     print(f"  Total samples: {X.shape[0]}")
@@ -179,7 +179,7 @@ def test_backward_compatibility():
     
     # Create data with exactly 2 subsets for backward compatibility
     X, A, subset_indices = create_synthetic_data(n_samples=200, n_features=15, n_subsets=2)
-    context = TestDenoiserContext(X, A, subset_indices)
+    context = DenoiserContextForTests(X, A, subset_indices)
     
     # Test that X1() and X2() still work
     X1 = context.X1()

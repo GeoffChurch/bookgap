@@ -6,12 +6,12 @@ from pydantic import ValidationError
 from bookgap.llm.protocols import (
     # Pydantic models with validation logic
     Chapter,
-    create_proposal_model,
     # New batch-oriented data structures with behavior
     OpenAIModel,
     ChatMessage,
     Article,
     Book,
+    Proposal,
     ProposalCounts,
     PromptPair,
     ChatCompletionBody,
@@ -47,14 +47,16 @@ class TestChapterValidation:
     def test_empty_title_fails(self):
         """Test that empty title fails validation."""
         with pytest.raises(ValidationError) as exc_info:
-            Chapter(chapter_title="", chapter_description="Valid description")
+            # Chapter(chapter_title="", chapter_topics=["Topic 1", "Topic 2"])
+            Chapter(chapter_title="", chapter_summary="Valid summary")
         assert "String should have at least 1 character" in str(exc_info.value)
     
     def test_empty_description_fails(self):
         """Test that empty description fails validation."""
         with pytest.raises(ValidationError) as exc_info:
-            Chapter(chapter_title="Valid Title", chapter_description="")
-        assert "String should have at least 1 character" in str(exc_info.value)
+            # Chapter(chapter_title="Valid Title", chapter_topics=[])
+            Chapter(chapter_title="Valid Title", chapter_summary="")
+        assert "List should have at least 1 item" in str(exc_info.value)
 
 
 class TestBatchRequestIntegration:
@@ -163,17 +165,15 @@ class TestProposalValidation:
     
     def test_chapter_count_constraints(self):
         """Test chapter count validation with business rules."""
-        # Create a proposal model with 10-15 chapter constraints
-        ProposalModel = create_proposal_model(chapters_min=10, chapters_max=15)
-        
         # Test too few chapters fails
         few_chapters = [
-            Chapter(chapter_title=f"Chapter {i}", chapter_description=f"Description {i}")
+            # Chapter(chapter_title=f"Chapter {i}", chapter_topics=[f"Topic {i}.1", f"Topic {i}.2"])
+            Chapter(chapter_title=f"Chapter {i}", chapter_summary=f"Chapter {i} summary.")
             for i in range(1, 10)  # 9 chapters (below minimum of 10)
         ]
         
         with pytest.raises(ValidationError) as exc_info:
-            ProposalModel(
+            Proposal(
                 title="Too Small Book",
                 abstract="A book with too few chapters",
                 chapters=few_chapters
@@ -182,12 +182,13 @@ class TestProposalValidation:
         
         # Test too many chapters fails
         many_chapters = [
-            Chapter(chapter_title=f"Chapter {i}", chapter_description=f"Description {i}")
+            # Chapter(chapter_title=f"Chapter {i}", chapter_topics=[f"Topic {i}.1", f"Topic {i}.2"])
+            Chapter(chapter_title=f"Chapter {i}", chapter_summary=f"Chapter {i} summary.")
             for i in range(1, 17)  # 16 chapters (exceeds max of 15)
         ]
         
         with pytest.raises(ValidationError) as exc_info:
-            ProposalModel(
+            Proposal(
                 title="Too Large Book",
                 abstract="A book with too many chapters",
                 chapters=many_chapters
@@ -196,11 +197,12 @@ class TestProposalValidation:
         
         # Test valid chapter count succeeds
         valid_chapters = [
-            Chapter(chapter_title=f"Chapter {i}", chapter_description=f"Description {i}")
+            # Chapter(chapter_title=f"Chapter {i}", chapter_topics=[f"Topic {i}.1", f"Topic {i}.2"])
+            Chapter(chapter_title=f"Chapter {i}", chapter_summary=f"Chapter {i} summary.")
             for i in range(1, 13)  # 12 chapters (within 10-15 range)
         ]
         
-        proposal = ProposalModel(
+        proposal = Proposal(
             title="Valid Book",
             abstract="A book with appropriate number of chapters",
             chapters=valid_chapters
@@ -211,21 +213,20 @@ class TestProposalValidation:
     
     def test_empty_proposal_fields_fail(self):
         """Test that empty title/abstract fail validation."""
-        ProposalModel = create_proposal_model(chapters_min=10, chapters_max=15)
-        
         valid_chapters = [
-            Chapter(chapter_title=f"Chapter {i}", chapter_description=f"Description {i}")
+            # Chapter(chapter_title=f"Chapter {i}", chapter_topics=[f"Topic {i}.1", f"Topic {i}.2"])
+            Chapter(chapter_title=f"Chapter {i}", chapter_summary=f"Chapter {i} summary.")
             for i in range(1, 11)  # 10 chapters minimum
         ]
         
         # Empty title should fail
         with pytest.raises(ValidationError) as exc_info:
-            ProposalModel(title="", abstract="Valid abstract", chapters=valid_chapters)
+            Proposal(title="", abstract="Valid abstract", chapters=valid_chapters)
         assert "String should have at least 1 character" in str(exc_info.value)
         
         # Empty abstract should fail
         with pytest.raises(ValidationError) as exc_info:
-            ProposalModel(title="Valid Title", abstract="", chapters=valid_chapters)
+            Proposal(title="Valid Title", abstract="", chapters=valid_chapters)
         assert "String should have at least 1 character" in str(exc_info.value)
 
 

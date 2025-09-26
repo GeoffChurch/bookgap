@@ -2,7 +2,21 @@
 
 ## Executive Summary
 
-The current Hydra-based `workflow_functions.py` implements core batch processing but lacks the rich artifacts generation that existed in the original workflow. This plan implements a simplified depth-first approach with **hardcoded settings** to restore all missing functionality quickly, starting with basic gap visualization plots and building to full LaTeX/CSV generation.
+The current Hydra-based `workflow_functions.py` implements core batch processing but lacks the rich artifacts generation that e## Simplified Implementation Principles
+
+### 🏗️ **Hardcode Everything Initially**
+- **Plot settings**: Figure size (12, 10), DPI 300, PNG format, standard colors
+- **File formats**: JSON with 2-space indent, CSV with UTF-8 encoding
+- **Directory structure**: `outputs/{timestamp}/{plots,contexts,proposals,latex}/`
+- **LaTeX templates**: Simple article format with minimal styling
+
+### 🔄 **Leverage Unified Architecture** 
+- **Eliminate Code Duplication**: Multiple plotting functions share 80-90% of logic
+  - `save_gap_plot_with_proposals()` and `save_gap_books_vs_proposals_plot()` use same pipeline
+  - Different modes via `PlotConfig.standard_mode()` vs `PlotConfig.comparison_mode()`
+  - Single data preparation pipeline with different visualization strategies
+- **Shared Components**: Projection, embedding handling, file saving, error handling
+- **Configuration-Driven**: Plot appearance controlled by config rather than separate functionsin the original workflow. This plan implements a simplified depth-first approach with **hardcoded settings** to restore all missing functionality quickly, starting with basic gap visualization plots and building to full LaTeX/CSV generation.
 
 **Key Simplification**: All settings (plot sizes, file formats, directory structures) will be hardcoded initially. Hydra configuration can be added later as needed.
 
@@ -74,13 +88,21 @@ bookgap/
 ### 🚀 **PHASE 1: Basic Gap Plots (Immediate Deliverable)**
 **Goal**: Generate `save_gap_plot_with_proposals` plots at end of Phase 1
 
-#### Step 1.1: Create Foundation Module
-**File**: `bookgap/llm/artifacts/gap_plots.py`
-- Port `save_gap_plot_with_proposals()` from `gap_finder.py`
-- Port `_create_gap_plot()` and `_compute_base_projection()` helper functions
-- **Hardcode all settings**: figure size (12, 10), DPI 300, PNG format, alpha 0.3
-- Update signature: `save_gap_plot_with_proposals(gap: GapWithContext, proposals: List[ParsedProposal], output_dir: Path) -> Path`
-- Use passed-in Hydra output directory
+#### Step 1.1: Create Foundation Module ✅ **PARTIAL - Foundation Complete, Features Missing**
+**File**: `bookgap/llm/artifacts/gap_plots.py` 
+- ✅ **COMPLETED**: Modern unified plotting architecture with `UnifiedGapPlotter`
+- ✅ **COMPLETED**: Standardized data structures (`VisualizationData`, `PlotConfig`, `ProjectionMethod`)
+- ✅ **COMPLETED**: Basic `save_gap_plot_with_proposals()` functionality
+- ❌ **MISSING**: Gap center marking (red star for center article)
+- ❌ **MISSING**: Complete neighbor network visualization (4-way FAISS searches)
+- ❌ **MISSING**: Article classification (gap vs non-gap neighboring articles)
+- ❌ **MISSING**: Full `_collect_visualization_data()` equivalent functionality
+
+**Remaining Work**: Enhance `GapVisualizationDataPreparer` to include:
+- Gap center identification and special marking
+- Complete neighbor search logic from original `_perform_gap_neighbor_searches()`
+- Article classification and neighbor context visualization
+- All information richness from original `gap_finder.save_gap_plot_with_proposals()`
 
 #### Step 1.2: Integrate with Workflow
 **File**: `bookgap/llm/generators/workflow_artifacts.py`
@@ -88,12 +110,18 @@ bookgap/
 - Add call to `run_batch_workflow()` in `workflow_functions.py`
 - Get Hydra output directory: `from hydra.core.hydra_config import HydraConfig; output_dir = Path(HydraConfig.get().runtime.output_dir)`
 
-#### Step 1.3: Test & Validate Phase 1
+#### Step 1.3: Test & Validate Phase 1 ⚠️ **PARTIAL SUCCESS**
 ```bash
 # Test command should generate gap plots with proposals
 python bookgap/batch_generator.py config=debug batch.num_gaps=1
 # Expected: outputs/{hydra_timestamp}/plots/gap_0_visualization_with_proposals.png
 ```
+
+**Current Status**: 
+- ✅ Modern architecture foundation complete
+- ✅ Basic plotting functionality working
+- ❌ **Plots are less informative than original** - missing gap center, neighbor network context
+- ⚠️ **Phase 1 Foundation Complete** but **Feature Parity Incomplete**
 
 ---
 
@@ -130,10 +158,46 @@ python bookgap/batch_generator.py config=debug batch.num_gaps=1
 
 #### Step 3.1: Statistical Plots
 **Extend**: `bookgap/llm/artifacts/gap_plots.py`
-- Port `save_gap_books_vs_proposals_plot()` from `gap_finder.py`
+- ✅ **Leverage Unified Pipeline**: Both `save_gap_plot_with_proposals()` and `save_gap_books_vs_proposals_plot()` share 90% functionality:
+  - **Shared data preparation**: Gap articles, covering books, neighbor searches, projection pipeline
+  - **Shared embedding logic**: Proposal handling, PCA/t-SNE projection, axis labeling
+  - **Different coloring strategies**: Standard vs classification-based coloring
+- **Implementation approach**: 
+  - Extend `PlotConfig` with `.standard_mode()` and `.comparison_mode()` class methods
+  - Single `_unified_gap_plot_pipeline()` function handles both modes
+  - Classification logic as configurable coloring strategy via `coloring_mode` field
+
+**PlotConfig Method Design**:
+```python
+@classmethod
+def standard_mode(cls, method: str, topic_name: str, gap_idx: int) -> "PlotConfig":
+    """Standard gap visualization with full neighborhood context.
+    Shows: gap articles (red), gap center (red star), neighbors, books (orange), proposals (purple)"""
+    return cls(method_name=method, topic_name=topic_name, gap_idx=gap_idx, coloring_mode="standard")
+
+@classmethod  
+def comparison_mode(cls, method: str, topic_name: str, gap_idx: int) -> "PlotConfig":
+    """Books vs proposals classification visualization.
+    Shows: articles colored by nearest neighbor, covering books, proposals (no neighbors/center)"""
+    return cls(method_name=method, topic_name=topic_name, gap_idx=gap_idx, coloring_mode="classification",
+               article_color="#ff7f0e", gap_article_color="#1f77b4", proposal_marker="s")
+```
+
+**Unified Function Usage**:
+```python
+def save_gap_plot_with_proposals(gap_with_context, proposals, method="PCA"):
+    config = PlotConfig.standard_mode(method, gap_with_context.topic_name, gap_with_context.gap_idx)
+    return _unified_gap_plot_pipeline(gap_with_context, proposals, config)
+
+def save_gap_books_vs_proposals_plot(gap_with_context, proposals, method="PCA"):
+    config = PlotConfig.comparison_mode(method, gap_with_context.topic_name, gap_with_context.gap_idx)
+    return _unified_gap_plot_pipeline(gap_with_context, proposals, config)
+```
 - Port Q-Q plot generation from `gap_statistics.py`
 - **Hardcode all plot settings**: colors, markers, sizes, fonts
 - Add gap size histograms and distribution analysis
+
+**Code Elimination**: This unified approach eliminates ~80% of code duplication between plotting functions
 
 ---
 
@@ -226,9 +290,11 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
 
 ## Success Criteria by Phase
 
-### ✅ **Phase 1 Success**: 
-- `python bookgap/batch_generator.py config=debug batch.num_gaps=1` generates gap plots with proposals
-- Plots saved to `{hydra_output_dir}/plots/gap_0_visualization_with_proposals.png`
+### ⚠️ **Phase 1 Status**: 
+- ✅ **Architecture Foundation Complete**: Modern unified plotting system working
+- ✅ **Basic Functionality**: `python bookgap/batch_generator.py config=debug batch.num_gaps=1` generates gap plots
+- ❌ **Feature Parity Incomplete**: Plots missing gap center marking, neighbor network, article classification
+- 🎯 **Next Priority**: Enhance `GapVisualizationDataPreparer` to match original `gap_finder` information richness
 
 ### ✅ **Phase 2 Success**:
 - CSV results file: `{hydra_output_dir}/gaps_analysis_results.csv`

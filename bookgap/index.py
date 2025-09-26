@@ -118,9 +118,9 @@ def range_search_radii_(
     return_dists: bool = True,
     return_ids: bool = True
 ) -> RangeSearchResult:
-    lims = [np.array([], dtype=np.uint64)] if return_lims else None
-    dists = [np.array([], dtype=np.float32)] if return_dists else None
-    ids = [np.array([], dtype=np.int64)] if return_ids else None
+    lims: Optional[list[NDArray[np.uint64]]] = [] if return_lims else None
+    dists: Optional[list[NDArray[np.float32]]] = [] if return_dists else None
+    ids: Optional[list[NDArray[np.int64]]] = [] if return_ids else None
     for i in tqdm.tqdm(range(len(query)), desc="Range search radii", mininterval=1, delay=1):
         batch = query[i:i+1]
         lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore
@@ -136,10 +136,10 @@ def range_search_radii_(
             dists.append(dists_)
         if ids is not None:
             ids.append(ids_)
-    lims = np.concatenate(lims) if lims is not None else None
-    dists = np.concatenate(dists) if dists is not None else None
-    ids = np.concatenate(ids) if ids is not None else None
-    return RangeSearchResult(lims=lims, dists=dists, ids=ids)
+    return RangeSearchResult(
+        lims=np.concatenate(lims) if lims is not None else None,
+        dists=np.concatenate(dists) if dists is not None else None,
+        ids=np.concatenate(ids) if ids is not None else None)
 
 def range_search_radii_with(
     index: faiss.Index,
@@ -193,9 +193,9 @@ def range_search_(
     return_ids: bool = True
 ) -> RangeSearchResult:
     # Need to use small batches to avoid crashing
-    lims = [] if return_lims else None
-    dists = [] if return_dists else None
-    ids = [] if return_ids else None
+    lims: Optional[list[NDArray[np.uint64]]] = [] if return_lims else None
+    dists: Optional[list[NDArray[np.float32]]] = [] if return_dists else None
+    ids: Optional[list[NDArray[np.int64]]] = [] if return_ids else None
 
     batch_size = 48
     with tqdm.tqdm(desc="Range search", total=len(query)) as pbar:
@@ -213,10 +213,10 @@ def range_search_(
                 ids.append(ids_)
             pbar.update(len(batch))
     
-    lims = np.concatenate(lims) if lims is not None else None
-    dists = np.concatenate(dists) if dists is not None else None
-    ids = np.concatenate(ids) if ids is not None else None
-    return RangeSearchResult(lims=lims, dists=dists, ids=ids)
+    return RangeSearchResult(
+        lims=np.concatenate(lims) if lims is not None else None,
+        dists=np.concatenate(dists) if dists is not None else None,
+        ids=np.concatenate(ids) if ids is not None else None)
 
 
 def range_search_with_(
@@ -224,7 +224,7 @@ def range_search_with_(
     query: NDArray, 
     epsilon: float,
     kernel_fn: Callable[[int, NDArray, NDArray], None],
-    batch_size: int = 48
+    batch_size: int = 24
 ) -> None:
     """
     Range search that processes results point-by-point to avoid memory bottlenecks.

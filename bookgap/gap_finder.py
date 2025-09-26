@@ -777,65 +777,7 @@ def _compute_base_projection(
         return embeddings_2d, pc_variances, pca.transform
 
     if method_upper == 'LPP':
-        raise NotImplementedError("LPP projection is not yet implemented in this context.")
-        gap_article_indices = gap.get_dists_idxs().idxs
-        covering_book_indices = list(book_to_articles_mapping.keys())
-        k = 5
-        item_neighbors = defaultdict(set)
-        global_to_local = { (work_type, global_idx): local_idx for local_idx, (work_type, global_idx) in enumerate(all_items) }
-        # 1. Article-article neighbors
-        if len(gap_article_indices) > 0:
-            res = knn(articles, articles, k=k+1)
-            for gap_article_idx in gap_article_indices:
-                if ('article', gap_article_idx) in global_to_local:
-                    neighbors = res.I[gap_article_idx]
-                    for neighbor_idx in neighbors:
-                        if ('article', neighbor_idx) in global_to_local and neighbor_idx != gap_article_idx:
-                            item_neighbors[('article', gap_article_idx)].add(global_to_local[('article', neighbor_idx)])
-        # 2. Article-book neighbors
-        if len(gap_article_indices) > 0 and len(books.embeddings()) > 0:
-            res = knn(books, articles, k=k)
-            for gap_article_idx in gap_article_indices:
-                if ('article', gap_article_idx) in global_to_local:
-                    neighbors = res.I[gap_article_idx]
-                    for neighbor_idx in neighbors:
-                        if ('book', neighbor_idx) in global_to_local:
-                            item_neighbors[('article', gap_article_idx)].add(global_to_local[('book', neighbor_idx)])
-        # 3. Book-article neighbors
-        if len(covering_book_indices) > 0:
-            res = knn(articles, books, k=k)
-            for covering_book_idx in covering_book_indices:
-                if ('book', covering_book_idx) in global_to_local:
-                    neighbors = res.I[covering_book_idx]
-                    for neighbor_idx in neighbors:
-                        if ('article', neighbor_idx) in global_to_local:
-                            item_neighbors[('book', covering_book_idx)].add(global_to_local[('article', neighbor_idx)])
-        # 4. Book-book neighbors
-        if len(covering_book_indices) > 0:
-            res = knn(books, books, k=k+1)
-            for covering_book_idx in covering_book_indices:
-                if ('book', covering_book_idx) in global_to_local:
-                    neighbors = res.I[covering_book_idx]
-                    for neighbor_idx in neighbors:
-                        if ('book', neighbor_idx) in global_to_local and neighbor_idx != covering_book_idx:
-                            item_neighbors[('book', covering_book_idx)].add(global_to_local[('book', neighbor_idx)])
-        # Build neighbor indices
-        neighbor_indices_list = []
-        for work_type, global_idx in all_items:
-            neighbors = list(item_neighbors[(work_type, global_idx)])
-            neighbors = neighbors[:k]
-            local_idx = global_to_local[(work_type, global_idx)]
-            while len(neighbors) < k:
-                neighbors.append(neighbors[0] if neighbors else local_idx)
-            neighbor_indices_list.append(neighbors)
-        neighbor_indices = np.array(neighbor_indices_list)
-        # LPP projector
-        context = _GapVisualizationContext(all_embeddings, neighbor_indices, item_types, k)
-        lpp_denoiser = LPPDenoiser()
-        projector, _eigs = lpp_denoiser.projector(context, n_components=2)
-        embeddings_2d = all_embeddings @ projector
-        transform_fn = lambda X: X @ projector
-        return embeddings_2d, "", transform_fn
+        raise NotImplementedError("LPP projection is not yet implemented.")
 
     raise NotImplementedError(f"Projection method not supported: {method}")
 

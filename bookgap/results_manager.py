@@ -88,9 +88,9 @@ class ResultsValidator:
         self.config = config
         self._validators = self._build_validators()
     
-    def _build_validators(self) -> Dict[str, List[Callable]]:
+    def _build_validators(self) -> dict[str, list[Callable]]:
         """Build validation functions from configuration rules."""
-        validators = {}
+        validators: dict[str, list[Callable]] = {}
         
         for rule in self.config.validation_rules:
             field_name = rule.field_name
@@ -281,22 +281,6 @@ class BaseResults(ABC):
                 df_filtered = df_filtered[df_filtered[column] == value]
         
         return df_filtered
-    
-    def get_summary_stats(self) -> Dict[str, Any]:
-        """Get summary statistics for the results."""
-        summary = {
-            'total_rows': len(self._df),
-            'columns': list(self._df.columns),
-            'memory_usage': self._df.memory_usage(deep=True).sum(),
-            'null_counts': self._df.isnull().sum().to_dict()
-        }
-        
-        # Add numeric column statistics
-        numeric_cols = self._df.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0:
-            summary['numeric_stats'] = self._df[numeric_cols].describe().to_dict()
-        
-        return summary
     
     def __len__(self) -> int:
         """Return number of rows."""
@@ -976,7 +960,7 @@ class ResultsProcessor:
         
         if not df.empty and all(col in df.columns for col in group_by):
             # Prepare aggregation functions
-            agg_functions = {}
+            agg_functions: dict[str, Any] = {}
             
             for column, agg_spec in agg_config.items():
                 if column not in df.columns:
@@ -1055,80 +1039,6 @@ class ResultsProcessor:
                 return df.nsmallest(n, metric_column)
             else:
                 return df.nlargest(n, metric_column)
-    
-    @staticmethod
-    def calculate_statistical_summary(results: BaseResults, 
-                                    columns: Optional[List[str]] = None,
-                                    include_distribution: bool = False) -> Dict[str, Any]:
-        """Calculate comprehensive statistical summary of results."""
-        df = results.get_df()
-        
-        if df.empty:
-            return {}
-        
-        # Select columns to analyze
-        if columns is None:
-            numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-        else:
-            numeric_columns = [col for col in columns if col in df.columns and 
-                             df[col].dtype in ['int64', 'float64']]
-        
-        summary = {
-            'total_rows': len(df),
-            'numeric_columns': len(numeric_columns),
-            'column_stats': {}
-        }
-        
-        for col in numeric_columns:
-            series = df[col].dropna()
-            if len(series) == 0:
-                continue
-            
-            # Helper function to safely convert to float
-            def safe_float(val) -> float:
-                if pd.isna(val):
-                    return 0.0
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    return 0.0
-            
-            col_stats = {
-                'count': len(series),
-                'mean': safe_float(series.mean()),
-                'std': safe_float(series.std()),
-                'min': safe_float(series.min()),
-                'max': safe_float(series.max()),
-                'median': safe_float(series.median()),
-                'q25': safe_float(series.quantile(0.25)),
-                'q75': safe_float(series.quantile(0.75)),
-                'skewness': safe_float(series.skew()),
-                'kurtosis': safe_float(series.kurtosis()),
-                'null_count': df[col].isnull().sum(),
-                'null_percentage': float(df[col].isnull().sum() / len(df) * 100)
-            }
-            
-            if include_distribution:
-                # Add distribution information
-                try:
-                    # Calculate histogram bins
-                    hist, bin_edges = np.histogram(series, bins=10)
-                    col_stats['histogram'] = {
-                        'counts': hist.tolist(),
-                        'bin_edges': bin_edges.tolist()
-                    }
-                    
-                    # Calculate percentiles
-                    percentiles = [1, 5, 10, 25, 50, 75, 90, 95, 99]
-                    col_stats['percentiles'] = {
-                        f'p{p}': float(series.quantile(p/100)) for p in percentiles
-                    }
-                except Exception as e:
-                    LOGGER.warning(f"Could not calculate distribution for {col}: {e}")
-            
-            summary['column_stats'][col] = col_stats
-        
-        return summary
     
     @staticmethod
     def detect_anomalies(results: BaseResults, columns: List[str], 
@@ -1421,7 +1331,7 @@ class ResultsRegistry:
 class ResultsManager:
     """Central management system for all results operations."""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self._active_results: Dict[str, BaseResults] = {}
         self._cache_enabled = True
         self._cache: Dict[str, Any] = {}
@@ -1466,19 +1376,6 @@ class ResultsManager:
         if results:
             return ResultsExporter.export_multiple_formats(results, base_path, formats)
         return []
-    
-    def get_summary(self) -> Dict[str, Any]:
-        """Get summary of all managed results."""
-        summary = {
-            'num_active_results': len(self._active_results),
-            'result_names': list(self._active_results.keys()),
-            'result_stats': {}
-        }
-        
-        for name, results in self._active_results.items():
-            summary['result_stats'][name] = results.get_summary_stats()
-        
-        return summary
     
     def clear_cache(self) -> None:
         """Clear internal cache."""

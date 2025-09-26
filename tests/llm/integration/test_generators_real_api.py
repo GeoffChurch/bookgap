@@ -16,28 +16,28 @@ import pytest
 from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
 from bookgap.llm.llm_implementation import Implementation
 from bookgap.types import CellType
-from bookgap.llm.protocols import ProposalContext
+from bookgap.llm.protocols import ProposalContext, ProposalCounts, Article, Book
 from bookgap.llm.generators.openai_generator import OpenAIProposalGenerator
 from bookgap.llm.generators.json_prompt_generator import JSONPromptProposalGenerator
 
 
 # Sample data for testing
 SAMPLE_ARTICLES = [
-    {
-        'display_name': 'Deep Learning for Computer Vision',
-        'abstract': 'This paper presents novel approaches to computer vision using deep neural networks.'
-    },
-    {
-        'display_name': 'Attention Mechanisms in Neural Networks',
-        'abstract': 'We explore attention mechanisms and their applications in various neural network architectures.'
-    }
+    Article(
+        display_name='Deep Learning for Computer Vision',
+        abstract='This paper presents novel approaches to computer vision using deep neural networks.'
+    ),
+    Article(
+        display_name='Attention Mechanisms in Neural Networks',
+        abstract='We explore attention mechanisms and their applications in various neural network architectures.'
+    )
 ]
 
 SAMPLE_BOOKS = [
-    {
-        'display_name': 'Pattern Recognition and Machine Learning',
-        'abstract': 'A comprehensive introduction to pattern recognition and machine learning techniques.'
-    }
+    Book(
+        display_name='Pattern Recognition and Machine Learning',
+        abstract='A comprehensive introduction to pattern recognition and machine learning techniques.'
+    )
 ]
 
 SAMPLE_CONTEXT = ProposalContext(
@@ -48,10 +48,10 @@ SAMPLE_CONTEXT = ProposalContext(
     requested_num_prompt_books=1,
     sampled_articles=SAMPLE_ARTICLES,
     covering_books=SAMPLE_BOOKS,
-    counts={
-        "num_articles_for_llm": 2,
-        "num_books_for_llm": 1
-    }
+    counts=ProposalCounts(
+        num_articles_for_llm=2,
+        num_books_for_llm=1
+    )
 )
 
 
@@ -66,7 +66,6 @@ def create_test_config() -> AnalysisConfiguration:
     
     llm_config = LLMConfiguration(
         implementation=Implementation.STRUCTURED,
-        provider="openai",
         model="gpt-5",
         temperature=0.2,
         max_tokens=2000,  # Should be sufficient for 3-4 chapters
@@ -105,8 +104,8 @@ class TestGeneratorsWithRealAPI:
                 assert result.prompt_path.exists()
                 if result.raw_response_path:  # May be None for structured outputs
                     assert result.raw_response_path.exists()
-                assert result.counts.num_articles_for_llm == SAMPLE_CONTEXT.counts["num_articles_for_llm"]
-                assert result.counts.num_books_for_llm == SAMPLE_CONTEXT.counts["num_books_for_llm"]
+                assert result.counts.num_articles_for_llm == SAMPLE_CONTEXT.counts.num_articles_for_llm
+                assert result.counts.num_books_for_llm == SAMPLE_CONTEXT.counts.num_books_for_llm
                 assert result.metadata.provider == "openai"
                 assert result.metadata.implementation == "structured"
                 
@@ -119,7 +118,7 @@ class TestGeneratorsWithRealAPI:
                     assert 3 <= len(proposal_data["chapters"]) <= 4  # Match our test configuration
                     
             # Test passed - move to success location
-            success_dir = test_results_dir.parent / "openai_last_success"
+            success_dir = test_results_dir / "openai_last_success"
             if success_dir.exists():
                 import shutil
                 shutil.rmtree(success_dir)
@@ -127,7 +126,7 @@ class TestGeneratorsWithRealAPI:
                 
         except Exception as e:
             # Test failed - move to failure location for inspection
-            failure_dir = test_results_dir.parent / "openai_last_failure"
+            failure_dir = test_results_dir / "openai_last_failure"
             if failure_dir.exists():
                 import shutil
                 shutil.rmtree(failure_dir)
@@ -146,7 +145,6 @@ class TestGeneratorsWithRealAPI:
         
         llm_config = LLMConfiguration(
             implementation=Implementation.PROMPT,
-            provider="openai",
             model="gpt-4",
             temperature=0.2,
             max_tokens=2000,
@@ -172,8 +170,8 @@ class TestGeneratorsWithRealAPI:
                 assert result.prompt_path.exists()
                 if result.raw_response_path:  # May be None
                     assert result.raw_response_path.exists()
-                assert result.counts.num_articles_for_llm == SAMPLE_CONTEXT.counts["num_articles_for_llm"]
-                assert result.counts.num_books_for_llm == SAMPLE_CONTEXT.counts["num_books_for_llm"]
+                assert result.counts.num_articles_for_llm == SAMPLE_CONTEXT.counts.num_articles_for_llm
+                assert result.counts.num_books_for_llm == SAMPLE_CONTEXT.counts.num_books_for_llm
                 assert result.metadata.provider == "openai"
                 assert result.metadata.implementation == "prompt"
                 

@@ -46,26 +46,15 @@ def main(cfg: ExperimentConfig) -> None:
         LOGGER.error("OPENAI_API_KEY environment variable is required")
         raise ValueError("OPENAI_API_KEY environment variable is required")
     
-    try:
-        # Run the complete batch workflow
-        results = run_batch_workflow(cfg)
-        
-        # Log completion
-        LOGGER.info("=" * 60)
-        LOGGER.info("WORKFLOW COMPLETED SUCCESSFULLY")
-        LOGGER.info("=" * 60)
-        LOGGER.info(f"Generated proposals: {len(results.proposals)}")
-        LOGGER.info(f"Output directory: {HydraConfig.get().runtime.output_dir}")
-        
-    except Exception as e:
-        LOGGER.error("=" * 60)
-        LOGGER.error("WORKFLOW FAILED")
-        LOGGER.error("=" * 60)
-        LOGGER.error(f"Error: {str(e)}")
-        LOGGER.error(f"Error type: {type(e).__name__}")
-        if hasattr(e, 'context'):
-            LOGGER.error(f"Error context: {e.context}")  # type: ignore
-        raise
+    # Run the complete batch workflow
+    results = run_batch_workflow(cfg)
+    
+    # Log completion
+    LOGGER.info("=" * 60)
+    LOGGER.info("WORKFLOW COMPLETED SUCCESSFULLY")
+    LOGGER.info("=" * 60)
+    LOGGER.info(f"Generated proposals: {len(results.proposals)}")
+    LOGGER.info(f"Output directory: {HydraConfig.get().runtime.output_dir}")
 
 
 if __name__ == "__main__":

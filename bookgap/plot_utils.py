@@ -12,9 +12,11 @@ import matplotlib.pyplot as plt
 import matplotlib.axes
 import matplotlib.figure
 from pathlib import Path
-from typing import Optional, Tuple, Union, Any, Dict
+from typing import Optional, Tuple, Union
 import numpy as np
 from numpy.typing import NDArray
+
+from bookgap.visualization import VisualizationData, PlotConfig
 
 # Centralized plotting constants (eliminates duplication across files)
 DPI = 300
@@ -347,6 +349,194 @@ class StatisticalPlotUtils:
             ax.set_yscale('log')
         
         ax.grid(True, alpha=GRID_ALPHA)
+
+
+# Modern unified plotting engine
+class UnifiedGapPlotter:
+    """
+    Modern, unified plotting engine for all gap visualizations.
+    
+    This class replaces the scattered plotting logic across multiple files
+    with a single, well-tested, configurable plotting system.
+    """
+    
+    def __init__(self):
+        """Initialize the plotter."""
+        pass
+    
+    def plot_gap_visualization(
+        self,
+        data: VisualizationData,
+        config: PlotConfig
+    ) -> matplotlib.figure.Figure:
+        """
+        Create a gap visualization plot using standardized data structures.
+        
+        This replaces all the complex plotting logic in gap_plots.py and gap_finder.py
+        with a single, clean, well-tested function.
+        
+        Args:
+            data: Standardized visualization data
+            config: Plot configuration
+            
+        Returns:
+            Matplotlib figure ready for saving
+        """
+        fig, ax = PlotManager.create_figure(config.figsize)
+        
+        # Plot non-gap articles
+        if data.non_gap_article_positions:
+            ax.scatter(
+                data.embeddings_2d[data.non_gap_article_positions, 0],
+                data.embeddings_2d[data.non_gap_article_positions, 1],
+                c=config.article_color,
+                s=config.article_size,
+                alpha=config.article_alpha,
+                marker=config.article_marker,
+                label='Articles',
+                zorder=1
+            )
+        
+        # Plot gap articles
+        if data.gap_article_positions:
+            ax.scatter(
+                data.embeddings_2d[data.gap_article_positions, 0],
+                data.embeddings_2d[data.gap_article_positions, 1],
+                c=config.gap_article_color,
+                s=config.gap_article_size,
+                alpha=config.gap_article_alpha,
+                marker=config.article_marker,
+                label='Gap Articles',
+                zorder=2
+            )
+        
+        # Plot books
+        if data.book_positions:
+            ax.scatter(
+                data.embeddings_2d[data.book_positions, 0],
+                data.embeddings_2d[data.book_positions, 1],
+                c=config.book_color,
+                s=config.book_size,
+                alpha=config.book_alpha,
+                marker=config.book_marker,
+                label='Books',
+                zorder=3
+            )
+        
+        # Plot gap center
+        if data.center_position is not None:
+            ax.scatter(
+                data.embeddings_2d[data.center_position, 0],
+                data.embeddings_2d[data.center_position, 1],
+                c=config.center_color,
+                s=config.center_size,
+                alpha=config.center_alpha,
+                marker=config.center_marker,
+                edgecolors='black',
+                linewidths=1.2,
+                label='Gap Center',
+                zorder=4
+            )
+        
+        # Plot proposals
+        if data.proposal_embeddings_2d is not None and len(data.proposal_embeddings_2d) > 0:
+            ax.scatter(
+                data.proposal_embeddings_2d[:, 0],
+                data.proposal_embeddings_2d[:, 1],
+                c=config.proposal_color,
+                s=config.proposal_size,
+                alpha=config.proposal_alpha,
+                marker=config.proposal_marker,
+                edgecolors='black',
+                linewidths=1.2,
+                label='Proposals',
+                zorder=5
+            )
+        
+        # Configure axes
+        self._configure_axes(ax, data, config)
+        
+        return fig
+    
+    def _configure_axes(
+        self,
+        ax: matplotlib.axes.Axes,
+        data: VisualizationData,
+        config: PlotConfig
+    ) -> None:
+        """Configure axes with standardized styling."""
+        # Set title
+        if config.title:
+            ax.set_title(config.title)
+        elif config.topic_name and config.gap_idx is not None:
+            ax.set_title(f"Gap {config.gap_idx} - {config.topic_name} ({config.method_name})")
+        
+        # Set axis labels based on method
+        if config.method_name.upper() == 'PCA' and 'explained_variance_ratio' in data.method_info:
+            var_ratios = data.method_info['explained_variance_ratio']
+            if len(var_ratios) >= 2:
+                ax.set_xlabel(f"PC1 ({var_ratios[0]:.1%})")
+                ax.set_ylabel(f"PC2 ({var_ratios[1]:.1%})")
+            else:
+                ax.set_xlabel('PC1')
+                ax.set_ylabel('PC2')
+        else:
+            ax.set_xlabel('Component 1')
+            ax.set_ylabel('Component 2')
+        
+        # Configure grid
+        if config.show_grid:
+            ax.grid(True, alpha=config.grid_alpha)
+        
+        # Configure legend
+        if config.show_legend:
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend()
+    
+    def save_plot(
+        self,
+        fig: matplotlib.figure.Figure,
+        config: PlotConfig,
+        base_dir: Path
+    ) -> Path:
+        """
+        Save plot with standardized configuration.
+        
+        Args:
+            fig: Figure to save
+            config: Plot configuration
+            base_dir: Base directory for saving
+            
+        Returns:
+            Path where plot was saved
+        """
+        save_path = config.build_save_path(base_dir)
+        PlotManager.save_and_close(fig, save_path, dpi=config.dpi)
+        return save_path
+    
+    def create_and_save_gap_plot(
+        self,
+        data: VisualizationData,
+        config: PlotConfig,
+        base_dir: Path
+    ) -> Path:
+        """
+        Create and save a gap visualization plot in one call.
+        
+        This is the main entry point that replaces all the individual
+        plotting functions with a single, unified interface.
+        
+        Args:
+            data: Standardized visualization data
+            config: Plot configuration
+            base_dir: Base directory for saving
+            
+        Returns:
+            Path where plot was saved
+        """
+        fig = self.plot_gap_visualization(data, config)
+        return self.save_plot(fig, config, base_dir)
 
 
 # Convenience functions that maintain backward compatibility

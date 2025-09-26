@@ -5,6 +5,7 @@
 /cache
 /logs
 __pycache__/
+.env
 
 # Keep all but plots
 # !/artifacts/*/*

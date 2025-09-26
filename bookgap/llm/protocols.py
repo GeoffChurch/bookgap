@@ -119,7 +119,6 @@ class ProposalContext:
 @dataclass(frozen=True)
 class ProposalMetadata:
     """Metadata about the proposal generation process."""
-    provider: str
     model: str
     implementation: str
     request_id: str | None = None
@@ -140,7 +139,8 @@ class ProposalResult:
 class Chapter(BaseModel):
     """A chapter in a textbook proposal."""
     chapter_title: str = Field(..., description="Chapter title")
-    chapter_topics: list[str] = Field(..., description="Chapter topics")
+    # chapter_topics: list[str] = Field(..., description="Chapter topics")
+    # chapter_summary: str = Field(..., description="Chapter summary")
 
 
 class Proposal(BaseModel):

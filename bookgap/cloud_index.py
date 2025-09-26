@@ -236,15 +236,15 @@ def get_avgrefs(index_clouds: Collection[Cloud | SubCloud], query_cloud: Cloud |
     d = query_cloud.embeddings().shape[1]
     if len(avgref_embeddings) == 0:
         LOGGER.warning(f"No avgrefs found, returning empty array with shape (0, {d})")
-        avgref_embeddings = np.empty((0, d), dtype=np.float32)
+        avgref_embeddings_array = np.empty((0, d), dtype=np.float32)
     else:
-        avgref_embeddings = np.array(avgref_embeddings)
-    assert avgref_embeddings.ndim == 2, f"Expected avgref_embeddings to be 2D, got {avgref_embeddings.ndim}D"
-    assert avgref_embeddings.shape[1] == d, f"Expected avgref_embeddings shape[1] to be {d}, got {avgref_embeddings.shape[1]}"
+        avgref_embeddings_array = np.array(avgref_embeddings)
+    assert avgref_embeddings_array.ndim == 2, f"Expected avgref_embeddings_array to be 2D, got {avgref_embeddings_array.ndim}D"
+    assert avgref_embeddings_array.shape[1] == d, f"Expected avgref_embeddings_array shape[1] to be {d}, got {avgref_embeddings_array.shape[1]}"
 
     # Normalize avgref embeddings if requested
-    avgref_norms = np.linalg.norm(avgref_embeddings, axis=1)
-    assert avgref_norms.shape == (len(avgref_embeddings),), f"Expected avgref_norms shape {(len(avgref_embeddings),)}, got {avgref_norms.shape}"
+    avgref_norms = np.linalg.norm(avgref_embeddings_array, axis=1)
+    assert avgref_norms.shape == (len(avgref_embeddings_array),), f"Expected avgref_norms shape {(len(avgref_embeddings_array),)}, got {avgref_norms.shape}"
     LOGGER.info(f"avgref norms: {get_stats(avgref_norms)}")
     if normalize_avgref_embeddings:
         threshold = 1e-6
@@ -252,10 +252,10 @@ def get_avgrefs(index_clouds: Collection[Cloud | SubCloud], query_cloud: Cloud |
         if np.any(near_zero):
             small_norms = avgref_norms[near_zero]
             LOGGER.warning(f"{len(small_norms)} of {len(avgref_norms)} avgref embeddings have norms <= {threshold:.2e} and will not be normalized. Small norms: {get_stats(small_norms)}")
-        avgref_embeddings[~near_zero] /= avgref_norms[~near_zero, np.newaxis]
+        avgref_embeddings_array[~near_zero] /= avgref_norms[~near_zero, np.newaxis]
 
     return AvgrefsResult(
-        avgref_embeddings=avgref_embeddings,
+        avgref_embeddings=avgref_embeddings_array,
         corresponding_query_idxs=np.array(corresponding_query_idxs, dtype=np.uint64)
     )
 

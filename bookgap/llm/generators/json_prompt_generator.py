@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.util import create_unicode_safe_filename, LOGGER
-from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, ProposalCounts, ProposalMetadata, create_proposal_model
+from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, ProposalCounts, ProposalMetadata, Proposal
 
 
 class JSONPromptProposalGenerator:
@@ -136,8 +136,7 @@ class JSONPromptProposalGenerator:
             
             # Validate with Pydantic
             try:
-                # Create the Proposal model class with default chapter constraints
-                Proposal = create_proposal_model()
+                # Use the fixed Proposal model class
                 proposal = Proposal.model_validate(proposal_dict)
             except ValidationError as e:
                 raise ProposalGenerationError(
@@ -170,13 +169,7 @@ class JSONPromptProposalGenerator:
             
             # Prepare metadata
             usage = response.usage.model_dump() if response.usage else None
-            metadata = {
-                "provider": self.llm_config.provider,
-                "model": self.llm_config.model,
-                "implementation": "prompt",
-                "request_id": getattr(response, 'id', None),
-                "usage": usage
-            }
+            request_id = response.id
             
             LOGGER.info(f"Generated proposal for gap {context.gap_idx} with {num_chapters} chapters")
             
@@ -189,11 +182,10 @@ class JSONPromptProposalGenerator:
                     num_books_for_llm=context.counts.num_books_for_llm
                 ),
                 metadata=ProposalMetadata(
-                    provider="openai",
                     model=self.llm_config.model,
                     implementation="prompt",
-                    request_id=metadata.get("request_id"),
-                    usage=metadata.get("usage")
+                    request_id=request_id,
+                    usage=usage
                 )
             )
             
@@ -232,8 +224,8 @@ class JSONPromptProposalGenerator:
         # Sample articles section
         prompt_parts.append("## Sample Articles\n\n")
         for i, article in enumerate(context.sampled_articles, 1):
-            title = article.get('display_name', 'N/A')
-            abstract = article.get('abstract', 'N/A')
+            title = article.display_name
+            abstract = article.abstract
             prompt_parts.append(f"**Article {i}**: {title}\n")
             prompt_parts.append(f"\t*Abstract*: {abstract}\n\n")
         
@@ -241,8 +233,8 @@ class JSONPromptProposalGenerator:
         if context.covering_books:
             prompt_parts.append("## Related Existing Books\n\n")
             for i, book in enumerate(context.covering_books, 1):
-                title = book.get('display_name', 'N/A')
-                abstract = book.get('abstract', 'N/A')
+                title = book.display_name
+                abstract = book.abstract
                 prompt_parts.append(f"**Book {i}**: {title}\n")
                 prompt_parts.append(f"\t*Abstract*: {abstract}\n\n")
         

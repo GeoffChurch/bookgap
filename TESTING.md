@@ -47,8 +47,13 @@ python -m mypy bookgap/
 # Check with missing import stubs ignored
 python -m mypy bookgap/ --ignore-missing-imports
 
+# Check bookgap/ and tests/ while excluding OLD directories
+python -m mypy bookgap/ tests/ --exclude 'bookgap/batch_utils_OLD' --ignore-missing-imports
+
 # Check specific files
 python -m mypy bookgap/config_manager.py bookgap/llm/llm_implementation.py
 ```
 
-Note: Some mypy warnings related to third-party libraries (faiss, sklearn, tqdm) are expected and can be ignored.
+**Notes**: 
+- If using conda environment, prefix commands with: `conda run -p /home/gchurchill/src/bookgap/.conda`
+- Some mypy warnings related to third-party libraries (faiss, sklearn, tqdm) are expected and can be ignored.

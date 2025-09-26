@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from bookgap.cloud import SubCloud
 from bookgap.config_manager import AnalysisConfiguration
-from .protocols import ProposalContext
+from .protocols import ProposalContext, ProposalCounts, Book
 
 if TYPE_CHECKING:
     from bookgap.gap_finder import GapProtocol
@@ -68,7 +68,7 @@ def build_proposal_context(
     
     # Validate sampled articles have required fields
     for i, article in enumerate(sampled_articles):
-        if not article.get('display_name') or not article.get('abstract'):
+        if not article.display_name or not article.abstract:
             raise ValueError(f"Sampled article {i} missing required fields (display_name, abstract)")
     
     # Analyze book coverage and select top covering books
@@ -84,19 +84,22 @@ def build_proposal_context(
         requested_books = analysis_config.llm_config.requested_num_prompt_books
         
         for book_idx, _ in sorted_books[:requested_books]:
-            book = book_works[book_idx]
+            book_dict = book_works[book_idx]
             # Validate book has required fields
-            if not book.get('display_name') or not book.get('abstract'):
+            if not book_dict["display_name"] or not book_dict["abstract"]:
                 continue  # Skip books with missing fields rather than failing
-            covering_books.append(book)
+            covering_books.append(Book(
+                display_name=book_dict["display_name"],
+                abstract=book_dict["abstract"]
+            ))
     
     # Record actual counts used
     num_articles_for_llm = len(sampled_articles)
     num_books_for_llm = len(covering_books)
-    counts = {
-        "num_articles_for_llm": num_articles_for_llm,
-        "num_books_for_llm": num_books_for_llm
-    }
+    counts = ProposalCounts(
+        num_articles_for_llm=num_articles_for_llm,
+        num_books_for_llm=num_books_for_llm
+    )
     
     return ProposalContext(
         topic_name=topic_name,

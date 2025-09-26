@@ -311,36 +311,32 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
         
         jsonl_lines.append(json.dumps(jsonl_line))
     
-    # Write JSONL to temporary file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+    # Write JSONL to persistent file
+    batch_input_filename = f"batch_input_{int(time.time())}.jsonl"
+    with open(batch_input_filename, 'w') as f:
         for line in jsonl_lines:
             f.write(line + '\n')
-        temp_file_path = f.name
     
-    try:
-        # Upload file
-        LOGGER.info(f"Uploading batch file with {len(batch_requests)} requests")
-        with open(temp_file_path, 'rb') as file:
-            batch_input_file = client.files.create(
-                file=file,
-                purpose="batch"
-            )
-        
-        # Create batch job
-        LOGGER.info(f"Creating batch job with completion window: {config.batch.completion_window}")
-        batch = client.batches.create(
-            input_file_id=batch_input_file.id,
-            endpoint="/v1/chat/completions",
-            completion_window=config.batch.completion_window,  # type: ignore
-            metadata=metadata
+    # Upload file
+    LOGGER.info(f"Uploading batch file with {len(batch_requests)} requests from {batch_input_filename}")
+    with open(batch_input_filename, 'rb') as file:
+        batch_input_file = client.files.create(
+            file=file,
+            purpose="batch"
         )
-        
-        LOGGER.info(f"Batch job created successfully: {batch.id}")
-        return batch.id
-        
-    finally:
-        # Clean up temporary file
-        os.unlink(temp_file_path)
+    
+    # Create batch job
+    LOGGER.info(f"Creating batch job with completion window: {config.batch.completion_window}")
+    batch = client.batches.create(
+        input_file_id=batch_input_file.id,
+        endpoint="/v1/chat/completions",
+        completion_window=config.batch.completion_window,  # type: ignore
+        metadata=metadata
+    )
+    
+    LOGGER.info(f"Batch job created successfully: {batch.id}")
+    LOGGER.info(f"Batch input file saved as: {batch_input_filename}")
+    return batch.id
 
 
 def parse_batch_result_to_proposal(result: dict[str, Any]) -> ParsedProposal:
@@ -407,17 +403,37 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         LOGGER.info("Downloading batch results")
         result_file_response = client.files.content(batch.output_file_id)
         result_content = result_file_response.content.decode('utf-8')
+
+        with open(f"batch_{batch_job_id}_results.jsonl", "w") as f:
+            f.write(result_content)
         
         # Parse JSONL results into ParsedProposal instances
-        results = []
-        
-        for line in result_content.strip().split('\n'):
-            if line:
+        results: list[ParsedProposal] = []
+
+        raw_results = result_content.strip().split('\n')
+
+        num_errors = 0
+        num_empty = 0
+        num_stop_reason_length = 0
+
+        for line in raw_results:
+            if not line.strip():
+                num_empty += 1
+                continue
+            line_json = json.loads(line)
+            if line_json["response"]["body"]["choices"][0]["finish_reason"] == "length":
+                num_stop_reason_length += 1
+                continue
+            try:
                 # Parse into ParsedProposal instance
-                parsed_proposal = parse_batch_result_to_proposal(json.loads(line))
+                parsed_proposal = parse_batch_result_to_proposal(line_json)
+                LOGGER.info(f"Parsed proposal title: {parsed_proposal.proposal.title}")
                 results.append(parsed_proposal)
+            except Exception as e:
+                num_errors += 1
+                LOGGER.error(f"Failed to parse line in results: {e}. Line:\n{line}")
         
-        LOGGER.info(f"Downloaded and parsed {len(results)} proposals")
+        LOGGER.info(f"Downloaded and parsed {len(results)} proposals out of {len(raw_results)} results ({num_empty} empty results, {num_errors} errors, {num_stop_reason_length} with stop_reason='length')")
         
         # Parse original config from metadata using MetadataUtils
         metadata = batch.metadata or {}

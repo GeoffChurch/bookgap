@@ -86,7 +86,7 @@ class Filter:
             assert type(self.work_types) is tuple, "work_types must be a tuple of strings"
             assert all(isinstance(wt, str) for wt in self.work_types), "Each work type must be a string"
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, str | list[str]]:
         ret: dict[str, str | list[str]] = {}
         if self.topic is not None:
             ret["primary_topic.id"] = self.topic

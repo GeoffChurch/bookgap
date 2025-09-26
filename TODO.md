@@ -1,4 +1,4 @@
-# TODO: Architecture Improvements
+TODO: Architecture Improvements
 
 > **Note**: Items should be removed from this list upon completion, not marked as completed.
 
@@ -7,12 +7,12 @@
 ### Current Issue
 We have retained hideous `if TYPE_CHECKING` workarounds to avoid circular dependencies in multiple places:
 
-1. **`bookgap/llm/llm_implementation.py`**: 
+- **`bookgap/llm/llm_implementation.py`**: 
    - Uses `TYPE_CHECKING` imports for generator classes
    - `Implementation` enum uses string values instead of direct class mapping like `CellType`
    - Circular dependency from `config_manager → llm_implementation → generators → config_manager`
    
-2. **`bookgap/llm/context_builder.py`**: Uses `TYPE_CHECKING` to import `GapProtocol` and string annotation `gap: "GapProtocol"` due to circular import between LLM module and `gap_finder.py`
+- **`bookgap/llm/context_builder.py`**: Uses `TYPE_CHECKING` to import `GapProtocol` and string annotation `gap: "GapProtocol"` due to circular import between LLM module and `gap_finder.py`
 
 Both issues stem from tight coupling between modules that should be more loosely connected.
 
@@ -203,13 +203,43 @@ python batch_generator.py cloud.subclouds=[quantum_5gaps_kball,robotics_2gaps_vo
 
 ## Test and Code Quality Issues
 
+### Critical Type and Runtime Errors (Current analysis - September 24, 2025)
+
+#### MyPy Type Errors (73 total errors to fix)
+
+- **OpenAI API Integration Issues**:
+   - [ ] `openai_generator.py` line 115: Multiple type incompatibility errors with OpenAI client.completions.parse() method
+
+- **Protocol Implementation Issues**:
+   - [ ] Missing type annotations in multiple files (gap_finder.py, results_manager.py, etc.)
+   - [ ] Various numpy array type compatibility issues
+
+#### Pytest Test Failures (29 failed, 56 passed)
+- **Mock Configuration Issues**:
+   - [ ] Tests use Mock objects instead of proper OmegaConf DictConfig objects for Hydra instantiation
+   - [ ] `OpenAIBatchGenerator` constructor signature changed - tests need updating
+   - [ ] Context builder tests fail due to empty gap article lists in mocks
+
+- **Test Data Structure Issues**:
+   - [ ] Gap mocks return empty article lists causing "contains no articles" errors
+   - [ ] Missing test module `tests.llm.test_llm_generators` referenced in registry tests
+   - [ ] Config store tests reference non-existent 'group_to_nodes' attribute (ConfigStore doesn't have this attribute)
+
+- **Embedding Function Test Issues**:
+   - [ ] One test still patches `get_embedding_model` in `test_modern_gap_plotting.py` (need to patch `embed_texts`)
+   - [ ] Test mocks don't handle new embedding function signature properly
+
+- **Workflow Function Test Issues**:
+   - [ ] Batch result parsing expects different JSON structure than tests provide
+   - [ ] Workflow tests expect return objects with different attributes than actual implementation
+
 ### Fix Pytest Warnings
 Address the following test warnings (from running `pytest tests/`):
 
-1. **PytestRemovedIn9Warning**: Update `conftest.py` to use `pathlib.Path` instead of deprecated `py.path.local`
-2. **PytestCollectionWarning**: Fix test class collection issues in `TestDenoiserContext` (constructor conflicts)
-3. **NumPy DeprecationWarnings**: Fix deprecated array-to-scalar conversions in `denoisers.py` lines 722, 723, 728
-4. **Faiss DeprecationWarning**: External library warning (can be suppressed if needed)
+- **PytestRemovedIn9Warning**: Update `conftest.py` to use `pathlib.Path` instead of deprecated `py.path.local`
+- **PytestCollectionWarning**: Fix test class collection issues in `TestDenoiserContext` (constructor conflicts)
+- **NumPy DeprecationWarnings**: Fix deprecated array-to-scalar conversions in `denoisers.py` lines 722, 723, 728
+- **Faiss DeprecationWarning**: External library warning (can be suppressed if needed)
 
 ## Code Quality and Architecture Issues
 
@@ -229,29 +259,15 @@ def parse_prompt_file_path(prompt_file_path: str, gaps_base_dir: str) -> dict:
 - Difficult to track what fields are available
 
 **Solution**:
-1. **Create `PromptFilePathComponents` dataclass** similar to existing `CustomIdComponents`
-2. **Update return type** to `PromptFilePathComponents`
-3. **Update callers** to use dataclass field access instead of dictionary keys
+- **Create `PromptFilePathComponents` dataclass** similar to existing `CustomIdComponents`
+- **Update return type** to `PromptFilePathComponents`
+- **Update callers** to use dataclass field access instead of dictionary keys
 
 **Benefits**:
 - Type safety and IDE support
 - Clear documentation of available fields
 - Consistent with other parsing methods in the class
 - Catches field access errors at type-check time
-
-### Fix Gap Classes Type Conformance  
-`KballGap` and `VoronoiGap` classes should explicitly implement the `GapProtocol` interface to resolve mypy type issues in `gap_finder.py`:
-
-- **KballGap**: Change `class KballGap:` to `class KballGap(GapProtocol):` 
-- **VoronoiGap**: Change `class VoronoiGap:` to `class VoronoiGap(GapProtocol):`
-
-Both classes already implement all required methods, but the explicit protocol declaration will:
-- Make the design intent clear
-- Help mypy understand the type relationships
-- Catch any method signature mismatches at type-check time
-- Eliminate type errors when these classes are used in functions expecting `GapProtocol`
-
-This requires importing `GapProtocol` in both algorithm files.
 
 ### Consolidate Duplicate DistsAndIdxs Class
 The `DistsAndIdxs` dataclass is duplicated identically in both gap algorithm files:

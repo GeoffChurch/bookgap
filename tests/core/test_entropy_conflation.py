@@ -9,7 +9,7 @@ from pathlib import Path
 # Add the bookgap package to the path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from test_generalized_jad import TestDenoiserContext, create_synthetic_data
+from test_generalized_jad import DenoiserContextForTests, create_synthetic_data
 from bookgap.denoisers import JADDenoiser
 
 
@@ -48,7 +48,7 @@ def test_entropy_conflation():
         A = kneighbors_graph(X, n_neighbors=min(10, total_samples-1), 
                            mode='connectivity', include_self=False)
         
-        context = TestDenoiserContext(X, A, subset_indices)
+        context = DenoiserContextForTests(X, A, subset_indices)
         
         # Compute subset variances manually to show the entropy calculation
         subset_variances = []
@@ -262,7 +262,7 @@ def test_jad_with_different_measures():
     # Convert to CSR matrix as expected by TestDenoiserContext
     import scipy.sparse as sp
     A = sp.csr_matrix(A_sparse)
-    context = TestDenoiserContext(X, A, subset_indices)
+    context = DenoiserContextForTests(X, A, subset_indices)
     
     print(f"Test dataset: {X.shape[0]} samples, {X.shape[1]} features, {context.num_subsets()} subsets")
     for i in range(context.num_subsets()):

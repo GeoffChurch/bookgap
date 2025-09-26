@@ -756,10 +756,10 @@ class JADDenoiser:
                      
             all_scores.append(score)
         
-        all_scores = np.array(all_scores)
+        all_scores_array = np.array(all_scores)
         
         # Sort by the final, weighted score to find the best components
-        sort_indices = np.argsort(all_scores)[::-1]
+        sort_indices = np.argsort(all_scores_array)[::-1]
         
         # Truncate to the desired number of components
         n_components = min(n_components, len(sort_indices))
@@ -767,7 +767,7 @@ class JADDenoiser:
         
         # The final projector is built from the highest-scoring columns
         P_final = P_full_basis[:, best_indices]
-        scores_final = all_scores[best_indices]
+        scores_final = all_scores_array[best_indices]
 
         # P_final_orthonormalized = orthonormalize(P_final)
         # return P_final_orthonormalized, scores_final

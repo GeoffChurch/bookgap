@@ -2,9 +2,11 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 import enum
 from functools import lru_cache
+import heapq
 import itertools
 import json
 import matplotlib.pyplot as plt
+import torch
 from bookgap.plot_utils import PlotManager
 import re
 import time
@@ -24,39 +26,125 @@ from bookgap.deduplicators import Deduplicator
 
 T = TypeVar('T', bound=np.generic)
 
-def get_embedding_model() -> SentenceTransformer:
-    """Get a fresh instance of the embedding model used throughout the system."""
-    return SentenceTransformer('avsolatorio/GIST-small-Embedding-v0')
+def _log_gpu_memory(context: str):
+    """Log current GPU memory usage if CUDA is available."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Get memory info for all available GPUs
+            for i in range(torch.cuda.device_count()):
+                try:
+                    allocated = torch.cuda.memory_allocated(i)
+                    reserved = torch.cuda.memory_reserved(i)
+                    
+                    # Convert bytes to MB for readability
+                    allocated_mb = allocated / (1024 * 1024)
+                    reserved_mb = reserved / (1024 * 1024)
+                    
+                    LOGGER.info(f"{context} - GPU {i}: {allocated_mb:.1f}MB allocated, {reserved_mb:.1f}MB reserved")
+                    
+                    # Log memory stats if available (PyTorch 1.4+)
+                    try:
+                        if hasattr(torch.cuda, 'memory_stats'):
+                            stats = torch.cuda.memory_stats(i)
+                            max_allocated = stats.get('allocated_bytes.all.peak', 0) / (1024 * 1024)
+                            LOGGER.info(f"{context} - GPU {i}: peak allocated {max_allocated:.1f}MB")
+                    except Exception as stats_e:
+                        LOGGER.info(f"{context} - GPU {i}: Could not get memory stats: {stats_e}")
+                        
+                except Exception as gpu_e:
+                    LOGGER.warning(f"{context} - Failed to get memory info for GPU {i}: {gpu_e}")
+        else:
+            LOGGER.info(f"{context} - CUDA not available")
+    except ImportError:
+        LOGGER.info(f"{context} - PyTorch not available")
+    except Exception as e:
+        LOGGER.warning(f"{context} - Failed to log GPU memory: {e}")
 
-def compute_embeddings_for_works(works: List[Dict[str, Any]], model: Optional[SentenceTransformer] = None) -> NDArray:
-    """
-    Compute embeddings for a list of works.
-    
-    Args:
-        works: List of work dictionaries containing 'display_name' and 'abstract' fields
-        model: Optional SentenceTransformer model. If None, a new model will be created.
+class Embedder:
+    class ModelName(enum.Enum):
+        GIST_SMALL = 'avsolatorio/GIST-small-Embedding-v0'
+        GEMMA_300M = 'google/embeddinggemma-300m'
+
+    def __init__(self, model_name: str = ModelName.GEMMA_300M.value):
+        self.model_name = model_name
+        self._model_: Optional[SentenceTransformer] = None
+        self._embedding_dtype_: Optional[np.dtype[np.float32]] = None
+        self._embedding_dimension_: Optional[int] = None
         
-    Returns:
-        NDArray of embeddings with shape (len(works), embedding_dim)
-    """
-    if not works:
-        # Return empty array with correct shape for the model
-        if model is None:
-            model = get_embedding_model()
-        # Get embedding dimension by encoding a dummy text
-        dummy_embedding = model.encode(["dummy"], show_progress_bar=False)
-        return np.empty((0, dummy_embedding.shape[1]), dtype=np.float32)
+        # Log initial GPU memory state
+        _log_gpu_memory(f"Embedder.__init__ (model: {model_name})")
+
+    def _model(self) -> SentenceTransformer:
+        if self._model_ is None:
+            _log_gpu_memory(f"Embedder._model() before loading {self.model_name}")
+            self._model_ = SentenceTransformer(self.model_name)
+            _log_gpu_memory(f"Embedder._model() after loading {self.model_name}")
+        return self._model_
     
-    if model is None:
-        model = get_embedding_model()
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - cleanup GPU resources."""
+        if self._model_ is not None:
+            _log_gpu_memory(f"Embedder.__exit__ before cleanup (model: {self.model_name})")
+            
+            # Delete the model reference
+            del self._model_
+            self._model_ = None
+            LOGGER.info(f"Released Embedder model: {self.model_name}")
     
-    # Create input texts from display_name and abstract
-    inputs = [f"{work['display_name']}\n{work['abstract']}" for work in works]
+            # Aggressive GPU memory cleanup
+            if torch.cuda.is_available():
+                import gc
+                # Force garbage collection
+                gc.collect()
+                # Clear CUDA cache multiple times
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()  # Clean up inter-process communication cache
+                torch.cuda.empty_cache()  # Clear again after IPC cleanup
+                LOGGER.info("Performed aggressive CUDA cache cleanup")
+                
+            _log_gpu_memory(f"Embedder.__exit__ after cleanup (model: {self.model_name})")
+            
+    def _determine_embedding_space(self):
+        dummy = self._model().encode(["dummy"], show_progress_bar=False)
+        one, d = dummy.shape
+        if one != 1:
+            raise ValueError(f"Expected embedding of single input to have shape (1, d), got ({one}, {d})")
+        if self._model().get_sentence_embedding_dimension() is not None:
+            if d != self._model().get_sentence_embedding_dimension():
+                raise ValueError(f"Model's reported embedding dimension {self._model().get_sentence_embedding_dimension()} does not match actual dimension {d}")
+        if dummy.dtype != np.float32:
+            raise ValueError(f"Expected embedding dtype to be float32, got {dummy.dtype}")
+        self._embedding_dimension_ = dummy.shape[1]
+        self._embedding_dtype_ = dummy.dtype
+
+    def embedding_dimension(self):
+        if self._embedding_dimension_ is None:
+            self._determine_embedding_space()
+        assert self._embedding_dimension_ is not None
+        return self._embedding_dimension_
     
-    # Compute embeddings
-    embeddings = model.encode(inputs, batch_size=512, show_progress_bar=False)
+    def embedding_dtype(self) -> np.dtype[np.float32]:
+        if self._embedding_dtype_ is None:
+            self._determine_embedding_space()
+        assert self._embedding_dtype_ is not None
+        return self._embedding_dtype_
     
-    return embeddings
+    def embed_texts(self, title_abstract_pairs: List[tuple[str, str]], batch_size: int = 32) -> NDArray[np.float32]:
+        if not title_abstract_pairs:
+            return np.empty((0, self.embedding_dimension()), dtype=self.embedding_dtype())
+        inputs = [f"{title}\n{abstract}" for title, abstract in title_abstract_pairs]
+        
+        _log_gpu_memory(f"Embedder.embed_texts before encoding {len(inputs)} texts (batch_size={batch_size})")
+        embeddings = self._model().encode(inputs, batch_size=batch_size, show_progress_bar=False)
+        _log_gpu_memory(f"Embedder.embed_texts after encoding {len(inputs)} texts")
+        if embeddings.shape != (len(title_abstract_pairs), self.embedding_dimension()):
+            raise ValueError(f"Expected embeddings shape to be {(len(title_abstract_pairs), self.embedding_dimension())}, got {embeddings.shape}")
+        return embeddings
 
 @dataclass(frozen=True)
 class CloudData:
@@ -315,19 +403,17 @@ class WorkDenoisers(enum.Enum):
 @TIMER.time()
 @MEMORY.cache
 def load_works(filter: Filter, max_works: Optional[int]):
-    expected = get_query(filter).count()
-    expected = min(max_works, expected) if max_works is not None else expected
-    works = sorted(tqdm.tqdm(itertools.islice(
-        embed_works(filter),
-        max_works),
-        total=expected, disable=False), key=lambda w: w["publication_date"])
+    works, undeduped_embeddings = embed_works(filter, max_works)
+    if max_works is None:
+        argsort = np.argsort([work["publication_date"] for work in works])
+    else:
+        argsort = np.array(heapq.nsmallest(max_works, range(len(works)), key=lambda i: works[i]["publication_date"]))
+    works = [works[i] for i in argsort]
+    undeduped_embeddings = undeduped_embeddings[argsort]
+    
     LOGGER.info(f"Loaded {len(works)} works")
-    d, = works[0]["embedding"].shape
-
-    undeduped_embeddings = np.empty((len(works), d), dtype=np.float32)
-    for i, work in enumerate(works):
-        undeduped_embeddings[i] = work["embedding"]
-        del work["embedding"]
+    n, d = undeduped_embeddings.shape
+    assert n == len(works), f"Embeddings and works length mismatch: {n} != {len(works)}"
 
     # Clean up work texts
     WHITESPACE_PAT = re.compile(r"\s")
@@ -504,14 +590,13 @@ class WorkFilter(enum.Enum):
 
 def filter_works(work_filter: Filter):
     class PerTypeCounter:
-        def __init__(self):
+        def __init__(self) -> None:
             self.total: int = 0
             self.per_type: defaultdict[str, int] = defaultdict(int)
         def insert(self, work: dict[str, Any]):
             self.total += 1
             work_type = work.get('type', 'UNKNOWN')
             self.per_type[work_type] += 1
-        
     filter_stats = {f"{filter}": PerTypeCounter() for filter in WorkFilter}
     total = PerTypeCounter()
     num_removed = PerTypeCounter()
@@ -520,7 +605,7 @@ def filter_works(work_filter: Filter):
     
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
         for work in tqdm.tqdm(get_works(work_filter), total=get_query(work_filter).count(),
-                            desc=f"Filtering works in {work_filter}", mininterval=1, delay=1, disable=False):
+                            desc=f"Filtering works in {work_filter}", mininterval=1, delay=1):
             invalidators = []
             total.insert(work)
             for filter in WorkFilter:
@@ -565,9 +650,9 @@ def deduplicate_works_syntactic(work_filter: Filter):
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     # Find cross-type duplicates
     with (artifacts_dir / f"syntactic_deduplication_crosstype_duplicates.txt").open("w") as f:
-        collisions = defaultdict(int)
+        collisions: defaultdict[tuple[str, ...], int] = defaultdict(int)
         for dupgroup in deduped.values():
-            work_types = tuple(sorted(set(work["type"] for work in dupgroup)))
+            work_types: tuple[str, ...] = tuple(sorted(set(work["type"] for work in dupgroup)))
             if len(work_types) > 1:
                 collisions[work_types] += 1
         for work_types, count in sorted(collisions.items(), key=lambda x: (-x[1], x[0])):
@@ -611,70 +696,80 @@ def batched(iterable, n): # TODO use itertools.batched when available
     while batch := tuple(itertools.islice(iterator, n)):
         yield batch
 
-@MEMORY.cache
-def embed_works(work_filter: Filter):
+def embed_works(work_filter: Filter, max_works: Optional[int]):
     LOGGER.info(f"Embedding {work_filter} works")
     works = deduplicate_works_syntactic(work_filter)
-    n_works = len(works)
-    works = iter(works)
-    emb_cache_dir = CACHE_DIR / "embeddings" / create_unicode_safe_filename(work_filter)
-    emb_cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    with Embedder() as embedder:
+        emb_cache_dir = CACHE_DIR / "embeddings" / create_unicode_safe_filename(f"{work_filter}, {embedder.model_name}")
+        emb_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    ret: list[dict[str, Any]] = []
-    # Yield cached works and embeddings
-    with tqdm.tqdm(desc="Loading cached embeddings", mininterval=1, delay=1) as cached_pbar:
-        i = 1
-        seen = 0
-        while True:
+        def validate_batch(batch_works: List[dict[str, Any]], expected_ids: List[str]):
+            actual_ids = [work["id"] for work in batch_works]
+            if len(actual_ids) != len(expected_ids):
+                msg = f"ID length mismatch in batch. Expected {len(expected_ids)} IDs, got {len(actual_ids)} IDs"
+                LOGGER.error(msg)
+                raise ValueError(msg)
             try:
-                embeddings = np.load(emb_cache_dir / f"batch_{i}_embeddings.npy")
-                with (emb_cache_dir / f"batch_{i}_ids.json").open("r") as ids_f:
-                    embedding_ids = json.load(ids_f)
-                for embedding_id, embedding in zip(embedding_ids, embeddings, strict=True):
-                    # zip(works, embedding_ids, embeddings) was a nasty bug because it would
-                    # discard the work pulled just before embedding_ids raised StopIteration
-                    work = next(works) # So, manually call `next` here
-                    assert work["id"] == embedding_id, f"ID mismatch: {work['id']} != {embedding_id} at index {seen}"
-                    work["embedding"] = embedding
-                    seen += 1
-                    # yield work
-                    ret.append(work)
-                    cached_pbar.update(1)
-                i += 1
-            except FileNotFoundError:
-                break
-        if seen > 0:
-            LOGGER.info(f"Yielded {seen} cached embeddings")
-                
-    # Yield new works and embeddings with their own progress bar
-    new_works_count = n_works - seen
-    with tqdm.tqdm(total=new_works_count, desc="Generating new embeddings", mininterval=1, delay=1) as new_pbar:
-        model = None # Lazy load the model in case `works` is already exhausted
-        start_time = time.time()
-        batch_size = 512
-        LOGGER.info(f"Embedding {work_filter} works")
-        seen_new = 0
-        for batch in batched(works, batch_size):
-            if model is None:
-                model = get_embedding_model()
-            # Embed batch using the new function
-            embeddings = compute_embeddings_for_works(list(batch), model)
-            # Save batch
-            with (emb_cache_dir / f"batch_{i}_embeddings.npy").open("wb") as embeddings_f, (emb_cache_dir / f"batch_{i}_ids.json").open("w") as ids_f:
-                np.save(embeddings_f, embeddings)
-                json.dump([work["id"] for work in batch], ids_f)
-            # Yield works and embeddings
-            for work, embedding in zip(batch, embeddings):
-                work["embedding"] = embedding
-                # yield work
-                ret.append(work)
-                new_pbar.update(1)
-                seen_new += 1
-            i += 1
-        if seen_new > 0:
-            LOGGER.info(f"Yielded {seen_new} new embeddings in {time.time() - start_time:.2f} seconds")
+                mismatch_idx = next(i for i, (a, b) in enumerate(zip(actual_ids, expected_ids)) if a != b)
+                msg = f"ID mismatch at index {mismatch_idx} in batch. Expected {expected_ids[mismatch_idx]}, got {actual_ids[mismatch_idx]}"
+                LOGGER.error(msg)
+                raise ValueError(msg)
+            except StopIteration:
+                return
 
-    return ret
+        def batches() -> Generator[NDArray, None, None]:
+            seen = 0
+            cache_exhausted = False
+            
+
+            for i in itertools.count():
+                emb_path = emb_cache_dir / f"batch_{i}_embeddings.npy"
+                ids_path = emb_cache_dir / f"batch_{i}_ids.json"
+
+                if emb_path.exists() or ids_path.exists():
+                    if cache_exhausted:
+                        raise ValueError(f"Cache exhausted but found unexpected cache files {emb_path} or {ids_path}.")
+                    with emb_path.open("rb") as f:
+                        embeddings: NDArray = np.load(f)
+                    with ids_path.open("r") as f:
+                        validate_batch(works[seen:seen + len(embeddings)], json.load(f))
+                else:
+                    cache_exhausted = True
+                    BATCH_SIZE = 4096
+                    batch_works = works[seen:seen + BATCH_SIZE]
+                    if len(batch_works) == 0:
+                        return
+                    embeddings = embedder.embed_texts([(work["display_name"], work["abstract"]) for work in batch_works])
+                    # Save batch
+                    with emb_path.open("wb") as embeddings_f, ids_path.open("w") as ids_f:
+                        np.save(embeddings_f, embeddings)
+                        json.dump([work["id"] for work in batch_works], ids_f)
+
+                seen += len(embeddings)
+                yield embeddings
+            
+
+        n_works = len(works)
+        if max_works is not None:
+            n_works = min(n_works, max_works)
+
+        dim = embedder.embedding_dimension()
+        embeddings = np.empty(shape=(n_works, dim), dtype=embedder.embedding_dtype())
+        idx = 0
+        with tqdm.tqdm(total=n_works, desc=f"Embedding works for {work_filter}", mininterval=1, delay=2, smoothing=1) as pbar:
+            for batch in batches():
+                remaining = n_works - idx
+                if len(batch) > remaining:
+                    batch = batch[:remaining]
+
+                embeddings[idx:idx + len(batch)] = batch
+                idx += len(batch)
+                pbar.update(len(batch))
+                if idx >= n_works:
+                    assert idx == n_works
+                    break
+        return works[:max_works], embeddings
 
 @dataclass(frozen=True)
 class SubCloud:
