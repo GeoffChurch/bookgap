@@ -288,11 +288,37 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
 - Standard subdirectories with predictable names
 - Example: `outputs/2025-09-21/14-30-25/plots/` (Hydra's default format)
 
+### 🏗️ **Better Data Structure Architecture**
+
+**Current Issue**: The plan doesn't address data structure consistency between phases.
+
+**Recommendation**: Create a unified data preparation layer:
+
+```python
+# bookgap/llm/artifacts/data_preparation.py (extend existing)
+class ArtifactDataPreparer:
+    """Unified data preparation for all artifact types."""
+    
+    def prepare_gap_summary(self, gap: GapWithContext) -> dict:
+        """Standard gap summary used by CSV, JSON, and LaTeX exports."""
+        
+    def prepare_proposal_metadata(self, proposal: ParsedProposal) -> dict:
+        """Standard proposal metadata used across all exports."""
+```
+
+**Benefits**:
+- **Eliminate Code Duplication**: Same gap/proposal formatting logic used across CSV, JSON, LaTeX
+- **Consistent Data**: All exports use identical gap metadata and proposal information
+- **Single Source of Truth**: Changes to data formatting affect all exports uniformly
+- **Testable**: Data preparation logic can be unit tested independently
+
 ## Success Criteria by Phase
 
-### ⚠️ **Phase 1 Status**: 
+### ⚠️ **Phase 1 Status - FOUNDATION COMPLETE, FEATURES INCOMPLETE**: 
 - ✅ **Architecture Foundation Complete**: Modern unified plotting system working
-- ✅ **Basic Functionality**: `python bookgap/batch_generator.py config=debug batch.num_gaps=1` generates gap plots
+- ✅ **Basic Functionality**: Gap plots generated in proper Hydra output directory structure
+- ✅ **Output Path Management**: No more file pollution - all files go to `outputs/{timestamp}/`
+- ✅ **Clean Error Handling**: No fallback behavior - fails fast with clear errors
 - ❌ **Feature Parity Incomplete**: Plots missing gap center marking, neighbor network, article classification
 - 🎯 **Next Priority**: Enhance `GapVisualizationDataPreparer` to match original `gap_finder` information richness
 

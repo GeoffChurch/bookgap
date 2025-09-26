@@ -67,12 +67,8 @@ def save_gap_plot_with_proposals(
     
     # Determine save directory - using a simple approach for now
     from hydra.core.hydra_config import HydraConfig
-    try:
-        hydra_cfg = HydraConfig.get()
-        base_dir = Path(hydra_cfg.runtime.output_dir) / "plots" / f"gap_{gap_with_context.gap_idx}"
-    except:
-        # Fallback to temp directory if Hydra not available
-        base_dir = Path("/tmp/gap_plots") / f"gap_{gap_with_context.gap_idx}"
+    hydra_cfg = HydraConfig.get()
+    base_dir = Path(hydra_cfg.runtime.output_dir) / "plots" / f"gap_{gap_with_context.gap_idx}"
     
     try:
         save_path = plotter.create_and_save_gap_plot(data, config, base_dir)

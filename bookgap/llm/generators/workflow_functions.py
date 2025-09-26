@@ -5,12 +5,12 @@ Pure functions for the batch processing pipeline using Hydra's instantiation sys
 
 from itertools import islice
 import json
-import os
 import random
 import time
-import tempfile
-from typing import List, Any, Dict, Optional
+from pathlib import Path
+from typing import List, Optional, Any, Dict
 
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from openai import OpenAI
@@ -311,8 +311,8 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
         
         jsonl_lines.append(json.dumps(jsonl_line))
     
-    # Write JSONL to persistent file
-    batch_input_filename = f"batch_input_{int(time.time())}.jsonl"
+    # Write JSONL to persistent file in Hydra output directory
+    batch_input_filename = Path(HydraConfig.get().runtime.output_dir) / f"batch_input.jsonl"
     with open(batch_input_filename, 'w') as f:
         for line in jsonl_lines:
             f.write(line + '\n')
@@ -404,7 +404,8 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         result_file_response = client.files.content(batch.output_file_id)
         result_content = result_file_response.content.decode('utf-8')
 
-        with open(f"batch_{batch_job_id}_results.jsonl", "w") as f:
+        # Write results to Hydra output directory
+        with open(Path(HydraConfig.get().runtime.output_dir) / f"batch_results.jsonl", "w") as f:
             f.write(result_content)
         
         # Parse JSONL results into ParsedProposal instances
