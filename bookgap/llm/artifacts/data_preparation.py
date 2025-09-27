@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 from bookgap.cloud import SubCloud, Embedder
+from bookgap.cloud_index import knn
 from bookgap.gap_finder import GapProtocol
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.llm.protocols import ParsedProposal
@@ -230,17 +231,15 @@ class GapVisualizationDataPreparer:
         
         This consolidates the complex data preparation logic from the original functions.
         """
-        # Get gap article indices
+        # Get gap article indices (ordered by increasing distance from center)
         gap_article_indices = gap.get_dists_idxs().idxs
         if len(gap_article_indices) == 0:
             LOGGER.warning("No gap articles found")
             return None
             
-        # Get neighbor data
+        # Get neighbor data (4-way FAISS searches) and covering books
         neighbor_data = self._perform_gap_neighbor_searches(gap, books, articles)
-        if not neighbor_data:
-            LOGGER.warning("No neighbor data found")
-            return None
+        covering_book_indices = self._get_covering_book_indices(gap)
             
         # Extract embeddings
         all_article_embeddings = articles.embeddings()
@@ -254,7 +253,7 @@ class GapVisualizationDataPreparer:
         book_positions = []
         current_pos = 0
         
-        # Add gap articles
+        # Add gap articles first (preserve order so center is first)
         for idx in gap_article_indices:
             embeddings_list.append(all_article_embeddings[int(idx)])
             item_types.append('article')
@@ -262,9 +261,41 @@ class GapVisualizationDataPreparer:
             gap_positions.append(current_pos)
             current_pos += 1
             
+        # Determine article neighbors (non-gap)
+        neighbor_article_indices: List[int] = []
+        for key in ('gap_to_article_neighbors', 'book_to_article_neighbors'):
+            if key in neighbor_data and neighbor_data[key] is not None:
+                neighbor_article_indices.extend(int(i) for i in neighbor_data[key])
+        # Unique and exclude gap articles
+        gap_set = set(int(i) for i in gap_article_indices.tolist())
+        neighbor_article_indices = [i for i in sorted(set(neighbor_article_indices)) if i not in gap_set]
+        
+        # Add neighbor articles (classified implicitly as non-gap articles)
+        for idx in neighbor_article_indices:
+            embeddings_list.append(all_article_embeddings[int(idx)])
+            item_types.append('article')
+            all_items.append(('article', int(idx)))
+            current_pos += 1
+        
+        # Determine book indices to include: covering books + neighbor books
+        neighbor_book_indices: List[int] = []
+        for key in ('gap_to_book_neighbors', 'book_to_book_neighbors'):
+            if key in neighbor_data and neighbor_data[key] is not None:
+                neighbor_book_indices.extend(int(i) for i in neighbor_data[key])
+        base_book_indices = sorted(set(int(i) for i in covering_book_indices))
+        neighbor_book_indices = [i for i in sorted(set(neighbor_book_indices)) if i not in set(base_book_indices)]
+        
+        # Add covering books first
+        for book_idx in base_book_indices:
+            if 0 <= int(book_idx) < len(all_book_embeddings):
+                embeddings_list.append(all_book_embeddings[int(book_idx)])
+                item_types.append('book')
+                all_items.append(('book', int(book_idx)))
+                book_positions.append(current_pos)
+                current_pos += 1
         # Add neighbor books
-        if 'neighbor_books' in neighbor_data:
-            for book_idx in neighbor_data['neighbor_books']:
+        for book_idx in neighbor_book_indices:
+            if 0 <= int(book_idx) < len(all_book_embeddings):
                 embeddings_list.append(all_book_embeddings[int(book_idx)])
                 item_types.append('book')
                 all_items.append(('book', int(book_idx)))
@@ -390,18 +421,74 @@ class GapVisualizationDataPreparer:
         articles: SubCloud, 
         k: int = 5
     ) -> Dict[str, Any]:
-        """Perform neighbor searches for gap visualization."""
-        # This is a simplified version - in practice you'd use the existing
-        # neighbor search logic from gap_finder.py
-        return {
-            "neighbor_books": [],  # Placeholder - implement actual neighbor search
-            "k": k
-        }
+        """Perform the four FAISS neighbor searches for gap visualization.
+
+        Returns a dict with sets of neighbor indices and detailed search arrays
+        for efficient lookups, mirroring gap_finder._perform_gap_neighbor_searches.
+        """
+        gap_article_indices = gap.get_dists_idxs().idxs
+        result: Dict[str, Any] = {}
+        # Match original gap_finder defaults: skip these two searches for now, but preserve API.
+        SKIP_GAP_TO_ARTICLE_NEIGHBORS = True
+        SKIP_BOOK_TO_ARTICLE_NEIGHBORS = True
+
+        # 1) Nearest articles to in-gap articles (exclude self-neighbor)
+        gap_to_article_neighbors: set[int] = set()
+        if not SKIP_GAP_TO_ARTICLE_NEIGHBORS:
+            if len(gap_article_indices) > 0 and len(articles.embeddings()) > 0:
+                res_articles = knn(articles, articles, k=k+1)  # +1 to include self
+                # Take neighbors for the specific gap articles, excluding the first column (self)
+                gap_article_neighbors = res_articles.I[gap_article_indices]
+                if gap_article_neighbors.ndim == 2 and gap_article_neighbors.shape[1] >= 2:
+                    gap_to_article_neighbors.update(gap_article_neighbors[:, 1:].flatten().tolist())
+                else:
+                    gap_to_article_neighbors.update(gap_article_neighbors.flatten().tolist())
+        result["gap_to_article_neighbors"] = gap_to_article_neighbors
+
+        # 2) Nearest books to in-gap articles (keep detailed per-article results)
+        gap_to_book_neighbors: set[int] = set()
+        gap_article_to_book_search = None
+        if len(gap_article_indices) > 0 and len(books.embeddings()) > 0:
+            res_books_for_articles = knn(books, articles, k=k)
+            gap_book_neighbors = res_books_for_articles.I[gap_article_indices]
+            gap_to_book_neighbors.update(gap_book_neighbors.flatten().tolist())
+            gap_article_to_book_search = gap_book_neighbors
+        result["gap_to_book_neighbors"] = gap_to_book_neighbors
+        result["gap_article_to_book_search"] = gap_article_to_book_search
+
+        # 3) Nearest articles to covering books (keep detailed per-book results)
+        book_to_article_neighbors: set[int] = set()
+        book_to_article_search = None
+        covering_book_indices = self._get_covering_book_indices(gap)
+        if not SKIP_BOOK_TO_ARTICLE_NEIGHBORS:
+            if len(covering_book_indices) > 0 and len(articles.embeddings()) > 0:
+                res_articles_for_books = knn(articles, books, k=k)
+                book_article_neighbors = res_articles_for_books.I[covering_book_indices]
+                book_to_article_neighbors.update(book_article_neighbors.flatten().tolist())
+                book_to_article_search = book_article_neighbors
+        result["book_to_article_neighbors"] = book_to_article_neighbors
+        result["book_to_article_search"] = book_to_article_search
+        result["covering_book_indices"] = covering_book_indices
+
+        # 4) Nearest books to covering books (exclude self-neighbor)
+        book_to_book_neighbors: set[int] = set()
+        if len(covering_book_indices) > 0 and len(books.embeddings()) > 0:
+            res_books_for_books = knn(books, books, k=k+1)  # +1 to include self
+            neighbors = res_books_for_books.I[covering_book_indices]
+            if neighbors.ndim == 2 and neighbors.shape[1] >= 2:
+                book_to_book_neighbors.update(neighbors[:, 1:].flatten().tolist())
+            else:
+                book_to_book_neighbors.update(neighbors.flatten().tolist())
+        result["book_to_book_neighbors"] = book_to_book_neighbors
+        result["k"] = k
+        return result
     
     def _get_covering_book_indices(self, gap: GapProtocol) -> List[int]:
-        """Get indices of books that cover the gap articles."""
-        # Placeholder - implement actual covering book logic
-        return []
+        """Get indices of books that cover the gap articles using gap API."""
+        try:
+            return [int(i) for i in list(gap.get_covering_book_indices())]
+        except Exception:
+            return []
     
     def _find_gap_center_position(
         self,
@@ -410,6 +497,6 @@ class GapVisualizationDataPreparer:
         all_items: List[Tuple[str, int]]
     ) -> Optional[int]:
         """Find the position of the gap center article in the visualization."""
-        # This would implement the actual gap center finding logic
-        # For now, return the first gap position if available
+        # By construction we add gap articles first in the same order as
+        # gap.get_dists_idxs().idxs, which has the center first.
         return gap_positions[0] if gap_positions else None
