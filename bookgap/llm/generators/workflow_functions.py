@@ -20,13 +20,14 @@ from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import build_cloud, get_subclouds_for_topic
 from bookgap.deduplicators import Deduplicator
 from bookgap.gap_finder import find_gaps_for_topic
-from bookgap.llm.data_structures import BatchResults, GapWithContext
+from bookgap.llm.data_structures import BatchResults, GapWithContext, ArtifactPaths
 from bookgap.util import LOGGER
 from ..protocols import (
     ProposalContext, BatchRequestData, ProposalGenerationError, 
     Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
-from .workflow_artifacts import generate_all_artifacts
+from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
+from bookgap.llm.artifacts.context_export import generate_all_contexts
 
 
 
@@ -508,8 +509,17 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     results = monitor_and_download_results(batch_job_id, config)
     LOGGER.info(f"Completed! Generated {len(results.proposals)} proposals")
     
-    # Step 6: Generate artifacts (Phase 1 only for now)
-    artifact_paths = generate_all_artifacts(gaps, results)
+    # Step 6: Generate artifacts
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
+    LOGGER.info(f"Generating artifacts in {output_dir}")
+    
+    # Generate plots
+    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
+    
+    # Generate context files
+    context_paths = generate_all_contexts(gaps, output_dir)
+    
+    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
     
     # Return enhanced results with artifacts
     return BatchResults(

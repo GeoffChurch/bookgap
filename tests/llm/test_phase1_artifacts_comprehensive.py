@@ -1,24 +1,19 @@
-"""Comprehensive tests for Phase 1 artifact generation functionality.
+"""
+Comprehensive tests for Phase 1 artifacts (gap plots with proposals).
 
-This module tests the complete Phase 1 implementation including:
-- Shared data structures (data_structures.py)
-- Workflow artifacts generation (workflow_artifacts.py) 
+Tests cover:
+- Data structures (ArtifactPaths, GapWithContext integration)
 - Gap plotting functionality (gap_plots.py)
-- End-to-end integration testing
-
-All tests are consolidated here for the Phase 1 artifact generation feature.
+- Error handling and validation
+- End-to-end modern plotting pipeline
 """
 
 import pytest
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from typing import List
-import numpy as np
+from unittest.mock import Mock, patch
 
-from bookgap.llm.data_structures import GapWithContext, BatchResults, ArtifactPaths
-from bookgap.llm.generators.workflow_artifacts import generate_phase1_artifacts, generate_all_artifacts
-from bookgap.llm.artifacts.gap_plots import save_gap_plot_with_proposals, generate_gap_plots_for_results
-from bookgap.llm.protocols import ParsedProposal
+from bookgap.llm.data_structures import ArtifactPaths
+from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 
 
 class TestPhase1DataStructures:
@@ -27,55 +22,6 @@ class TestPhase1DataStructures:
     # All static dataclass field tests removed - covered by type checking
 
 
-class TestPhase1WorkflowArtifacts:
-    """Test the workflow artifacts generation functions."""
-    
-    @patch('bookgap.llm.generators.workflow_artifacts.generate_gap_plots_for_results')
-    @patch('bookgap.llm.generators.workflow_artifacts.HydraConfig')
-    def test_generate_phase1_artifacts(self, mock_hydra, mock_generate_plots):
-        """Test Phase 1 artifacts generation with mocked dependencies."""
-        # Setup mocks
-        mock_gap_with_context = Mock(spec=GapWithContext)
-        gaps = [mock_gap_with_context]
-        
-        mock_results = Mock(spec=BatchResults)
-        mock_results.proposals = []
-        
-        mock_output_dir = Path("/test/output")
-        mock_plot_paths = [Path("/test/output/plot1.png")]
-        
-        mock_hydra.get.return_value.runtime.output_dir = "/test/output"
-        mock_generate_plots.return_value = mock_plot_paths
-        
-        # Call the function
-        result = generate_phase1_artifacts(gaps, mock_results)
-        
-        # Verify results
-        assert isinstance(result, ArtifactPaths)
-        assert result.plots == mock_plot_paths
-        assert result.context_files is None
-        assert result.proposal_files is None
-        assert result.results_csv is None
-        assert result.latex_files is None
-        
-        # Verify function calls
-        mock_hydra.get.assert_called_once()
-        mock_generate_plots.assert_called_once_with(gaps, mock_results.proposals, mock_output_dir)
-    
-    @patch('bookgap.llm.generators.workflow_artifacts.generate_phase1_artifacts')
-    def test_generate_all_artifacts_calls_phase1(self, mock_phase1):
-        """Test that generate_all_artifacts correctly delegates to Phase 1."""
-        mock_gap = Mock(spec=GapWithContext)
-        mock_results = Mock(spec=BatchResults)
-        
-        mock_artifact_paths = Mock(spec=ArtifactPaths)
-        mock_phase1.return_value = mock_artifact_paths
-        
-        result = generate_all_artifacts([mock_gap], mock_results)
-        
-        assert result == mock_artifact_paths
-        mock_phase1.assert_called_once_with([mock_gap], mock_results)
-    
 
 class TestPhase1GapPlots:
     """Test the gap plotting functionality."""

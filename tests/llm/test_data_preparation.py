@@ -23,7 +23,7 @@ class DummySubCloud:
         d = self._embeddings.shape[1]
         index = faiss.IndexFlatL2(d)
         x = np.ascontiguousarray(self._embeddings.astype(np.float32))
-        index.add(x)
+        index.add(x) # type: ignore
         return index
 
 class DummyGap:
