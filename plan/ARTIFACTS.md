@@ -72,15 +72,15 @@ The current Hydra-based `workflow_functions.py` implements core batch processing
 bookgap/
 ├── llm/
 │   ├── generators/
-│   │   ├── workflow_functions.py      # Current - minimal changes
-│   │   └── workflow_artifacts.py     # NEW: Main artifacts orchestration
-│   └── artifacts/                     # NEW: Modular artifact generation
+│   │   └── workflow_functions.py      # ✅ UPDATED: Inlined artifacts generation
+│   └── artifacts/                     # ✅ NEW: Modular artifact generation
 │       ├── __init__.py
-│       ├── gap_plots.py              # Gap visualization (hardcoded settings)
-│       ├── context_export.py         # Context JSON + analysis files  
-│       ├── results_export.py         # CSV generation (hardcoded formats)
-│       ├── proposal_export.py        # Individual proposal files
-│       └── latex_export.py           # LaTeX generation (hardcoded templates)
+│       ├── gap_plots.py              # ✅ COMPLETE: Gap visualization (hardcoded settings)
+│       ├── data_preparation.py       # ✅ COMPLETE: Unified data preparation pipeline
+│       ├── context_export.py         # ✅ COMPLETE: Context JSON + analysis files  
+│       ├── results_export.py         # ❌ TODO: CSV generation (hardcoded formats)
+│       ├── proposal_export.py        # ❌ TODO: Individual proposal files
+│       └── latex_export.py           # ❌ TODO: LaTeX generation (hardcoded templates)
 ```
 
 ## Simplified Depth-First Implementation Plan
@@ -107,11 +107,12 @@ bookgap/
 - All information richness from original `gap_finder.save_gap_plot_with_proposals()`
 - Unit tests covering changed functionality with real FAISS indices
 
-#### Step 1.2: Integrate with Workflow
-**File**: `bookgap/llm/generators/workflow_artifacts.py`
-- Create `generate_gap_plots_for_results(gaps: List[GapWithContext], results: BatchResults, output_dir: Path) -> List[Path]`
-- Add call to `run_batch_workflow()` in `workflow_functions.py`
-- Get Hydra output directory: `from hydra.core.hydra_config import HydraConfig; output_dir = Path(HydraConfig.get().runtime.output_dir)`
+#### Step 1.2: Integrate with Workflow ✅ **COMPLETED**
+**Implementation**: Inlined directly into `workflow_functions.py`
+- ✅ **COMPLETED**: Artifact generation integrated into `run_batch_workflow()`
+- ✅ **COMPLETED**: Direct calls to `generate_gap_plots_for_results()` and `generate_all_contexts()`
+- ✅ **COMPLETED**: Uses Hydra output directory: `Path(HydraConfig.get().runtime.output_dir)`
+- ✅ **COMPLETED**: Removed intermediate `workflow_artifacts.py` orchestration layer
 
 #### Step 1.3: Test & Validate Phase 1 ✅ **COMPLETED**
 ```bash
@@ -132,13 +133,15 @@ python bookgap/batch_generator.py config=debug batch.num_gaps=1
 ### 📊 **PHASE 2: Results Export & Context Files**
 **Goal**: Restore CSV generation and context file export
 
-#### Step 2.1: Context Export Module
+#### Step 2.1: Context Export Module ✅ **COMPLETED**
 **File**: `bookgap/llm/artifacts/context_export.py`
-- Implement `save_gap_context(gap: GapWithContext, gap_idx: int, output_dir: Path) -> Path`
-- **Hardcode format**: Standard JSON with 2-space indentation
-- Generate `gap_N_context.json` with articles, books, gap statistics
-- Port gap analysis text file generation from `write_single_kball_gap()`
-- **Simple paths**: `{hydra_output_dir}/contexts/gap_{idx}_context.json`
+- ✅ **COMPLETED**: `save_gap_context(gap: GapWithContext, output_dir: Path) -> Dict[str, Path]`
+- ✅ **COMPLETED**: Standard JSON with 2-space indentation format
+- ✅ **COMPLETED**: Generate `gap_N_context.json` with articles, books, gap statistics
+- ✅ **COMPLETED**: Generate `gap_N_analysis.txt` with detailed human-readable analysis
+- ✅ **COMPLETED**: Ported functionality from `write_single_kball_gap()` in gap_finder.py
+- ✅ **COMPLETED**: Integrated into workflow via `generate_all_contexts()` function
+- ✅ **COMPLETED**: Comprehensive test suite (4/4 tests passing)
 
 #### Step 2.2: Results Export Module
 **File**: `bookgap/llm/artifacts/results_export.py`
@@ -244,18 +247,24 @@ class ArtifactPaths:
     results_csv: Path
     latex_files: List[Path]
 
-def generate_all_artifacts(gaps: List[GapWithContext], results: BatchResults) -> ArtifactPaths:
-    """Simple orchestration function using Hydra output directory."""
+# Example of how artifact generation works (inlined in workflow_functions.py):
+def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
+    # ... steps 1-5 ...
+    
+    # Step 6: Generate artifacts (inlined)
     output_dir = Path(HydraConfig.get().runtime.output_dir)
     
-    # Generate all artifacts - each function creates its own directory
-    plots = generate_all_plots(gaps, results, output_dir)
-    contexts = generate_all_contexts(gaps, output_dir)
-    proposals = save_all_proposals(results, output_dir)
-    csv_path = generate_results_csv(gaps, results, output_dir)
-    latex_files = generate_all_latex(results, output_dir)
+    # ✅ IMPLEMENTED: Generate plots and contexts
+    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
+    context_paths = generate_all_contexts(gaps, output_dir)
     
-    return ArtifactPaths(plots, contexts, proposals, csv_path, latex_files)
+    # ❌ TODO: Add when implementing remaining steps
+    # proposal_paths = save_individual_proposals(results, output_dir)
+    # csv_path = generate_gaps_analysis_csv(gaps, results, output_dir)
+    # latex_paths = generate_latex_files(results, output_dir)
+    
+    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
+    return BatchResults(proposals=results.proposals, metadata=results.metadata, artifact_paths=artifact_paths)
 ```
 
 ## Simplified Implementation Principles
@@ -271,18 +280,27 @@ def generate_all_artifacts(gaps: List[GapWithContext], results: BatchResults) ->
 - Use existing imports and standard library where possible
 - Simple error handling with logging, no complex validation frameworks
 
-### 🔄 **Simple Integration**
+### 🔄 **Simplified Integration** ✅ **COMPLETED**
 ```python
-# Updated workflow - just add artifacts at the end
+# Actual implementation - inlined into run_batch_workflow()
 def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     # ... existing workflow steps 1-5 ...
     
-    # Step 6: Generate artifacts (hardcoded, always enabled)
-    artifact_paths = generate_all_artifacts(gaps, results)
+    # Step 6: Generate artifacts (inlined for simplicity)
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
+    LOGGER.info(f"Generating artifacts in {output_dir}")
+    
+    # Generate plots
+    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
+    
+    # Generate context files  
+    context_paths = generate_all_contexts(gaps, output_dir)
+    
+    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
     
     return BatchResults(
         proposals=results.proposals,
-        metadata=config,
+        metadata=results.metadata,
         artifact_paths=artifact_paths
     )
 ```
@@ -325,12 +343,13 @@ class ArtifactDataPreparer:
 - ✅ **Clean Error Handling**: No fallback behavior - fails fast with clear errors
 - ✅ **Feature Parity Complete**: Plots include gap center marking, neighbor network, article classification
 - ✅ **Validated Implementation**: Working output confirmed in `outputs/2025-09-26/18-43-49/`
-- 🎯 **Next Priority**: Phase 2 - Results Export & Context Files
+- 🎯 **Next Priority**: Step 2.2 - Results Export (CSV generation)
 
-### ✅ **Phase 2 Success**:
-- CSV results file: `{hydra_output_dir}/gaps_analysis_results.csv`
-- Context JSON files: `{hydra_output_dir}/contexts/gap_N_context.json`
-- Individual proposal JSON files: `{hydra_output_dir}/openai_structured_proposals/gap_N_proposal.json`
+### ✅ **Phase 2 Status - PARTIAL**: 
+- ✅ **Step 2.1 COMPLETE**: Context JSON files: `{hydra_output_dir}/contexts/gap_N_context.json`
+- ✅ **Step 2.1 COMPLETE**: Context text files: `{hydra_output_dir}/contexts/gap_N_analysis.txt`
+- ❌ **Step 2.2 TODO**: CSV results file: `{hydra_output_dir}/gaps_analysis_results.csv`
+- ❌ **Step 2.3 TODO**: Individual proposal JSON files: `{hydra_output_dir}/openai_structured_proposals/gap_N_proposal.json`
 
 ### ✅ **Phase 3 Success**:
 - Books vs proposals plots: `{hydra_output_dir}/plots/gap_N_books_vs_proposals.png`
