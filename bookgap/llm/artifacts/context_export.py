@@ -64,9 +64,8 @@ def save_gap_context(gap_with_context: GapWithContext, output_dir: Path) -> Dict
     article_works = articles.works()
     book_works = books.works()
     
-    # Compute gap statistics (need book gap sizes - simplified for now)
-    # TODO: In full implementation, this would come from the broader analysis context
-    book_gap_sizes = [len(book_works)]  # Placeholder - in real implementation this would be computed
+    # Compute gap statistics using pre-computed book gap sizes
+    book_gap_sizes = gap_with_context.book_gap_sizes
     gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
     
     # Get book coverage information

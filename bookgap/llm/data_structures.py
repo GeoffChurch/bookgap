@@ -23,6 +23,7 @@ class GapWithContext:
     gap_idx: int
     books: SubCloud
     articles: SubCloud
+    book_gap_sizes: List[int]  # Gap sizes for all books in topic (for statistics)
 
 
 @dataclass(frozen=True)

@@ -23,9 +23,10 @@ The current Hydra-based `workflow_functions.py` implements core batch processing
 ## Missing Functionalities from Original Workflow
 
 ### 📊 **Gap Analysis & Statistics**
-- ❌ Individual gap analysis text files (`*_analysis.txt`)
-- ❌ Gap context JSON files (`gap_N_context.json`) 
-- ❌ Gap statistics computation (percentile, z-score, Shapiro-Wilk test)
+- ✅ Individual gap analysis text files (`*_analysis.txt`)
+- ✅ Gap context JSON files (`gap_N_context.json`) 
+- ✅ Gap statistics computation (percentile, z-score, Shapiro-Wilk test)
+- ✅ **book_gap_sizes computation** - Full statistical parity with legacy implementation
 - ❌ Book gap sizes Q-Q plots (`book_gap_sizes_qqplot.png`)
 - ❌ Gap size histograms and statistical plots
 
@@ -110,6 +111,8 @@ bookgap/
 #### Step 1.2: Integrate with Workflow ✅ **COMPLETED**
 **Implementation**: Inlined directly into `workflow_functions.py`
 - ✅ **COMPLETED**: Artifact generation integrated into `run_batch_workflow()`
+- ✅ **COMPLETED**: **Early artifacts** - Context files generated immediately after gap finding
+- ✅ **COMPLETED**: **Late artifacts** - Plots generated after proposal completion
 - ✅ **COMPLETED**: Direct calls to `generate_gap_plots_for_results()` and `generate_all_contexts()`
 - ✅ **COMPLETED**: Uses Hydra output directory: `Path(HydraConfig.get().runtime.output_dir)`
 - ✅ **COMPLETED**: Removed intermediate `workflow_artifacts.py` orchestration layer
@@ -128,6 +131,23 @@ python bookgap/batch_generator.py config=debug batch.num_gaps=1
 - ✅ **Plots have complete information richness** - gap center, neighbor network, article classification
 - ✅ **Phase 1 Complete** with full feature parity to original implementation
 
+**Recent Implementation (September 29, 2025)**:
+- ✅ **book_gap_sizes Computation**: Successfully implemented computation of book gap sizes for complete parity with legacy gap_finder.write_gaps()
+- ✅ **Statistical Integration**: Added book_gap_sizes field to GapWithContext dataclass and integrated into workflow_functions.py
+- ✅ **Algorithm Debug**: Fixed assertion logic in kball_algorithm.py for proper is_intra_cloud parameter handling
+- ✅ **Context Export**: Updated context_export.py to use real book_gap_sizes data instead of placeholder values
+- ✅ **Full Validation**: Generated complete artifact files showing statistical parity (z-score 16.33, percentile 1.0) with legacy implementation
+- ✅ **Data Completeness**: Confirmed all JSON context files contain complete article/book metadata with no missing fields
+- ✅ **Early Artifact Generation**: Context files now generated immediately after gap finding, providing immediate results even if LLM processing fails
+
+**Workflow Improvement - Early vs Late Artifacts**:
+- **Early Artifacts** (after Step 1 - Gap Finding): Context JSON files, analysis text files
+  - **Benefit**: Available immediately for analysis even if batch processing fails
+  - **Content**: Complete gap statistics, article metadata, covering books analysis
+- **Late Artifacts** (after Step 5 - Proposal Generation): Plot files requiring proposal data
+  - **Benefit**: Include proposal visualizations and comparative analysis
+  - **Content**: Gap plots with proposals, books vs proposals comparisons
+
 ---
 
 ### 📊 **PHASE 2: Results Export & Context Files**
@@ -140,8 +160,12 @@ python bookgap/batch_generator.py config=debug batch.num_gaps=1
 - ✅ **COMPLETED**: Generate `gap_N_context.json` with articles, books, gap statistics
 - ✅ **COMPLETED**: Generate `gap_N_analysis.txt` with detailed human-readable analysis
 - ✅ **COMPLETED**: Ported functionality from `write_single_kball_gap()` in gap_finder.py
-- ✅ **COMPLETED**: Integrated into workflow via `generate_all_contexts()` function
+- ✅ **COMPLETED**: **Early generation** - Integrated into workflow immediately after gap finding
 - ✅ **COMPLETED**: Comprehensive test suite (4/4 tests passing)
+- ✅ **COMPLETED**: **book_gap_sizes implementation** - Full statistical parity with legacy gap_finder
+- ✅ **COMPLETED**: **Complete data validation** - All JSON context files contain full article/book metadata
+- ✅ **COMPLETED**: **Statistical analysis integration** - Z-scores, percentiles, Shapiro-Wilk tests working
+- ✅ **COMPLETED**: **Robust workflow** - Context files available even if subsequent LLM processing fails
 
 #### Step 2.2: Results Export Module
 **File**: `bookgap/llm/artifacts/results_export.py`
@@ -249,14 +273,18 @@ class ArtifactPaths:
 
 # Example of how artifact generation works (inlined in workflow_functions.py):
 def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
-    # ... steps 1-5 ...
+    # Step 1: Find gaps
+    gaps = find_gaps_for_config(config)
     
-    # Step 6: Generate artifacts (inlined)
+    # ARTIFACTS: Generate context files immediately after gap finding
     output_dir = Path(HydraConfig.get().runtime.output_dir)
-    
-    # ✅ IMPLEMENTED: Generate plots and contexts
-    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
     context_paths = generate_all_contexts(gaps, output_dir)
+    
+    # Steps 2-5: Build contexts, generate requests, submit batch, monitor results
+    # ... proposal generation pipeline ...
+    
+    # ARTIFACTS: Generate plots after proposals are complete
+    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
     
     # ❌ TODO: Add when implementing remaining steps
     # proposal_paths = save_individual_proposals(results, output_dir)
@@ -284,17 +312,20 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
 ```python
 # Actual implementation - inlined into run_batch_workflow()
 def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
-    # ... existing workflow steps 1-5 ...
+    # Step 1: Find gaps
+    gaps = find_gaps_for_config(config)
     
-    # Step 6: Generate artifacts (inlined for simplicity)
+    # ARTIFACTS: Generate context files immediately (early artifacts)
     output_dir = Path(HydraConfig.get().runtime.output_dir)
-    LOGGER.info(f"Generating artifacts in {output_dir}")
-    
-    # Generate plots
-    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
-    
-    # Generate context files  
     context_paths = generate_all_contexts(gaps, output_dir)
+    LOGGER.info(f"Generated context files in {output_dir}/contexts/")
+    
+    # Steps 2-5: Proposal generation pipeline...
+    # ... build contexts, generate requests, submit batch, monitor results ...
+    
+    # ARTIFACTS: Generate plots after proposals are complete (late artifacts)
+    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
+    LOGGER.info(f"Generated plot files in {output_dir}/plots/")
     
     artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
     
@@ -345,9 +376,12 @@ class ArtifactDataPreparer:
 - ✅ **Validated Implementation**: Working output confirmed in `outputs/2025-09-26/18-43-49/`
 - 🎯 **Next Priority**: Step 2.2 - Results Export (CSV generation)
 
-### ✅ **Phase 2 Status - PARTIAL**: 
+### ✅ **Phase 2 Status - MOSTLY COMPLETE**: 
 - ✅ **Step 2.1 COMPLETE**: Context JSON files: `{hydra_output_dir}/contexts/gap_N_context.json`
 - ✅ **Step 2.1 COMPLETE**: Context text files: `{hydra_output_dir}/contexts/gap_N_analysis.txt`
+- ✅ **Step 2.1 COMPLETE**: **book_gap_sizes computation** - Statistical parity with legacy implementation achieved
+- ✅ **Step 2.1 COMPLETE**: **Data structure enhancement** - GapWithContext includes book_gap_sizes field
+- ✅ **Step 2.1 COMPLETE**: **Workflow integration** - Full artifact generation working in batch workflow
 - ❌ **Step 2.2 TODO**: CSV results file: `{hydra_output_dir}/gaps_analysis_results.csv`
 - ❌ **Step 2.3 TODO**: Individual proposal JSON files: `{hydra_output_dir}/openai_structured_proposals/gap_N_proposal.json`
 

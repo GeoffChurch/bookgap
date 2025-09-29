@@ -118,9 +118,10 @@ def range_search_radii_(
     return_dists: bool = True,
     return_ids: bool = True
 ) -> RangeSearchResult:
-    lims: Optional[list[NDArray[np.uint64]]] = [] if return_lims else None
-    dists: Optional[list[NDArray[np.float32]]] = [] if return_dists else None
-    ids: Optional[list[NDArray[np.int64]]] = [] if return_ids else None
+    # Start with an empty array in each list so that concatenation works with no results
+    lims = [np.array([], dtype=np.uint64)] if return_lims else None
+    dists = [np.array([], dtype=np.float32)] if return_dists else None
+    ids = [np.array([], dtype=np.int64)] if return_ids else None
     for i in tqdm.tqdm(range(len(query)), desc="Range search radii", mininterval=1, delay=1):
         batch = query[i:i+1]
         lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore

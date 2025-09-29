@@ -147,6 +147,21 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
             LOGGER.warning(f"No articles found for topic {topic_id}")
             continue  # Skip to next topic instead of returning
         
+        # Compute book gap sizes for statistics (matches gap_finder.write_gaps)
+        # Note: For book gaps, we call the algorithm directly with query=books
+        book_gap_sizes = [
+            len(g.get_dists_idxs().idxs)
+            for g in config.gap.cell_type.value.find_gaps(
+                ambient=articles,
+                landmark=books,
+                query=books,  # Key difference: query=books for book gaps
+                radius_fraction=config.gap.radius_fraction,
+                k=1,
+                is_intra_cloud=True,  # Key difference: intra_cloud=True for book gaps
+            )
+        ]
+        LOGGER.info(f"Computed {len(book_gap_sizes)} book gap sizes for topic {topic_name}")
+        
         # Find gaps using configured parameters
         gap_generator = find_gaps_for_topic(
             books=books,
@@ -165,7 +180,8 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
                 topic_id=topic_id,
                 gap_idx=len(gaps),  # Use global gap index across all topics
                 books=books,
-                articles=articles
+                articles=articles,
+                book_gap_sizes=book_gap_sizes  # Pass computed book gap sizes
             )
             for gap in islice(gap_generator, config.batch.num_gaps)]
         
@@ -488,11 +504,15 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         BatchResults frozen dataclass containing proposals, metadata, and artifact paths
     """
     LOGGER.info(f"Starting batch workflow with {config.batch.num_gaps} gaps per topic")
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
     
     # Step 1: Find gaps
     gaps = find_gaps_for_config(config)
     LOGGER.info(f"Found {len(gaps)} gaps")
     
+    # ARTIFACTS: Generate context files
+    context_paths = generate_all_contexts(gaps, output_dir)
+
     # Step 2: Build contexts
     contexts = build_contexts_for_gaps(gaps, config)
     LOGGER.info(f"Built {len(contexts)} proposal contexts")
@@ -509,15 +529,9 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     results = monitor_and_download_results(batch_job_id, config)
     LOGGER.info(f"Completed! Generated {len(results.proposals)} proposals")
     
-    # Step 6: Generate artifacts
-    output_dir = Path(HydraConfig.get().runtime.output_dir)
-    LOGGER.info(f"Generating artifacts in {output_dir}")
-    
-    # Generate plots
+    # ARTIFACTS: Generate plots
     plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
     
-    # Generate context files
-    context_paths = generate_all_contexts(gaps, output_dir)
     
     artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
     
