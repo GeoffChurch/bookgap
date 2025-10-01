@@ -2,6 +2,7 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 import enum
 from functools import lru_cache
+import gc
 import heapq
 import itertools
 import json
@@ -26,41 +27,6 @@ from bookgap.deduplicators import Deduplicator
 
 T = TypeVar('T', bound=np.generic)
 
-def _log_gpu_memory(context: str):
-    """Log current GPU memory usage if CUDA is available."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            # Get memory info for all available GPUs
-            for i in range(torch.cuda.device_count()):
-                try:
-                    allocated = torch.cuda.memory_allocated(i)
-                    reserved = torch.cuda.memory_reserved(i)
-                    
-                    # Convert bytes to MB for readability
-                    allocated_mb = allocated / (1024 * 1024)
-                    reserved_mb = reserved / (1024 * 1024)
-                    
-                    LOGGER.info(f"{context} - GPU {i}: {allocated_mb:.1f}MB allocated, {reserved_mb:.1f}MB reserved")
-                    
-                    # Log memory stats if available (PyTorch 1.4+)
-                    try:
-                        if hasattr(torch.cuda, 'memory_stats'):
-                            stats = torch.cuda.memory_stats(i)
-                            max_allocated = stats.get('allocated_bytes.all.peak', 0) / (1024 * 1024)
-                            LOGGER.info(f"{context} - GPU {i}: peak allocated {max_allocated:.1f}MB")
-                    except Exception as stats_e:
-                        LOGGER.info(f"{context} - GPU {i}: Could not get memory stats: {stats_e}")
-                        
-                except Exception as gpu_e:
-                    LOGGER.warning(f"{context} - Failed to get memory info for GPU {i}: {gpu_e}")
-        else:
-            LOGGER.info(f"{context} - CUDA not available")
-    except ImportError:
-        LOGGER.info(f"{context} - PyTorch not available")
-    except Exception as e:
-        LOGGER.warning(f"{context} - Failed to log GPU memory: {e}")
-
 class Embedder:
     class ModelName(enum.Enum):
         GIST_SMALL = 'avsolatorio/GIST-small-Embedding-v0'
@@ -71,15 +37,10 @@ class Embedder:
         self._model_: Optional[SentenceTransformer] = None
         self._embedding_dtype_: Optional[np.dtype[np.float32]] = None
         self._embedding_dimension_: Optional[int] = None
-        
-        # Log initial GPU memory state
-        _log_gpu_memory(f"Embedder.__init__ (model: {model_name})")
 
     def _model(self) -> SentenceTransformer:
         if self._model_ is None:
-            _log_gpu_memory(f"Embedder._model() before loading {self.model_name}")
             self._model_ = SentenceTransformer(self.model_name)
-            _log_gpu_memory(f"Embedder._model() after loading {self.model_name}")
         return self._model_
     
     def __enter__(self):
@@ -89,16 +50,12 @@ class Embedder:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - cleanup GPU resources."""
         if self._model_ is not None:
-            _log_gpu_memory(f"Embedder.__exit__ before cleanup (model: {self.model_name})")
-            
             # Delete the model reference
             del self._model_
             self._model_ = None
-            LOGGER.info(f"Released Embedder model: {self.model_name}")
     
             # Aggressive GPU memory cleanup
             if torch.cuda.is_available():
-                import gc
                 # Force garbage collection
                 gc.collect()
                 # Clear CUDA cache multiple times
@@ -106,8 +63,6 @@ class Embedder:
                 torch.cuda.ipc_collect()  # Clean up inter-process communication cache
                 torch.cuda.empty_cache()  # Clear again after IPC cleanup
                 LOGGER.info("Performed aggressive CUDA cache cleanup")
-                
-            _log_gpu_memory(f"Embedder.__exit__ after cleanup (model: {self.model_name})")
             
     def _determine_embedding_space(self):
         dummy = self._model().encode(["dummy"], show_progress_bar=False)
@@ -139,9 +94,7 @@ class Embedder:
             return np.empty((0, self.embedding_dimension()), dtype=self.embedding_dtype())
         inputs = [f"{title}\n{abstract}" for title, abstract in title_abstract_pairs]
         
-        _log_gpu_memory(f"Embedder.embed_texts before encoding {len(inputs)} texts (batch_size={batch_size})")
         embeddings = self._model().encode(inputs, batch_size=batch_size, show_progress_bar=False)
-        _log_gpu_memory(f"Embedder.embed_texts after encoding {len(inputs)} texts")
         if embeddings.shape != (len(title_abstract_pairs), self.embedding_dimension()):
             raise ValueError(f"Expected embeddings shape to be {(len(title_abstract_pairs), self.embedding_dimension())}, got {embeddings.shape}")
         return embeddings

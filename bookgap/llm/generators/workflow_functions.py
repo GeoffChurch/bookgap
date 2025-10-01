@@ -3,6 +3,7 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
+from dataclasses import dataclass
 from itertools import islice
 import json
 import random
@@ -16,10 +17,14 @@ from omegaconf import OmegaConf
 from openai import OpenAI
 import pyalex
 
+import numpy as np
+from numpy.typing import NDArray
+
 from bookgap.configs.config import ExperimentConfig
-from bookgap.cloud import build_cloud, get_subclouds_for_topic
+from bookgap.cloud import build_cloud, get_subclouds_for_topic, Embedder
 from bookgap.deduplicators import Deduplicator
 from bookgap.gap_finder import find_gaps_for_topic
+from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.llm.data_structures import BatchResults, GapWithContext, ArtifactPaths
 from bookgap.util import LOGGER
 from ..protocols import (
@@ -28,8 +33,23 @@ from ..protocols import (
 )
 from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
+from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
 
+@dataclass(frozen=True)
+class PendingProposal:
+    """Temporary holder for parsed proposal data before embeddings are attached."""
+    proposal: Proposal
+    custom_id: str
 
+def _compute_proposal_embeddings(pending: List[PendingProposal]) -> NDArray[np.float32]:
+    """Compute embeddings for pending proposals in a single batch pass."""
+    title_abstract_pairs = [
+        (proposal.proposal.title, proposal.proposal.abstract)
+        for proposal in pending
+    ]
+
+    with Embedder() as embedder:
+        return embedder.embed_texts(title_abstract_pairs)
 
 class MetadataUtils:
     """Static utilities for metadata chunking and parsing."""
@@ -160,7 +180,6 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
                 is_intra_cloud=True,  # Key difference: intra_cloud=True for book gaps
             )
         ]
-        LOGGER.info(f"Computed {len(book_gap_sizes)} book gap sizes for topic {topic_name}")
         
         # Find gaps using configured parameters
         gap_generator = find_gaps_for_topic(
@@ -173,23 +192,29 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
         )
         
         # Take the requested number of gaps for this topic using itertools.islice
-        topic_gaps = [
-            GapWithContext(
-                gap=gap,
-                topic_name=topic_name,
-                topic_id=topic_id,
-                gap_idx=len(gaps),  # Use global gap index across all topics
-                books=books,
-                articles=articles,
-                book_gap_sizes=book_gap_sizes  # Pass computed book gap sizes
+        topic_gaps: list[GapWithContext] = []
+        for gap in islice(gap_generator, config.batch.num_gaps):
+            gap_size = len(gap.get_dists_idxs().idxs)
+            gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
+
+            topic_gaps.append(
+                GapWithContext(
+                    gap=gap,
+                    topic_name=topic_name,
+                    topic_id=topic_id,
+                    gap_idx=len(gaps) + len(topic_gaps),  # Use global gap index across all topics
+                    books=books,
+                    articles=articles,
+                    book_gap_sizes=book_gap_sizes,
+                    gap_size=gap_size,
+                    gap_size_percentile=gap_size_percentile,
+                    gap_zscore=gap_zscore,
+                    shapiro_log10_pval=shapiro_log10_pval,
+                )
             )
-            for gap in islice(gap_generator, config.batch.num_gaps)]
-        
-        
+
         if len(topic_gaps) == 0:
             LOGGER.warning(f"No gaps found for topic {topic_name}")
-        else:
-            LOGGER.info(f"Found {len(topic_gaps)} gaps for topic {topic_name}")
         
         gaps.extend(topic_gaps)
  
@@ -356,14 +381,14 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
     return batch.id
 
 
-def parse_batch_result_to_proposal(result: dict[str, Any]) -> ParsedProposal:
-    """Parse OpenAI batch result into ParsedProposal instance.
+def parse_batch_result_to_proposal(result: dict[str, Any]) -> PendingProposal:
+    """Parse OpenAI batch result into a pending proposal without embeddings.
     
     Args:
         result: Raw batch result dict from OpenAI API
         
     Returns:
-        ParsedProposal instance or None if parsing fails
+        PendingProposal ready for embedding computation
     """
     # Extract the JSON content from OpenAI batch result structure
     content = result["response"]["body"]["choices"][0]["message"]["content"]
@@ -372,12 +397,10 @@ def parse_batch_result_to_proposal(result: dict[str, Any]) -> ParsedProposal:
     proposal = Proposal.model_validate_json(content)
     
     # Wrap with metadata
-    parsed_proposal = ParsedProposal(
+    return PendingProposal(
         proposal=proposal,
         custom_id=result["custom_id"]
     )
-    
-    return parsed_proposal
 
 def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) -> BatchResults:
     """Monitor batch job and download results when complete.
@@ -425,8 +448,8 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         with open(Path(HydraConfig.get().runtime.output_dir) / f"batch_results.jsonl", "w") as f:
             f.write(result_content)
         
-        # Parse JSONL results into ParsedProposal instances
-        results: list[ParsedProposal] = []
+        # Parse JSONL results into PendingProposal instances
+        pending_proposals: list[PendingProposal] = []
 
         raw_results = result_content.strip().split('\n')
 
@@ -443,15 +466,33 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
                 num_stop_reason_length += 1
                 continue
             try:
-                # Parse into ParsedProposal instance
-                parsed_proposal = parse_batch_result_to_proposal(line_json)
-                LOGGER.info(f"Parsed proposal title: {parsed_proposal.proposal.title}")
-                results.append(parsed_proposal)
+                pending = parse_batch_result_to_proposal(line_json)
+                LOGGER.info(f"Parsed proposal title: {pending.proposal.title}")
+                pending_proposals.append(pending)
             except Exception as e:
                 num_errors += 1
                 LOGGER.error(f"Failed to parse line in results: {e}. Line:\n{line}")
         
-        LOGGER.info(f"Downloaded and parsed {len(results)} proposals out of {len(raw_results)} results ({num_empty} empty results, {num_errors} errors, {num_stop_reason_length} with stop_reason='length')")
+        LOGGER.info(f"Downloaded and parsed {len(pending_proposals)} proposals out of {len(raw_results)} results ({num_empty} empty results, {num_errors} errors, {num_stop_reason_length} with stop_reason='length')")
+
+        # Compute embeddings once for all proposals and materialize ParsedProposal instances
+        embeddings = _compute_proposal_embeddings(pending_proposals)
+
+        if len(embeddings) != len(pending_proposals):
+            raise RuntimeError(
+                f"Embedding count mismatch: expected {len(pending_proposals)}, got {len(embeddings)}"
+            )
+
+        parsed_proposals = [
+            ParsedProposal(
+                proposal=pending.proposal,
+                custom_id=pending.custom_id,
+                embedding=embedding,
+            )
+            for pending, embedding in zip(pending_proposals, embeddings)
+        ]
+
+        LOGGER.info(f"Embedded {len(parsed_proposals)} proposals for downstream artifacts")
         
         # Parse original config from metadata using MetadataUtils
         metadata = batch.metadata or {}
@@ -463,7 +504,7 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
             parsed_config = config
         
         return BatchResults(
-            proposals=results,
+            proposals=parsed_proposals,
             metadata=parsed_config
         )
     else:
@@ -531,9 +572,18 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     
     # ARTIFACTS: Generate plots
     plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
+
+    # ARTIFACTS: Generate simple results CSV (Step 2.2 minimal)
+    results_csv = generate_gaps_analysis_csv(
+        gaps,
+        results.proposals,
+        output_dir,
+        config,
+        contexts,
+    )
     
     
-    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
+    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths, results_csv=results_csv)
     
     # Return enhanced results with artifacts
     return BatchResults(

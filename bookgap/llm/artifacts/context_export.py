@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from bookgap.llm.data_structures import GapWithContext
-from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.gap_finder import group_gap_articles_by_covering_books, get_book_to_articles_mapping, TOP_ARTICLES_TO_DISPLAY
 from bookgap.util import create_unicode_safe_filename, LOGGER
 
@@ -36,8 +35,6 @@ def save_gap_context(gap_with_context: GapWithContext, output_dir: Path) -> Dict
     topic_name = gap_with_context.topic_name
     topic_id = gap_with_context.topic_id
     
-    LOGGER.info(f"Generating context files for gap {gap_idx}: {topic_name}")
-    
     # Create contexts directory
     contexts_dir = output_dir / "contexts"
     contexts_dir.mkdir(parents=True, exist_ok=True)
@@ -55,8 +52,8 @@ def save_gap_context(gap_with_context: GapWithContext, output_dir: Path) -> Dict
     books = gap_with_context.books
     
     gap_dists_idxs = gap.get_dists_idxs()
-    gap_size = len(gap_dists_idxs.idxs)
-    
+    gap_size = gap_with_context.gap_size
+
     if gap_size == 0:
         raise ValueError(f"Gap {gap_idx} has no articles")
     
@@ -64,13 +61,22 @@ def save_gap_context(gap_with_context: GapWithContext, output_dir: Path) -> Dict
     article_works = articles.works()
     book_works = books.works()
     
-    # Compute gap statistics using pre-computed book gap sizes
-    book_gap_sizes = gap_with_context.book_gap_sizes
-    gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
+    # Use precomputed gap statistics from GapWithContext
+    gap_size_percentile = gap_with_context.gap_size_percentile
+    gap_zscore = gap_with_context.gap_zscore
+    shapiro_log10_pval = gap_with_context.shapiro_log10_pval
     
     # Get book coverage information
-    book_coverage = group_gap_articles_by_covering_books(gap)
-    book_to_articles_mapping = get_book_to_articles_mapping(gap)
+    raw_book_coverage = group_gap_articles_by_covering_books(gap)
+    book_coverage = {
+        int(book_idx): [int(article_idx) for article_idx in covered_article_idxs]
+        for book_idx, covered_article_idxs in raw_book_coverage.items()
+    }
+    raw_book_to_articles_mapping = get_book_to_articles_mapping(gap)
+    book_to_articles_mapping = {
+        int(book_idx): dists_idxs
+        for book_idx, dists_idxs in raw_book_to_articles_mapping.items()
+    }
     
     # 1. Generate JSON context file
     context_data = _build_json_context(
@@ -81,15 +87,11 @@ def save_gap_context(gap_with_context: GapWithContext, output_dir: Path) -> Dict
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(context_data, f, indent=2, ensure_ascii=False)
     
-    LOGGER.info(f"Gap context JSON written to {json_path}")
-    
     # 2. Generate text analysis file (ported from write_single_kball_gap)
     _write_gap_analysis_text(
         txt_path, gap_with_context, gap_size, gap_size_percentile, gap_zscore, shapiro_log10_pval,
         article_works, book_works, book_coverage, book_to_articles_mapping, gap_dists_idxs
     )
-    
-    LOGGER.info(f"Gap analysis text written to {txt_path}")
     
     return {"json": json_path, "txt": txt_path}
 

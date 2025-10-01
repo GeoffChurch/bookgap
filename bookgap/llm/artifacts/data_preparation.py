@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
-from bookgap.cloud import SubCloud, Embedder
+from bookgap.cloud import SubCloud
 from bookgap.cloud_index import knn
 from bookgap.gap_finder import GapProtocol
 from bookgap.llm.data_structures import GapWithContext
@@ -61,24 +61,16 @@ class GapVisualizationDataPreparer:
         Raises:
             ValueError: If insufficient data for visualization
         """
-        LOGGER.info(f"Preparing gap visualization data for gap {gap_with_context.gap_idx}")
-        
-        # Extract core data
-        gap = gap_with_context.gap
-        books = gap_with_context.books
-        articles = gap_with_context.articles
-        
         # Compute proposal embeddings if provided
         proposal_embeddings = None
         proposal_labels = None
         if proposals:
-            LOGGER.info(f"Computing embeddings for {len(proposals)} proposals")
-            proposal_embeddings = self._compute_proposal_embeddings(proposals)
+            proposal_embeddings = [p.embedding for p in proposals]
             proposal_labels = [f"{p.proposal.title[:50]}..." if len(p.proposal.title) > 50 else p.proposal.title 
                              for p in proposals]
         
         # Prepare base embeddings and metadata
-        base_data = self._prepare_base_data(gap, books, articles)
+        base_data = self._prepare_base_data(gap_with_context.gap, gap_with_context.books, gap_with_context.articles)
         if not base_data:
             raise ValueError("Insufficient data for visualization")
             
@@ -98,7 +90,7 @@ class GapVisualizationDataPreparer:
             )
         
         # Find gap center position
-        center_position = self._find_gap_center_position(gap, gap_positions, all_items)
+        center_position = self._find_gap_center_position(gap_with_context.gap, gap_positions, all_items)
         
         return VisualizationData(
             embeddings_2d=embeddings_2d,
@@ -170,7 +162,7 @@ class GapVisualizationDataPreparer:
                     [('book', int(idx)) for idx in covering_book_indices])
         
         # Compute proposal embeddings
-        proposal_embeddings = self._compute_proposal_embeddings(proposals)
+        proposal_embeddings = [p.embedding for p in proposals]
         proposal_labels = [p.proposal.title for p in proposals]
         
         # Project to 2D
@@ -196,29 +188,6 @@ class GapVisualizationDataPreparer:
             proposal_labels=proposal_labels,
             method_info=method_info
         )
-    
-    def _compute_proposal_embeddings(self, proposals: List[ParsedProposal]) -> List[np.ndarray]:
-        """Compute embeddings for proposal titles and abstracts."""
-        if not proposals:
-            return []
-            
-        # Prepare title-abstract pairs for batch embedding
-        title_abstract_pairs = []
-        
-        for proposal in proposals:
-            title_abstract_pairs.append((proposal.proposal.title, proposal.proposal.abstract))
-        
-        if not title_abstract_pairs:
-            return []
-            
-        # Compute embeddings in batch using standardized format with context manager
-        with Embedder() as embedder:
-            embeddings_array = embedder.embed_texts(title_abstract_pairs, batch_size=1)
-        
-        # Convert to list of individual arrays
-        embeddings = [embeddings_array[i] for i in range(len(embeddings_array))]
-        
-        return embeddings
     
     def _prepare_base_data(
         self, 

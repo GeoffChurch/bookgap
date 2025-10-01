@@ -40,7 +40,14 @@ class TestContextExport:
         
         self.mock_articles.works.return_value = self.article_works
         self.mock_books.works.return_value = self.book_works
-        
+
+        # Precomputed gap statistics for testing
+        self.book_gap_sizes = [2, 5, 7, 3]
+        self.gap_size = len(self.mock_gap.get_dists_idxs.return_value.idxs)
+        self.gap_size_percentile = 0.75
+        self.gap_zscore = 1.5
+        self.shapiro_log10_pval = -2.3
+
         # Create GapWithContext
         self.gap_with_context = GapWithContext(
             gap=self.mock_gap,
@@ -48,16 +55,19 @@ class TestContextExport:
             topic_id="ml_123",
             gap_idx=0,
             books=self.mock_books,
-            articles=self.mock_articles
+            articles=self.mock_articles,
+            book_gap_sizes=self.book_gap_sizes,
+            gap_size=self.gap_size,
+            gap_size_percentile=self.gap_size_percentile,
+            gap_zscore=self.gap_zscore,
+            shapiro_log10_pval=self.shapiro_log10_pval,
         )
     
     @patch('bookgap.llm.artifacts.context_export.group_gap_articles_by_covering_books')
     @patch('bookgap.llm.artifacts.context_export.get_book_to_articles_mapping')
-    @patch('bookgap.llm.artifacts.context_export.compute_gap_statistics')
-    def test_save_gap_context_success(self, mock_compute_stats, mock_book_mapping, mock_book_coverage):
+    def test_save_gap_context_success(self, mock_book_mapping, mock_book_coverage):
         """Test successful gap context generation."""
         # Mock the gap analysis functions
-        mock_compute_stats.return_value = (0.75, 1.5, -2.3)  # percentile, z-score, shapiro_log10_pval
         mock_book_coverage.return_value = {
             0: [10, 15],  # Book 0 covers articles 10, 15
             1: [22, 8, 12],  # Book 1 covers articles 22, 8, 12
@@ -130,7 +140,8 @@ class TestContextExport:
     def test_save_gap_context_empty_gap(self):
         """Test error handling for empty gap."""
         # Mock empty gap
-        self.mock_gap.get_dists_idxs.return_value = Mock(
+        empty_gap = Mock()
+        empty_gap.get_dists_idxs.return_value = Mock(
             idxs=np.array([]),
             sqdists=np.array([])
         )
@@ -138,9 +149,23 @@ class TestContextExport:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             
+            empty_gap_with_context = GapWithContext(
+                gap=empty_gap,
+                topic_name="Machine Learning",
+                topic_id="ml_123",
+                gap_idx=0,
+                books=self.mock_books,
+                articles=self.mock_articles,
+                book_gap_sizes=[],
+                gap_size=0,
+                gap_size_percentile=float('nan'),
+                gap_zscore=float('nan'),
+                shapiro_log10_pval=float('nan'),
+            )
+
             # Should raise ValueError for empty gap
             with pytest.raises(ValueError, match="Gap 0 has no articles"):
-                save_gap_context(self.gap_with_context, output_dir)
+                save_gap_context(empty_gap_with_context, output_dir)
     
     @patch('bookgap.llm.artifacts.context_export.save_gap_context')
     def test_generate_all_contexts_success(self, mock_save_context):
@@ -178,7 +203,12 @@ class TestContextExport:
             topic_id="phys_456",
             gap_idx=1,
             books=self.mock_books,
-            articles=self.mock_articles
+            articles=self.mock_articles,
+            book_gap_sizes=self.book_gap_sizes,
+            gap_size=self.gap_size,
+            gap_size_percentile=self.gap_size_percentile,
+            gap_zscore=self.gap_zscore,
+            shapiro_log10_pval=self.shapiro_log10_pval,
         )
         gaps = [self.gap_with_context, gap2]
         

@@ -48,12 +48,10 @@ class KballAlgorithm:
                                                     k=k, is_intra_cloud=is_intra_cloud)
         while True:
             if len(covered_ambient_points) == 0:
-                LOGGER.info("No gaps found")
                 break
             highest_coverage_query = np.argmax([len(idxs) for _dists, idxs in covered_ambient_points])
             dists, idxs = covered_ambient_points[highest_coverage_query]
             if len(idxs) == 0:
-                LOGGER.info("No more gaps found")
                 break
             order = np.argsort(dists)
             dists = dists[order]

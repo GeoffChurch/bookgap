@@ -232,6 +232,7 @@ Replace `batch_operations.py` with clean new architecture:
 - `InteractiveLLMConfiguration` class - replaced by Hydra configs
 - `bookgap/config_manager.py` - **DELETE ENTIRELY** (CustomIdManager, AnalysisConfiguration, etc.)
 - `bookgap/gap_directory_manager.py` - **REPLACE** with Hydra output directory management
+- `bookgap/llm/context_builder.py` - **DELETE ENTIRELY** (replaced by `build_contexts_for_gaps` workflow)
 - **Individual Generator Architecture - DELETE ENTIRELY:**
   - `bookgap/llm/generators/openai_generator.py` - Individual request generator
   - `bookgap/llm/generators/json_prompt_generator.py` - Prompt-based generator  

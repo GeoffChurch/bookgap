@@ -8,7 +8,7 @@ issues we encountered with the old mock-heavy approach.
 import pytest
 import numpy as np
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from bookgap.visualization import VisualizationData, PlotConfig, ProjectionMethod
 from bookgap.llm.artifacts.data_preparation import GapVisualizationDataPreparer
@@ -82,6 +82,7 @@ class TestVisualizationData:
         )
         
         assert data.n_proposals == 2
+        assert data.proposal_labels is not None
         assert len(data.proposal_labels) == 2
 
 
@@ -192,24 +193,18 @@ class TestUnifiedGapPlotter:
 
 class TestDataPreparation:
     """Test the data preparation pipeline."""
-    
-    @patch('bookgap.llm.artifacts.data_preparation.get_embedding_model')
-    def test_compute_proposal_embeddings(self, mock_get_embedding_model):
-        """Test proposal embedding computation."""
-        # Mock the embedding model
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.array([0.1, 0.2, 0.3])
-        mock_get_embedding_model.return_value = mock_model
-        
+
+    def test_compute_proposal_embeddings(self):
+        """Test proposal embedding accessor."""
         # Create mock proposals with required fields
         from bookgap.llm.protocols import ParsedProposal, Proposal, Chapter
-        
+
         # Create minimal chapters for the proposal
         chapters = [
             Chapter(
-                chapter_title=f"Chapter {i}", 
-                chapter_topics=[f"Topic {i}.1", f"Topic {i}.2"]
-            ) for i in range(10)
+                chapter_title=f"Chapter {i}"
+            )
+            for i in range(10)
         ]
         
         proposals = [
@@ -219,16 +214,17 @@ class TestDataPreparation:
                     title="Test Title", 
                     abstract="Test Abstract",
                     chapters=chapters
-                )
+                ),
+                embedding=np.array([0.1, 0.2, 0.3], dtype=np.float32)
             )
         ]
-        
+
         preparer = GapVisualizationDataPreparer()
         embeddings = preparer._compute_proposal_embeddings(proposals)
-        
+
         assert len(embeddings) == 1
         assert isinstance(embeddings[0], np.ndarray)
-        mock_model.encode.assert_called_once()
+        np.testing.assert_array_equal(embeddings[0], proposals[0].embedding)
 
 
 class TestIntegrationWithoutMocks:

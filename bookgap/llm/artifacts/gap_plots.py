@@ -8,6 +8,8 @@ standardized data structures and a unified plotting engine.
 from pathlib import Path
 from typing import List, Dict
 
+from hydra.core.hydra_config import HydraConfig
+
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.llm.protocols import ParsedProposal
 from bookgap.plot_utils import UnifiedGapPlotter
@@ -38,20 +40,14 @@ def save_gap_plot_with_proposals(
     Raises:
         ValueError: If insufficient data for plotting
     """
-    LOGGER.info(f"Creating gap plot for gap {gap_with_context.gap_idx} with {len(proposals)} proposals")
-    
     # Step 1: Prepare visualization data using unified pipeline
     preparer = GapVisualizationDataPreparer()
     projection_method = (ProjectionMethod.pca() if method.upper() == "PCA" 
                         else ProjectionMethod.tsne())
     
-    try:
-        data = preparer.prepare_standard_gap_data(
-            gap_with_context, proposals, projection_method
-        )
-    except ValueError as e:
-        LOGGER.error(f"Failed to prepare visualization data: {e}")
-        raise
+    data = preparer.prepare_standard_gap_data(
+        gap_with_context, proposals, projection_method
+    )
     
     # Step 2: Configure plot appearance
     config = PlotConfig(
@@ -65,20 +61,10 @@ def save_gap_plot_with_proposals(
     # Step 3: Create and save plot using unified engine
     plotter = UnifiedGapPlotter()
     
-    # Determine save directory - using a simple approach for now
-    from hydra.core.hydra_config import HydraConfig
     hydra_cfg = HydraConfig.get()
     base_dir = Path(hydra_cfg.runtime.output_dir) / "plots" / f"gap_{gap_with_context.gap_idx}"
-    
-    try:
-        save_path = plotter.create_and_save_gap_plot(data, config, base_dir)
-        LOGGER.info(f"Saved gap plot to {save_path}")
-        return save_path
-        
-    except Exception as e:
-        LOGGER.error(f"Failed to create gap plot: {e}")
-        raise ValueError(f"Failed to create gap plot: {e}")
-
+    save_path = plotter.create_and_save_gap_plot(data, config, base_dir)
+    return save_path
 
 def generate_gap_plots_for_results(
     gaps: List[GapWithContext], 

@@ -1,9 +1,21 @@
 """Comprehensive tests for workflow functions."""
 
-import pytest
-from unittest.mock import Mock, patch, mock_open
+import json
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
+import numpy as np
+import pytest
+from unittest.mock import Mock, patch
+
+from omegaconf import OmegaConf, DictConfig
+
+from bookgap.configs.config import ExperimentConfig
+from bookgap.llm.data_structures import BatchResults, GapWithContext
 from bookgap.llm.generators.workflow_functions import (
+    PendingProposal,
     generate_batch_requests,
     validate_batch_requests,
     get_supported_models,
@@ -12,15 +24,18 @@ from bookgap.llm.generators.workflow_functions import (
     submit_batch_job,
     monitor_and_download_results,
     run_batch_workflow,
-    GapWithContext
 )
 from bookgap.llm.protocols import (
     ProposalContext,
     BatchRequestData,
     ChatCompletionBody,
     ChatMessage,
+    Proposal,
+    Chapter,
     ProposalGenerationError,
-    OpenAIModel
+    OpenAIModel,
+    ParsedProposal,
+    ProposalCounts,
 )
 
 
@@ -41,6 +56,8 @@ class TestFindGapsForConfig:
         mock_config.data.deduplicator = None  # Simplified DataConfig
         mock_config.gap.radius_fraction = 0.5
         mock_config.gap.cell_type = Mock()
+        mock_cell_type_value = Mock()
+        mock_config.gap.cell_type.value = mock_cell_type_value
         mock_config.gap.index_type = Mock()
         mock_config.gap.hnsw_m = 16
         mock_config.gap.hnsw_efc = 200
@@ -67,10 +84,16 @@ class TestFindGapsForConfig:
 
         # Setup gap generator mock
         mock_gap1 = Mock()
-        mock_gap1.dists_idxs.idxs = [0, 1, 2]
+        mock_gap1.get_dists_idxs.return_value = Mock(idxs=[0, 1, 2])
         mock_gap2 = Mock()
-        mock_gap2.dists_idxs.idxs = [3, 4]
+        mock_gap2.get_dists_idxs.return_value = Mock(idxs=[3, 4])
         mock_find_gaps.return_value = iter([mock_gap1, mock_gap2])
+
+        book_gap_mock1 = Mock()
+        book_gap_mock1.get_dists_idxs.return_value = Mock(idxs=[0, 1])
+        book_gap_mock2 = Mock()
+        book_gap_mock2.get_dists_idxs.return_value = Mock(idxs=[0, 1, 2])
+        mock_cell_type_value.find_gaps.return_value = [book_gap_mock1, book_gap_mock2]
 
         # Call function
         result = find_gaps_for_config(mock_config)
@@ -108,143 +131,6 @@ class TestFindGapsForConfig:
         mock_subfield_instance = {"topics": [mock_topic]}
         mock_subfields.return_value = {"1702": mock_subfield_instance}  # Hardcoded AI subfield_open
 
-from bookgap.llm.generators.workflow_functions import (
-    generate_batch_requests,
-    validate_batch_requests,
-    get_supported_models,
-    find_gaps_for_config,
-    build_contexts_for_gaps,
-    submit_batch_job,
-    monitor_and_download_results,
-    run_batch_workflow,
-    GapWithContext
-)
-from bookgap.llm.protocols import (
-    ProposalContext,
-    BatchRequestData,
-    ChatCompletionBody,
-    ChatMessage,
-    ProposalGenerationError,
-    OpenAIModel
-)
-
-
-class TestFindGapsForConfig:
-    """Test find_gaps_for_config function."""
-    
-    @patch('bookgap.llm.generators.workflow_functions.build_cloud')
-    @patch('pyalex.Subfields')  # Patch the actual module
-    @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
-    @patch('bookgap.llm.generators.workflow_functions.find_gaps_for_topic')
-    def test_successful_gap_finding(self, mock_find_gaps, mock_get_subclouds, mock_subfields, mock_build_cloud):
-        """Test successful gap finding with proper configuration."""
-        # Setup mocks
-        mock_config = Mock()
-        mock_config.gap.denoiser.name = "NONE"
-        mock_config.gap.drop_k = 0
-        mock_config.data.max_works = 1000
-        mock_config.data.deduplicator = None  # Simplified DataConfig
-        mock_config.gap.radius_fraction = 0.5
-        mock_config.gap.cell_type = Mock()
-        mock_config.gap.index_type = Mock()
-        mock_config.gap.hnsw_m = 16
-        mock_config.gap.hnsw_efc = 200
-        mock_config.gap.hnsw_efs = 200
-        mock_config.batch.num_gaps = 2
-
-        # Setup pyalex mock - hardcoded AI subfield (matches workflow_functions.py)
-        mock_topic = {
-            "display_name": "Machine Learning",
-            "id": "https://openalex.org/T123"
-        }
-        mock_subfield_instance = {"topics": [mock_topic]}
-        mock_subfields.return_value = {"1702": mock_subfield_instance}  # Hardcoded AI subfield
-
-        # Setup cloud mocks
-        mock_cloud = Mock()
-        mock_build_cloud.return_value = mock_cloud
-        
-        mock_books = Mock()
-        mock_articles = Mock()
-        mock_books.embeddings.return_value = [1, 2, 3]  # 3 books
-        mock_articles.embeddings.return_value = [1, 2, 3, 4, 5]  # 5 articles
-        mock_get_subclouds.return_value = (mock_books, mock_articles)
-
-        # Setup gap generator mock
-        mock_gap1 = Mock()
-        mock_gap1.dists_idxs.idxs = [0, 1, 2]
-        mock_gap2 = Mock()
-        mock_gap2.dists_idxs.idxs = [3, 4]
-        mock_find_gaps.return_value = iter([mock_gap1, mock_gap2])
-
-        # Call function
-        result = find_gaps_for_config(mock_config)
-
-        # Assertions
-        assert len(result) == 2
-        assert all(isinstance(gap, GapWithContext) for gap in result)
-        assert result[0].topic_name == "Machine Learning"
-        assert result[0].topic_id == "T123"  # ID after splitting on "/"
-        assert result[0].gap_idx == 0
-        assert result[1].gap_idx == 1
-        
-        # Verify all mocks were called correctly
-        mock_build_cloud.assert_called_once()
-        mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
-        mock_find_gaps.assert_called_once()
-
-    @patch('bookgap.llm.generators.workflow_functions.build_cloud')
-    @patch('pyalex.Subfields')  # Patch the actual module
-    @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
-    def test_no_articles_found(self, mock_get_subclouds, mock_subfields, mock_build_cloud):
-        """Test handling when no articles are found for a topic."""
-        # Setup mocks
-        mock_config = Mock()
-        mock_config.gap.denoiser.name = "NONE"
-        mock_config.data.subfield.value = "1702"
-        mock_config.batch.num_gaps = 2
-
-        # Setup pyalex mock
-        mock_topic = {
-            "display_name": "Empty Topic",
-            "id": "https://openalex.org/T123"
-        }
-        mock_subfield_instance = {"topics": [mock_topic]}
-        mock_subfields.return_value = {mock_config.data.subfield.value: mock_subfield_instance}
-
-        # Setup cloud mocks - no articles
-        mock_books = Mock()
-        mock_articles = Mock()
-        mock_books.embeddings.return_value = [1, 2]
-        mock_articles.embeddings.return_value = []  # No articles
-        mock_get_subclouds.return_value = (mock_books, mock_articles)
-
-        # Call function
-        result = find_gaps_for_config(mock_config)
-
-        # Should return empty list when no articles
-        assert result == []
-
-    @patch('bookgap.llm.generators.workflow_functions.build_cloud')
-    @patch('pyalex.Subfields')  # Patch the actual module
-    def test_no_topics_found(self, mock_subfields, mock_build_cloud):
-        """Test handling when no topics are found for a subfield."""
-        # Setup mocks
-        mock_config = Mock()
-        mock_config.gap.denoiser.name = "NONE"
-        mock_config.data.subfield.value = "1702"
-
-        # Setup pyalex mock with no topics
-        mock_subfield_instance = {"topics": []}
-        mock_subfields.return_value = {mock_config.data.subfield.value: mock_subfield_instance}
-
-        # Call function
-        result = find_gaps_for_config(mock_config)
-
-        # Should return empty list when no topics
-        assert result == []
-
-
 class TestBuildContextsForGaps:
     """Test build_contexts_for_gaps function."""
     
@@ -272,13 +158,19 @@ class TestBuildContextsForGaps:
         mock_articles.works.return_value = article_works
         mock_books.works.return_value = book_works
         
+        gap_size = len(mock_dists_idxs.idxs)
         gap_with_context = GapWithContext(
             gap=mock_gap,
             topic_name="Test Topic",
             topic_id="123",
             gap_idx=0,
             books=mock_books,
-            articles=mock_articles
+            articles=mock_articles,
+            book_gap_sizes=[gap_size, gap_size + 1],
+            gap_size=gap_size,
+            gap_size_percentile=0.5,
+            gap_zscore=0.0,
+            shapiro_log10_pval=-1.0,
         )
         
         mock_config = Mock()
@@ -327,13 +219,19 @@ class TestBuildContextsForGaps:
         mock_articles.works.return_value = article_works
         mock_books.works.return_value = book_works
         
+        gap_size = len(mock_dists_idxs.idxs)
         gap_with_context = GapWithContext(
             gap=mock_gap,
             topic_name="Small Gap Topic",
             topic_id="456",
             gap_idx=1,
             books=mock_books,
-            articles=mock_articles
+            articles=mock_articles,
+            book_gap_sizes=[gap_size, gap_size + 2],
+            gap_size=gap_size,
+            gap_size_percentile=0.6,
+            gap_zscore=0.1,
+            shapiro_log10_pval=-0.5,
         )
         
         mock_config = Mock()
@@ -353,29 +251,31 @@ class TestBuildContextsForGaps:
 class TestSubmitBatchJob:
     """Test submit_batch_job function."""
     
+    @staticmethod
+    def _make_config(max_completion_tokens: bool = False) -> DictConfig:
+        return OmegaConf.create(
+            {
+                "batch": {"completion_window": "24h"},
+                "llm": {
+                    "model": {"uses_max_completion_tokens": max_completion_tokens}
+                },
+            }
+        )
+
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
-    @patch('tempfile.NamedTemporaryFile')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('os.unlink')
-    def test_successful_batch_submission(self, mock_unlink, mock_file_open, mock_temp_file, mock_openai_class):
+    def test_successful_batch_submission(self, mock_openai_class):
         """Test successful batch job submission."""
-        # Setup mocks
         mock_client = Mock()
         mock_openai_class.return_value = mock_client
-        
-        mock_temp_file_handle = Mock()
-        mock_temp_file_handle.name = "/tmp/test_batch.jsonl"
-        mock_temp_file.return_value.__enter__.return_value = mock_temp_file_handle
-        
+
         mock_file = Mock()
         mock_file.id = "file-123"
         mock_client.files.create.return_value = mock_file
-        
+
         mock_batch = Mock()
         mock_batch.id = "batch-456"
         mock_client.batches.create.return_value = mock_batch
-        
-        # Test data
+
         batch_requests = [
             BatchRequestData(
                 custom_id="test-1",
@@ -383,54 +283,49 @@ class TestSubmitBatchJob:
                     model="gpt-4o-mini",
                     messages=[
                         ChatMessage(role="system", content="You are a helpful assistant."),
-                        ChatMessage(role="user", content="Test prompt.")
+                        ChatMessage(role="user", content="Test prompt."),
                     ],
-                    max_tokens=1000
-                )
+                    max_tokens=1000,
+                ),
             )
         ]
-        
-        mock_config = Mock()
-        mock_config.batch.completion_window = "24h"
-        
-        # Call function
-        result = submit_batch_job(batch_requests, mock_config)
-        
-        # Assertions
+
+        config = cast(ExperimentConfig, self._make_config())
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
+            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime):
+                result = submit_batch_job(batch_requests, config)
+                written_file = Path(tmp_dir) / "batch_input.jsonl"
+                assert written_file.exists()
+                assert written_file.read_text().strip() != ""
+
         assert result == "batch-456"
         mock_client.files.create.assert_called_once()
         mock_client.batches.create.assert_called_once()
-        mock_unlink.assert_called_once_with("/tmp/test_batch.jsonl")
 
     def test_empty_requests_error(self):
         """Test error handling for empty batch requests."""
-        mock_config = Mock()
-        
+        mock_config = cast(ExperimentConfig, self._make_config())
+
         with pytest.raises(ValueError, match="No batch requests to submit"):
             submit_batch_job([], mock_config)
 
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
-    @patch('tempfile.NamedTemporaryFile')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('os.unlink')
-    def test_request_serialization(self, mock_unlink, mock_file_open, mock_temp_file, mock_openai_class):
+    def test_request_serialization(self, mock_openai_class):
         """Test that requests are properly serialized to JSONL format."""
         # Setup mocks
         mock_client = Mock()
         mock_openai_class.return_value = mock_client
-        
-        mock_temp_file_handle = Mock()
-        mock_temp_file_handle.name = "/tmp/test_batch.jsonl"
-        mock_temp_file.return_value.__enter__.return_value = mock_temp_file_handle
-        
+
         mock_file = Mock()
         mock_file.id = "file-123"
         mock_client.files.create.return_value = mock_file
-        
+
         mock_batch = Mock()
         mock_batch.id = "batch-456"
         mock_client.batches.create.return_value = mock_batch
-        
+
         # Test data with optional fields
         batch_requests = [
             BatchRequestData(
@@ -445,65 +340,105 @@ class TestSubmitBatchJob:
             )
         ]
         
-        mock_config = Mock()
-        mock_config.batch.completion_window = "24h"
-        
-        # Call function
-        submit_batch_job(batch_requests, mock_config)
-        
-        # Verify file was written (mock_file_open should have been called)
-        mock_temp_file.assert_called_once()
+        config = cast(ExperimentConfig, self._make_config())
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
+            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime):
+                submit_batch_job(batch_requests, config)
+                batch_input = Path(tmp_dir) / "batch_input.jsonl"
+                assert batch_input.exists()
+                lines = batch_input.read_text().strip().splitlines()
+                assert len(lines) == 1
+                payload = json.loads(lines[0])
+                assert payload["body"].get("response_format") == {"type": "json_object"}
+                assert payload["body"].get("temperature") == 0.7
 
 
 class TestMonitorAndDownloadResults:
     """Test monitor_and_download_results function."""
-    
+
+    @staticmethod
+    def _make_proposal(title_suffix: str) -> Proposal:
+        chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+        return Proposal(title=f"Title {title_suffix}", abstract="Abstract", chapters=chapters)
+
+    @staticmethod
+    def _make_result_line(custom_id: str, finish_reason: str = "stop") -> str:
+        return json.dumps({
+            "custom_id": custom_id,
+            "response": {
+                "body": {
+                    "choices": [
+                        {
+                            "finish_reason": finish_reason,
+                            "message": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "dummy"
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        })
+
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
     @patch('time.sleep')  # Mock sleep to speed up tests
     def test_successful_monitoring_and_download(self, mock_sleep, mock_openai_class):
         """Test successful monitoring and result download."""
-        # Setup mocks
         mock_client = Mock()
         mock_openai_class.return_value = mock_client
-        
-        # Mock batch status progression
+
         mock_batch_in_progress = Mock()
         mock_batch_in_progress.status = "in_progress"
-        
+
         mock_batch_completed = Mock()
         mock_batch_completed.status = "completed"
         mock_batch_completed.output_file_id = "file-output-123"
-        mock_batch_completed.metadata = {"0": '{"test": "config"}'}
+        mock_batch_completed.metadata = {"0": '{"batch": {"completion_window": "24h"}}'}
         mock_batch_completed.request_counts.total = 10
         mock_batch_completed.request_counts.completed = 10
         mock_batch_completed.request_counts.failed = 0
-        
-        mock_client.batches.retrieve.side_effect = [
-            mock_batch_in_progress,  # First call: still in progress
-            mock_batch_completed     # Second call: completed
-        ]
-        
-        # Mock file download
+
+        mock_client.batches.retrieve.side_effect = [mock_batch_in_progress, mock_batch_completed]
+
         mock_file_response = Mock()
-        mock_file_response.content = b'{"result": "test1"}\n{"result": "test2"}'
+        mock_file_response.content = "\n".join([
+            self._make_result_line("id-1"),
+            self._make_result_line("id-2"),
+        ]).encode('utf-8')
         mock_client.files.content.return_value = mock_file_response
-        
-        mock_config = Mock()
-        
-        # Call function
-        result = monitor_and_download_results("batch-123", mock_config)
-        
-        # Assertions
-        assert result["batch_id"] == "batch-123"
-        assert result["status"] == "completed"
-        assert len(result["results"]) == 2
-        assert result["num_results"] == 2
-        assert result["original_config"] == '{"test": "config"}'
-        assert result["request_counts"]["total"] == 10
-        assert result["request_counts"]["completed"] == 10
-        assert result["request_counts"]["failed"] == 0
-        
-        # Verify sleep was called (polling)
+
+        config = cast(ExperimentConfig, OmegaConf.create({}))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
+            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
+                 patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
+                 patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed, \
+                 patch('bookgap.llm.generators.workflow_functions.MetadataUtils.deserialize_config') as mock_deserialize:
+
+                mock_parse.side_effect = [
+                    PendingProposal(proposal=self._make_proposal("A"), custom_id="id-1"),
+                    PendingProposal(proposal=self._make_proposal("B"), custom_id="id-2"),
+                ]
+                mock_embed.return_value = np.zeros((2, 3), dtype=np.float32)
+                parsed_config = cast(ExperimentConfig, OmegaConf.create({"batch": {"completion_window": "24h"}}))
+                mock_deserialize.return_value = parsed_config
+
+                result = monitor_and_download_results("batch-123", config)
+
+                output_path = Path(tmp_dir) / "batch_results.jsonl"
+                assert output_path.exists()
+                assert output_path.read_text().strip() != ""
+
+        assert isinstance(result, BatchResults)
+        assert len(result.proposals) == 2
+        assert result.metadata == parsed_config
         mock_sleep.assert_called()
 
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
@@ -511,16 +446,15 @@ class TestMonitorAndDownloadResults:
         """Test handling of failed batch jobs."""
         mock_client = Mock()
         mock_openai_class.return_value = mock_client
-        
+
         mock_batch_failed = Mock()
         mock_batch_failed.status = "failed"
         mock_client.batches.retrieve.return_value = mock_batch_failed
-        
-        mock_config = Mock()
-        
-        # Should raise exception for failed batch
+
+        config = cast(ExperimentConfig, OmegaConf.create({}))
+
         with pytest.raises(Exception, match="Batch job failed with status: failed"):
-            monitor_and_download_results("batch-failed", mock_config)
+            monitor_and_download_results("batch-failed", config)
 
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
     @patch('time.sleep')
@@ -528,17 +462,10 @@ class TestMonitorAndDownloadResults:
         """Test that monitoring progresses through different states."""
         mock_client = Mock()
         mock_openai_class.return_value = mock_client
-        
-        # Mock progression through different states
+
         statuses = ["validating", "in_progress", "finalizing", "completed"]
-        mock_batches = []
-        
-        for status in statuses[:-1]:
-            mock_batch = Mock()
-            mock_batch.status = status
-            mock_batches.append(mock_batch)
-        
-        # Final completed batch
+        mock_batches = [Mock(status=status) for status in statuses[:-1]]
+
         mock_batch_completed = Mock()
         mock_batch_completed.status = "completed"
         mock_batch_completed.output_file_id = "file-123"
@@ -547,22 +474,33 @@ class TestMonitorAndDownloadResults:
         mock_batch_completed.request_counts.completed = 5
         mock_batch_completed.request_counts.failed = 0
         mock_batches.append(mock_batch_completed)
-        
+
         mock_client.batches.retrieve.side_effect = mock_batches
-        
-        # Mock file download
+
         mock_file_response = Mock()
-        mock_file_response.content = b'{"result": "test"}'
+        mock_file_response.content = self._make_result_line("id-1").encode('utf-8')
         mock_client.files.content.return_value = mock_file_response
-        
-        mock_config = Mock()
-        
-        # Call function
-        result = monitor_and_download_results("batch-progression", mock_config)
-        
-        # Should have called retrieve for each status
+
+        config = cast(ExperimentConfig, OmegaConf.create({}))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
+            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
+                 patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
+                 patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed, \
+                 patch('bookgap.llm.generators.workflow_functions.MetadataUtils.deserialize_config') as mock_deserialize:
+
+                mock_parse.return_value = PendingProposal(proposal=self._make_proposal("Single"), custom_id="id-1")
+                mock_embed.return_value = np.zeros((1, 3), dtype=np.float32)
+                parsed_config = cast(ExperimentConfig, OmegaConf.create({"batch": {"completion_window": "24h"}}))
+                mock_deserialize.return_value = parsed_config
+
+                result = monitor_and_download_results("batch-progression", config)
+
         assert mock_client.batches.retrieve.call_count == len(statuses)
-        assert result["status"] == "completed"
+        assert isinstance(result, BatchResults)
+        assert len(result.proposals) == 1
+        assert result.metadata == parsed_config
 
 
 class TestRunBatchWorkflow:
@@ -588,19 +526,38 @@ class TestRunBatchWorkflow:
         
         mock_submit.return_value = "batch-123"
         
-        mock_results = {
-            "batch_id": "batch-123",
-            "status": "completed",
-            "results": [{"test": "result1"}, {"test": "result2"}],
-            "num_results": 2
-        }
-        mock_monitor.return_value = mock_results
+        proposal = ParsedProposal(
+            proposal=Proposal(
+                title="Title",
+                abstract="Abstract",
+                chapters=[Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+            ),
+            custom_id="id-1",
+            embedding=np.zeros(3, dtype=np.float32),
+        )
+        metadata = cast(ExperimentConfig, OmegaConf.create({"batch": {"num_gaps": 2}}))
+        mock_monitor.return_value = BatchResults(proposals=[proposal], metadata=metadata)
         
         mock_config = Mock()
         mock_config.batch.num_gaps = 2
         
-        # Call function
-        result = run_batch_workflow(mock_config)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
+            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
+                 patch('bookgap.llm.generators.workflow_functions.generate_all_contexts') as mock_generate_contexts, \
+                 patch('bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results') as mock_generate_plots, \
+                 patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv:
+
+                context_paths = [Path(tmp_dir) / "context.json"]
+                plot_paths = [Path(tmp_dir) / "plot.png"]
+                results_csv = Path(tmp_dir) / "results.csv"
+
+                mock_generate_contexts.return_value = context_paths
+                mock_generate_plots.return_value = plot_paths
+                mock_generate_csv.return_value = results_csv
+
+                # Call function
+                result = run_batch_workflow(mock_config)
         
         # Verify all steps were called in order
         mock_find_gaps.assert_called_once_with(mock_config)
@@ -608,9 +565,18 @@ class TestRunBatchWorkflow:
         mock_generate.assert_called_once_with(mock_contexts, mock_config)
         mock_submit.assert_called_once_with(mock_requests, mock_config)
         mock_monitor.assert_called_once_with("batch-123", mock_config)
+        mock_generate_contexts.assert_called_once_with(mock_gaps, Path(tmp_dir))
+        mock_generate_plots.assert_called_once_with(mock_gaps, result.proposals, Path(tmp_dir))
+        mock_generate_csv.assert_called_once_with(mock_gaps, result.proposals, Path(tmp_dir), mock_config, mock_contexts)
         
         # Verify result
-        assert result == mock_results
+        assert isinstance(result, BatchResults)
+        assert result.proposals == [proposal]
+        assert result.metadata == metadata
+        assert result.artifact_paths is not None
+        assert result.artifact_paths.context_files == context_paths
+        assert result.artifact_paths.plots == plot_paths
+        assert result.artifact_paths.results_csv == results_csv
 
 
 class TestGenerateBatchRequests:
@@ -631,15 +597,29 @@ class TestGenerateBatchRequests:
         mock_generator.generate_batch_requests.return_value = mock_requests
         mock_instantiate.return_value = mock_generator
         
-        mock_contexts = [Mock(), Mock()]
-        mock_config = Mock()
+        counts = ProposalCounts(num_articles_for_llm=0, num_books_for_llm=0)
+        context = ProposalContext(
+            topic_name="Topic",
+            topic_id="id",
+            gap_idx=0,
+            requested_num_prompt_articles=2,
+            requested_num_prompt_books=1,
+            sampled_articles=[],
+            covering_books=[],
+            counts=counts,
+        )
+        mock_contexts = [context, context]
+        mock_config = cast(
+            ExperimentConfig,
+            SimpleNamespace(llm=SimpleNamespace(model="gpt-4o-mini", _target_="dummy.generator")),
+        )
         
         # Call function
         result = generate_batch_requests(mock_contexts, mock_config)
         
         # Assertions
         assert result == mock_requests
-        mock_instantiate.assert_called_once_with(mock_config.llm, _config=mock_config)
+        mock_instantiate.assert_called_once_with(mock_config.llm)
         mock_generator.generate_batch_requests.assert_called_once_with(mock_contexts)
 
     @patch('bookgap.llm.generators.workflow_functions.instantiate')
@@ -648,10 +628,22 @@ class TestGenerateBatchRequests:
         # Setup mocks to raise exception
         mock_instantiate.side_effect = Exception("Test error")
         
-        mock_contexts = [Mock()]
-        mock_config = Mock()
-        mock_config.llm.model_name = "gpt-4o"
-        mock_config.llm._target_ = "test.target"
+        counts = ProposalCounts(num_articles_for_llm=0, num_books_for_llm=0)
+        context = ProposalContext(
+            topic_name="Topic",
+            topic_id="id",
+            gap_idx=0,
+            requested_num_prompt_articles=2,
+            requested_num_prompt_books=1,
+            sampled_articles=[],
+            covering_books=[],
+            counts=counts,
+        )
+        mock_contexts = [context]
+        mock_config = cast(
+            ExperimentConfig,
+            SimpleNamespace(llm=SimpleNamespace(model="gpt-4o", _target_="test.target")),
+        )
         
         # Should raise ProposalGenerationError
         with pytest.raises(ProposalGenerationError) as exc_info:

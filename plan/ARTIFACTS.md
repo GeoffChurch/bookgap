@@ -1,8 +1,26 @@
 # ARTIFACTS IMPLEMENTATION PLAN: Simplified Depth-First Approach
 
+## ⚠️ **Implementation Note (September 30, 2025)**
+
+**Stashed Complex Implementation**: A complex artifacts implementation with architectural issues has been stashed for reference:
+- **Stash**: `stash@{0}: COMPREHENSIVE: Complex artifacts implementation with architectural issues - includes results_export.py, shared_computation.py, and all modifications`
+- **Issues Identified**: 
+  - `results_export.py` was 396 lines of over-engineered complexity
+  - `shared_computation.py` became a dumping ground for mixed concerns
+  - Ad-hoc proposal-to-gap lookup structures duplicated across modules
+  - Data structure inconsistencies and poor separation of concerns
+- **Recovery**: Use `git stash show stash@{0}` to inspect or `git stash apply stash@{0}` to recover if needed
+- **Recommendation**: This stash can be deleted after successful simplified implementation
+
+**Proceeding with**: Clean, simple implementation following the original "hardcode everything initially" principle.
+
+---
+
 ## Executive Summary
 
-The current Hydra-based `workflow_functions.py` implements core batch processing but lacks the rich artifacts generation that e## Simplified Implementation Principles
+The current Hydra-based `workflow_functions.py` implements core batch processing but lacks the rich artifacts generation that existed in the original workflow. This plan implements a simplified depth-first approach with **hardcoded settings** to restore all missing functionality quickly, starting with basic gap visualization plots and building to full LaTeX/CSV generation.
+
+## Simplified Implementation Principles
 
 ### 🏗️ **Hardcode Everything Initially**
 - **Plot settings**: Figure size (12, 10), DPI 300, PNG format, standard colors
@@ -16,7 +34,7 @@ The current Hydra-based `workflow_functions.py` implements core batch processing
   - Different modes via `PlotConfig.standard_mode()` vs `PlotConfig.comparison_mode()`
   - Single data preparation pipeline with different visualization strategies
 - **Shared Components**: Projection, embedding handling, file saving, error handling
-- **Configuration-Driven**: Plot appearance controlled by config rather than separate functionsin the original workflow. This plan implements a simplified depth-first approach with **hardcoded settings** to restore all missing functionality quickly, starting with basic gap visualization plots and building to full LaTeX/CSV generation.
+- **Configuration-Driven**: Plot appearance controlled by config rather than separate functions in the original workflow. This plan implements a simplified depth-first approach with **hardcoded settings** to restore all missing functionality quickly, starting with basic gap visualization plots and building to full LaTeX/CSV generation.
 
 **Key Simplification**: All settings (plot sizes, file formats, directory structures) will be hardcoded initially. Hydra configuration can be added later as needed.
 
@@ -38,7 +56,7 @@ The current Hydra-based `workflow_functions.py` implements core batch processing
 - ❌ Interactive plot generation during gap finding
 
 ### 📋 **Results Export & Tables**
-- ❌ Main results CSV (`gaps_analysis_results.csv`)
+-    Main results CSV (`gaps_analysis_results.csv`) — minimal proposals-centric export
 - ❌ Comprehensive proposal ranking and embedding analysis
 - ❌ Multiple export formats (CSV, JSON, JSONL, Parquet)
 - ❌ Results DataFrame with statistical validation
@@ -47,7 +65,7 @@ The current Hydra-based `workflow_functions.py` implements core batch processing
 - ❌ Individual proposal JSON files (`gap_N_proposal.json`)
 - ❌ Proposal content extraction and parsing
 - ❌ LLM response raw storage and processing
-- ❌ Custom ID management and metadata tracking
+- ✅ Custom ID management and metadata tracking (centralized in `identifiers.py`)
 
 ### 📄 **LaTeX Generation**
 - ❌ Individual proposal LaTeX documents (`*.tex`)
@@ -55,17 +73,8 @@ The current Hydra-based `workflow_functions.py` implements core batch processing
 - ❌ Unicode to LaTeX conversion for special characters
 - ❌ Standalone LaTeX document generation
 
-### 🗂️ **File Organization & Output**
-- ❌ Structured output directory creation (`artifacts/subfield=1702, work_types=[book,article]/`)
-- ❌ Subdirectory organization (`plots/`, `contexts/`, `openai_structured_proposals/`)
-- ❌ Batch request JSONL file generation for inspection
-- ❌ Automated file naming and timestamp management
-
 ### 🔧 **Legacy Integration Points**
-- ❌ Integration with existing `GapDirectoryManager` and directory structure
-- ❌ Results validation using `DataFrameResults` framework
 - ❌ Proposal ranking computation via `cloud_index.py`
-- ❌ Plot styling and formatting consistency
 
 ## Simplified File Structure (No Configuration Files)
 
@@ -74,14 +83,15 @@ bookgap/
 ├── llm/
 │   ├── generators/
 │   │   └── workflow_functions.py      # ✅ UPDATED: Inlined artifacts generation
-│   └── artifacts/                     # ✅ NEW: Modular artifact generation
+│   ├── artifacts/                     # ✅ NEW: Modular artifact generation
 │       ├── __init__.py
 │       ├── gap_plots.py              # ✅ COMPLETE: Gap visualization (hardcoded settings)
 │       ├── data_preparation.py       # ✅ COMPLETE: Unified data preparation pipeline
 │       ├── context_export.py         # ✅ COMPLETE: Context JSON + analysis files  
-│       ├── results_export.py         # ❌ TODO: CSV generation (hardcoded formats)
+│       ├── results_export.py         # MOSTLY COMPLETE: Proposals-centric CSV export
 │       ├── proposal_export.py        # ❌ TODO: Individual proposal files
 │       └── latex_export.py           # ❌ TODO: LaTeX generation (hardcoded templates)
+│   └── identifiers.py                # ✅ NEW: Canonical gap proposal ID helpers
 ```
 
 ## Simplified Depth-First Implementation Plan
@@ -140,6 +150,13 @@ python bookgap/batch_generator.py config=debug batch.num_gaps=1
 - ✅ **Data Completeness**: Confirmed all JSON context files contain complete article/book metadata with no missing fields
 - ✅ **Early Artifact Generation**: Context files now generated immediately after gap finding, providing immediate results even if LLM processing fails
 
+**Recent Implementation (October 1, 2025)**:
+- ✅ **Results CSV Delivery**: `generate_gaps_analysis_csv()` writes sanitized, proposals-centric CSVs with prompt counts and gap statistics
+- ✅ **Canonical IDs**: `bookgap/llm/identifiers.py` centralizes building/parsing of `gap_{idx}_topic_{topic_id}` custom IDs used across requests and exports
+- ✅ **Workflow Embeddings Pass**: Batch results now materialize `ParsedProposal` objects after a single `Embedder` pass via the new `PendingProposal` staging type
+- ✅ **ArtifactPaths Update**: Results CSV path is stored alongside plots and contexts for downstream integrations
+- ✅ **Targeted Tests**: Added `tests/llm/test_results_export.py` to cover CSV sanitization edge cases
+
 **Workflow Improvement - Early vs Late Artifacts**:
 - **Early Artifacts** (after Step 1 - Gap Finding): Context JSON files, analysis text files
   - **Benefit**: Available immediately for analysis even if batch processing fails
@@ -169,11 +186,14 @@ python bookgap/batch_generator.py config=debug batch.num_gaps=1
 
 #### Step 2.2: Results Export Module
 **File**: `bookgap/llm/artifacts/results_export.py`
-- Implement `generate_gaps_analysis_csv(gaps: List[GapWithContext], results: BatchResults, output_dir: Path) -> Path`
-- Port ranking computation from `batch_operations.py`
-- **Hardcode format**: CSV only (no JSON/JSONL/Parquet for now)
-- **Simple validation**: Basic checks, no full `DataFrameResults` framework
-- **Fixed filename**: `gaps_analysis_results.csv`
+- ✅ **COMPLETED**: Implemented `generate_gaps_analysis_csv(...)` producing `gaps_analysis_results.csv`
+- ✅ **COMPLETED**: Proposals-first schema joins sanitized proposal text with gap metadata (topic, gap stats, prompt counts)
+- ✅ **COMPLETED**: Control characters escaped via `_sanitize_text_field` (unit-tested)
+- ✅ **COMPLETED**: Lookup map for `ProposalCounts` built from `ProposalContext` to report requested vs actual prompt sizes
+- ✅ **COMPLETED**: Minimal Pandas dependency only; columns ordered for human readability
+- ✅ **COMPLETED**: Dedicated tests in `tests/llm/test_results_export.py` covering sanitization edge cases
+- ✅ **COMPLETED**: Integrated into `run_batch_workflow()` so CSV is generated alongside plots and contexts
+- ⚠️ **TODO**: Ranking columns (`proposal_book_rank`, `proposal_article_rank`, fractions) still missing; reference legacy implementation in `bookgap/batch_utils_OLD/batch_operations.py::_merge_gap_analysis_with_proposals()` and `compute_proposal_rankings()` for restoration blueprint
 
 #### Step 2.3: Individual Proposal Files
 **File**: `bookgap/llm/artifacts/proposal_export.py`
@@ -285,14 +305,23 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     
     # ARTIFACTS: Generate plots after proposals are complete
     plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
-    
+
     # ❌ TODO: Add when implementing remaining steps
     # proposal_paths = save_individual_proposals(results, output_dir)
-    # csv_path = generate_gaps_analysis_csv(gaps, results, output_dir)
     # latex_paths = generate_latex_files(results, output_dir)
-    
-    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
-    return BatchResults(proposals=results.proposals, metadata=results.metadata, artifact_paths=artifact_paths)
+
+    csv_path = generate_gaps_analysis_csv(gaps, results.proposals, output_dir, config, contexts)
+
+    artifact_paths = ArtifactPaths(
+        plots=plot_paths,
+        context_files=context_paths,
+        results_csv=csv_path,
+    )
+    return BatchResults(
+        proposals=results.proposals,
+        metadata=results.metadata,
+        artifact_paths=artifact_paths,
+    )
 ```
 
 ## Simplified Implementation Principles
@@ -322,13 +351,27 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     
     # Steps 2-5: Proposal generation pipeline...
     # ... build contexts, generate requests, submit batch, monitor results ...
-    
+
     # ARTIFACTS: Generate plots after proposals are complete (late artifacts)
     plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
     LOGGER.info(f"Generated plot files in {output_dir}/plots/")
-    
-    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths)
-    
+
+    # ARTIFACTS: Generate CSV once proposals are embedded
+    results_csv = generate_gaps_analysis_csv(
+        gaps,
+        results.proposals,
+        output_dir,
+        config,
+        contexts,
+    )
+    LOGGER.info(f"Generated results CSV at {results_csv}")
+
+    artifact_paths = ArtifactPaths(
+        plots=plot_paths,
+        context_files=context_paths,
+        results_csv=results_csv,
+    )
+
     return BatchResults(
         proposals=results.proposals,
         metadata=results.metadata,
@@ -374,15 +417,16 @@ class ArtifactDataPreparer:
 - ✅ **Clean Error Handling**: No fallback behavior - fails fast with clear errors
 - ✅ **Feature Parity Complete**: Plots include gap center marking, neighbor network, article classification
 - ✅ **Validated Implementation**: Working output confirmed in `outputs/2025-09-26/18-43-49/`
-- 🎯 **Next Priority**: Step 2.2 - Results Export (CSV generation)
+- 🎯 **Next Priority**: Step 2.3 - Individual proposal exports
 
 ### ✅ **Phase 2 Status - MOSTLY COMPLETE**: 
 - ✅ **Step 2.1 COMPLETE**: Context JSON files: `{hydra_output_dir}/contexts/gap_N_context.json`
 - ✅ **Step 2.1 COMPLETE**: Context text files: `{hydra_output_dir}/contexts/gap_N_analysis.txt`
 - ✅ **Step 2.1 COMPLETE**: **book_gap_sizes computation** - Statistical parity with legacy implementation achieved
-- ✅ **Step 2.1 COMPLETE**: **Data structure enhancement** - GapWithContext includes book_gap_sizes field
+- ✅ **Step 2.1 COMPLETE**: **Data structure enhancement** - GapWithContext now carries book_gap_sizes, gap_size, percentile, z-score, Shapiro metrics
 - ✅ **Step 2.1 COMPLETE**: **Workflow integration** - Full artifact generation working in batch workflow
-- ❌ **Step 2.2 TODO**: CSV results file: `{hydra_output_dir}/gaps_analysis_results.csv`
+- ✅ **Step 2.2 COMPLETE**: `gaps_analysis_results.csv` written beside plots/contexts (sanitized text, prompt counts, topic metadata)
+- ⚠️ **Step 2.2 Follow-up**: Reinstate proposal ranking metrics by porting logic from `bookgap/batch_utils_OLD/batch_operations.py::_merge_gap_analysis_with_proposals()` and `compute_proposal_rankings()`
 - ❌ **Step 2.3 TODO**: Individual proposal JSON files: `{hydra_output_dir}/openai_structured_proposals/gap_N_proposal.json`
 
 ### ✅ **Phase 3 Success**:

@@ -8,12 +8,21 @@ Tests cover:
 - End-to-end modern plotting pipeline
 """
 
+import numpy as np
 import pytest
 from pathlib import Path
+from typing import List, cast
 from unittest.mock import Mock, patch
 
-from bookgap.llm.data_structures import ArtifactPaths
-from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
+from bookgap.cloud import SubCloud
+from bookgap.gap_finder import GapProtocol
+from bookgap.llm.data_structures import ArtifactPaths, GapWithContext
+from bookgap.llm.artifacts.gap_plots import (
+    generate_gap_plots_for_results,
+    save_gap_plot_with_proposals,
+)
+from bookgap.llm.protocols import ParsedProposal, Proposal, Chapter
+import tempfile
 
 
 class TestPhase1DataStructures:
@@ -27,81 +36,92 @@ class TestPhase1GapPlots:
     """Test the gap plotting functionality."""
     
     @patch('hydra.core.hydra_config.HydraConfig')
-    @patch('bookgap.llm.artifacts.data_preparation.embed_texts')
-    def test_save_gap_plot_with_proposals_success(self, mock_embed_texts, mock_hydra_config):
+    def test_save_gap_plot_with_proposals_success(self, mock_hydra_config):
         """Test the complete modern gap plotting pipeline end-to-end."""
-        from bookgap.llm.artifacts.gap_plots import save_gap_plot_with_proposals
-        from bookgap.llm.data_structures import GapWithContext
-        from bookgap.llm.protocols import ParsedProposal, Proposal, Chapter
-        from bookgap.gap_finder import GapProtocol
-        from bookgap.cloud import SubCloud
-        import tempfile
-        import numpy as np
-        
         # Create realistic test data
         mock_gap = Mock(spec=GapProtocol)
-        mock_gap.get_dists_idxs.return_value = Mock(idxs=[0, 1, 2])  # 3 gap articles
-        
+        mock_gap.get_dists_idxs.return_value = Mock(idxs=np.array([0, 1, 2]))  # 3 gap articles
+
         # Create mock SubClouds with realistic embeddings
         mock_books = Mock(spec=SubCloud)
-        mock_books.embeddings.return_value = np.random.rand(5, 10)  # 5 books, 10-dim embeddings
-        
-        mock_articles = Mock(spec=SubCloud) 
-        mock_articles.embeddings.return_value = np.random.rand(8, 10)  # 8 articles, 10-dim embeddings
-        
+        mock_books.embeddings.return_value = np.random.rand(5, 10)
+
+        mock_articles = Mock(spec=SubCloud)
+        mock_articles.embeddings.return_value = np.random.rand(8, 10)
+
         # Create realistic GapWithContext
+        gap_size = len(mock_gap.get_dists_idxs.return_value.idxs)
         gap_with_context = GapWithContext(
             gap=mock_gap,
             topic_name="Machine Learning",
             topic_id="ml_001",
             gap_idx=5,
             books=mock_books,
-            articles=mock_articles
+            articles=mock_articles,
+            book_gap_sizes=[gap_size, gap_size + 2, gap_size + 4],
+            gap_size=gap_size,
+            gap_size_percentile=0.6,
+            gap_zscore=0.0,
+            shapiro_log10_pval=-1.5,
         )
-        
+
         # Create realistic proposals with proper structure
         chapters = [
             Chapter(
-                chapter_title=f"Chapter {i}: Core Concepts", 
-                chapter_topics=[f"Topic {i}.1", f"Topic {i}.2", f"Topic {i}.3"]
-            ) for i in range(10)
+                chapter_title=f"Chapter {i}: Core Concepts"
+            )
+            for i in range(10)
         ]
-        
+
+        proposal_embeddings = np.random.rand(2, 10).astype(np.float32)
+
         proposals = [
             ParsedProposal(
                 custom_id="gap_5_proposal_1",
                 proposal=Proposal(
                     title="Advanced Machine Learning Techniques",
                     abstract="This textbook covers advanced ML algorithms and their applications.",
-                    chapters=chapters
-                )
+                    chapters=chapters,
+                ),
+                embedding=proposal_embeddings[0],
             ),
             ParsedProposal(
-                custom_id="gap_5_proposal_2", 
+                custom_id="gap_5_proposal_2",
                 proposal=Proposal(
                     title="Deep Learning Fundamentals",
                     abstract="A comprehensive introduction to deep learning methodologies.",
-                    chapters=chapters
-                )
-            )
+                    chapters=chapters,
+                ),
+                embedding=proposal_embeddings[1],
+            ),
         ]
-        
-        # Mock the embed_texts function to return realistic embeddings
-        # embed_texts expects List[tuple[str, str]] and returns NDArray
-        mock_embed_texts.return_value = np.random.rand(2, 10)  # 2 proposals, 10-dim embeddings
-        
+
+        mock_gap.get_covering_book_indices.return_value = []
+
         # Mock Hydra config to return a temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             mock_hydra_instance = Mock()
             mock_hydra_instance.runtime.output_dir = str(temp_path)
             mock_hydra_config.get.return_value = mock_hydra_instance
-            
-            # Execute the complete pipeline
+
             try:
-                result_path = save_gap_plot_with_proposals(gap_with_context, proposals, method="PCA")
-                
-                # Verify the result
+                with patch(
+                    'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._perform_gap_neighbor_searches',
+                    return_value={
+                        "gap_to_article_neighbors": set(),
+                        "gap_to_book_neighbors": set(),
+                        "gap_article_to_book_search": None,
+                        "book_to_article_neighbors": set(),
+                        "book_to_article_search": None,
+                        "covering_book_indices": [],
+                    },
+                ), patch(
+                    'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._get_covering_book_indices',
+                    return_value=[],
+                ):
+                    result_path = save_gap_plot_with_proposals(gap_with_context, proposals, method="PCA")
+
                 assert isinstance(result_path, Path)
                 assert result_path.exists()
                 assert result_path.suffix == '.png'
@@ -109,33 +129,19 @@ class TestPhase1GapPlots:
                 assert "Machine_Learning" in result_path.name
                 assert "gap_5" in result_path.name
                 assert "pca" in result_path.name.lower()
-                
-                # Verify the file has reasonable size (not empty, not too small)
+
                 file_size = result_path.stat().st_size
-                assert file_size > 1000  # At least 1KB for a real plot
-                
-                # Verify embedding function was called once for the batch of proposals
-                mock_embed_texts.assert_called_once()
-                # Verify it was called with the right number of title-abstract pairs
-                call_args = mock_embed_texts.call_args[0][0]  # First positional argument
-                assert len(call_args) == len(proposals)
-                
-                # Verify Hydra config was accessed
+                assert file_size > 1000
+
                 mock_hydra_config.get.assert_called()
-                
-                print(f"✅ End-to-end test created plot: {result_path}")
-                print(f"✅ Plot file size: {file_size} bytes")
-                
+
             except Exception as e:
                 pytest.fail(f"End-to-end gap plotting failed: {e}")
-                
-            # Test with t-SNE method as well
+
             try:
                 result_path_tsne = save_gap_plot_with_proposals(gap_with_context, proposals, method="TSNE")
                 assert result_path_tsne.exists()
                 assert "tsne" in result_path_tsne.name.lower()
-                print(f"✅ t-SNE plotting also works: {result_path_tsne}")
-                
             except Exception as e:
                 pytest.fail(f"t-SNE plotting failed: {e}")
     
@@ -160,7 +166,11 @@ class TestPhase1GapPlots:
         
         mock_save_plot.return_value = Path("/test/output/plot.png")
         
-        result_paths = generate_gap_plots_for_results(mock_gaps, mock_results, output_dir)
+        result_paths = generate_gap_plots_for_results(
+            cast(List[GapWithContext], mock_gaps),
+            cast(List[ParsedProposal], mock_results),
+            output_dir,
+        )
         
         # Should generate one plot per gap
         assert len(result_paths) == len(mock_gaps)

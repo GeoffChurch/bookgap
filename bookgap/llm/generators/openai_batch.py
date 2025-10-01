@@ -12,6 +12,7 @@ from ..protocols import (
     ProposalContext, BatchRequestData, ChatMessage, ChatCompletionBody,
     ProposalGenerationError, Proposal, PromptPair, OpenAIModel
 )
+from ..identifiers import build_gap_proposal_id
 from .batch_generator import BatchProposalGenerator
 
 
@@ -101,6 +102,8 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
                 }
             }
         
+        custom_id = build_gap_proposal_id(gap_idx=context.gap_idx, topic_id=context.topic_id)
+
         body = ChatCompletionBody(
             model=self.model.value,
             messages=messages,
@@ -108,14 +111,8 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
             max_tokens=self.max_tokens,
             response_format=response_format
         )
-        
-        # Simple custom ID (no embedded configuration)
-        custom_id = f"gap_{context.gap_idx}_topic_{context.topic_id}"
-        
-        return BatchRequestData(
-            custom_id=custom_id,
-            body=body
-        )
+
+        return BatchRequestData(custom_id=custom_id, body=body)
     
     def _build_system_prompt(self) -> str:
         """Build system prompt with hardcoded chapter count guidance.

@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Any, Literal
 from enum import Enum
+
+import numpy as np
+from numpy.typing import NDArray
 from pydantic import BaseModel, Field
 
 
@@ -152,9 +155,10 @@ class Proposal(BaseModel):
 
 @dataclass(frozen=True)
 class ParsedProposal:
-    """Wrapper for a parsed proposal with metadata."""
+    """Wrapper for a parsed proposal with metadata and embedding."""
     proposal: Proposal
     custom_id: str
+    embedding: NDArray[np.float32]
 
 
 class ProposalGenerationError(Exception):

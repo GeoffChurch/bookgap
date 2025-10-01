@@ -24,14 +24,10 @@ class GapWithContext:
     books: SubCloud
     articles: SubCloud
     book_gap_sizes: List[int]  # Gap sizes for all books in topic (for statistics)
-
-
-@dataclass(frozen=True)
-class BatchResults:
-    """Immutable container for batch processing results."""
-    proposals: List[ParsedProposal]
-    metadata: ExperimentConfig
-    artifact_paths: Optional['ArtifactPaths'] = None
+    gap_size: int
+    gap_size_percentile: float
+    gap_zscore: float
+    shapiro_log10_pval: float
 
 
 @dataclass(frozen=True)
@@ -42,3 +38,11 @@ class ArtifactPaths:
     proposal_files: Optional[List[Path]] = None  # Will be added in Phase 2
     results_csv: Optional[Path] = None  # Will be added in Phase 2
     latex_files: Optional[List[Path]] = None  # Will be added in Phase 4
+
+
+@dataclass(frozen=True)
+class BatchResults:
+    """Immutable container for batch processing results."""
+    proposals: List[ParsedProposal]
+    metadata: ExperimentConfig
+    artifact_paths: Optional[ArtifactPaths] = None
