@@ -5,9 +5,32 @@ These tests verify the core enum structure and that the registry can
 properly load and instantiate generators.
 """
 
+import os
 from enum import Enum
+from unittest.mock import patch
 
+from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
+from bookgap.types import CellType
 from bookgap.llm.llm_implementation import Implementation, get_generator
+
+
+def _create_test_analysis_config() -> AnalysisConfiguration:
+    """Build a minimal AnalysisConfiguration for registry smoke tests."""
+    gap_config = GapConfiguration(
+        denoiser="NONE",
+        drop_k=0,
+        radius_fraction=0.75,
+        cell_type=CellType.KBALL,
+    )
+    llm_config = LLMConfiguration(
+        implementation=Implementation.STRUCTURED,
+        requested_num_prompt_articles=2,
+        requested_num_prompt_books=1,
+        model="gpt-4o-mini",
+        temperature=0.5,
+        max_tokens=1024,
+    )
+    return AnalysisConfiguration.from_components(gap_config, llm_config)
 
 
 class TestImplementation:
@@ -46,14 +69,12 @@ class TestRegistryIntegration:
     
     def test_get_generator_with_real_config(self):
         """Test that get_generator works with properly configured config."""
-        from tests.llm.test_llm_generators import create_test_config
-        
-        config = create_test_config()
-        
-        # Should successfully create generator with valid config
+    config = _create_test_analysis_config()
+
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}), \
+         patch("bookgap.llm.generators.openai_generator.OpenAI"):
         generator = get_generator(Implementation.STRUCTURED, config)
         assert generator is not None
-        
-        # Should have the expected type
+
         from bookgap.llm.generators.openai_generator import OpenAIProposalGenerator
         assert isinstance(generator, OpenAIProposalGenerator)

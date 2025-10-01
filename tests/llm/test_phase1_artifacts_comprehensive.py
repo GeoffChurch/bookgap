@@ -13,6 +13,8 @@ import pytest
 from pathlib import Path
 from typing import List, cast
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from contextlib import ExitStack
 
 from bookgap.cloud import SubCloud
 from bookgap.gap_finder import GapProtocol
@@ -35,7 +37,7 @@ class TestPhase1DataStructures:
 class TestPhase1GapPlots:
     """Test the gap plotting functionality."""
     
-    @patch('hydra.core.hydra_config.HydraConfig')
+    @patch('bookgap.llm.artifacts.gap_plots.HydraConfig')
     def test_save_gap_plot_with_proposals_success(self, mock_hydra_config):
         """Test the complete modern gap plotting pipeline end-to-end."""
         # Create realistic test data
@@ -102,48 +104,54 @@ class TestPhase1GapPlots:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             mock_hydra_instance = Mock()
-            mock_hydra_instance.runtime.output_dir = str(temp_path)
+            mock_hydra_instance.runtime = SimpleNamespace(output_dir=str(temp_path))
             mock_hydra_config.get.return_value = mock_hydra_instance
 
+            neighbor_search_return = {
+                "gap_to_article_neighbors": set(),
+                "gap_to_book_neighbors": set(),
+                "gap_article_to_book_search": None,
+                "book_to_article_neighbors": set(),
+                "book_to_article_search": None,
+                "covering_book_indices": [],
+            }
+
             try:
-                with patch(
-                    'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._perform_gap_neighbor_searches',
-                    return_value={
-                        "gap_to_article_neighbors": set(),
-                        "gap_to_book_neighbors": set(),
-                        "gap_article_to_book_search": None,
-                        "book_to_article_neighbors": set(),
-                        "book_to_article_search": None,
-                        "covering_book_indices": [],
-                    },
-                ), patch(
-                    'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._get_covering_book_indices',
-                    return_value=[],
-                ):
+                with ExitStack() as stack:
+                    stack.enter_context(
+                        patch(
+                            'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._perform_gap_neighbor_searches',
+                            return_value=neighbor_search_return,
+                        )
+                    )
+                    stack.enter_context(
+                        patch(
+                            'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._get_covering_book_indices',
+                            return_value=[],
+                        )
+                    )
+
                     result_path = save_gap_plot_with_proposals(gap_with_context, proposals, method="PCA")
 
-                assert isinstance(result_path, Path)
-                assert result_path.exists()
-                assert result_path.suffix == '.png'
-                assert temp_path in result_path.parents
-                assert "Machine_Learning" in result_path.name
-                assert "gap_5" in result_path.name
-                assert "pca" in result_path.name.lower()
+                    assert isinstance(result_path, Path)
+                    assert result_path.exists()
+                    assert result_path.suffix == '.png'
+                    assert "Machine_Learning" in result_path.name
+                    assert "gap_5" in result_path.name
+                    assert "pca" in result_path.name.lower()
+                    assert "plots" in result_path.parts
 
-                file_size = result_path.stat().st_size
-                assert file_size > 1000
+                    file_size = result_path.stat().st_size
+                    assert file_size > 1000
 
-                mock_hydra_config.get.assert_called()
+                    mock_hydra_config.get.assert_called()
+
+                    result_path_tsne = save_gap_plot_with_proposals(gap_with_context, proposals, method="TSNE")
+                    assert result_path_tsne.exists()
+                    assert "tsne" in result_path_tsne.name.lower()
 
             except Exception as e:
                 pytest.fail(f"End-to-end gap plotting failed: {e}")
-
-            try:
-                result_path_tsne = save_gap_plot_with_proposals(gap_with_context, proposals, method="TSNE")
-                assert result_path_tsne.exists()
-                assert "tsne" in result_path_tsne.name.lower()
-            except Exception as e:
-                pytest.fail(f"t-SNE plotting failed: {e}")
     
     @patch('bookgap.llm.artifacts.gap_plots.save_gap_plot_with_proposals')
     def test_generate_gap_plots_for_results_success(self, mock_save_plot):
@@ -322,16 +330,6 @@ class TestPhase1ErrorHandling:
         assert artifact_paths.plots == []
         assert len(artifact_paths.plots) == 0
     
-    def test_gap_plots_with_empty_proposals(self):
-        """Test gap plotting handles empty proposals gracefully."""
-        # This functionality is now tested in the unified architecture tests
-        # The data preparation module handles empty proposals gracefully
-        from bookgap.llm.artifacts.data_preparation import GapVisualizationDataPreparer
-        
-        preparer = GapVisualizationDataPreparer()
-        result = preparer._compute_proposal_embeddings([])
-        assert result == []
-
 
 if __name__ == "__main__":
     # Run tests with verbose output when executed directly

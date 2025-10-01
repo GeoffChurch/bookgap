@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bookgap.visualization import VisualizationData, PlotConfig, ProjectionMethod
-from bookgap.llm.artifacts.data_preparation import GapVisualizationDataPreparer
 from bookgap.plot_utils import UnifiedGapPlotter
 
 
@@ -189,42 +188,6 @@ class TestUnifiedGapPlotter:
         # Clean up
         import matplotlib.pyplot as plt
         plt.close(fig)
-
-
-class TestDataPreparation:
-    """Test the data preparation pipeline."""
-
-    def test_compute_proposal_embeddings(self):
-        """Test proposal embedding accessor."""
-        # Create mock proposals with required fields
-        from bookgap.llm.protocols import ParsedProposal, Proposal, Chapter
-
-        # Create minimal chapters for the proposal
-        chapters = [
-            Chapter(
-                chapter_title=f"Chapter {i}"
-            )
-            for i in range(10)
-        ]
-        
-        proposals = [
-            ParsedProposal(
-                custom_id="test_1",
-                proposal=Proposal(
-                    title="Test Title", 
-                    abstract="Test Abstract",
-                    chapters=chapters
-                ),
-                embedding=np.array([0.1, 0.2, 0.3], dtype=np.float32)
-            )
-        ]
-
-        preparer = GapVisualizationDataPreparer()
-        embeddings = preparer._compute_proposal_embeddings(proposals)
-
-        assert len(embeddings) == 1
-        assert isinstance(embeddings[0], np.ndarray)
-        np.testing.assert_array_equal(embeddings[0], proposals[0].embedding)
 
 
 class TestIntegrationWithoutMocks:

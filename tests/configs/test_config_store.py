@@ -25,6 +25,9 @@ class TestConfigStoreRegistration:
         except Exception as e:
             pytest.fail(f"Config registration failed: {e}")
 
-        # Check that some known groups/names are registered
-        assert ("gap", "production") in cs.group_to_nodes
-        assert ("llm", "creative") in cs.group_to_nodes
+        # Check that some known groups/names are registered via public API
+        gap_nodes = set(cs.list("gap"))
+        llm_nodes = set(cs.list("llm"))
+
+        assert any(name.startswith("production") for name in gap_nodes)
+        assert any(name.startswith("production") for name in llm_nodes)

@@ -48,7 +48,7 @@ def make_clouds(n_articles: int = 10, n_books: int = 3, dim: int = 4, seed: int 
     return DummySubCloud(books), DummySubCloud(articles)
 
 
-def test_prepare_standard_gap_data_center_position_and_basic_assembly(monkeypatch):
+def test_prepare_standard_gap_data_center_position_and_basic_assembly():
     # Arrange: small deterministic clouds
     books, articles = make_clouds(n_articles=8, n_books=2, dim=5, seed=42)
     # Gap includes three article indices, first is center
@@ -66,19 +66,6 @@ def test_prepare_standard_gap_data_center_position_and_basic_assembly(monkeypatc
             self.articles = articles
     gwc = GWCLike(gap=gap, topic_name="Topic", topic_id="T1", gap_idx=0, books=books, articles=articles)
 
-    # Monkeypatch Embedder to avoid heavy model load
-    class DummyEmbedder:
-        def __enter__(self):
-            return self
-        def __exit__(self, exc_type, exc, tb):
-            return False
-        def embed_texts(self, pairs, batch_size: int = 1):
-            # Return zeros of appropriate shape
-            return np.zeros((len(pairs), articles.embeddings().shape[1]), dtype=np.float32)
-
-    import bookgap.llm.artifacts.data_preparation as dp
-    monkeypatch.setattr(dp, 'Embedder', DummyEmbedder)
-
     # Act
     preparer = GapVisualizationDataPreparer()
     gwc_any: Any = gwc
@@ -95,7 +82,7 @@ def test_prepare_standard_gap_data_center_position_and_basic_assembly(monkeypatc
     assert len(data.book_positions) >= 1
 
 
-def test_neighbor_search_skip_flags(monkeypatch):
+def test_neighbor_search_skip_flags():
     # Arrange deterministic small clouds and gap
     books, articles = make_clouds(n_articles=6, n_books=2, dim=3, seed=7)
     gap_indices = [1, 3]
@@ -111,17 +98,6 @@ def test_neighbor_search_skip_flags(monkeypatch):
             self.books = books
             self.articles = articles
     gwc = GWCLike(gap=gap, topic_name="Topic", topic_id="T1", gap_idx=0, books=books, articles=articles)
-
-    # Stub Embedder (not used when proposals=[] but harmless)
-    class DummyEmbedder:
-        def __enter__(self):
-            return self
-        def __exit__(self, exc_type, exc, tb):
-            return False
-        def embed_texts(self, pairs, batch_size: int = 1):
-            return np.zeros((len(pairs), articles.embeddings().shape[1]), dtype=np.float32)
-    import bookgap.llm.artifacts.data_preparation as dp
-    monkeypatch.setattr(dp, 'Embedder', DummyEmbedder)
 
     # Act
     preparer = GapVisualizationDataPreparer()
