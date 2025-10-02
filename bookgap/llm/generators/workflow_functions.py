@@ -11,7 +11,7 @@ import random
 import time
 import hashlib
 from pathlib import Path
-from typing import List, Optional, Any, Dict, Tuple
+from typing import Optional, Any
 
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
@@ -48,11 +48,11 @@ class PendingProposal:
 @dataclass(frozen=True)
 class ProposalGrouping:
     """Indexed proposal collections for downstream artifact generation."""
-    by_gap_idx: Dict[int, List[ParsedProposal]]
-    by_topic_gap: Dict[Tuple[str, int], List[ParsedProposal]]
-    ordered: List[Tuple[ParsedProposal, GapProposalId]]
+    by_gap_idx: dict[int, list[ParsedProposal]]
+    by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
+    ordered: list[tuple[ParsedProposal, GapProposalId]]
 
-def _compute_proposal_embeddings(pending: List[PendingProposal]) -> NDArray[np.float32]:
+def _compute_proposal_embeddings(pending: list[PendingProposal]) -> NDArray[np.float32]:
     """Compute embeddings for pending proposals in a single batch pass."""
     title_abstract_pairs = [
         (proposal.proposal.title, proposal.proposal.abstract)
@@ -63,11 +63,11 @@ def _compute_proposal_embeddings(pending: List[PendingProposal]) -> NDArray[np.f
         return embedder.embed_texts(title_abstract_pairs)
 
 
-def _index_proposals(proposals: List[ParsedProposal]) -> ProposalGrouping:
+def _index_proposals(proposals: list[ParsedProposal]) -> ProposalGrouping:
     """Build indexed views of proposals keyed by gap identifiers."""
-    by_gap_idx: Dict[int, List[ParsedProposal]] = defaultdict(list)
-    by_topic_gap: Dict[Tuple[str, int], List[ParsedProposal]] = defaultdict(list)
-    ordered: List[Tuple[ParsedProposal, GapProposalId]] = []
+    by_gap_idx: dict[int, list[ParsedProposal]] = defaultdict(list)
+    by_topic_gap: dict[tuple[str, int], list[ParsedProposal]] = defaultdict(list)
+    ordered: list[tuple[ParsedProposal, GapProposalId]] = []
 
     for proposal in proposals:
         try:
@@ -97,7 +97,7 @@ class MetadataUtils:
     CHUNK_SIZE = 512  # OpenAI batch API metadata value limit
     
     @staticmethod
-    def serialize_config(config: Any) -> Dict[str, str]:
+    def serialize_config(config: Any) -> dict[str, str]:
         """Convert config to chunked metadata dict for batch API.
         
         Args:
@@ -120,7 +120,7 @@ class MetadataUtils:
         return metadata
     
     @staticmethod
-    def deserialize_config(metadata: Dict[str, str]) -> ExperimentConfig:
+    def deserialize_config(metadata: dict[str, str]) -> ExperimentConfig:
         """Parse chunked metadata dict back to ExperimentConfig object.
         
         Args:
@@ -146,7 +146,7 @@ class MetadataUtils:
         return instantiate(metadata_dict)
 
 
-def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
+def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
     """Find gaps using the provided configuration.
     
     Uses the data and gap configuration to build cloud and find gaps for each topic.
@@ -177,7 +177,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
         hnsw_efs=config.gap.hnsw_efs
     )
     
-    gaps: List[GapWithContext] = []
+    gaps: list[GapWithContext] = []
     
     # Analyze all topics from the AI subfield (matches gap_finder.main)
     
@@ -262,7 +262,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> List[GapWithContext]:
     return gaps
 
 
-def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig) -> List[ProposalContext]:
+def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig) -> list[ProposalContext]:
     """Build proposal contexts from gaps.
     
     Samples articles and books for each gap to create the context needed for proposal generation.
@@ -301,7 +301,7 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
         sampled_article_indices = [int(gap_idxs[pos]) for pos in sampled_positions]
         sampled_article_dicts = [article_works[idx] for idx in sampled_article_indices]
 
-        sampled_articles: List[Article] = []
+        sampled_articles: list[Article] = []
         for i, work in enumerate(sampled_article_dicts):
             display_name = work.get('display_name') if isinstance(work, dict) else getattr(work, 'display_name', None)
             abstract = work.get('abstract') if isinstance(work, dict) else getattr(work, 'abstract', None)
@@ -312,7 +312,7 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
             sampled_articles.append(Article(display_name=display_name, abstract=abstract))
 
         # Select covering books ordered by decreasing coverage, deterministic tie-breaker
-        covering_books: List[Book] = []
+        covering_books: list[Book] = []
         try:
             book_coverage = group_gap_articles_by_covering_books(gap_with_context.gap)
         except (AttributeError, TypeError):
@@ -371,7 +371,7 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
     return contexts
 
 
-def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentConfig) -> str:
+def submit_batch_job(batch_requests: list[BatchRequestData], config: ExperimentConfig) -> str:
     """Submit batch job to OpenAI API.
     
     Args:
@@ -418,11 +418,10 @@ def submit_batch_job(batch_requests: List[BatchRequestData], config: ExperimentC
             }
         }
         
-        # Add optional fields
-        if hasattr(request.body, 'temperature') and request.body.temperature is not None:
+        if request.body.temperature is not None:
             jsonl_line["body"]["temperature"] = request.body.temperature  # type: ignore
         
-        if hasattr(request.body, 'response_format') and request.body.response_format is not None:
+        if request.body.response_format is not None:
             jsonl_line["body"]["response_format"] = request.body.response_format  # type: ignore
         
         jsonl_lines.append(json.dumps(jsonl_line))
@@ -677,7 +676,7 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     )
 
 
-def generate_batch_requests(contexts: List[ProposalContext], config: ExperimentConfig) -> List[BatchRequestData]:
+def generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]:
     """Generate batch API requests from proposal contexts.
     
     Uses Hydra's _target_ pattern to instantiate the appropriate generator for the provider.
@@ -744,7 +743,7 @@ def generate_batch_requests(contexts: List[ProposalContext], config: ExperimentC
             ) from e
 
 
-def validate_batch_requests(requests: List[BatchRequestData]) -> None:
+def validate_batch_requests(requests: list[BatchRequestData]) -> None:
     """Validate that batch requests are properly formatted.
     
     Args:
@@ -796,7 +795,7 @@ def validate_batch_requests(requests: List[BatchRequestData]) -> None:
         )
 
 
-def get_supported_models() -> List[str]:
+def get_supported_models() -> list[str]:
     """Get list of supported model names.
     
     Returns:
