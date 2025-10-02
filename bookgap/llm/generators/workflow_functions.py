@@ -3,13 +3,15 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 from itertools import islice
 import json
 import random
 import time
+import hashlib
 from pathlib import Path
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
@@ -23,7 +25,7 @@ from numpy.typing import NDArray
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import build_cloud, get_subclouds_for_topic, Embedder
 from bookgap.deduplicators import Deduplicator
-from bookgap.gap_finder import find_gaps_for_topic
+from bookgap.gap_finder import find_gaps_for_topic, group_gap_articles_by_covering_books
 from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.llm.data_structures import BatchResults, GapWithContext, ArtifactPaths
 from bookgap.util import LOGGER
@@ -31,6 +33,7 @@ from ..protocols import (
     ProposalContext, BatchRequestData, ProposalGenerationError, 
     Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
+from ..identifiers import parse_gap_proposal_id, GapProposalId
 from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
 from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
@@ -41,6 +44,14 @@ class PendingProposal:
     proposal: Proposal
     custom_id: str
 
+
+@dataclass(frozen=True)
+class ProposalGrouping:
+    """Indexed proposal collections for downstream artifact generation."""
+    by_gap_idx: Dict[int, List[ParsedProposal]]
+    by_topic_gap: Dict[Tuple[str, int], List[ParsedProposal]]
+    ordered: List[Tuple[ParsedProposal, GapProposalId]]
+
 def _compute_proposal_embeddings(pending: List[PendingProposal]) -> NDArray[np.float32]:
     """Compute embeddings for pending proposals in a single batch pass."""
     title_abstract_pairs = [
@@ -50,6 +61,35 @@ def _compute_proposal_embeddings(pending: List[PendingProposal]) -> NDArray[np.f
 
     with Embedder() as embedder:
         return embedder.embed_texts(title_abstract_pairs)
+
+
+def _index_proposals(proposals: List[ParsedProposal]) -> ProposalGrouping:
+    """Build indexed views of proposals keyed by gap identifiers."""
+    by_gap_idx: Dict[int, List[ParsedProposal]] = defaultdict(list)
+    by_topic_gap: Dict[Tuple[str, int], List[ParsedProposal]] = defaultdict(list)
+    ordered: List[Tuple[ParsedProposal, GapProposalId]] = []
+
+    for proposal in proposals:
+        try:
+            parsed = parse_gap_proposal_id(proposal.custom_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning(
+                "Skipping proposal with unparseable custom_id %s: %s",
+                proposal.custom_id,
+                exc,
+            )
+            continue
+
+        by_gap_idx[parsed.gap_idx].append(proposal)
+        key = (parsed.topic_id, parsed.gap_idx)
+        by_topic_gap[key].append(proposal)
+        ordered.append((proposal, parsed))
+
+    return ProposalGrouping(
+        by_gap_idx=dict(by_gap_idx),
+        by_topic_gap=dict(by_topic_gap),
+        ordered=ordered,
+    )
 
 class MetadataUtils:
     """Static utilities for metadata chunking and parsing."""
@@ -239,39 +279,73 @@ def build_contexts_for_gaps(gaps: List[GapWithContext], config: ExperimentConfig
     for gap_with_context in gaps:
         gap_idxs = gap_with_context.gap.get_dists_idxs().idxs
         gap_size = len(gap_idxs)
-        
+
+        if gap_size == 0:
+            raise ValueError(
+                f"Gap {gap_with_context.gap_idx} for topic {gap_with_context.topic_id} contains no articles"
+            )
+
+        # Deterministic RNG seeded by topic and gap
+        seed_string = f"{gap_with_context.topic_id}_{gap_with_context.gap_idx}"
+        seed_hash = hashlib.md5(seed_string.encode()).hexdigest()
+        rng = random.Random(int(seed_hash[:8], 16))
+
         # Get work metadata
         article_works = gap_with_context.articles.works()
         book_works = gap_with_context.books.works()
-        
-        # Sample random articles from the gap (up to configured limit)
-        sample_size = min(config.llm.num_articles, gap_size)
-        sampled_indices = random.sample(range(gap_size), sample_size)
-        sampled_article_works = [article_works[gap_idxs[i]] for i in sampled_indices]
 
-        # Convert to Article dataclasses
-        sampled_articles = [
-            Article(
-                display_name=work['display_name'],
-                abstract=work['abstract']
-            )
-            for work in sampled_article_works
-        ]
-        
-        # Find covering books (simplified logic for now)
-        covering_books = []
-        if len(book_works) > 0:
-            # Take up to requested number of books
-            num_books_to_sample = min(config.llm.num_books, len(book_works))
-            sampled_book_works = random.sample(book_works, num_books_to_sample)
-            
-            covering_books = [
-                Book(
-                    display_name=work['display_name'],
-                    abstract=work['abstract']
+        # Sample articles from the gap (up to configured limit)
+        requested_articles = config.llm.num_articles
+        sample_size = min(requested_articles, gap_size)
+        sampled_positions = rng.sample(range(gap_size), sample_size)
+        sampled_article_indices = [int(gap_idxs[pos]) for pos in sampled_positions]
+        sampled_article_dicts = [article_works[idx] for idx in sampled_article_indices]
+
+        sampled_articles: List[Article] = []
+        for i, work in enumerate(sampled_article_dicts):
+            display_name = work.get('display_name') if isinstance(work, dict) else getattr(work, 'display_name', None)
+            abstract = work.get('abstract') if isinstance(work, dict) else getattr(work, 'abstract', None)
+            if not display_name or not abstract:
+                raise ValueError(
+                    f"Sampled article {i} for gap {gap_with_context.gap_idx} missing display_name or abstract"
                 )
-                for work in sampled_book_works
-            ]
+            sampled_articles.append(Article(display_name=display_name, abstract=abstract))
+
+        # Select covering books ordered by decreasing coverage, deterministic tie-breaker
+        covering_books: List[Book] = []
+        try:
+            book_coverage = group_gap_articles_by_covering_books(gap_with_context.gap)
+        except (AttributeError, TypeError):
+            book_coverage = {}
+
+        if book_coverage:
+            requested_books = config.llm.num_books
+            sorted_books = sorted(
+                book_coverage.items(),
+                key=lambda item: (-len(item[1]), int(item[0]))
+            )
+            for book_idx, _ in sorted_books:
+                idx = int(book_idx)
+                if idx < 0 or idx >= len(book_works):
+                    continue
+                book_work = book_works[idx]
+                display_name = book_work.get('display_name') if isinstance(book_work, dict) else getattr(book_work, 'display_name', None)
+                abstract = book_work.get('abstract') if isinstance(book_work, dict) else getattr(book_work, 'abstract', None)
+                if not display_name or not abstract:
+                    continue
+                covering_books.append(Book(display_name=display_name, abstract=abstract))
+                if len(covering_books) >= requested_books:
+                    break
+        else:
+            requested_books = config.llm.num_books
+            for book_work in book_works[:requested_books]:
+                display_name = book_work.get('display_name') if isinstance(book_work, dict) else getattr(book_work, 'display_name', None)
+                abstract = book_work.get('abstract') if isinstance(book_work, dict) else getattr(book_work, 'abstract', None)
+                if not display_name or not abstract:
+                    continue
+                covering_books.append(Book(display_name=display_name, abstract=abstract))
+                if len(covering_books) >= requested_books:
+                    break
         
         # Create counts using correct field names
         counts = ProposalCounts(
@@ -569,9 +643,17 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     # Step 5: Monitor and download results
     results = monitor_and_download_results(batch_job_id, config)
     LOGGER.info(f"Completed! Generated {len(results.proposals)} proposals")
+
+    # Index proposals once for downstream artifact generation
+    proposal_grouping = _index_proposals(results.proposals)
     
     # ARTIFACTS: Generate plots
-    plot_paths = generate_gap_plots_for_results(gaps, results.proposals, output_dir)
+    plot_paths = generate_gap_plots_for_results(
+        gaps,
+        results.proposals,
+        output_dir,
+        proposals_by_gap=proposal_grouping.by_gap_idx,
+    )
 
     # ARTIFACTS: Generate simple results CSV (Step 2.2 minimal)
     results_csv = generate_gaps_analysis_csv(
@@ -580,6 +662,8 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         output_dir,
         config,
         contexts,
+        proposals_grouped=proposal_grouping.by_topic_gap,
+        ordered_proposals=proposal_grouping.ordered,
     )
     
     

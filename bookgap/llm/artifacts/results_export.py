@@ -4,17 +4,17 @@ Simple results CSV export for Step 2.2.
 Generates a proposals-centric CSV that joins each proposal with basic gap
 metadata (topic, ids, gap_idx, counts, gap_size).
 """
-from collections import defaultdict, deque
+from collections import deque
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from bookgap.cloud_index import compute_proposal_rankings_for_gap
 from bookgap.configs.config import ExperimentConfig
-from bookgap.llm.identifiers import GapProposalId, parse_gap_proposal_id
+from bookgap.llm.identifiers import GapProposalId
 from bookgap.llm.protocols import ParsedProposal, ProposalContext, ProposalCounts
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.util import LOGGER
@@ -66,43 +66,15 @@ def _sanitize_text_field(value: str) -> str:
 
 
 def _build_counts_map(
-    contexts: List[ProposalContext],
+    contexts: list[ProposalContext],
 ) -> dict[tuple[str, int], ProposalCounts]:
     """Create a lookup from (topic_id, gap_idx) to ProposalCounts."""
-    counts_map: dict[tuple[str, int], ProposalCounts] = {}
-    for ctx in contexts:
-        key = (ctx.topic_id, ctx.gap_idx)
-        if key in counts_map:
-            LOGGER.warning(
-                "Duplicate ProposalContext detected for topic_id=%s gap_idx=%s; overwriting previous counts",
-                ctx.topic_id,
-                ctx.gap_idx,
-            )
-        counts_map[key] = ctx.counts
-    return counts_map
-
-
-def _group_proposals_by_gap(
-    proposals: List[ParsedProposal],
-) -> Tuple[dict[tuple[str, int], List[ParsedProposal]], List[tuple[ParsedProposal, GapProposalId]]]:
-    """Group proposals by (topic_id, gap_idx) while preserving input order.
-
-    Returns both the grouped mapping and an ordered list of tuples for
-    deterministic row construction.
-    """
-    grouped: dict[tuple[str, int], List[ParsedProposal]] = defaultdict(list)
-    ordered: List[tuple[ParsedProposal, GapProposalId]] = []
-    for proposal in proposals:
-        parsed = parse_gap_proposal_id(proposal.custom_id)
-        key = (parsed.topic_id, parsed.gap_idx)
-        grouped[key].append(proposal)
-        ordered.append((proposal, parsed))
-    return grouped, ordered
+    return {(ctx.topic_id, ctx.gap_idx): ctx.counts for ctx in contexts}
 
 
 def _compute_proposal_rankings_by_gap(
-    gaps: List[GapWithContext],
-    proposals_grouped: dict[tuple[str, int], List[ParsedProposal]],
+    gaps: list[GapWithContext],
+    proposals_grouped: dict[tuple[str, int], list[ParsedProposal]],
 ) -> dict[tuple[str, int], deque[tuple[int, int]]]:
     """Compute ranking stats for proposals grouped by their gap."""
 
@@ -183,24 +155,38 @@ def _proposal_row(
     parsed: GapProposalId,
     proposal: ParsedProposal,
     ranking: tuple[int, int] | None,
-) -> Dict[str, Any]:
+    gap_meta: dict[str, Any] | None,
+) -> dict[str, Any]:
     book_rank, article_rank = ranking if ranking is not None else (-1, -1)
+    num_books = int(gap_meta.get("num_books", 0)) if gap_meta else 0
+    num_articles = int(gap_meta.get("num_articles", 0)) if gap_meta else 0
+    book_fraction = (
+        book_rank / num_books if book_rank >= 0 and num_books > 0 else -1.0
+    )
+    article_fraction = (
+        article_rank / num_articles if article_rank >= 0 and num_articles > 0 else -1.0
+    )
     return {
         "topic_id": parsed.topic_id,
         "gap_idx": parsed.gap_idx,
         "proposal_book_rank": int(book_rank),
+        "proposal_book_rank_fraction": book_fraction,
         "proposal_article_rank": int(article_rank),
+        "proposal_article_rank_fraction": article_fraction,
         "proposal_title": _sanitize_text_field(proposal.proposal.title),
         "proposal_abstract": _sanitize_text_field(proposal.proposal.abstract),
     }
 
 
 def generate_gaps_analysis_csv(
-    gaps: List[GapWithContext],
-    proposals: List[ParsedProposal],
+    gaps: list[GapWithContext],
+    proposals: list[ParsedProposal],
     output_dir: Path,
     config: ExperimentConfig,
-    contexts: List[ProposalContext],
+    contexts: list[ProposalContext],
+    *,
+    proposals_grouped: dict[tuple[str, int], list[ParsedProposal]],
+    ordered_proposals: list[tuple[ParsedProposal, GapProposalId]],
 ) -> Path:
     """
     Create a minimal CSV joining proposals with basic gap metadata.
@@ -215,28 +201,19 @@ def generate_gaps_analysis_csv(
     counts_map = _build_counts_map(contexts)
     gap_rows = [_gap_row(g, config, counts_map) for g in gaps]
     gap_df = pd.DataFrame(gap_rows)
-    proposals_grouped, ordered_proposals = _group_proposals_by_gap(proposals)
+    gap_meta_map = {
+        (row["topic_id"], row["gap_idx"]): row for row in gap_rows
+    }
     rankings_by_gap = _compute_proposal_rankings_by_gap(gaps, proposals_grouped)
 
-    prop_rows: List[Dict[str, Any]] = []
+    prop_rows: list[dict[str, Any]] = []
     for proposal, parsed in ordered_proposals:
         ranking_deque = rankings_by_gap.get((parsed.topic_id, parsed.gap_idx))
         ranking_tuple = ranking_deque.popleft() if ranking_deque else None
-        prop_rows.append(_proposal_row(parsed, proposal, ranking_tuple))
+        gap_meta = gap_meta_map.get((parsed.topic_id, parsed.gap_idx))
+        prop_rows.append(_proposal_row(parsed, proposal, ranking_tuple, gap_meta))
 
-    if prop_rows:
-        proposals_df = pd.DataFrame(prop_rows)
-    else:
-        proposals_df = pd.DataFrame(
-            columns=[
-                "topic_id",
-                "gap_idx",
-                "proposal_book_rank",
-                "proposal_article_rank",
-                "proposal_title",
-                "proposal_abstract",
-            ]
-        )
+    proposals_df = pd.DataFrame(prop_rows)
 
     if gap_df.empty:
         LOGGER.warning("Gap DataFrame is empty; CSV will contain only proposal columns")
@@ -244,17 +221,6 @@ def generate_gaps_analysis_csv(
     # Merge proposals with gap metadata (left: proposals)
     key_cols = ["topic_id", "gap_idx"]
     merged = proposals_df.merge(gap_df, on=key_cols, how="left")
-
-    merged["proposal_book_rank_fraction"] = np.where(
-        (merged["proposal_book_rank"] >= 0) & (merged["num_books"] > 0),
-        merged["proposal_book_rank"] / merged["num_books"],
-        -1.0,
-    )
-    merged["proposal_article_rank_fraction"] = np.where(
-        (merged["proposal_article_rank"] >= 0) & (merged["num_articles"] > 0),
-        merged["proposal_article_rank"] / merged["num_articles"],
-        -1.0,
-    )
 
     # Reorder columns to ensure proposal_title and proposal_abstract are last
     LAST_COLUMNS = ["proposal_title", "proposal_abstract"]

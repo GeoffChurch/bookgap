@@ -16,7 +16,7 @@ from bookgap.llm.artifacts.results_export import (
     generate_gaps_analysis_csv,
 )
 from bookgap.llm.data_structures import GapWithContext
-from bookgap.llm.identifiers import build_gap_proposal_id
+from bookgap.llm.identifiers import build_gap_proposal_id, parse_gap_proposal_id
 from bookgap.llm.protocols import (
     Article,
     Book,
@@ -109,6 +109,11 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
         embedding=np.array([0.1, 0.2, 0.3], dtype=np.float32),
     )
 
+    proposals_grouped = {("topic-1", 0): [parsed_proposal]}
+    ordered_proposals = [
+        (parsed_proposal, parse_gap_proposal_id(parsed_proposal.custom_id))
+    ]
+
     context = ProposalContext(
         topic_name="Topic",
         topic_id="topic-1",
@@ -151,6 +156,8 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
         output_dir=tmp_path,
         config=config,
         contexts=[context],
+        proposals_grouped=proposals_grouped,
+        ordered_proposals=ordered_proposals,
     )
 
     df = pd.read_csv(csv_path)
@@ -214,6 +221,12 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         embedding=np.array([2.5, 0.0], dtype=np.float32),
     )
 
+    proposals_grouped = {("topic-1", 0): [proposal_a, proposal_b]}
+    ordered_proposals = [
+        (proposal_a, parse_gap_proposal_id(proposal_a.custom_id)),
+        (proposal_b, parse_gap_proposal_id(proposal_b.custom_id)),
+    ]
+
     context = ProposalContext(
         topic_name="Topic",
         topic_id="topic-1",
@@ -247,6 +260,8 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         output_dir=tmp_path,
         config=config,
         contexts=[context],
+        proposals_grouped=proposals_grouped,
+        ordered_proposals=ordered_proposals,
     )
 
     df = pd.read_csv(csv_path).sort_values("proposal_title").reset_index(drop=True)

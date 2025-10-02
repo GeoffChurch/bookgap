@@ -19,6 +19,7 @@ from contextlib import ExitStack
 from bookgap.cloud import SubCloud
 from bookgap.gap_finder import GapProtocol
 from bookgap.llm.data_structures import ArtifactPaths, GapWithContext
+from bookgap.llm.identifiers import build_gap_proposal_id
 from bookgap.llm.artifacts.gap_plots import (
     generate_gap_plots_for_results,
     save_gap_plot_with_proposals,
@@ -107,21 +108,21 @@ class TestPhase1GapPlots:
             mock_hydra_instance.runtime = SimpleNamespace(output_dir=str(temp_path))
             mock_hydra_config.get.return_value = mock_hydra_instance
 
-            neighbor_search_return = {
-                "gap_to_article_neighbors": set(),
-                "gap_to_book_neighbors": set(),
-                "gap_article_to_book_search": None,
-                "book_to_article_neighbors": set(),
-                "book_to_article_search": None,
-                "covering_book_indices": [],
-            }
-
             try:
                 with ExitStack() as stack:
                     stack.enter_context(
                         patch(
                             'bookgap.llm.artifacts.data_preparation.GapVisualizationDataPreparer._perform_gap_neighbor_searches',
-                            return_value=neighbor_search_return,
+                            return_value={
+                                "gap_to_article_neighbors": set(),
+                                "gap_to_book_neighbors": set(),
+                                "gap_article_to_book_search": np.zeros((3, 5), dtype=np.int32),
+                                "book_to_article_neighbors": set(),
+                                "book_to_article_search": np.zeros((2, 3), dtype=np.int32),
+                                "covering_book_indices": [],
+                                "book_to_book_neighbors": set(),
+                                "k": 5,
+                            },
                         )
                     )
                     stack.enter_context(
@@ -150,8 +151,8 @@ class TestPhase1GapPlots:
                     assert result_path_tsne.exists()
                     assert "tsne" in result_path_tsne.name.lower()
 
-            except Exception as e:
-                pytest.fail(f"End-to-end gap plotting failed: {e}")
+            except Exception as exc:
+                pytest.fail(f"End-to-end gap plotting failed: {exc}")
     
     @patch('bookgap.llm.artifacts.gap_plots.save_gap_plot_with_proposals')
     def test_generate_gap_plots_for_results_success(self, mock_save_plot):
@@ -163,21 +164,30 @@ class TestPhase1GapPlots:
         mock_gap2.gap_idx = 1
         mock_gaps = [mock_gap1, mock_gap2]
         
-        # Create proper mock proposals with custom_id
-        mock_proposal1 = Mock()
-        mock_proposal1.custom_id = "gap_0_proposal_1"
-        mock_proposal2 = Mock()
-        mock_proposal2.custom_id = "gap_1_proposal_1"
-        mock_results = [mock_proposal1, mock_proposal2]
+        chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+        proposal1 = ParsedProposal(
+            proposal=Proposal(title="Title 1", abstract="Abstract 1", chapters=chapters),
+            custom_id=build_gap_proposal_id(gap_idx=0, topic_id="topic-1"),
+            embedding=np.zeros(4, dtype=np.float32),
+        )
+        proposal2 = ParsedProposal(
+            proposal=Proposal(title="Title 2", abstract="Abstract 2", chapters=chapters),
+            custom_id=build_gap_proposal_id(gap_idx=1, topic_id="topic-2"),
+            embedding=np.zeros(4, dtype=np.float32),
+        )
+        proposals = [proposal1, proposal2]
         
         output_dir = Path("/test/output")
         
         mock_save_plot.return_value = Path("/test/output/plot.png")
         
+        proposals_by_gap = {0: [proposal1], 1: [proposal2]}
+
         result_paths = generate_gap_plots_for_results(
             cast(List[GapWithContext], mock_gaps),
-            cast(List[ParsedProposal], mock_results),
+            proposals,
             output_dir,
+            proposals_by_gap=proposals_by_gap,
         )
         
         # Should generate one plot per gap

@@ -25,6 +25,7 @@ from bookgap.llm.generators.workflow_functions import (
     monitor_and_download_results,
     run_batch_workflow,
 )
+from bookgap.llm.identifiers import build_gap_proposal_id
 from bookgap.llm.protocols import (
     ProposalContext,
     BatchRequestData,
@@ -532,7 +533,7 @@ class TestRunBatchWorkflow:
                 abstract="Abstract",
                 chapters=[Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
             ),
-            custom_id="id-1",
+            custom_id=build_gap_proposal_id(gap_idx=0, topic_id="topic-1"),
             embedding=np.zeros(3, dtype=np.float32),
         )
         metadata = cast(ExperimentConfig, OmegaConf.create({"batch": {"num_gaps": 2}}))
@@ -566,8 +567,16 @@ class TestRunBatchWorkflow:
         mock_submit.assert_called_once_with(mock_requests, mock_config)
         mock_monitor.assert_called_once_with("batch-123", mock_config)
         mock_generate_contexts.assert_called_once_with(mock_gaps, Path(tmp_dir))
-        mock_generate_plots.assert_called_once_with(mock_gaps, result.proposals, Path(tmp_dir))
-        mock_generate_csv.assert_called_once_with(mock_gaps, result.proposals, Path(tmp_dir), mock_config, mock_contexts)
+        mock_generate_plots.assert_called_once()
+        plot_args, plot_kwargs = mock_generate_plots.call_args
+        assert plot_args == (mock_gaps, result.proposals, Path(tmp_dir))
+        assert plot_kwargs.get("proposals_by_gap") == {0: [proposal]}
+
+        mock_generate_csv.assert_called_once()
+        csv_args, csv_kwargs = mock_generate_csv.call_args
+        assert csv_args == (mock_gaps, result.proposals, Path(tmp_dir), mock_config, mock_contexts)
+        assert list(csv_kwargs.get("proposals_grouped", {}).keys()) == [("topic-1", 0)]
+        assert csv_kwargs.get("ordered_proposals")
         
         # Verify result
         assert isinstance(result, BatchResults)

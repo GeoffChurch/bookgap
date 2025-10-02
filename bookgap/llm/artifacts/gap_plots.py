@@ -67,10 +67,12 @@ def save_gap_plot_with_proposals(
     return save_path
 
 def generate_gap_plots_for_results(
-    gaps: List[GapWithContext], 
-    results: List[ParsedProposal],
-    output_dir: Path
-) -> List[Path]:
+    gaps: list[GapWithContext], 
+    results: list[ParsedProposal],
+    output_dir: Path,
+    *,
+    proposals_by_gap: dict[int, list[ParsedProposal]],
+) -> list[Path]:
     """
     Generate gap plots for all gaps with their corresponding proposals.
     
@@ -87,17 +89,7 @@ def generate_gap_plots_for_results(
     LOGGER.info(f"Generating plots for {len(gaps)} gaps with {len(results)} total proposals")
     
     # Group proposals by gap index (extract from custom_id)
-    proposals_by_gap: Dict[int, List[ParsedProposal]] = {}
-    for proposal in results:
-        try:
-            if "_" in proposal.custom_id:
-                gap_idx = int(proposal.custom_id.split("_")[1])
-                if gap_idx not in proposals_by_gap:
-                    proposals_by_gap[gap_idx] = []
-                proposals_by_gap[gap_idx].append(proposal)
-        except (ValueError, IndexError) as e:
-            LOGGER.warning(f"Could not parse gap index from custom_id {proposal.custom_id}: {e}")
-            continue
+    grouped_by_gap = proposals_by_gap
     
     # Generate plots for each gap
     plot_paths = []
@@ -105,7 +97,7 @@ def generate_gap_plots_for_results(
     
     for gap_with_context in gaps:
         gap_idx = gap_with_context.gap_idx
-        gap_proposals = proposals_by_gap.get(gap_idx, [])
+        gap_proposals = grouped_by_gap.get(gap_idx, [])
         
         try:
             plot_path = save_gap_plot_with_proposals(
