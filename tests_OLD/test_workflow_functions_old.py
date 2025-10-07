@@ -25,7 +25,6 @@ from bookgap.llm.protocols import (
     Article,
     Book,
     ProposalCounts,
-    ProposalGenerationError,
     OpenAIModel
 )
 from bookgap.configs.config import ExperimentConfig
@@ -677,7 +676,7 @@ class TestGenerateBatchRequests:
         ]
         config = Mock()
         
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             generate_batch_requests(contexts, config)
         
         assert "Generator instantiation failed" in str(exc_info.value)
@@ -709,7 +708,7 @@ class TestValidateBatchRequests:
     
     def test_empty_requests(self):
         """Test validation of empty requests list."""
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             validate_batch_requests([])
         
         assert "No batch requests provided" in str(exc_info.value)
@@ -735,7 +734,7 @@ class TestValidateBatchRequests:
             )
         ]
         
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             validate_batch_requests(requests)
         
         assert "Duplicate custom_id found: duplicate_id" in str(exc_info.value)
@@ -832,7 +831,7 @@ class TestGetSupportedModels:
         ]
         config = Mock()
         
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             generate_batch_requests(contexts, config)
         
         assert "Generator instantiation failed" in str(exc_info.value)
@@ -864,7 +863,7 @@ class TestValidateBatchRequests:
     
     def test_empty_requests(self):
         """Test validation of empty requests list."""
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             validate_batch_requests([])
         
         assert "No batch requests provided" in str(exc_info.value)
@@ -890,7 +889,7 @@ class TestValidateBatchRequests:
             )
         ]
         
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             validate_batch_requests(requests)
         
         assert "Duplicate custom_id found: duplicate_id" in str(exc_info.value)

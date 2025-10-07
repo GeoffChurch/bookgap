@@ -46,6 +46,9 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.use_structured_output = use_structured_output
+
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError("OPENAI_API_KEY environment variable is required")
         
     def _build_prompt(self, context: ProposalContext) -> PromptPair:
         """Build system and user prompts separately for native message format.

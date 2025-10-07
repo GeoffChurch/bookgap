@@ -719,13 +719,13 @@ class JADDenoiser:
             p_i = P_full_basis[:, i:i+1]
             
             # Get the unweighted quadratic forms (variances along the basis vector)
-            t = float(p_i.T @ S_T @ p_i)
-            l = float(p_i.T @ S_L @ p_i)
+            t = (p_i.T @ S_T @ p_i).item()
+            l = (p_i.T @ S_L @ p_i).item()
             
             # Get subset variances
             subset_variances = []
             for S_subset in subset_scatter_matrices:
-                s = float(p_i.T @ S_subset @ p_i)
+                s = (p_i.T @ S_subset @ p_i).item()
                 subset_variances.append(s)
             
             # # Add a small epsilon for numerical stability to prevent log(0)

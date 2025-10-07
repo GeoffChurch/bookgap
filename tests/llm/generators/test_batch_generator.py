@@ -14,7 +14,6 @@ from bookgap.llm.protocols import (
     PromptPair,
     ProposalContext,
     ProposalCounts,
-    ProposalGenerationError,
 )
 
 
@@ -71,11 +70,10 @@ class TestOpenAIBatchGenerator:
     @patch.dict(os.environ, {}, clear=True)
     def test_initialization_missing_api_key(self, generator_kwargs):
         """Test initialization fails without API key."""
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             OpenAIBatchGenerator(**generator_kwargs)
 
         assert "OPENAI_API_KEY environment variable is required" in str(exc_info.value)
-        assert exc_info.value.context["provider"] == "openai"
     
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
     def test_build_prompt(self, generator_kwargs, sample_context):

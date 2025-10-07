@@ -17,6 +17,7 @@ from bookgap.cloud import Embedder
 from bookgap.llm.data_structures import BatchResults, GapWithContext
 from bookgap.llm.generators.workflow_functions import (
     PendingProposal,
+    _compute_proposal_embeddings,
     MetadataUtils,
     generate_batch_requests,
     validate_batch_requests,
@@ -372,6 +373,70 @@ class TestSubmitBatchJob:
                 payload = json.loads(lines[0])
                 assert payload["body"].get("response_format") == {"type": "json_object"}
                 assert payload["body"].get("temperature") == 0.7
+ 
+class TestComputeProposalEmbeddings:
+    """Tests for proposal embedding projection reuse."""
+
+    @staticmethod
+    def _make_pending(title_suffix: str) -> PendingProposal:
+        chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+        proposal = Proposal(title=f"Title {title_suffix}", abstract="Abstract", chapters=chapters)
+        return PendingProposal(proposal=proposal, custom_id=f"id-{title_suffix}")
+
+    @patch('bookgap.llm.generators.workflow_functions.instantiate')
+    @patch('bookgap.llm.generators.workflow_functions.Embedder')
+    def test_projection_and_normalization_applied(self, mock_embedder_cls, mock_instantiate):
+        pending = [self._make_pending("A")]
+        config = cast(ExperimentConfig, OmegaConf.create({
+            "cloud": {"_target_": "mock.Cloud"},
+            "embedder": {"model_name": "mock-model"},
+        }))
+
+        raw_embeddings = np.array([[3.0, 4.0]], dtype=np.float32)
+
+        class DummyEmbedder:
+            def __init__(self, embeddings):
+                self.embeddings = embeddings
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def embed_texts(self, _pairs):
+                self.calls += 1
+                return self.embeddings
+
+        dummy_embedder = DummyEmbedder(raw_embeddings)
+        mock_embedder_cls.return_value = dummy_embedder
+
+        class FakeProjection:
+            def __init__(self):
+                self.seen = None
+
+            def apply(self, embeddings):
+                self.seen = embeddings
+                return embeddings * 2
+
+        projection = FakeProjection()
+        mock_cloud = Mock()
+        mock_cloud.denoiser_projection.return_value = projection
+        mock_cloud.normalize_embeddings = True
+        mock_instantiate.return_value = mock_cloud
+
+        result = _compute_proposal_embeddings(pending, config)
+
+        expected = raw_embeddings * 2
+        expected = expected / np.linalg.norm(expected, axis=1, keepdims=True)
+
+        assert projection.seen is not None
+        assert np.allclose(projection.seen, raw_embeddings)
+        assert np.allclose(result, expected.astype(np.float32))
+        mock_cloud.denoiser_projection.assert_called_once()
+        assert dummy_embedder.calls == 1
+        mock_instantiate.assert_called_once()
 
 
 class TestMonitorAndDownloadResults:

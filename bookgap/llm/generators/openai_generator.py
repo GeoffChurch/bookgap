@@ -10,7 +10,6 @@ import json
 import os
 
 from openai import OpenAI
-from pydantic import BaseModel
 
 from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
@@ -26,9 +25,6 @@ class OpenAIProposalGenerator:
         
         Args:
             analysis_config: Analysis configuration containing LLM settings
-            
-        Raises:
-            ProposalGenerationError: If configuration is invalid or API key is missing
         """
         self.analysis_config = analysis_config
         self.llm_config = analysis_config.llm_config
@@ -36,19 +32,10 @@ class OpenAIProposalGenerator:
         # Validate API key
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ProposalGenerationError(
-                "OPENAI_API_KEY environment variable is required",
-                context={"provider": "openai"}
-            )
+            raise ValueError("OPENAI_API_KEY environment variable is required")
         
         # Initialize OpenAI client
-        try:
-            self.client = OpenAI(api_key=api_key)
-        except Exception as e:
-            raise ProposalGenerationError(
-                f"Failed to initialize OpenAI client: {e}",
-                context={"provider": "openai", "error": str(e)}
-            ) from e
+        self.client = OpenAI(api_key=api_key)
     
     def generate(self, context: ProposalContext) -> ProposalResult:
         """Generate a textbook proposal using OpenAI Structured Outputs.
@@ -62,112 +49,82 @@ class OpenAIProposalGenerator:
         Raises:
             ProposalGenerationError: If generation fails for any reason
         """
-        try:
-            # Build the prompt
-            prompt = self._build_prompt(context)
-            
-            # Get output directory
-            prompts_llm_dir = GapDirectoryManager.get_prompts_llm_dir(
-                self.analysis_config, context.gap_idx
-            )
-            
-            # Generate file paths
-            base_name = f"{create_unicode_safe_filename(context.topic_name)}_id={context.topic_id}"
-            prompt_path = prompts_llm_dir / f"{base_name}_prompt.txt"
-            json_path = prompts_llm_dir / f"{base_name}_proposal.json"
-            raw_response_path = prompts_llm_dir / f"{base_name}_response_raw.json"
-            
-            # Write the prompt for audit
-            with open(prompt_path, 'w', encoding='utf-8') as f:
-                f.write(prompt)
-            
-            # Call OpenAI API with structured outputs
-            LOGGER.info(f"Calling OpenAI API for gap {context.gap_idx} with structured outputs")
-            
-            response = self.client.beta.chat.completions.parse(
-                model=self.llm_config.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a publishing expert and academic researcher."
-                    },
-                    {
-                        "role": "user", 
-                        "content": prompt
-                    }
-                ],
-                response_format=Proposal,
-                max_completion_tokens=self.llm_config.max_tokens,
-                temperature=self.llm_config.temperature if not self.llm_config.model.startswith("gpt-5") else None
-            )
-            
-            # Extract the parsed proposal
-            proposal = response.choices[0].message.parsed
-            
-            if proposal is None:
-                raise ProposalGenerationError(
-                    "OpenAI returned None for parsed proposal",
-                    context={
-                        "topic_id": context.topic_id,
-                        "gap_idx": context.gap_idx,
-                        "model": self.llm_config.model
-                    }
-                )
-            
-            # Validate chapter count is within bounds
-            num_chapters = len(proposal.chapters)
-            if not (self.llm_config.chapters_min <= num_chapters <= self.llm_config.chapters_max):
-                raise ProposalGenerationError(
-                    f"Chapter count {num_chapters} outside bounds [{self.llm_config.chapters_min}, {self.llm_config.chapters_max}]",
-                    context={
-                        "topic_id": context.topic_id,
-                        "gap_idx": context.gap_idx,
-                        "chapter_count": num_chapters,
-                        "min_chapters": self.llm_config.chapters_min,
-                        "max_chapters": self.llm_config.chapters_max
-                    }
-                )
-            
-            # Write validated JSON proposal
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(proposal.model_dump(), f, indent=2, ensure_ascii=False)
-            
-            # Write raw response for audit
-            with open(raw_response_path, 'w', encoding='utf-8') as f:
-                json.dump(response.model_dump(), f, indent=2, ensure_ascii=False)
-            
-            usage = response.usage.model_dump() if response.usage else None
-            
-            LOGGER.info(f"Generated proposal for gap {context.gap_idx} with {num_chapters} chapters")
-            
-            return ProposalResult(
-                json_path=json_path,
-                prompt_path=prompt_path,
-                raw_response_path=raw_response_path,
-                counts=ProposalCounts(
-                    num_articles_for_llm=context.counts.num_articles_for_llm,
-                    num_books_for_llm=context.counts.num_books_for_llm
-                ),
-                metadata=ProposalMetadata(
-                    model=self.llm_config.model,
-                    implementation="structured",
-                    request_id=response.id,
-                    usage=usage
-                )
-            )
-            
-        except ProposalGenerationError:
-            raise  # Re-raise our own exceptions
-        except Exception as e:
-            raise ProposalGenerationError(
-                f"Unexpected error during proposal generation: {e}",
-                context={
-                    "topic_id": context.topic_id,
-                    "gap_idx": context.gap_idx,
-                    "model": self.llm_config.model,
-                    "error": str(e)
+        # Build the prompt
+        prompt = self._build_prompt(context)
+        
+        # Get output directory
+        prompts_llm_dir = GapDirectoryManager.get_prompts_llm_dir(
+            self.analysis_config, context.gap_idx
+        )
+        
+        # Generate file paths
+        base_name = f"{create_unicode_safe_filename(context.topic_name)}_id={context.topic_id}"
+        prompt_path = prompts_llm_dir / f"{base_name}_prompt.txt"
+        json_path = prompts_llm_dir / f"{base_name}_proposal.json"
+        raw_response_path = prompts_llm_dir / f"{base_name}_response_raw.json"
+        
+        # Write the prompt for audit
+        with open(prompt_path, 'w', encoding='utf-8') as f:
+            f.write(prompt)
+        
+        # Call OpenAI API with structured outputs
+        LOGGER.info(f"Calling OpenAI API for gap {context.gap_idx} with structured outputs")
+        
+        response = self.client.beta.chat.completions.parse(
+            model=self.llm_config.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a publishing expert and academic researcher."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
                 }
-            ) from e
+            ],
+            response_format=Proposal,
+            max_completion_tokens=self.llm_config.max_tokens,
+            temperature=self.llm_config.temperature if not self.llm_config.model.startswith("gpt-5") else None
+        )
+        
+        # Extract the parsed proposal
+        proposal = response.choices[0].message.parsed
+        
+        if proposal is None:
+            raise ValueError("OpenAI returned None for parsed proposal")
+        
+        # Validate chapter count is within bounds
+        num_chapters = len(proposal.chapters)
+        if not (self.llm_config.chapters_min <= num_chapters <= self.llm_config.chapters_max):
+            raise ValueError(f"Chapter count {num_chapters} outside bounds [{self.llm_config.chapters_min}, {self.llm_config.chapters_max}]")
+        
+        # Write validated JSON proposal
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(proposal.model_dump(), f, indent=2, ensure_ascii=False)
+        
+        # Write raw response for audit
+        with open(raw_response_path, 'w', encoding='utf-8') as f:
+            json.dump(response.model_dump(), f, indent=2, ensure_ascii=False)
+        
+        usage = response.usage.model_dump() if response.usage else None
+        
+        LOGGER.info(f"Generated proposal for gap {context.gap_idx} with {num_chapters} chapters")
+        
+        return ProposalResult(
+            json_path=json_path,
+            prompt_path=prompt_path,
+            raw_response_path=raw_response_path,
+            counts=ProposalCounts(
+                num_articles_for_llm=context.counts.num_articles_for_llm,
+                num_books_for_llm=context.counts.num_books_for_llm
+            ),
+            metadata=ProposalMetadata(
+                model=self.llm_config.model,
+                implementation="structured",
+                request_id=response.id,
+                usage=usage
+            )
+        )
     
     def _build_prompt(self, context: ProposalContext) -> str:
         """Build the prompt for the LLM.

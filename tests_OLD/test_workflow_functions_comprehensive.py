@@ -25,7 +25,6 @@ from bookgap.llm.protocols import (
     Article,
     Book,
     ProposalCounts,
-    ProposalGenerationError,
     OpenAIModel
 )
 
@@ -370,7 +369,7 @@ class TestValidateBatchRequests:
     
     def test_empty_requests(self):
         """Test validation of empty requests list."""
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             validate_batch_requests([])
         
         assert "No batch requests provided" in str(exc_info.value)

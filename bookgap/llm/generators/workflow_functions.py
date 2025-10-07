@@ -55,16 +55,26 @@ class ProposalGrouping:
 
 def _compute_proposal_embeddings(
     pending: list[PendingProposal],
-    model_name: Embedder.ModelName,
+    config: ExperimentConfig,
 ) -> NDArray[np.float32]:
-    """Compute embeddings for pending proposals in a single batch pass."""
+    """Compute embeddings for pending proposals projected into the cloud space."""
+
     title_abstract_pairs = [
         (proposal.proposal.title, proposal.proposal.abstract)
         for proposal in pending
     ]
 
-    with Embedder(model_name=model_name) as embedder:
-        return embedder.embed_texts(title_abstract_pairs)
+    with Embedder(model_name=config.embedder.model_name) as embedder:
+        raw_embeddings = embedder.embed_texts(title_abstract_pairs)
+
+    cloud = instantiate(config.cloud)
+    projection = cloud.denoiser_projection()
+    projected_embeddings = projection.apply(raw_embeddings)
+
+    if cloud.normalize_embeddings and projected_embeddings.shape[0] > 0:
+        projected_embeddings = projected_embeddings / np.linalg.norm(projected_embeddings, axis=1, keepdims=True)
+
+    return projected_embeddings.astype(np.float32, copy=False)
 
 
 def _index_proposals(proposals: list[ParsedProposal]) -> ProposalGrouping:
@@ -512,7 +522,7 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         LOGGER.info(f"Downloaded and parsed {len(pending_proposals)} proposals out of {len(raw_results)} results ({num_empty} empty results, {num_errors} errors, {num_stop_reason_length} with stop_reason='length')")
 
         # Compute embeddings once for all proposals and materialize ParsedProposal instances
-        embeddings = _compute_proposal_embeddings(pending_proposals, model_name=config.embedder.model_name)
+        embeddings = _compute_proposal_embeddings(pending_proposals, config=config)
 
         parsed_proposals = [
             ParsedProposal(

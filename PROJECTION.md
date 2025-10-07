@@ -11,49 +11,31 @@
 - Ensure the proposal embedding workflow degrades gracefully when no denoiser is configured.
 - Preserve compatibility with Hydra-managed configs and existing cache/memoization layers.
 
-## Investigation Tasks
-1. **Audit denoiser APIs**: Confirm how `ProjectiveDenoiser` and its wrapped implementations expose projection matrices or transformation metadata (e.g., via attributes like `W`, `components_`, etc.). Determine whether a standard interface exists or needs to be added.
-2. **Trace current caching**: Review existing memoization decorators (`@MEMORY.cache`, `@lru_cache`) around denoiser calls in `cloud.py` to understand where the projection currently lives in memory and how to persist it.
-3. **Identify serialization needs**: Decide on a stable format (NumPy `.npy`, `.npz`, or joblib) that captures the projection matrix and any auxiliary statistics (means, scaling factors) the denoiser requires during inference.
-4. **Locate hydra output hooks**: Determine the most appropriate location to store/retrieve the serialized projection within Hydra's runtime output directory or reusable cache directories.
+## Current Status
+- ✅ Introduced a `ProjectiveDenoiserProjection` payload that standardizes what gets cached (projection matrix + optional mean) and added `Cloud.denoiser_projection()` / `get_cloud_projection` helpers backed by `MEMORY`.
+- ✅ Required every `WorkDenoiser` to expose `compute_projection_artifact`, including the `NONE` denoiser which now returns an identity transformation and respects normalization.
+- ✅ Simplified generator error handling to use standard exceptions and updated tests accordingly.
+- 🚧 The proposal/gap workflow still needs to load and apply the cached projection when generating proposal embeddings.
 
-## Implementation Plan
-1. **Leverage `joblib.Memory` for projection caching**
-   - Extend the denoising workflow (likely within `ProjectiveDenoiser.denoise` or the surrounding cloud orchestration) to register the projection matrix and supporting parameters with the existing `MEMORY` cache, using a deterministic key derived from the cloud configuration (filters, embedder model, deduplicator, denoiser name, normalization flag, etc.).
-   - Reuse the same cache directory already managed by `MEMORY` instead of writing dedicated artifacts to `ARTIFACTS_DIR`.
-   - Ensure the cached payload includes everything `_compute_proposal_embeddings` needs (projection matrix, mean vector, normalization hints, etc.) so it can be reloaded without recomputation.
+## Updated Implementation Plan
+1. **Projection artifact plumbing *(done)***
+   - Cache projection metadata via `compute_projection_artifact` and `MEMORY`.
+   - Expose projections directly on `Cloud` for downstream consumers.
 
-2. **Expose projection metadata on `Cloud`**
-   - Augment the `Cloud` dataclass to retain the cache key and `joblib` accessor needed to retrieve the cached projection payload.
-   - Provide helper methods (e.g., `cloud.get_projection()` or `cloud.denoiser_projection()`) that call into the `MEMORY` cache and return the projection matrix, raising a clear error if unavailable when a denoiser is configured.
+2. **Batch workflow integration *(done)***
+   - Re-instantiate the `Cloud` from Hydra config wherever needed and access `cloud.denoiser_projection()` directly (construction is cheap and all heavy work stays cached).
 
-3. **Plumb projection details through batch workflow metadata**
-   - When `run_batch_workflow` instantiates the cloud and builds contexts, capture the cache key or callable that retrieves the projection and record it in the batch run's metadata (e.g., extend `ArtifactPaths`, `BatchResults.metadata`, or attach it to the Hydra output directory).
-   - Ensure that `_compute_proposal_embeddings` can access the `MEMORY` cache entry either through direct invocation or via data passed into `BatchResults`.
+3. **Apply projection during proposal embedding *(done)***
+   - `_compute_proposal_embeddings` now rehydrates the `Cloud`, applies the cached projection, and mirrors normalization safeguards.
 
-4. **Apply projection during proposal embedding**
-   - Modify `_compute_proposal_embeddings` to:
-     1. Load the cached projection associated with the current batch configuration.
-     2. Apply any preprocessing required by the projection (e.g., mean centering) prior to multiplying by the projection matrix.
-     3. Fall back to raw embeddings if no denoiser is configured.
-   - Validate that the resulting embedding dimensionality matches the one used in the cloud pipeline.
-
-5. **Testing & validation**
-   - Add unit/integration tests that run a minimal configuration with a simple denoiser (e.g., PCA) to verify that:
-     - The projection artifact is created and persisted.
-     - Proposal embeddings are projected to the expected dimension.
-     - Workflows without a denoiser remain unchanged.
-   - Update documentation (README/TODO) to explain the new artifact and reusability pattern.
+4. **Testing & validation *(in progress)***
+   - Added a unit test covering projection application and normalization; expand with higher-level workflow coverage as needed.
 
 ## Open Questions & Considerations
-- Do all supported denoisers expose a consistent projection interface, or do we need adapter methods per implementation?
-- Should projections be invalidated and recomputed if upstream cached embeddings change (e.g., new works fetched)? How to detect staleness efficiently?
-- Is in-memory caching via `@MEMORY.cache` sufficient for repeated calls within a single process, or do we also need on-disk persistence for cross-process reuse?
-- How will concurrency be handled if multiple batch jobs attempt to compute the projection simultaneously? Consider file locks or atomic writes.
-- Are there existing Hydra config fields where we should surface the projection artifact path for transparency or downstream tooling?
+- How should we surface projection availability to the LLM workflow—via configuration, metadata objects, or direct `Cloud` access?
+- What invalidation rules do we need if upstream caches (works, embeddings) are refreshed? Do we need explicit versioning beyond `MEMORY` cache keys?
+- Is additional synchronization required if multiple batch jobs request the projection simultaneously, or is `MEMORY` sufficient?
 
 ## Next Steps
-- Complete the investigation tasks to confirm assumptions about denoiser interfaces and caching.
-- Design the serialization schema and artifact directory structure.
-- Prototype the caching mechanism and update `_compute_proposal_embeddings` to consume it.
-- Iterate with tests to ensure reproducibility and compatibility across denoiser variants.
+- Expand workflow-level tests to ensure end-to-end reuse of projections.
+- Document the new reuse path in README/TESTING guidance once integration coverage is complete.

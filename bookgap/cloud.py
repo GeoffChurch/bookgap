@@ -1,6 +1,6 @@
 from collections import OrderedDict, defaultdict
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import enum
 from functools import lru_cache
 import gc
@@ -12,7 +12,7 @@ import torch
 from bookgap.plot_utils import PlotManager
 import re
 import time
-from typing import Any, Dict, Generator, List, Optional, Protocol, TypeVar, Union, runtime_checkable
+from typing import Any, Dict, Generator, List, Optional, Protocol, Tuple, TypeVar, Union, runtime_checkable
 import faiss
 import numpy as np
 from numpy.typing import NDArray
@@ -112,6 +112,21 @@ class CloudData:
         assert len(self.works) == self.embeddings.shape[0], f"Works and embeddings length mismatch: {len(self.works)} != {self.embeddings.shape[0]}"
 
 @dataclass(frozen=True)
+class ProjectiveDenoiserProjection:
+    """Serialized payload describing a projective denoiser transformation."""
+
+    projection_matrix: NDArray
+    fit_mean: Optional[NDArray]
+
+    def apply(self, embeddings: NDArray) -> NDArray:
+        """Project embeddings into the cached denoised space."""
+
+        if self.fit_mean is not None:
+            embeddings = embeddings - self.fit_mean
+
+        return embeddings @ self.projection_matrix
+
+@dataclass(frozen=True)
 class Cloud:
     filter_pair: FilterPair
     index_info: IndexInfo
@@ -145,6 +160,9 @@ class Cloud:
     
     def embeddings(self):
         return get_cloud_embeddings(self)
+
+    def denoiser_projection(self) -> ProjectiveDenoiserProjection:
+        return get_cloud_projection(self)
 
     def name(self) -> str:
         return f"{self.filter_pair.merged_name()}"
@@ -203,6 +221,22 @@ def get_cloud_embeddings(cloud: Cloud):
     denoiser = WorkDenoisers[cloud.denoiser]
     return denoiser.value.denoise(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
 
+
+@lru_cache(maxsize=1)
+@TIMER.time()
+@MEMORY.cache
+def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
+    denoiser_enum = WorkDenoisers[cloud.denoiser]
+    denoiser_impl = denoiser_enum.value
+
+    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    retained_idxs = get_cloud_retained_idxs(cloud)
+
+    retained_works = [works[i] for i in retained_idxs]
+    retained_embeddings = embeddings[retained_idxs]
+
+    return denoiser_impl.compute_projection_artifact(cloud, retained_works, retained_embeddings)
+
 class CloudDenoiserContext(denoisers.DenoiserContext):
     def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, *filters: Filter):
         self.works = works
@@ -246,15 +280,45 @@ class WorkDenoiser(Protocol):
         """Apply denoising to embeddings and return final denoised embeddings."""
         ...
 
+    def compute_projection_artifact(
+        self,
+        cloud: Cloud,
+        works: List[Dict[str, Any]],
+        embeddings: NDArray[T],
+    ) -> ProjectiveDenoiserProjection:
+        """Return the projection metadata for downstream reuse."""
+        ...
+
 class NoneDenoiser:
     """No-op denoiser that returns original embeddings unchanged."""
     
-    def denoise(self, cloud: 'Cloud', works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+    def denoise(self, cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
         if cloud.drop_k != 0:
             raise ValueError(f"NoneDenoiser requires drop_k=0, got drop_k={cloud.drop_k}")
-        
-        LOGGER.info(f"NONE denoiser: returning original embeddings unchanged")
+        if cloud.normalize_embeddings:
+            return embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
         return embeddings
+
+    def compute_projection_artifact(
+        self,
+        cloud: Cloud,
+        _works: List[Dict[str, Any]],
+        embeddings: NDArray[T],
+    ) -> ProjectiveDenoiserProjection:
+        if embeddings.ndim != 2:
+            raise ValueError(f"Expected 2D embeddings array, got shape {embeddings.shape}")
+        if embeddings.shape[0] == 0:
+            raise ValueError(f"Cloud {cloud.name()} -- Cannot build projection with zero embeddings")
+        if cloud.drop_k != 0:
+            raise ValueError(f"NoneDenoiser requires drop_k=0, got drop_k={cloud.drop_k}")
+
+        original_dim = embeddings.shape[1]
+        identity = np.eye(original_dim, dtype=embeddings.dtype)
+
+        return ProjectiveDenoiserProjection(
+            projection_matrix=identity,
+            fit_mean=None,
+        )
 
 class ProjectiveDenoiser:
     """Projective denoiser with full orchestration including plotting and analysis."""
@@ -262,6 +326,49 @@ class ProjectiveDenoiser:
     def __init__(self, denoiser_impl, *filters: Filter):
         self.denoiser_impl = denoiser_impl
         self.filters = filters
+
+    def compute_projection_artifact(
+        self,
+        cloud: Cloud,
+        works: List[Dict[str, Any]],
+        embeddings: NDArray[T],
+    ) -> ProjectiveDenoiserProjection:
+        if embeddings.ndim != 2:
+            raise ValueError(f"Expected 2D embeddings array, got shape {embeddings.shape}")
+        if embeddings.shape[0] == 0:
+            raise ValueError(f"Cloud {cloud.name()} -- Cannot build projection with zero embeddings")
+
+        original_dim = embeddings.shape[1]
+        if cloud.drop_k >= original_dim:
+            raise ValueError(f"Cloud {cloud.name()} -- drop_k={cloud.drop_k} must be smaller than embedding dimension {original_dim}")
+
+        n_components = original_dim - cloud.drop_k
+        context = CloudDenoiserContext(works, embeddings, *self.filters)
+        projector, eigvals = self.denoiser_impl.projector(context, n_components)
+
+        projection_matrix = np.ascontiguousarray(np.asarray(projector, dtype=embeddings.dtype))
+        if projection_matrix.ndim != 2:
+            raise ValueError(f"Expected projector to be 2D, got {projection_matrix.ndim}D array")
+        if projection_matrix.shape[0] != original_dim:
+            raise ValueError(
+                f"Projector row dimension {projection_matrix.shape[0]} does not match embeddings dimension {original_dim}"
+            )
+
+        projected_dim = projection_matrix.shape[1]
+        if projected_dim != n_components:
+            LOGGER.warning(
+                "Cloud %s -- Requested %d components but projector produced %d components",
+                cloud.name(),
+                n_components,
+                projected_dim,
+            )
+
+        mean_vector = np.ascontiguousarray(np.asarray(embeddings.mean(axis=0), dtype=embeddings.dtype))
+
+        return ProjectiveDenoiserProjection(
+            projection_matrix=projection_matrix,
+            fit_mean=mean_vector,
+        )
 
     def denoise(self, cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
         """Apply projective denoising with full orchestration."""
@@ -274,15 +381,12 @@ class ProjectiveDenoiser:
         LOGGER.info(f"Cloud {cloud.name()} -- Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
 
         # Dimensionality reduction/cleaning
-        n_components = embeddings.shape[1] - cloud.drop_k
-        LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={n_components}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
-        
-        # Get projector from the denoiser implementation
-        context = CloudDenoiserContext(works, embeddings, *self.filters)
-        P, _eigvals = self.denoiser_impl.projector(context, n_components)
-        
-        # Apply projection
-        denoised_embeddings: NDArray[T] = embeddings @ P
+
+        projection = get_cloud_projection(cloud)
+
+        LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={embeddings.shape[1] - cloud.drop_k}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
+
+        denoised_embeddings: NDArray[T] = projection.apply(embeddings)
 
         if cloud.normalize_embeddings:
             norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
