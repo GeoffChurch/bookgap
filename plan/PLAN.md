@@ -18,7 +18,7 @@ The system is **functionally complete** and ready for real-world testing with an
 ```bash
 # Set API key and test the system
 export OPENAI_API_KEY="your-key-here"
-python bookgap/batch_generator.py config=debug batch.num_gaps=1
+python bookgap/batch_generator.py --config-name standard batch.num_gaps=1
 ```
 
 ### 📋 **FUTURE ARCHITECTURE (Documented in TODO.md):**
@@ -61,8 +61,8 @@ export OPENAI_API_KEY="your-openai-api-key"
 # 2. Test with minimal configuration (single gap)
 python bookgap/batch_generator.py batch.num_gaps=1
 
-# 3. Test with debug configuration 
-python bookgap/batch_generator.py config=debug
+# 3. Test an alternate configuration 
+python bookgap/batch_generator.py --config-name anti_lda_drop1
 
 # 4. Monitor batch job execution and results
 # The system will automatically handle batch submission and monitoring
@@ -74,8 +74,8 @@ python bookgap/batch_generator.py config=debug
 After successful API testing:
 
 ```bash
-# Run full production analysis
-python bookgap/batch_generator.py config=production batch.num_gaps=77
+# Run full analysis with the standard preset
+python bookgap/batch_generator.py --config-name standard
 
 # Validate outputs in Hydra's automatic output directory
 # Check generated proposals for quality and completeness

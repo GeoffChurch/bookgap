@@ -1,4 +1,5 @@
 from collections import OrderedDict, defaultdict
+from contextlib import suppress
 from dataclasses import dataclass
 import enum
 from functools import lru_cache
@@ -11,7 +12,7 @@ import torch
 from bookgap.plot_utils import PlotManager
 import re
 import time
-from typing import Any, Dict, Generator, List, Optional, Protocol, TypeVar, runtime_checkable
+from typing import Any, Dict, Generator, List, Optional, Protocol, TypeVar, Union, runtime_checkable
 import faiss
 import numpy as np
 from numpy.typing import NDArray
@@ -21,7 +22,7 @@ import scipy.linalg
 from sentence_transformers import SentenceTransformer
 import tqdm
 import bookgap.denoisers as denoisers
-from bookgap.index import IndexInfo, build_index, HNSW, IndexType
+from bookgap.index import IndexInfo, build_index, IndexType, HNSW, FlatL2
 from bookgap.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, SubField, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
 from bookgap.deduplicators import Deduplicator
 
@@ -32,8 +33,12 @@ class Embedder:
         GIST_SMALL = 'avsolatorio/GIST-small-Embedding-v0'
         GEMMA_300M = 'google/embeddinggemma-300m'
 
-    def __init__(self, model_name: str = ModelName.GEMMA_300M.value):
-        self.model_name = model_name
+    def __init__(self, model_name: Union[str, 'Embedder.ModelName']):
+        resolved_model: Union[str, 'Embedder.ModelName'] = model_name
+        if isinstance(resolved_model, Embedder.ModelName):
+            resolved_model = resolved_model.value
+
+        self.model_name = str(resolved_model)
         self._model_: Optional[SentenceTransformer] = None
         self._embedding_dtype_: Optional[np.dtype[np.float32]] = None
         self._embedding_dimension_: Optional[int] = None
@@ -115,6 +120,7 @@ class Cloud:
     normalize_embeddings: bool
     denoiser: str
     drop_k: int
+    embedder_model: Embedder.ModelName
 
     def __post_init__(self):
         assert self.drop_k >= 0
@@ -122,6 +128,8 @@ class Cloud:
         valid_denoisers = [d.name for d in WorkDenoisers]
         if self.denoiser not in valid_denoisers:
             raise ValueError(f"denoiser must be one of {valid_denoisers}, got '{self.denoiser}'")
+        if not isinstance(self.embedder_model, Embedder.ModelName):
+            raise TypeError("embedder_model must be an instance of Embedder.ModelName")
 
     def works(self) -> List[Dict[str, Any]]:
         return get_cloud_works(self)
@@ -145,7 +153,7 @@ class Cloud:
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
-    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
+    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     
     # Apply deduplication in initial space because denoisers shouldn't need
     # to consider post-projection deduplication and so that different denoisers
@@ -165,7 +173,7 @@ def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
-    works, _ = load_works(cloud.filter_pair.pre, cloud.max_works)
+    works, _ = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return [works[i] for i in retained_idxs]
 
@@ -190,7 +198,7 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_embeddings(cloud: Cloud):
-    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works)
+    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     retained_idxs = get_cloud_retained_idxs(cloud)
     denoiser = WorkDenoisers[cloud.denoiser]
     return denoiser.value.denoise(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
@@ -255,7 +263,7 @@ class ProjectiveDenoiser:
         self.denoiser_impl = denoiser_impl
         self.filters = filters
 
-    def denoise(self, cloud: 'Cloud', works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+    def denoise(self, cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
         """Apply projective denoising with full orchestration."""
         cloud_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre) / f"{cloud.denoiser} drop_k={cloud.drop_k}"
         cloud_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +283,10 @@ class ProjectiveDenoiser:
         
         # Apply projection
         denoised_embeddings: NDArray[T] = embeddings @ P
+
+        if cloud.normalize_embeddings:
+            norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
+            denoised_embeddings = denoised_embeddings / norms
 
         s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0))  # type: ignore
         
@@ -355,8 +367,8 @@ class WorkDenoisers(enum.Enum):
 @lru_cache(maxsize=1)
 @TIMER.time()
 @MEMORY.cache
-def load_works(filter: Filter, max_works: Optional[int]):
-    works, undeduped_embeddings = embed_works(filter, max_works)
+def load_works(filter: Filter, max_works: Optional[int], embedder_model: Embedder.ModelName):
+    works, undeduped_embeddings = embed_works(filter, max_works, embedder_model)
     if max_works is None:
         argsort = np.argsort([work["publication_date"] for work in works])
     else:
@@ -385,7 +397,12 @@ def deduplicate_works_semantic_(deduplicator: Optional[Deduplicator], index_info
 
 def deduplicate_works_semantic(cloud, works, embeddings):
     LOGGER.info(f"Cloud {cloud.name()} -- Applying deduplication to {len(embeddings)} embeddings with {cloud.deduplicator}")
-    retained_idxs = deduplicate_works_semantic_(cloud.deduplicator, cloud.index_info, embeddings, embeddings_key=(cloud.filter_pair.pre, cloud.max_works))
+    retained_idxs = deduplicate_works_semantic_(
+        cloud.deduplicator,
+        cloud.index_info,
+    embeddings,
+    embeddings_key=(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model),
+    )
     # Write total and per-type retention stats
     artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -649,11 +666,15 @@ def batched(iterable, n): # TODO use itertools.batched when available
     while batch := tuple(itertools.islice(iterator, n)):
         yield batch
 
-def embed_works(work_filter: Filter, max_works: Optional[int]):
-    LOGGER.info(f"Embedding {work_filter} works")
+def embed_works(
+    work_filter: Filter,
+    max_works: Optional[int],
+    model_name: Embedder.ModelName,
+):
+    LOGGER.info(f"Embedding {work_filter} works with model {model_name.value}")
     works = deduplicate_works_syntactic(work_filter)
-    
-    with Embedder() as embedder:
+
+    with Embedder(model_name=model_name) as embedder:
         emb_cache_dir = CACHE_DIR / "embeddings" / create_unicode_safe_filename(f"{work_filter}, {embedder.model_name}")
         emb_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -780,7 +801,6 @@ def get_subcloud_work_references(subcloud: SubCloud) -> List[List[str]]:
     return [parent_work_references[i] for i in retained_idxs]
 
 @lru_cache(maxsize=2)
-@TIMER.time()
 @MEMORY.cache
 def get_subcloud_index(subcloud: SubCloud) -> faiss.Index:
     return build_index(subcloud.parent.index_info, get_subcloud_embeddings(subcloud))
@@ -828,34 +848,77 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
     words = [pos_to_word.get(i, "[[MISSING]]") for i in range(max_pos + 1)]
     return " ".join(words)
 
-def build_cloud(
-    drop_k: int,
-    max_works: Optional[int],
-    deduplicator: Optional[Deduplicator],
-    denoiser: str,
-    index_type: IndexType,
-    hnsw_m: int,
-    hnsw_efc: int,
-    hnsw_efs: int
-) -> Cloud:
-    """Build and return a Cloud object with the given parameters."""
-    if index_type == IndexType.HNSW:
-        index_info = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
-    else:
-        index_info = index_type.value()
-    ai_filter_pair = FilterPair(
-        Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
-        Filter()
-    )
-    return Cloud(
-        filter_pair=ai_filter_pair,
-        index_info=index_info,
-        max_works=max_works,
-        deduplicator=deduplicator,
-        normalize_embeddings=True,
-        denoiser=denoiser,
-        drop_k=drop_k
-    )
+# def build_cloud(
+#     drop_k: int,
+#     max_works: Optional[int],
+#     deduplicator: Optional[Deduplicator],
+#     denoiser: str,
+#     *,
+#     index: Optional[IndexInfo | Any] = None,
+#     index_type: Optional[IndexType] = None,
+#     hnsw_m: Optional[int] = None,
+#     hnsw_efc: Optional[int] = None,
+#     hnsw_efs: Optional[int] = None,
+#     embedder_model: Embedder.ModelName,
+#     filter_pair: Optional[FilterPair] = None,
+#     normalize_embeddings: bool = True,
+# ) -> Cloud:
+#     """Build and return a :class:`Cloud` object with the given parameters.
+
+#     This legacy helper remains for backwards compatibility with modules that
+#     predate the Hydra-based configuration system. New code should prefer
+#     instantiating :class:`Cloud` via :class:`bookgap.configs.cloud.CloudConfig`.
+#     """
+
+#     if index is not None and index_type is not None:
+#         raise ValueError("Specify either 'index' or 'index_type', not both")
+
+#     index_config: IndexInfo | Any
+#     if index is not None:
+#         index_config = index
+#     elif index_type is not None:
+#         if index_type == IndexType.HNSW:
+#             if hnsw_m is None or hnsw_efc is None or hnsw_efs is None:
+#                 raise ValueError("HNSW index requires hnsw_m, hnsw_efc, and hnsw_efs parameters")
+#             index_config = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
+#         elif index_type == IndexType.FLAT_L2:
+#             index_config = FlatL2()
+#         else:
+#             raise ValueError(f"Unsupported index_type: {index_type}")
+#     else:
+#         raise ValueError("Either 'index' or 'index_type' must be provided")
+
+#     if not isinstance(index_config, IndexInfo):
+#         from hydra.utils import instantiate
+
+#         index_info = instantiate(index_config)
+#         if not isinstance(index_info, IndexInfo):
+#             raise TypeError(f"Instantiated index must be an IndexInfo, got {type(index_info)}")
+#     else:
+#         index_info = index_config
+
+#     if deduplicator is not None and not isinstance(deduplicator, Deduplicator):
+#         from hydra.utils import instantiate
+
+#         deduplicator = instantiate(deduplicator)  # type: ignore[assignment]
+#         if deduplicator is not None and not isinstance(deduplicator, Deduplicator):
+#             raise TypeError(f"Deduplicator must be a Deduplicator, got {type(deduplicator)}")
+
+#     resolved_filter_pair = filter_pair or FilterPair(
+#         Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
+#         Filter()
+#     )
+
+#     return Cloud(
+#         filter_pair=resolved_filter_pair,
+#         index_info=index_info,
+#         max_works=max_works,
+#         deduplicator=deduplicator,
+#         normalize_embeddings=normalize_embeddings,
+#         denoiser=denoiser,
+#         drop_k=drop_k,
+#         embedder_model=embedder_model,
+#     )
 
 
 def get_subclouds_for_topic(cloud: Cloud, topic_id: Optional[str]) -> tuple:

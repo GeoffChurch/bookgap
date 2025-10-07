@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from bookgap.llm.protocols import OpenAIModel
 
 
-@dataclass(frozen=True)
+@dataclass
 class LLMConfig:
     """Configuration for LLM parameters.
     

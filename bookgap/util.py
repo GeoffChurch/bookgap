@@ -1,11 +1,10 @@
-from abc import ABC
 from dataclasses import dataclass
 import enum
 import logging
 from functools import wraps
 import inspect
 import re
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from pathlib import Path
 import time
 
@@ -83,8 +82,9 @@ class Filter:
     def __post_init__(self):
         # Enforce that work_types is either None or a tuple[str, ...]
         if self.work_types is not None:
-            assert type(self.work_types) is tuple, "work_types must be a tuple of strings"
-            assert all(isinstance(wt, str) for wt in self.work_types), "Each work type must be a string"
+            object.__setattr__(self, "work_types", tuple(self.work_types)) # Hydra will pass a ListConfig
+            if not all(isinstance(wt, str) for wt in self.work_types):
+                raise TypeError("Each work type must be a string")
 
     def to_dict(self) -> dict[str, str | list[str]]:
         ret: dict[str, str | list[str]] = {}

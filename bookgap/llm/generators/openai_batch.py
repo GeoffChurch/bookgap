@@ -10,7 +10,7 @@ from openai.lib._pydantic import to_strict_json_schema
 
 from ..protocols import (
     ProposalContext, BatchRequestData, ChatMessage, ChatCompletionBody,
-    ProposalGenerationError, Proposal, PromptPair, OpenAIModel
+    Proposal, PromptPair, OpenAIModel
 )
 from ..identifiers import build_gap_proposal_id
 from .batch_generator import BatchProposalGenerator
@@ -38,18 +38,7 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
             temperature: Sampling temperature
             max_tokens: Token limit for responses
             use_structured_output: Whether to use structured JSON output
-            
-        Raises:
-            ProposalGenerationError: If configuration is invalid
         """
-        
-        # Validate API key
-        if not os.getenv("OPENAI_API_KEY"):
-            raise ProposalGenerationError(
-                "OPENAI_API_KEY environment variable is required",
-                context={"provider": "openai"}
-            )
-        
         # Store individual parameters
         self.model = model
         self.num_articles = num_articles

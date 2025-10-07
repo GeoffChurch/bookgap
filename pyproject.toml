@@ -11,6 +11,7 @@ dependencies = [
     "bitsandbytes",
     "faiss-cpu",
     "hydra-core",
+    "omegaconf",
     "matplotlib",
     "numpy",
     "openai",

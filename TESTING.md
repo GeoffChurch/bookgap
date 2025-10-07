@@ -55,5 +55,5 @@ python -m mypy bookgap/config_manager.py bookgap/llm/llm_implementation.py
 ```
 
 **Notes**: 
-- If using conda environment, prefix commands with: `conda run -p /home/gchurchill/src/bookgap/.conda` (AI agents: use #configurePythonEnvironment).
+- Prefix commands with: `conda run -p /home/gchurchill/src/bookgap/.conda` (AI agents: use #configurePythonEnvironment).
 - Some mypy warnings related to third-party libraries (faiss, sklearn, tqdm) are expected and can be ignored.

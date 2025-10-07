@@ -37,28 +37,24 @@ The main entry point is `batch_generator.py`, which uses Hydra for configuration
 # Default configuration (production settings)
 python batch_generator.py
 
-# Use production preset explicitly
-python batch_generator.py config=production
+# Switch to the anti-LDA preset
+python batch_generator.py --config-name anti_lda_drop1
 
 # Override specific parameters
-python batch_generator.py batch.num_gaps=5 gap.radius_fraction=0.3
+python batch_generator.py --config-name standard batch.num_gaps=5 gap.radius_fraction=0.3
 
-# Mix component presets
-python batch_generator.py gap=production llm=production batch=standard
+# Override nested component values directly
+python batch_generator.py llm.temperature=0.35 gap.cell_type=VORONOI
 ```
 
 #### Configuration System
 
-BookGap uses Hydra's structured configuration system with presets:
+BookGap uses Hydra's structured configuration system with registered presets:
 
-- `config=production`: Default production settings (1 gap per topic)
+- `--config-name standard`: Default pipeline configuration (used when no flag is provided)
+- `--config-name anti_lda_drop1`: Uses Anti-LDA denoiser with `drop_k=1`
 
-Available component configurations:
-- `gap=production`: K-ball algorithm with HNSW indexing  
-- `llm=production`: GPT-5 with structured outputs
-- `batch=standard`: Standard batch processing settings
-- `data=deduped`: Deduplicated dataset with similarity filtering
-- `output=standard`: Comprehensive export formats
+Component-level overrides are applied by assigning dotted paths, for example `gap.radius_fraction=0.6` or `llm.num_articles=5`.
 
 #### Key Configuration Groups
 
@@ -130,32 +126,22 @@ BookGap follows a modular architecture with structured configuration:
 BookGap uses Hydra's structured configuration system with dataclasses:
 
 ```python
-from bookgap.configs.config import ExperimentConfig, GapConfig, LLMConfig, BatchConfig
 from hydra import initialize, compose
+from bookgap.configs.config import ExperimentConfig
+from bookgap.configs.config_store import register_configs
 
-# Load configuration with Hydra
-with initialize(config_path="bookgap/configs", version_base=None):
-    config = compose(config_name="config")  # Default configuration
-    
-# Or load specific presets
-with initialize(config_path="bookgap/configs", version_base=None):
-    config = compose(config_name="config", overrides=["config=debug"])
+register_configs()
 
-# Configuration structure
-config = ExperimentConfig(
-    gap=GapConfig(
-        cell_type=CellType.KBALL,
-        radius_fraction=0.5,
-        denoiser=DenoisingConfig(...)
-    ),
-    llm=LLMConfig(
-        model=OpenAIModel.GPT_4O,
-        requested_num_prompt_articles=5,
-        requested_num_prompt_books=2
-    ),
-    batch=BatchConfig(num_gaps=10),
-    data=DataConfig(...)
-)
+# Load the default preset
+with initialize(config_path=None, version_base=None):
+    cfg: ExperimentConfig = compose(config_name="standard")
+
+# Load another preset and override specific fields
+with initialize(config_path=None, version_base=None):
+    cfg: ExperimentConfig = compose(
+        config_name="anti_lda_drop1",
+        overrides=["batch.num_gaps=5", "llm.temperature=0.3"],
+    )
 ```
 
 ### Proposal Generation

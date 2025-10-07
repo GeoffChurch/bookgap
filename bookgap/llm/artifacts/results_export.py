@@ -19,6 +19,80 @@ from bookgap.llm.protocols import ParsedProposal, ProposalContext, ProposalCount
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.util import LOGGER
 
+
+def _enum_name(value: Any) -> Any:
+    """Return enum.name when available, otherwise the value itself."""
+    if value is None:
+        return None
+    name = getattr(value, "name", None)
+    return name if name is not None else value
+
+
+def _config_row(config: ExperimentConfig) -> dict[str, Any]:
+    """Flatten experiment configuration into a single-row mapping."""
+
+    gap = getattr(config, "gap", None)
+    llm = getattr(config, "llm", None)
+    data = getattr(config, "data", None)
+    batch = getattr(config, "batch", None)
+    embedder = getattr(config, "embedder", None)
+    output = getattr(config, "output", None)
+
+    export_formats = getattr(output, "export_formats", ()) if output else ()
+    deduplicator = getattr(data, "deduplicator", None) if data else None
+    export_format_names = [
+        str(_enum_name(fmt)) for fmt in export_formats if _enum_name(fmt) is not None
+    ]
+
+    row: dict[str, Any] = {
+        # Gap configuration
+        "config_gap_cell_type": _enum_name(getattr(gap, "cell_type", None)),
+        "config_gap_radius_fraction": getattr(gap, "radius_fraction", None),
+        "config_gap_drop_k": getattr(gap, "drop_k", None),
+        "config_gap_hnsw_m": getattr(gap, "hnsw_m", None),
+        "config_gap_hnsw_efc": getattr(gap, "hnsw_efc", None),
+        "config_gap_hnsw_efs": getattr(gap, "hnsw_efs", None),
+        "config_gap_denoiser": _enum_name(getattr(gap, "denoiser", None)),
+        "config_gap_index_type": _enum_name(getattr(gap, "index_type", None)),
+        # LLM configuration
+        "config_llm_target": getattr(llm, "_target_", None),
+        "config_llm_model": _enum_name(getattr(llm, "model", None)),
+        "config_llm_num_articles": getattr(llm, "num_articles", None),
+        "config_llm_num_books": getattr(llm, "num_books", None),
+        "config_llm_temperature": getattr(llm, "temperature", None),
+        "config_llm_max_tokens": getattr(llm, "max_tokens", None),
+        "config_llm_use_structured_output": getattr(
+            llm, "use_structured_output", None
+        ),
+        # Data configuration
+        "config_data_max_works": getattr(data, "max_works", None),
+        "config_data_deduplicator_target": (
+            deduplicator._target_ if deduplicator is not None else None
+        ),
+        "config_data_deduplicator_min_sqdist": (
+            deduplicator.min_sqdist if deduplicator is not None else None
+        ),
+        # Batch configuration
+        "config_batch_num_gaps": getattr(batch, "num_gaps", None),
+        "config_batch_completion_window": getattr(batch, "completion_window", None),
+        "config_batch_generate_plots": getattr(batch, "generate_plots", None),
+        "config_batch_save_prompts": getattr(batch, "save_prompts", None),
+        "config_batch_save_batch_file": getattr(batch, "save_batch_file", None),
+        # Embedder configuration
+        "config_embedder_model_name": _enum_name(
+            getattr(embedder, "model_name", None)
+        ),
+        # Output configuration
+        "config_output_export_formats": ",".join(export_format_names),
+        "config_output_create_subdirectories": getattr(
+            output, "create_subdirectories", None
+        ),
+        "config_output_include_metadata": getattr(output, "include_metadata", None),
+        "config_output_use_timestamp": getattr(output, "use_timestamp", None),
+    }
+
+    return row
+
 def _gap_row(
     g: GapWithContext,
     config: ExperimentConfig,
@@ -39,8 +113,8 @@ def _gap_row(
     return {
         "topic_name": g.topic_name,
         "topic_id": g.topic_id,
-        "denoiser": config.gap.denoiser.name,
-        "drop_k": config.gap.drop_k,
+        "denoiser": config.cloud.denoiser,
+        "drop_k": config.cloud.drop_k,
         "radius_fraction": config.gap.radius_fraction,
         "cell_type": config.gap.cell_type.name,
         "gap_idx": g.gap_idx,
@@ -56,8 +130,10 @@ def _gap_row(
         "actual_num_prompt_books": actual_books,
     }
 
+
 def _sanitize_text_field(value: str) -> str:
     """Replace control characters with safe escaped sequences for CSV output."""
+
     def _substitute(match: re.Match[str]) -> str:
         char = match.group(0)
         return {"\n": r"\n", "\r": r"\r", "\t": r"\t"}.get(char, f"\\x{ord(char):02x}")
@@ -70,7 +146,6 @@ def _build_counts_map(
 ) -> dict[tuple[str, int], ProposalCounts]:
     """Create a lookup from (topic_id, gap_idx) to ProposalCounts."""
     return {(ctx.topic_id, ctx.gap_idx): ctx.counts for ctx in contexts}
-
 
 def _compute_proposal_rankings_by_gap(
     gaps: list[GapWithContext],
@@ -121,32 +196,23 @@ def _compute_proposal_rankings_by_gap(
             rankings[key] = deque()
             continue
 
-        try:
-            proposal_embeddings_array = np.stack(proposal_embeddings, axis=0)
-            center_embedding = np.asarray(
-                article_embeddings[center_idx : center_idx + 1],
-                dtype=np.float32,
+        proposal_embeddings_array = np.stack(proposal_embeddings, axis=0)
+        center_embedding = np.asarray(
+            article_embeddings[center_idx : center_idx + 1],
+            dtype=np.float32,
+        )
+        ranking_result = compute_proposal_rankings_for_gap(
+            gap.books,
+            gap.articles,
+            center_embedding,
+            proposal_embeddings_array,
+        )
+        rankings[key] = deque(
+            zip(
+                ranking_result.book_ranks.astype(int).tolist(),
+                ranking_result.article_ranks.astype(int).tolist(),
             )
-            ranking_result = compute_proposal_rankings_for_gap(
-                gap.books,
-                gap.articles,
-                center_embedding,
-                proposal_embeddings_array,
-            )
-            rankings[key] = deque(
-                zip(
-                    ranking_result.book_ranks.astype(int).tolist(),
-                    ranking_result.article_ranks.astype(int).tolist(),
-                )
-            )
-        except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.exception(
-                "Failed computing proposal rankings for topic_id=%s gap_idx=%s: %s",
-                key[0],
-                key[1],
-                exc,
-            )
-            rankings[key] = deque([(-1, -1)] * len(group))
+        )
 
     return rankings
 
@@ -201,9 +267,7 @@ def generate_gaps_analysis_csv(
     counts_map = _build_counts_map(contexts)
     gap_rows = [_gap_row(g, config, counts_map) for g in gaps]
     gap_df = pd.DataFrame(gap_rows)
-    gap_meta_map = {
-        (row["topic_id"], row["gap_idx"]): row for row in gap_rows
-    }
+    gap_meta_map = {(row["topic_id"], row["gap_idx"]): row for row in gap_rows}
     rankings_by_gap = _compute_proposal_rankings_by_gap(gaps, proposals_grouped)
 
     prop_rows: list[dict[str, Any]] = []
@@ -221,6 +285,11 @@ def generate_gaps_analysis_csv(
     # Merge proposals with gap metadata (left: proposals)
     key_cols = ["topic_id", "gap_idx"]
     merged = proposals_df.merge(gap_df, on=key_cols, how="left")
+
+    # Broadcast full experiment configuration across all rows
+    config_row = _config_row(config)
+    for key, value in config_row.items():
+        merged[key] = value
 
     # Reorder columns to ensure proposal_title and proposal_abstract are last
     LAST_COLUMNS = ["proposal_title", "proposal_abstract"]

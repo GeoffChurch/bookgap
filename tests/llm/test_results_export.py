@@ -138,6 +138,10 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
                 num_articles=10,
                 num_books=5,
             ),
+            cloud=SimpleNamespace(
+                denoiser="NONE",
+                drop_k=1,
+            ),
         ),
     )
 
@@ -250,6 +254,10 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
             llm=SimpleNamespace(
                 num_articles=10,
                 num_books=5,
+            ),
+            cloud=SimpleNamespace(
+                denoiser="NONE",
+                drop_k=1,
             ),
         ),
     )

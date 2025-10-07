@@ -10,15 +10,19 @@ from hydra.core.config_store import ConfigStore
 from .config import ExperimentConfig
 from .gap.gap_config import GapConfig
 from .llm.llm_config import LLMConfig
-from .data.data_config import DataConfig, SqDistDeduplicatorConfig
+from .data.data_config import SqDistDeduplicatorConfig
 from .batch.batch_config import BatchConfig
 from .output.output_config import OutputConfig
 from .output.export_formats import ExportFormat
+from .embedder.embedder_config import EmbedderConfig
+from .index.index_config import HNSWConfig
+from .cloud.cloud_config import CloudConfig
 
 # Import required enums and types
 from bookgap.types import CellType
-from bookgap.cloud import WorkDenoisers
-from bookgap.index import IndexType
+from bookgap.cloud import WorkDenoisers, Embedder
+from bookgap.util import SubField, WorkType
+from .util.filter_config import FilterConfig, FilterPairConfig
 from bookgap.llm.protocols import OpenAIModel
 
 
@@ -29,22 +33,25 @@ def register_configs():
     # ===== GAP CONFIGURATIONS =====
     
     # Production gap config - matches existing codebase defaults from parse_args.py
-    production_gap = GapConfig(
+    hnsw_index = HNSWConfig(hnsw_m=16, hnsw_efc=512, hnsw_efs=1024)
+
+    standard_gap = GapConfig(
         cell_type=CellType.KBALL,           # K-ball algorithm (vs VORONOI) - from batch_workflow.py
         radius_fraction=0.75,               # Gap radius = 75% of k-NN distance - from parse_args.py  
-        drop_k=0,                          # No PCA dropping (keep all dimensions) - from parse_args.py
-        hnsw_m=16,                         # HNSW connectivity (16 = good quality/speed balance) - from parse_args.py
-        hnsw_efc=512,                      # HNSW construction candidates (512 = high quality) - from parse_args.py
-        hnsw_efs=1024,                     # HNSW search candidates (1024 = high recall) - from parse_args.py
-        denoiser=WorkDenoisers.NONE,       # No embedding denoising (raw embeddings) - from parse_args.py
-        index_type=IndexType.HNSW          # HNSW index (fast approximate search) - from parse_args.py
     )
-    cs.store(group="gap", name="production", node=production_gap)
+
+    ai_filter_pair = FilterPairConfig(
+        pre=FilterConfig(
+            subfield=SubField.AI.value,
+            work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value),
+        ),
+        post=FilterConfig(),
+    )
     
     # ===== LLM CONFIGURATIONS =====
     
     # Production LLM config - combines config_manager.py and batch_workflow.py defaults
-    production_llm = LLMConfig(
+    standard_llm = LLMConfig(
         _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
         model=OpenAIModel.GPT_5,           # GPT-5 model (structured output support)
         num_articles=10,                   # 10 gap articles per prompt
@@ -53,19 +60,9 @@ def register_configs():
         max_tokens=4096,                   # Token limit for proposals
         use_structured_output=True         # Use JSON schema for structured responses - enables parsing
     )
-    cs.store(group="llm", name="production", node=production_llm)
     
-    # ===== DATA CONFIGURATIONS =====
-    
-    # Data config with deduplication - removes semantically similar papers
-    deduped_data = DataConfig(
-        max_works=None,                    # No limit on dataset size (use full OpenAlex data)
-        deduplicator=SqDistDeduplicatorConfig(
-            min_sqdist=0.01                # Remove papers with <1% embedding distance
-        )
-    )
-    cs.store(group="data", name="deduped", node=deduped_data)
-    
+    deduplicator_config = SqDistDeduplicatorConfig(min_sqdist=0.01)
+
     # ===== BATCH CONFIGURATIONS =====
     
     standard_batch = BatchConfig(
@@ -75,7 +72,6 @@ def register_configs():
         save_prompts=True,
         save_batch_file=True
     )
-    cs.store(group="batch", name="standard", node=standard_batch)
 
     # ===== OUTPUT CONFIGURATIONS =====
     
@@ -86,16 +82,56 @@ def register_configs():
         include_metadata=True,         # Include configuration details in output files
         use_timestamp=True             # Add timestamps to filenames for version tracking
     )
-    cs.store(group="output", name="standard", node=standard_output)
+
+    # ===== EMBEDDER CONFIGURATIONS =====
+
+    gemma_embedder = EmbedderConfig(model_name=Embedder.ModelName.GEMMA_300M)
+    gist_small_embedder = EmbedderConfig(model_name=Embedder.ModelName.GIST_SMALL)
+
+    # ===== CLOUD CONFIGURATIONS =====
+
+    standard_cloud = CloudConfig(
+        filter_pair=ai_filter_pair,
+        index_info=hnsw_index,
+        denoiser=WorkDenoisers.NONE.name,
+        drop_k=0,
+        embedder_model=gist_small_embedder.model_name,
+        max_works=None,
+        deduplicator=deduplicator_config,
+        normalize_embeddings=True,
+    )
+
+    anti_lda_cloud = CloudConfig(
+        filter_pair=ai_filter_pair,
+        index_info=hnsw_index,
+        denoiser=WorkDenoisers.ANTI_LDA.name,
+        drop_k=1,
+        embedder_model=gemma_embedder.model_name,
+        max_works=None,
+        deduplicator=deduplicator_config,
+        normalize_embeddings=True,
+    )
+
     
     # ===== FULL EXPERIMENT CONFIGURATIONS =====
     
     # Production experiment - uses existing codebase defaults from parse_args.py + config_manager.py
-    production_experiment = ExperimentConfig(
-        gap=production_gap,
-        llm=production_llm,
-        data=deduped_data,
+    standard_experiment = ExperimentConfig(
+        gap=standard_gap,
+        llm=standard_llm,
         batch=standard_batch,
         output=standard_output,
+        embedder=gemma_embedder,
+        cloud=standard_cloud,
     )
-    cs.store(name="production", node=production_experiment)
+    cs.store(name="standard", node=standard_experiment)
+
+    anti_lda_experiment = ExperimentConfig(
+        gap=standard_gap,
+        llm=standard_llm,
+        batch=standard_batch,
+        output=standard_output,
+        embedder=gemma_embedder,
+        cloud=anti_lda_cloud,
+    )
+    cs.store(name="anti_lda_drop1", node=anti_lda_experiment)

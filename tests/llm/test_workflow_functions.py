@@ -13,9 +13,11 @@ from unittest.mock import Mock, patch
 from omegaconf import OmegaConf, DictConfig
 
 from bookgap.configs.config import ExperimentConfig
+from bookgap.cloud import Embedder
 from bookgap.llm.data_structures import BatchResults, GapWithContext
 from bookgap.llm.generators.workflow_functions import (
     PendingProposal,
+    MetadataUtils,
     generate_batch_requests,
     validate_batch_requests,
     get_supported_models,
@@ -33,7 +35,6 @@ from bookgap.llm.protocols import (
     ChatMessage,
     Proposal,
     Chapter,
-    ProposalGenerationError,
     OpenAIModel,
     ParsedProposal,
     ProposalCounts,
@@ -43,18 +44,16 @@ from bookgap.llm.protocols import (
 class TestFindGapsForConfig:
     """Test find_gaps_for_config function."""
     
-    @patch('bookgap.llm.generators.workflow_functions.build_cloud')
+    @patch('bookgap.llm.generators.workflow_functions.instantiate')
     @patch('pyalex.Subfields')  # Patch the actual module
     @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
     @patch('bookgap.llm.generators.workflow_functions.find_gaps_for_topic')
-    def test_successful_gap_finding(self, mock_find_gaps, mock_get_subclouds, mock_subfields, mock_build_cloud):
+    def test_successful_gap_finding(self, mock_find_gaps, mock_get_subclouds, mock_subfields, mock_instantiate):
         """Test successful gap finding with proper configuration."""
         # Setup mocks
         mock_config = Mock()
-        mock_config.gap.denoiser.name = "NONE"
-        mock_config.gap.drop_k = 0
-        mock_config.data.max_works = 1000
-        mock_config.data.deduplicator = None  # Simplified DataConfig
+        mock_config.cloud.denoiser = "NONE"
+        mock_config.cloud.drop_k = 0
         mock_config.gap.radius_fraction = 0.5
         mock_config.gap.cell_type = Mock()
         mock_cell_type_value = Mock()
@@ -64,6 +63,8 @@ class TestFindGapsForConfig:
         mock_config.gap.hnsw_efc = 200
         mock_config.gap.hnsw_efs = 200
         mock_config.batch.num_gaps = 2
+        mock_config.embedder = Mock()
+        mock_config.embedder.model_name = Embedder.ModelName.GEMMA_300M.value
 
         # Setup pyalex mock - hardcoded AI subfield (matches workflow_functions.py)
         mock_topic = {
@@ -75,7 +76,7 @@ class TestFindGapsForConfig:
 
         # Setup cloud mocks
         mock_cloud = Mock()
-        mock_build_cloud.return_value = mock_cloud
+        mock_instantiate.return_value = mock_cloud
         
         mock_books = Mock()
         mock_articles = Mock()
@@ -108,21 +109,22 @@ class TestFindGapsForConfig:
         assert result[1].gap_idx == 1
         
         # Verify all mocks were called correctly
-        mock_build_cloud.assert_called_once()
+        mock_instantiate.assert_called_once_with(mock_config.cloud)
         mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
         mock_find_gaps.assert_called_once()
 
-    @patch('bookgap.llm.generators.workflow_functions.build_cloud')
+    @patch('bookgap.llm.generators.workflow_functions.instantiate')
     @patch('pyalex.Subfields')  # Patch the actual module
     @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
-    def test_no_articles_found(self, mock_get_subclouds, mock_subfields, mock_build_cloud):
+    def test_no_articles_found(self, mock_get_subclouds, mock_subfields, mock_instantiate):
         """Test handling when no articles are found for a topic."""
         # Setup mocks
         mock_config = Mock()
-        mock_config.gap.denoiser.name = "NONE"
-        mock_config.data.max_works = 1000
-        mock_config.data.deduplicator = None  # Simplified DataConfig
+        mock_config.cloud.denoiser = "NONE"
+        mock_config.cloud.drop_k = 0
         mock_config.batch.num_gaps = 2
+        mock_config.embedder = Mock()
+        mock_config.embedder.model_name = Embedder.ModelName.GEMMA_300M.value
 
         # Setup pyalex mock - hardcoded AI subfield
         mock_topic = {
@@ -131,6 +133,21 @@ class TestFindGapsForConfig:
         }
         mock_subfield_instance = {"topics": [mock_topic]}
         mock_subfields.return_value = {"1702": mock_subfield_instance}  # Hardcoded AI subfield_open
+
+        mock_cloud = Mock()
+        mock_instantiate.return_value = mock_cloud
+
+        mock_books = Mock()
+        mock_articles = Mock()
+        mock_books.embeddings.return_value = []
+        mock_articles.embeddings.return_value = []  # No articles for topic
+        mock_get_subclouds.return_value = (mock_books, mock_articles)
+
+        result = find_gaps_for_config(mock_config)
+
+        assert result == []
+        mock_instantiate.assert_called_once_with(mock_config.cloud)
+        mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
 
 class TestBuildContextsForGaps:
     """Test build_contexts_for_gaps function."""
@@ -260,6 +277,7 @@ class TestSubmitBatchJob:
                 "llm": {
                     "model": {"uses_max_completion_tokens": max_completion_tokens}
                 },
+                "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
             }
         )
 
@@ -400,7 +418,6 @@ class TestMonitorAndDownloadResults:
         mock_batch_completed = Mock()
         mock_batch_completed.status = "completed"
         mock_batch_completed.output_file_id = "file-output-123"
-        mock_batch_completed.metadata = {"0": '{"batch": {"completion_window": "24h"}}'}
         mock_batch_completed.request_counts.total = 10
         mock_batch_completed.request_counts.completed = 10
         mock_batch_completed.request_counts.failed = 0
@@ -414,22 +431,25 @@ class TestMonitorAndDownloadResults:
         ]).encode('utf-8')
         mock_client.files.content.return_value = mock_file_response
 
-        config = cast(ExperimentConfig, OmegaConf.create({}))
+        config_data = {
+            "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
+            "batch": {"completion_window": "24h"},
+        }
+        config = cast(ExperimentConfig, OmegaConf.create(config_data))
+        expected_metadata = MetadataUtils.serialize_config(config)
+        mock_batch_completed.metadata = expected_metadata
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
             with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
                  patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
-                 patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed, \
-                 patch('bookgap.llm.generators.workflow_functions.MetadataUtils.deserialize_config') as mock_deserialize:
+                 patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed:
 
                 mock_parse.side_effect = [
                     PendingProposal(proposal=self._make_proposal("A"), custom_id="id-1"),
                     PendingProposal(proposal=self._make_proposal("B"), custom_id="id-2"),
                 ]
                 mock_embed.return_value = np.zeros((2, 3), dtype=np.float32)
-                parsed_config = cast(ExperimentConfig, OmegaConf.create({"batch": {"completion_window": "24h"}}))
-                mock_deserialize.return_value = parsed_config
 
                 result = monitor_and_download_results("batch-123", config)
 
@@ -439,7 +459,7 @@ class TestMonitorAndDownloadResults:
 
         assert isinstance(result, BatchResults)
         assert len(result.proposals) == 2
-        assert result.metadata == parsed_config
+        assert result.metadata is config
         mock_sleep.assert_called()
 
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
@@ -452,7 +472,11 @@ class TestMonitorAndDownloadResults:
         mock_batch_failed.status = "failed"
         mock_client.batches.retrieve.return_value = mock_batch_failed
 
-        config = cast(ExperimentConfig, OmegaConf.create({}))
+        config_data = {
+            "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
+            "batch": {"completion_window": "24h"},
+        }
+        config = cast(ExperimentConfig, OmegaConf.create(config_data))
 
         with pytest.raises(Exception, match="Batch job failed with status: failed"):
             monitor_and_download_results("batch-failed", config)
@@ -470,7 +494,6 @@ class TestMonitorAndDownloadResults:
         mock_batch_completed = Mock()
         mock_batch_completed.status = "completed"
         mock_batch_completed.output_file_id = "file-123"
-        mock_batch_completed.metadata = {}
         mock_batch_completed.request_counts.total = 5
         mock_batch_completed.request_counts.completed = 5
         mock_batch_completed.request_counts.failed = 0
@@ -482,26 +505,28 @@ class TestMonitorAndDownloadResults:
         mock_file_response.content = self._make_result_line("id-1").encode('utf-8')
         mock_client.files.content.return_value = mock_file_response
 
-        config = cast(ExperimentConfig, OmegaConf.create({}))
+        config_data = {
+            "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
+            "batch": {"completion_window": "24h"},
+        }
+        config = cast(ExperimentConfig, OmegaConf.create(config_data))
+        mock_batch_completed.metadata = MetadataUtils.serialize_config(config)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
             with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
                  patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
-                 patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed, \
-                 patch('bookgap.llm.generators.workflow_functions.MetadataUtils.deserialize_config') as mock_deserialize:
+                 patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed:
 
                 mock_parse.return_value = PendingProposal(proposal=self._make_proposal("Single"), custom_id="id-1")
                 mock_embed.return_value = np.zeros((1, 3), dtype=np.float32)
-                parsed_config = cast(ExperimentConfig, OmegaConf.create({"batch": {"completion_window": "24h"}}))
-                mock_deserialize.return_value = parsed_config
 
                 result = monitor_and_download_results("batch-progression", config)
 
         assert mock_client.batches.retrieve.call_count == len(statuses)
         assert isinstance(result, BatchResults)
         assert len(result.proposals) == 1
-        assert result.metadata == parsed_config
+        assert result.metadata is config
 
 
 class TestRunBatchWorkflow:
@@ -654,14 +679,8 @@ class TestGenerateBatchRequests:
             SimpleNamespace(llm=SimpleNamespace(model="gpt-4o", _target_="test.target")),
         )
         
-        # Should raise ProposalGenerationError
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(Exception, match=r"^Test error$"):
             generate_batch_requests(mock_contexts, mock_config)
-        
-        # Verify error context
-        assert "Failed to generate batch requests" in str(exc_info.value)
-        assert exc_info.value.context["num_contexts"] == 1
-
 
 class TestValidateBatchRequests:
     """Test validate_batch_requests function."""
@@ -690,7 +709,7 @@ class TestValidateBatchRequests:
 
     def test_empty_requests(self):
         """Test validation of empty requests list."""
-        with pytest.raises(ProposalGenerationError, match="No batch requests provided"):
+        with pytest.raises(ValueError, match=r"^No batch requests to validate$"):
             validate_batch_requests([])
 
     def test_duplicate_custom_ids(self):
@@ -712,10 +731,8 @@ class TestValidateBatchRequests:
             )
         ]
         
-        with pytest.raises(ProposalGenerationError) as exc_info:
+        with pytest.raises(ValueError, match=r"^Batch request validation failed:\nDuplicate custom_id found: duplicate$"):
             validate_batch_requests(requests)
-        
-        assert "Duplicate custom_id found: duplicate" in str(exc_info.value)
 
 
 class TestGetSupportedModels:

@@ -20,20 +20,94 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Union, Tuple
 from dataclasses import dataclass
 
-from bookgap.cloud import build_cloud
+from hydra.utils import instantiate
+
+from bookgap.cloud import Cloud, Embedder
 from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
 from bookgap.types import CellType
 from bookgap.llm.llm_implementation import Implementation
 from bookgap.gap_finder import main as gap_finder_main
-from bookgap.batch_utils.batch_operations import (
+from bookgap.batch_utils_OLD.batch_operations import (
     GAPS_DIR, get_client, estimate_batch_cost,
     extract_textbook_proposals, 
     find_batch_request_files_for_config, find_batch_results_files_for_config, find_prompt_files_for_config,
     get_batch_status, download_batch_results,
     create_batch_requests_from_prompts, 
     create_batch_file_from_requests, upload_and_submit_batch,
+    monitor_batch_job, create_all_tex_files_in_gaps
 )
-from bookgap.util import LOGGER
+from bookgap.util import LOGGER, FilterPair, Filter, SubField, WorkType
+from bookgap.index import IndexInfo, IndexType, HNSW, FlatL2
+from bookgap.deduplicators import Deduplicator
+
+
+def build_cloud(
+    drop_k: int,
+    max_works: Optional[int],
+    deduplicator: Optional[Union[Deduplicator, Any]],
+    denoiser: str,
+    *,
+    index: Optional[Union[IndexInfo, Any]] = None,
+    index_type: Optional[IndexType] = None,
+    hnsw_m: Optional[int] = None,
+    hnsw_efc: Optional[int] = None,
+    hnsw_efs: Optional[int] = None,
+    embedder_model: Union[Embedder.ModelName, str],
+    filter_pair: Optional[FilterPair] = None,
+    normalize_embeddings: bool = True,
+) -> Cloud:
+    """Inline legacy helper retained for compatibility with this script."""
+
+    if index is not None and index_type is not None:
+        raise ValueError("Specify either 'index' or 'index_type', not both")
+
+    if index is not None:
+        index_config: Union[IndexInfo, Any] = index
+    elif index_type is not None:
+        if index_type == IndexType.HNSW:
+            if hnsw_m is None or hnsw_efc is None or hnsw_efs is None:
+                raise ValueError("HNSW index requires hnsw_m, hnsw_efc, and hnsw_efs parameters")
+            index_config = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
+        elif index_type == IndexType.FLAT_L2:
+            index_config = FlatL2()
+        else:
+            raise ValueError(f"Unsupported index_type: {index_type}")
+    else:
+        raise ValueError("Either 'index' or 'index_type' must be provided")
+
+    if not isinstance(index_config, IndexInfo):
+        resolved_index = instantiate(index_config)
+        if not isinstance(resolved_index, IndexInfo):
+            raise TypeError(f"Instantiated index must be an IndexInfo, got {type(resolved_index)}")
+        index_info = resolved_index
+    else:
+        index_info = index_config
+
+    if deduplicator is not None and not isinstance(deduplicator, Deduplicator):
+        resolved_deduplicator = instantiate(deduplicator)
+        if resolved_deduplicator is not None and not isinstance(resolved_deduplicator, Deduplicator):
+            raise TypeError(f"Deduplicator must be a Deduplicator, got {type(resolved_deduplicator)}")
+        deduplicator = resolved_deduplicator
+
+    resolved_filter_pair = filter_pair or FilterPair(
+        Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
+        Filter()
+    )
+
+    resolved_model = embedder_model
+    if isinstance(resolved_model, str):
+        resolved_model = Embedder.ModelName(resolved_model)
+
+    return Cloud(
+        filter_pair=resolved_filter_pair,
+        index_info=index_info,
+        max_works=max_works,
+        deduplicator=deduplicator,
+        normalize_embeddings=normalize_embeddings,
+        denoiser=denoiser,
+        drop_k=drop_k,
+        embedder_model=resolved_model,
+    )
 
 @dataclass(frozen=True)
 class InteractiveLLMConfiguration:
@@ -345,7 +419,6 @@ def step_4_monitor_batch_job(batch_id: Optional[str] = None) -> bool:
     
     try:
         # Import here to use the monitoring function
-        from bookgap.batch_utils.batch_operations import monitor_batch_job
         assert type(batch_id) is str, f"Expected str, got {type(batch_id)}"
         final_status: Optional[Any] = monitor_batch_job(batch_id, poll_interval=poll_interval)
         
@@ -507,7 +580,8 @@ def step_6_generate_tex_files(downloaded_results_file: Optional[Path], config: A
         index_type=index_type,
         hnsw_m=hnsw_m,
         hnsw_efc=hnsw_efc,
-        hnsw_efs=hnsw_efs
+        hnsw_efs=hnsw_efs,
+        embedder_model=Embedder.ModelName.GIST_SMALL # This whole file will be deleted anyway, so not worth making configurable
     )
 
     for results_file in selected_files:
@@ -537,8 +611,6 @@ def step_6_generate_tex_files(downloaded_results_file: Optional[Path], config: A
 
 def _show_existing_files_summary(extracted_proposals):
     """Show summary of existing extracted files."""
-    from bookgap.batch_utils.batch_operations import GAPS_DIR
-    
     # Check if all.tex files exist
     all_tex_files = []
     if GAPS_DIR.exists():
@@ -556,7 +628,6 @@ def _show_existing_files_summary(extracted_proposals):
         LOGGER.info(f"Found {len(all_tex_files)} compilation files (all.tex) ready for use.")
     else:
         LOGGER.info("Compilation files missing. Regenerating...")
-        from bookgap.batch_utils.batch_operations import create_all_tex_files_in_gaps
         all_tex_count = create_all_tex_files_in_gaps()
         if all_tex_count > 0:
             LOGGER.info(f"✓ Created {all_tex_count} compilation files")
@@ -576,7 +647,6 @@ def _show_extraction_summary(stats: Optional[Dict[str, Any]] = None) -> None:
                - latex_table_paths: List of generated LaTeX table files
                - all_tex_count: Number of all.tex compilation files created
     """
-    from bookgap.batch_utils.batch_operations import GAPS_DIR
     
     # Show information from extraction stats if provided
     if stats:

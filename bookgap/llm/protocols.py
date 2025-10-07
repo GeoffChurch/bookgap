@@ -81,24 +81,6 @@ class BatchRequestData:
     url: Literal["/v1/chat/completions"] = "/v1/chat/completions"
 
 
-class ProposalGenerator(Protocol):
-    """Protocol for LLM proposal generators."""
-    
-    def generate(self, context: 'ProposalContext') -> 'ProposalResult':
-        """Generate a textbook proposal from the given context.
-        
-        Args:
-            context: The proposal context containing gap analysis and configuration.
-            
-        Returns:
-            ProposalResult with generated proposal and metadata.
-            
-        Raises:
-            ProposalGenerationError: If generation fails for any reason.
-        """
-        ...
-
-
 @dataclass(frozen=True)
 class ProposalCounts:
     """Counts of items used in proposal generation."""
@@ -138,6 +120,21 @@ class ProposalResult:
     metadata: ProposalMetadata
 
 
+class ProposalGenerator(Protocol):
+    """Protocol for LLM proposal generators."""
+    
+    def generate(self, context: ProposalContext) -> ProposalResult:
+        """Generate a textbook proposal from the given context.
+        
+        Args:
+            context: The proposal context containing gap analysis and configuration.
+            
+        Returns:
+            ProposalResult with generated proposal and metadata.
+        """
+        ...
+
+
 # Pydantic models for structured output validation and data handling
 class Chapter(BaseModel):
     """A chapter in a textbook proposal."""
@@ -159,11 +156,3 @@ class ParsedProposal:
     proposal: Proposal
     custom_id: str
     embedding: NDArray[np.float32]
-
-
-class ProposalGenerationError(Exception):
-    """Exception raised when proposal generation fails."""
-    
-    def __init__(self, message: str, context: dict[str, Any] | None = None):
-        super().__init__(message)
-        self.context = context or {}

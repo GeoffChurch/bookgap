@@ -6,10 +6,10 @@ This is the main entry point for the new batch-first architecture. It uses Hydra
 for configuration management and provides a simple CLI interface.
 
 Usage:
-    python batch_generator.py                                     # Default (production) configuration
-    python batch_generator.py config=production                   # Production preset (explicit)
-    python batch_generator.py batch.num_gaps=5                    # Override specific values
-    python batch_generator.py gap=production llm=production       # Mix component presets
+    python batch_generator.py                                     # Default preset (standard)
+    python batch_generator.py --config-name anti_lda_drop1        # Switch to a registered preset
+    python batch_generator.py --config-name standard batch.num_gaps=5  # Override specific values
+    python batch_generator.py gap.cell_type=VORONOI llm.temperature=0.4  # Override nested fields
 """
 
 import hydra
@@ -26,7 +26,7 @@ from bookgap.util import LOGGER
 register_configs()
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="production")
+@hydra.main(version_base=None, config_path="configs", config_name="standard")
 def main(cfg: ExperimentConfig) -> None:
     """Main entry point for batch proposal generation.
     

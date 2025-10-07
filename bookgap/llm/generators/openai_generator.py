@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from bookgap.config_manager import AnalysisConfiguration
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.util import create_unicode_safe_filename, LOGGER
-from ..protocols import ProposalContext, ProposalResult, ProposalGenerationError, Proposal, ProposalCounts, ProposalMetadata
+from ..protocols import ProposalContext, ProposalResult, Proposal, ProposalCounts, ProposalMetadata
 
 
 class OpenAIProposalGenerator:

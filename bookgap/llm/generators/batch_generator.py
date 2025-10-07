@@ -28,9 +28,6 @@ class BatchProposalGenerator(ABC):
             
         Returns:
             List of batch API request data structures
-            
-        Raises:
-            ProposalGenerationError: If batch request generation fails
         """
         requests = []
         for context in contexts:
@@ -52,9 +49,6 @@ class BatchProposalGenerator(ABC):
             
         Returns:
             PromptPair with system_prompt and user_prompt
-            
-        Raises:
-            ProposalGenerationError: If prompt building fails
         """
         ...
     
@@ -71,8 +65,5 @@ class BatchProposalGenerator(ABC):
             
         Returns:
             Batch API request data structure ready for submission
-            
-        Raises:
-            ProposalGenerationError: If request creation fails
         """
         ...

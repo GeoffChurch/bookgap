@@ -17,7 +17,6 @@ from bookgap.llm.protocols import (
     ChatCompletionBody,
     BatchRequestData,
     ProposalContext,
-    ProposalGenerationError,
 )
 
 
@@ -136,24 +135,6 @@ class TestTemperatureEdgeCases:
         # Test maximum temperature (most creative)
         body_max = ChatCompletionBody(model="gpt-4o", messages=[msg], temperature=2.0)
         assert body_max.temperature == 2.0
-
-
-class TestErrorHandling:
-    """Test error handling behavior."""
-    
-    def test_error_with_context_preservation(self):
-        """Test that error context is preserved properly."""
-        context = {"model": "gpt-4", "temperature": 0.7}
-        error = ProposalGenerationError("API call failed", context=context)
-        
-        assert str(error) == "API call failed"
-        assert error.context == context
-        assert error.context["model"] == "gpt-4"
-    
-    def test_error_inheritance(self):
-        """Test that error inherits from Exception for proper exception handling."""
-        error = ProposalGenerationError("Test error")
-        assert isinstance(error, Exception)
 
 
 class TestProposalValidation:

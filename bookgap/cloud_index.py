@@ -1,14 +1,12 @@
 from dataclasses import dataclass
 import time
-from typing import Collection, Optional, Union, List, Tuple, Callable
+from typing import Collection, Optional, Union, List
 import numpy as np
 from numpy.typing import NDArray
-import scipy.sparse as sp
-import json
 import tqdm
 
 from bookgap.cloud import Cloud, SubCloud
-from bookgap.index import range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims, kballs_with
+from bookgap.index import range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims
 from bookgap.util import TIMER, MEMORY, LOGGER, get_stats
 
 @MEMORY.cache

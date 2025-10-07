@@ -8,17 +8,19 @@ architecture, eliminating the need for AnalysisConfiguration bridge pattern.
 from .config import ExperimentConfig
 from .gap.gap_config import GapConfig
 from .llm.llm_config import LLMConfig
-from .data.data_config import DataConfig
 from .batch.batch_config import BatchConfig
 from .output.output_config import OutputConfig
 from .output.export_formats import ExportFormat
+from .embedder.embedder_config import EmbedderConfig
+from .cloud.cloud_config import CloudConfig
 
 __all__ = [
     "ExperimentConfig",
     "GapConfig", 
     "LLMConfig",
-    "DataConfig",
     "BatchConfig",
     "OutputConfig",
+    "EmbedderConfig",
     "ExportFormat",
+    "CloudConfig",
 ]

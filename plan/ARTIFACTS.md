@@ -130,7 +130,7 @@ bookgap/
 #### Step 1.3: Test & Validate Phase 1 ✅ **COMPLETED**
 ```bash
 # Test command generates gap plots with full feature parity
-python bookgap/batch_generator.py config=debug batch.num_gaps=1
+python bookgap/batch_generator.py --config-name standard batch.num_gaps=1
 # Generates: outputs/{hydra_timestamp}/plots/gap_0_visualization_with_proposals.png
 # Confirmed output in: outputs/2025-09-26/18-43-49/
 ```

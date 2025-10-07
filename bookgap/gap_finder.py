@@ -1,7 +1,6 @@
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable, Tuple, Protocol
+from typing import Optional, Callable, Tuple, Protocol, Any, Union
 import abc
 import numpy as np
 import pandas as pd
@@ -11,12 +10,17 @@ import random
 import matplotlib.axes
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from bookgap.denoisers import LPPDenoiser
-from bookgap.cloud import Cloud, SubCloud, build_cloud, get_subclouds_for_topic
+from hydra.utils import instantiate
+from bookgap.cloud import (
+    Cloud,
+    Embedder,
+    SubCloud,
+    get_subclouds_for_topic,
+)
 from bookgap.cloud_index import knn
 from bookgap.deduplicators import Deduplicator
-from bookgap.index import IndexType
-from bookgap.util import LOGGER, SubField, create_unicode_safe_filename
+from bookgap.index import IndexInfo, IndexType, HNSW, FlatL2
+from bookgap.util import LOGGER, SubField, create_unicode_safe_filename, FilterPair, Filter, WorkType
 from bookgap.gap_directory_manager import GapDirectoryManager
 from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
 from bookgap.gap_types import DistsAndIdxs
@@ -45,6 +49,75 @@ TOP_ARTICLES_TO_DISPLAY = 10  # Number of closest articles to show in gap analys
 MIN_REQUIRED_DIMENSION = 1  # Minimum required dimension for distance arrays
 CENTER_ARTICLE_DISTANCE = 0  # Expected squared distance for center article (self-distance)
 INVALID_LANDMARK_INDEX = -1   # Indicator for no nearest landmark found
+
+
+def build_cloud(
+    drop_k: int,
+    max_works: Optional[int],
+    deduplicator: Optional[Union[Deduplicator, Any]],
+    denoiser: str,
+    *,
+    index: Optional[Union[IndexInfo, Any]] = None,
+    index_type: Optional[IndexType] = None,
+    hnsw_m: Optional[int] = None,
+    hnsw_efc: Optional[int] = None,
+    hnsw_efs: Optional[int] = None,
+    embedder_model: Union[Embedder.ModelName, str],
+    filter_pair: Optional[FilterPair] = None,
+    normalize_embeddings: bool = True,
+) -> Cloud:
+    """Inline legacy helper kept for backwards compatibility within this module."""
+
+    if index is not None and index_type is not None:
+        raise ValueError("Specify either 'index' or 'index_type', not both")
+
+    if index is not None:
+        index_config: Union[IndexInfo, Any] = index
+    elif index_type is not None:
+        if index_type == IndexType.HNSW:
+            if hnsw_m is None or hnsw_efc is None or hnsw_efs is None:
+                raise ValueError("HNSW index requires hnsw_m, hnsw_efc, and hnsw_efs parameters")
+            index_config = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
+        elif index_type == IndexType.FLAT_L2:
+            index_config = FlatL2()
+        else:
+            raise ValueError(f"Unsupported index_type: {index_type}")
+    else:
+        raise ValueError("Either 'index' or 'index_type' must be provided")
+
+    if not isinstance(index_config, IndexInfo):
+        resolved_index = instantiate(index_config)
+        if not isinstance(resolved_index, IndexInfo):
+            raise TypeError(f"Instantiated index must be an IndexInfo, got {type(resolved_index)}")
+        index_info = resolved_index
+    else:
+        index_info = index_config
+
+    if deduplicator is not None and not isinstance(deduplicator, Deduplicator):
+        resolved_deduplicator = instantiate(deduplicator)
+        if resolved_deduplicator is not None and not isinstance(resolved_deduplicator, Deduplicator):
+            raise TypeError(f"Deduplicator must be a Deduplicator, got {type(resolved_deduplicator)}")
+        deduplicator = resolved_deduplicator
+
+    resolved_filter_pair = filter_pair or FilterPair(
+        Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
+        Filter()
+    )
+
+    resolved_model = embedder_model
+    if isinstance(resolved_model, str):
+        resolved_model = Embedder.ModelName(resolved_model)
+
+    return Cloud(
+        filter_pair=resolved_filter_pair,
+        index_info=index_info,
+        max_works=max_works,
+        deduplicator=deduplicator,
+        normalize_embeddings=normalize_embeddings,
+        denoiser=denoiser,
+        drop_k=drop_k,
+        embedder_model=resolved_model,
+    )
 
 
 
@@ -446,9 +519,6 @@ def generate_book_proposal(
         
     Returns:
         ProposalResult with generated proposal and metadata
-        
-    Raises:
-        ProposalGenerationError: If generation fails for any reason
     """
     # Build the proposal context using deterministic sampling
     context = build_proposal_context(
@@ -1218,7 +1288,8 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         index_type=index_type,
         hnsw_m=hnsw_m,
         hnsw_efc=hnsw_efc,
-        hnsw_efs=hnsw_efs
+        hnsw_efs=hnsw_efs,
+        embedder_model=Embedder.ModelName.GIST_SMALL, # This file will be deleted anyway, so not worth making configurable
     )
     subfields = pyalex.Subfields()
     ai_subfield: pyalex.Subfield = subfields[SubField.AI.value] # type: ignore

@@ -11,7 +11,7 @@ import random
 import time
 import hashlib
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Union
 
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
@@ -23,14 +23,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bookgap.configs.config import ExperimentConfig
-from bookgap.cloud import build_cloud, get_subclouds_for_topic, Embedder
-from bookgap.deduplicators import Deduplicator
+from bookgap.cloud import get_subclouds_for_topic, Embedder
 from bookgap.gap_finder import find_gaps_for_topic, group_gap_articles_by_covering_books
 from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.llm.data_structures import BatchResults, GapWithContext, ArtifactPaths
+from bookgap.llm.generators.batch_generator import BatchProposalGenerator
 from bookgap.util import LOGGER
 from ..protocols import (
-    ProposalContext, BatchRequestData, ProposalGenerationError, 
+    ProposalContext, BatchRequestData,
     Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
 from ..identifiers import parse_gap_proposal_id, GapProposalId
@@ -52,14 +52,18 @@ class ProposalGrouping:
     by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
     ordered: list[tuple[ParsedProposal, GapProposalId]]
 
-def _compute_proposal_embeddings(pending: list[PendingProposal]) -> NDArray[np.float32]:
+
+def _compute_proposal_embeddings(
+    pending: list[PendingProposal],
+    model_name: Embedder.ModelName,
+) -> NDArray[np.float32]:
     """Compute embeddings for pending proposals in a single batch pass."""
     title_abstract_pairs = [
         (proposal.proposal.title, proposal.proposal.abstract)
         for proposal in pending
     ]
 
-    with Embedder() as embedder:
+    with Embedder(model_name=model_name) as embedder:
         return embedder.embed_texts(title_abstract_pairs)
 
 
@@ -118,32 +122,6 @@ class MetadataUtils:
             metadata[str(i)] = chunk
         
         return metadata
-    
-    @staticmethod
-    def deserialize_config(metadata: dict[str, str]) -> ExperimentConfig:
-        """Parse chunked metadata dict back to ExperimentConfig object.
-        
-        Args:
-            metadata: Dictionary with chunked metadata from batch API
-            
-        Returns:
-            Reconstructed ExperimentConfig object
-        """
-        # Reconstruct config JSON from chunks
-        config_chunks = []
-        i = 0
-        while str(i) in metadata:
-            config_chunks.append(metadata[str(i)])
-            i += 1
-        
-        if not config_chunks:
-            raise ValueError("No config chunks found in metadata")
-        
-        config_json = ''.join(config_chunks)
-        metadata_dict = json.loads(config_json)
-        
-        # Reconstruct the config using hydra's instantiate
-        return instantiate(metadata_dict)
 
 
 def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
@@ -160,22 +138,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
     Raises:
         Exception: If gap finding fails
     """
-    LOGGER.info(f"Building cloud with denoiser={config.gap.denoiser}")
-    
-    deduplicator: Optional[Deduplicator] = None if config.data.deduplicator is None else instantiate(config.data.deduplicator)
-    assert deduplicator is None or isinstance(deduplicator, Deduplicator), f"deduplicator must be a Deduplicator instance or None. Got {deduplicator} of type {type(deduplicator)}"
-
-    # Build cloud from data configuration
-    cloud = build_cloud(
-        drop_k=config.gap.drop_k,
-        max_works=config.data.max_works,
-        deduplicator=deduplicator,
-        denoiser=config.gap.denoiser.name,  # Convert enum to string using .name
-        index_type=config.gap.index_type,
-        hnsw_m=config.gap.hnsw_m,
-        hnsw_efc=config.gap.hnsw_efc,
-        hnsw_efs=config.gap.hnsw_efs
-    )
+    cloud = instantiate(config.cloud)
     
     gaps: list[GapWithContext] = []
     
@@ -549,12 +512,7 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         LOGGER.info(f"Downloaded and parsed {len(pending_proposals)} proposals out of {len(raw_results)} results ({num_empty} empty results, {num_errors} errors, {num_stop_reason_length} with stop_reason='length')")
 
         # Compute embeddings once for all proposals and materialize ParsedProposal instances
-        embeddings = _compute_proposal_embeddings(pending_proposals)
-
-        if len(embeddings) != len(pending_proposals):
-            raise RuntimeError(
-                f"Embedding count mismatch: expected {len(pending_proposals)}, got {len(embeddings)}"
-            )
+        embeddings = _compute_proposal_embeddings(pending_proposals, model_name=config.embedder.model_name)
 
         parsed_proposals = [
             ParsedProposal(
@@ -562,23 +520,21 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
                 custom_id=pending.custom_id,
                 embedding=embedding,
             )
-            for pending, embedding in zip(pending_proposals, embeddings)
+            for pending, embedding in zip(pending_proposals, embeddings, strict=True)
         ]
 
         LOGGER.info(f"Embedded {len(parsed_proposals)} proposals for downstream artifacts")
         
-        # Parse original config from metadata using MetadataUtils
-        metadata = batch.metadata or {}
-        try:
-            parsed_config = MetadataUtils.deserialize_config(metadata)
-        except (ProposalGenerationError, KeyError):
-            # Fall back to the provided config if metadata parsing fails
-            LOGGER.warning("Failed to parse metadata, using provided config")
-            parsed_config = config
-        
+        expected_metadata = MetadataUtils.serialize_config(config)
+        if batch.metadata != expected_metadata:
+            LOGGER.error("Batch metadata does not match expected serialized config.")
+            LOGGER.error(f"Expected metadata: {expected_metadata}")
+            LOGGER.error(f"Actual metadata: {batch.metadata}")
+            raise ValueError("Batch metadata does not match expected serialized config.")
+
         return BatchResults(
             proposals=parsed_proposals,
-            metadata=parsed_config
+            metadata=config
         )
     else:
         # Log detailed batch information for debugging
@@ -677,70 +633,14 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
 
 
 def generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]:
-    """Generate batch API requests from proposal contexts.
-    
-    Uses Hydra's _target_ pattern to instantiate the appropriate generator for the provider.
-    
-    Args:
-        contexts: List of proposal contexts
-        config: Experiment configuration with LLM settings
-        
-    Returns:
-        List of batch API request data structures
-        
-    Raises:
-        ProposalGenerationError: If generator instantiation or generation fails
-        
-    Example:
-        ```python
-        from hydra import compose, initialize
-        from bookgap.llm.generators.workflow_functions import generate_batch_requests
-        
-        # Using Hydra config
-        with initialize(config_path="../configs"):
-            config = compose(config_name="production")
-            requests = generate_batch_requests(contexts, config)
-        
-        # Manual config (for testing)
-        config = ExperimentConfig(
-            llm=LLMConfig(
-                _target_="bookgap.llm.generators.openai_batch.OpenAIBatchGenerator",
-                model_name=OpenAIModel.GPT_4O_MINI,
-                # ... other required fields
-            ),
-            # ... other config fields
-        )
-        requests = generate_batch_requests(contexts, config)
-        ```
-    """
     if not contexts:
         return []
     
-    try:
-        generator = instantiate(config.llm)
-        
-        # Generate batch requests
-        return generator.generate_batch_requests(contexts)
-        
-    except Exception as e: # TODO: Why don't we just let the exception propagate? Do we need ProposalGenerationError at all?
-        # Wrap any errors in ProposalGenerationError with context
-        error_context = {
-            "num_contexts": len(contexts),
-            "model": str(config.llm.model),
-            "target": config.llm._target_
-        }
-        
-        # If it's already a ProposalGenerationError, preserve the original
-        if isinstance(e, ProposalGenerationError):
-            # Add workflow context to existing error context
-            e.context.update(error_context)
-            raise e
-        else:
-            # Wrap other exceptions
-            raise ProposalGenerationError(
-                f"Failed to generate batch requests: {str(e)}",
-                context=error_context
-            ) from e
+    generator: BatchProposalGenerator = instantiate(config.llm)
+    
+    # Generate batch requests
+    return generator.generate_batch_requests(contexts)
+
 
 
 def validate_batch_requests(requests: list[BatchRequestData]) -> None:
@@ -748,15 +648,9 @@ def validate_batch_requests(requests: list[BatchRequestData]) -> None:
     
     Args:
         requests: List of batch request data structures
-        
-    Raises:
-        ProposalGenerationError: If validation fails
     """
     if not requests:
-        raise ProposalGenerationError(
-            "No batch requests provided",
-            context={"validation_step": "empty_check"}
-        )
+        raise ValueError("No batch requests to validate")
     
     errors = []
     custom_ids = set()
@@ -785,14 +679,7 @@ def validate_batch_requests(requests: list[BatchRequestData]) -> None:
                 errors.append(f"Request {i}, Message {j}: invalid role '{message.role}'")
     
     if errors:
-        raise ProposalGenerationError(
-            f"Batch request validation failed: {'; '.join(errors)}",
-            context={
-                "num_requests": len(requests),
-                "num_errors": len(errors),
-                "validation_errors": errors
-            }
-        )
+        raise ValueError("Batch request validation failed:\n" + "\n".join(errors))
 
 
 def get_supported_models() -> list[str]:
