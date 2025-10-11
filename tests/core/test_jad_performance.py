@@ -4,16 +4,14 @@ Test JAD denoiser performance on actual data.
 
 import time
 import numpy as np
-from pathlib import Path
-import sys
 
 # Configuration flags
 ENABLE_CDOPT = False  # Set to False to disable slow cdopt_rnojd benchmarking
 
-from bookgap.cloud import Cloud, WorkDenoisers, CloudDenoiserContext
+from bookgap.cloud import Cloud
+from bookgap.cloud_denoiser import CloudDenoiserContext
 from bookgap.denoisers import JADDenoiser
-from bookgap.util import Filter, WorkType, LOGGER, TIMER, setup_logging
-from bookgap.parse_args import get_explicit_args, parse_args
+from bookgap.util import Filter, WorkType, LOGGER
 
 # Try importing RNOJD functions for detailed benchmarking
 try:
@@ -36,11 +34,6 @@ def time_function(func, *args, **kwargs):
 def test_jad_performance_basic():
     """Basic test to verify JAD performance testing infrastructure is working"""
     
-    # Test that we can import the necessary modules
-    from bookgap.cloud import Cloud, WorkDenoisers, CloudDenoiserContext
-    from bookgap.denoisers import JADDenoiser
-    from bookgap.util import Filter, WorkType, LOGGER, TIMER, setup_logging
-    
     # Test time_function helper
     def dummy_function(x):
         return x * 2
@@ -49,7 +42,6 @@ def test_jad_performance_basic():
     assert result == 10
     assert elapsed >= 0
     
-    LOGGER.info("JAD performance testing infrastructure is working")
     print("JAD performance testing infrastructure verified!")
 
 

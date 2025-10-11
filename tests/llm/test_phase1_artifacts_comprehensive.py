@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from contextlib import ExitStack
 
-from bookgap.cloud import SubCloud
+from bookgap.subcloud import SubCloud
 from bookgap.gap_finder import GapProtocol
 from bookgap.llm.data_structures import ArtifactPaths, GapWithContext
 from bookgap.llm.identifiers import build_gap_proposal_id
@@ -24,7 +24,7 @@ from bookgap.llm.artifacts.gap_plots import (
     generate_gap_plots_for_results,
     save_gap_plot_with_proposals,
 )
-from bookgap.llm.protocols import ParsedProposal, Proposal, Chapter
+from bookgap.llm.protocols import ParsedProposal, Proposal#, Chapter
 import tempfile
 
 
@@ -69,12 +69,12 @@ class TestPhase1GapPlots:
         )
 
         # Create realistic proposals with proper structure
-        chapters = [
-            Chapter(
-                chapter_title=f"Chapter {i}: Core Concepts"
-            )
-            for i in range(10)
-        ]
+        # chapters = [
+        #     Chapter(
+        #         chapter_title=f"Chapter {i}: Core Concepts"
+        #     )
+        #     for i in range(10)
+        # ]
 
         proposal_embeddings = np.random.rand(2, 10).astype(np.float32)
 
@@ -84,7 +84,7 @@ class TestPhase1GapPlots:
                 proposal=Proposal(
                     title="Advanced Machine Learning Techniques",
                     abstract="This textbook covers advanced ML algorithms and their applications.",
-                    chapters=chapters,
+                    # chapters=chapters,
                 ),
                 embedding=proposal_embeddings[0],
             ),
@@ -93,7 +93,7 @@ class TestPhase1GapPlots:
                 proposal=Proposal(
                     title="Deep Learning Fundamentals",
                     abstract="A comprehensive introduction to deep learning methodologies.",
-                    chapters=chapters,
+                    # chapters=chapters,
                 ),
                 embedding=proposal_embeddings[1],
             ),
@@ -164,14 +164,14 @@ class TestPhase1GapPlots:
         mock_gap2.gap_idx = 1
         mock_gaps = [mock_gap1, mock_gap2]
         
-        chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+        # chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
         proposal1 = ParsedProposal(
-            proposal=Proposal(title="Title 1", abstract="Abstract 1", chapters=chapters),
+            proposal=Proposal(title="Title 1", abstract="Abstract 1"),#, chapters=chapters),
             custom_id=build_gap_proposal_id(gap_idx=0, topic_id="topic-1"),
             embedding=np.zeros(4, dtype=np.float32),
         )
         proposal2 = ParsedProposal(
-            proposal=Proposal(title="Title 2", abstract="Abstract 2", chapters=chapters),
+            proposal=Proposal(title="Title 2", abstract="Abstract 2"),#, chapters=chapters),
             custom_id=build_gap_proposal_id(gap_idx=1, topic_id="topic-2"),
             embedding=np.zeros(4, dtype=np.float32),
         )

@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
-from bookgap.cloud import SubCloud
 from bookgap.cloud_index import knn
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import hypothetical_voronoi_coverage
+from bookgap.subcloud import SubCloud
 
 
 class VoronoiAlgorithm:

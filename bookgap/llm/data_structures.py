@@ -9,9 +9,8 @@ from typing import List, Optional
 from pathlib import Path
 
 from bookgap.configs.config import ExperimentConfig
-from bookgap.cloud import SubCloud
-from bookgap.gap_finder import GapProtocol
-from .protocols import ParsedProposal
+from bookgap.subcloud import SubCloud
+from .protocols import GapProtocol, ParsedProposal
 
 
 @dataclass(frozen=True)

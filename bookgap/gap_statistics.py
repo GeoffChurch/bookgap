@@ -15,8 +15,6 @@ from scipy import stats
 
 from bookgap.util import LOGGER, create_unicode_safe_filename
 from bookgap.plot_utils import PlotManager, FIGURE_SIZE_MEDIUM, GRID_ALPHA
-from bookgap.config_manager import AnalysisConfiguration
-from bookgap.gap_directory_manager import GapDirectoryManager
 
 
 # Constants for statistical analysis
@@ -205,14 +203,10 @@ def create_negative_hypergeometric_qqplot(
         return None
 
 
-from bookgap.gap_directory_manager import GapDirectoryManager  
-from bookgap.config_manager import AnalysisConfiguration
-
 def create_book_gap_sizes_qqplot(
     book_gap_sizes: Union[List[int], NDArray[np.intp]], 
     topic_name: str, 
     topic_id: str,
-    analysis_config: AnalysisConfiguration,
     num_books: Optional[int] = None, 
     num_articles: Optional[int] = None, 
     proposed_gap_size: Optional[int] = None
@@ -236,7 +230,7 @@ def create_book_gap_sizes_qqplot(
         return
     
     # Get plot directory using the configuration object
-    plot_dir = GapDirectoryManager.get_plots_dir(analysis_config)    # Create normal distribution Q-Q plot
+    plot_dir = Path('.')#GapDirectoryManager.get_plots_dir(analysis_config)    # Create normal distribution Q-Q plot
     create_normal_qqplot(book_gap_sizes, topic_name, topic_id, plot_dir, proposed_gap_size)
     
     # Create negative hypergeometric Q-Q plot if parameters are available

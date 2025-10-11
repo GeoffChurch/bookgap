@@ -11,30 +11,20 @@ import matplotlib.axes
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from hydra.utils import instantiate
-from bookgap.cloud import (
-    Cloud,
-    Embedder,
-    SubCloud,
-    get_subclouds_for_topic,
-)
+from bookgap.cloud import Cloud, Embedder
 from bookgap.cloud_index import knn
 from bookgap.deduplicators import Deduplicator
 from bookgap.index import IndexInfo, IndexType, HNSW, FlatL2
+from bookgap.subcloud import SubCloud, get_subclouds_for_topic
 from bookgap.util import LOGGER, SubField, create_unicode_safe_filename, FilterPair, Filter, WorkType
-from bookgap.gap_directory_manager import GapDirectoryManager
-from bookgap.config_manager import AnalysisConfiguration, GapConfiguration, LLMConfiguration
-from bookgap.gap_types import DistsAndIdxs
 from bookgap.llm.gap_algorithms.kball_algorithm import KballGap
 from bookgap.llm.gap_algorithms.voronoi_algorithm import VoronoiGap
-from bookgap.llm.llm_implementation import Implementation, get_generator
 from bookgap.types import CellType
 from bookgap.llm.protocols import ProposalResult
-from bookgap.llm.context_builder import build_proposal_context
 from bookgap.plot_utils import (
     PlotManager, FIGURE_SIZE_LARGE, GRID_ALPHA,
     BOOK_COLOR, GAP_COLOR
 )
-from bookgap.results_manager import GapResults
 from bookgap.gap_statistics import compute_gap_statistics, create_book_gap_sizes_qqplot
 import abc
 
@@ -121,32 +111,6 @@ def build_cloud(
 
 
 
-class GapProtocol(Protocol):
-    """Protocol defining the common interface for gap analysis objects.
-    
-    This eliminates the need for isinstance checks by defining the methods
-    that both KballGap and VoronoiGap must implement.
-    """
-    
-    def get_dists_idxs(self) -> DistsAndIdxs:
-        """Return the distances and indices of articles in the gap."""
-        ...
-    
-    def get_ambient(self) -> SubCloud:
-        """Return the ambient space (articles)."""
-        ...
-        
-    def get_landmark(self) -> SubCloud:  
-        """Return the landmark space (books)."""
-        ...
-    
-    def get_covering_book_indices(self) -> list[np.intp]:
-        """Get the indices of books that cover articles in the gap."""
-        ...
-        
-    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
-        """Get mapping from book indices to their covered articles with distances."""
-        ...
 
 
 @dataclass(frozen=True)
@@ -202,17 +166,6 @@ class GapVisualizationData:
 def get_covering_book_indices(gap: GapProtocol) -> list[np.intp]:
     """Get the indices of books that cover articles in the gap."""
     return gap.get_covering_book_indices()
-
-
-def get_book_to_articles_mapping(gap: GapProtocol) -> dict[np.intp, DistsAndIdxs]:
-    """Get mapping from book indices to their covered articles with distances."""
-    return gap.get_book_to_articles_mapping()
-
-
-def group_gap_articles_by_covering_books(gap: GapProtocol) -> dict[np.intp, list[np.intp]]:
-    """Group gap articles by their covering books (simplified version without distances)."""
-    book_to_articles = get_book_to_articles_mapping(gap)
-    return {book_idx: dists_idxs.idxs.tolist() for book_idx, dists_idxs in book_to_articles.items()}
 
 
 ARTIFACTS_DIR = GapDirectoryManager.get_base_artifacts_dir()

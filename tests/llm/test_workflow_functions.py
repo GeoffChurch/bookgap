@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import cast, Optional
 
 import numpy as np
 import pytest
@@ -35,7 +35,7 @@ from bookgap.llm.protocols import (
     ChatCompletionBody,
     ChatMessage,
     Proposal,
-    Chapter,
+    # Chapter,
     OpenAIModel,
     ParsedProposal,
     ProposalCounts,
@@ -379,8 +379,8 @@ class TestComputeProposalEmbeddings:
 
     @staticmethod
     def _make_pending(title_suffix: str) -> PendingProposal:
-        chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
-        proposal = Proposal(title=f"Title {title_suffix}", abstract="Abstract", chapters=chapters)
+        # chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+        proposal = Proposal(title=f"Title {title_suffix}", abstract="Abstract")#, chapters=chapters)
         return PendingProposal(proposal=proposal, custom_id=f"id-{title_suffix}")
 
     @patch('bookgap.llm.generators.workflow_functions.instantiate')
@@ -388,7 +388,7 @@ class TestComputeProposalEmbeddings:
     def test_projection_and_normalization_applied(self, mock_embedder_cls, mock_instantiate):
         pending = [self._make_pending("A")]
         config = cast(ExperimentConfig, OmegaConf.create({
-            "cloud": {"_target_": "mock.Cloud"},
+            "cloud": {"_target_": "mock.Cloud", "embedder_model": Embedder.ModelName.GEMMA_300M.value},
             "embedder": {"model_name": "mock-model"},
         }))
 
@@ -444,8 +444,8 @@ class TestMonitorAndDownloadResults:
 
     @staticmethod
     def _make_proposal(title_suffix: str) -> Proposal:
-        chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
-        return Proposal(title=f"Title {title_suffix}", abstract="Abstract", chapters=chapters)
+        # chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+        return Proposal(title=f"Title {title_suffix}", abstract="Abstract")#, chapters=chapters)
 
     @staticmethod
     def _make_result_line(custom_id: str, finish_reason: str = "stop") -> str:
@@ -499,6 +499,7 @@ class TestMonitorAndDownloadResults:
         config_data = {
             "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
             "batch": {"completion_window": "24h"},
+            "cloud": {"_target_": "mock.Cloud", "embedder_model": Embedder.ModelName.GEMMA_300M.value},
         }
         config = cast(ExperimentConfig, OmegaConf.create(config_data))
         expected_metadata = MetadataUtils.serialize_config(config)
@@ -527,6 +528,107 @@ class TestMonitorAndDownloadResults:
         assert result.metadata is config
         mock_sleep.assert_called()
 
+    @patch('bookgap.llm.generators.workflow_functions.instantiate')
+    @patch('bookgap.llm.generators.workflow_functions.Embedder')
+    @patch('bookgap.llm.generators.workflow_functions.OpenAI')
+    @patch('time.sleep')
+    def test_projection_applied_via_monitoring(self, mock_sleep, mock_openai_class, mock_embedder_cls, mock_instantiate):
+        raw_embeddings = np.array([
+            [3.0, 4.0],
+            [0.0, 5.0],
+        ], dtype=np.float32)
+
+        class DummyEmbedder:
+            def __init__(self, embeddings: np.ndarray):
+                self.embeddings = embeddings
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def embed_texts(self, _pairs: list[tuple[str, str]]):
+                self.calls += 1
+                return self.embeddings
+
+        dummy_embedder = DummyEmbedder(raw_embeddings)
+        mock_embedder_cls.return_value = dummy_embedder
+
+        class FakeProjection:
+            def __init__(self):
+                self.seen: Optional[np.ndarray] = None
+
+            def apply(self, embeddings: np.ndarray) -> np.ndarray:
+                self.seen = embeddings
+                return embeddings * 2
+
+        projection = FakeProjection()
+        mock_cloud = Mock()
+        mock_cloud.denoiser_projection.return_value = projection
+        mock_cloud.normalize_embeddings = True
+        mock_instantiate.return_value = mock_cloud
+
+        mock_client = Mock()
+        mock_openai_class.return_value = mock_client
+
+        mock_batch_in_progress = Mock()
+        mock_batch_in_progress.status = "in_progress"
+
+        mock_batch_completed = Mock()
+        mock_batch_completed.status = "completed"
+        mock_batch_completed.output_file_id = "file-output-123"
+        mock_batch_completed.request_counts.total = 2
+        mock_batch_completed.request_counts.completed = 2
+        mock_batch_completed.request_counts.failed = 0
+
+        config_data = {
+            "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
+            "batch": {"completion_window": "24h"},
+            "cloud": {"_target_": "mock.Cloud", "embedder_model": Embedder.ModelName.GEMMA_300M.value},
+        }
+        config = cast(ExperimentConfig, OmegaConf.create(config_data))
+        expected_metadata = MetadataUtils.serialize_config(config)
+        mock_batch_completed.metadata = expected_metadata
+
+        mock_client.batches.retrieve.side_effect = [mock_batch_in_progress, mock_batch_completed]
+
+        proposal_lines = [
+            self._make_result_line("id-1"),
+            self._make_result_line("id-2"),
+        ]
+        mock_file_response = Mock()
+        mock_file_response.content = "\n".join(proposal_lines).encode('utf-8')
+        mock_client.files.content.return_value = mock_file_response
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
+            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
+                 patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse:
+
+                mock_parse.side_effect = [
+                    PendingProposal(proposal=self._make_proposal("A"), custom_id="id-1"),
+                    PendingProposal(proposal=self._make_proposal("B"), custom_id="id-2"),
+                ]
+
+                result = monitor_and_download_results("batch-xyz", config)
+
+        mock_parse.assert_called()
+
+        assert len(result.proposals) == 2
+        assert dummy_embedder.calls == 1
+        assert projection.seen is not None
+        assert np.allclose(projection.seen, raw_embeddings)
+
+        embeddings = np.stack([proposal.embedding for proposal in result.proposals])
+        expected_projected = raw_embeddings * 2
+        expected_normalized = expected_projected / np.linalg.norm(expected_projected, axis=1, keepdims=True)
+        assert np.allclose(embeddings, expected_normalized.astype(np.float32))
+
+        mock_client.batches.retrieve.assert_called()
+        mock_cloud.denoiser_projection.assert_called()
+        mock_sleep.assert_called()
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
     def test_batch_failure_handling(self, mock_openai_class):
         """Test handling of failed batch jobs."""
@@ -621,7 +723,7 @@ class TestRunBatchWorkflow:
             proposal=Proposal(
                 title="Title",
                 abstract="Abstract",
-                chapters=[Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+                # chapters=[Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
             ),
             custom_id=build_gap_proposal_id(gap_idx=0, topic_id="topic-1"),
             embedding=np.zeros(3, dtype=np.float32),

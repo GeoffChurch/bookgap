@@ -9,7 +9,7 @@ from bookgap.configs.index.index_config import HNSWConfig
 from bookgap.configs.util.filter_config import FilterPairConfig
 
 
-@dataclass(frozen=True)
+@dataclass
 class CloudConfig:
     """Hydra-friendly configuration for :class:`bookgap.cloud.Cloud`.
 

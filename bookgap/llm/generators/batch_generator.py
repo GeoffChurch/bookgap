@@ -7,7 +7,6 @@ individual request patterns with OpenAI batch API integration.
 from abc import ABC, abstractmethod
 from typing import List
 
-from bookgap.configs.llm.llm_config import LLMConfig
 from ..protocols import ProposalContext, BatchRequestData, PromptPair
 
 

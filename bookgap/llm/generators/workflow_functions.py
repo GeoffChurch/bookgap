@@ -23,11 +23,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bookgap.configs.config import ExperimentConfig
-from bookgap.cloud import get_subclouds_for_topic, Embedder
-from bookgap.gap_finder import find_gaps_for_topic, group_gap_articles_by_covering_books
+from bookgap.cloud import Cloud, Embedder
+from bookgap.configs.gap.gap_config import CellType
 from bookgap.gap_statistics import compute_gap_statistics
+from bookgap.llm.artifacts.common import group_gap_articles_by_covering_books
 from bookgap.llm.data_structures import BatchResults, GapWithContext, ArtifactPaths
 from bookgap.llm.generators.batch_generator import BatchProposalGenerator
+from bookgap.subcloud import SubCloud, get_subclouds_for_topic
 from bookgap.util import LOGGER
 from ..protocols import (
     ProposalContext, BatchRequestData,
@@ -52,6 +54,23 @@ class ProposalGrouping:
     by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
     ordered: list[tuple[ParsedProposal, GapProposalId]]
 
+def find_gaps_for_topic(
+    books: SubCloud,
+    articles: SubCloud,
+    radius_fraction: float,
+    cell_type: CellType,
+    k: int = 1,
+    is_intra_cloud: bool = False,
+):
+    """Return gaps for the given books/articles subclouds and parameters."""
+    return cell_type.value.find_gaps(
+        ambient=articles,
+        landmark=books,
+        query=articles,
+        radius_fraction=radius_fraction,
+        k=k,
+        is_intra_cloud=is_intra_cloud
+    )
 
 def _compute_proposal_embeddings(
     pending: list[PendingProposal],
@@ -64,10 +83,10 @@ def _compute_proposal_embeddings(
         for proposal in pending
     ]
 
-    with Embedder(model_name=config.embedder.model_name) as embedder:
+    with Embedder(model_name=config.cloud.embedder_model) as embedder:
         raw_embeddings = embedder.embed_texts(title_abstract_pairs)
 
-    cloud = instantiate(config.cloud)
+    cloud: Cloud = instantiate(config.cloud)
     projection = cloud.denoiser_projection()
     projected_embeddings = projection.apply(raw_embeddings)
 

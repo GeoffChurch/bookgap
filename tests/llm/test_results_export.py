@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bookgap.cloud import SubCloud
+from bookgap.subcloud import SubCloud
 from bookgap.cloud_index import ProposalRankingResult
 from bookgap.configs.config import ExperimentConfig
 from bookgap.gap_types import DistsAndIdxs
@@ -20,7 +20,7 @@ from bookgap.llm.identifiers import build_gap_proposal_id, parse_gap_proposal_id
 from bookgap.llm.protocols import (
     Article,
     Book,
-    Chapter,
+    # Chapter,
     ParsedProposal,
     Proposal,
     ProposalContext,
@@ -101,7 +101,7 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
     proposal_model = Proposal(
         title="Example Title",
         abstract="Example Abstract",
-        chapters=[Chapter(chapter_title=f"Chapter {i}") for i in range(10)],
+        # chapters=[Chapter(chapter_title=f"Chapter {i}") for i in range(10)],
     )
     parsed_proposal = ParsedProposal(
         proposal=proposal_model,
@@ -213,14 +213,14 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         shapiro_log10_pval=-1.0,
     )
 
-    proposal_chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
+    # proposal_chapters = [Chapter(chapter_title=f"Chapter {i}") for i in range(10)]
     proposal_a = ParsedProposal(
-        proposal=Proposal(title="A", abstract="First", chapters=proposal_chapters),
+        proposal=Proposal(title="A", abstract="First"),#, chapters=proposal_chapters),
         custom_id=build_gap_proposal_id(gap_idx=0, topic_id="topic-1"),
         embedding=np.array([0.5, 0.0], dtype=np.float32),
     )
     proposal_b = ParsedProposal(
-        proposal=Proposal(title="B", abstract="Second", chapters=proposal_chapters),
+        proposal=Proposal(title="B", abstract="Second"),#, chapters=proposal_chapters),
         custom_id=build_gap_proposal_id(gap_idx=0, topic_id="topic-1"),
         embedding=np.array([2.5, 0.0], dtype=np.float32),
     )

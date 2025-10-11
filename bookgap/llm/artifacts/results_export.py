@@ -24,78 +24,66 @@ def _enum_name(value: Any) -> Any:
     """Return enum.name when available, otherwise the value itself."""
     if value is None:
         return None
-    name = getattr(value, "name", None)
+    name = value.name
     return name if name is not None else value
 
 
-def _config_row(config: ExperimentConfig) -> dict[str, Any]:
-    """Flatten experiment configuration into a single-row mapping."""
+# def _config_row(config: ExperimentConfig) -> dict[str, Any]:
+#     """Flatten experiment configuration into a single-row mapping."""
 
-    gap = getattr(config, "gap", None)
-    llm = getattr(config, "llm", None)
-    data = getattr(config, "data", None)
-    batch = getattr(config, "batch", None)
-    embedder = getattr(config, "embedder", None)
-    output = getattr(config, "output", None)
+#     gap = config.gap
+#     llm = config.llm
+#     data = config.data
+#     batch = config.batch
+#     embedder = config.embedder
+#     output = config.output
 
-    export_formats = getattr(output, "export_formats", ()) if output else ()
-    deduplicator = getattr(data, "deduplicator", None) if data else None
-    export_format_names = [
-        str(_enum_name(fmt)) for fmt in export_formats if _enum_name(fmt) is not None
-    ]
+#     export_formats = output.export_formats if output else ()
+#     deduplicator = data.deduplicator if data else None
+#     export_format_names = [
+#         str(_enum_name(fmt)) for fmt in export_formats if _enum_name(fmt) is not None
+#     ]
 
-    row: dict[str, Any] = {
-        # Gap configuration
-        "config_gap_cell_type": _enum_name(getattr(gap, "cell_type", None)),
-        "config_gap_radius_fraction": getattr(gap, "radius_fraction", None),
-        "config_gap_drop_k": getattr(gap, "drop_k", None),
-        "config_gap_hnsw_m": getattr(gap, "hnsw_m", None),
-        "config_gap_hnsw_efc": getattr(gap, "hnsw_efc", None),
-        "config_gap_hnsw_efs": getattr(gap, "hnsw_efs", None),
-        "config_gap_denoiser": _enum_name(getattr(gap, "denoiser", None)),
-        "config_gap_index_type": _enum_name(getattr(gap, "index_type", None)),
-        # LLM configuration
-        "config_llm_target": getattr(llm, "_target_", None),
-        "config_llm_model": _enum_name(getattr(llm, "model", None)),
-        "config_llm_num_articles": getattr(llm, "num_articles", None),
-        "config_llm_num_books": getattr(llm, "num_books", None),
-        "config_llm_temperature": getattr(llm, "temperature", None),
-        "config_llm_max_tokens": getattr(llm, "max_tokens", None),
-        "config_llm_use_structured_output": getattr(
-            llm, "use_structured_output", None
-        ),
-        # Data configuration
-        "config_data_max_works": getattr(data, "max_works", None),
-        "config_data_deduplicator_target": (
-            deduplicator._target_ if deduplicator is not None else None
-        ),
-        "config_data_deduplicator_min_sqdist": (
-            deduplicator.min_sqdist if deduplicator is not None else None
-        ),
-        # Batch configuration
-        "config_batch_num_gaps": getattr(batch, "num_gaps", None),
-        "config_batch_completion_window": getattr(batch, "completion_window", None),
-        "config_batch_generate_plots": getattr(batch, "generate_plots", None),
-        "config_batch_save_prompts": getattr(batch, "save_prompts", None),
-        "config_batch_save_batch_file": getattr(batch, "save_batch_file", None),
-        # Embedder configuration
-        "config_embedder_model_name": _enum_name(
-            getattr(embedder, "model_name", None)
-        ),
-        # Output configuration
-        "config_output_export_formats": ",".join(export_format_names),
-        "config_output_create_subdirectories": getattr(
-            output, "create_subdirectories", None
-        ),
-        "config_output_include_metadata": getattr(output, "include_metadata", None),
-        "config_output_use_timestamp": getattr(output, "use_timestamp", None),
-    }
+#     row: dict[str, Any] = {
+#         # Gap configuration
+#         "config_gap_cell_type": _enum_name(gap.cell_type),
+#         "config_gap_radius_fraction": gap.radius_fraction,
+#         "config_gap_drop_k": gap.drop_k,
+#         "config_gap_hnsw_m": gap.hnsw_m,
+#         "config_gap_hnsw_efc": gap.hnsw_efc,
+#         "config_gap_hnsw_efs": gap.hnsw_efs,
+#         "config_gap_denoiser": _enum_name(gap.denoiser),
+#         "config_gap_index_type": _enum_name(gap.index_type),
+#         # LLM configuration
+#         "config_llm_target": llm._target_,
+#         "config_llm_model": _enum_name(llm.model),
+#         "config_llm_num_articles": llm.num_articles,
+#         "config_llm_num_books": llm.num_books,
+#         "config_llm_temperature": llm.temperature,
+#         "config_llm_max_tokens": llm.max_tokens,
+#         "config_llm_use_structured_output": llm.use_structured_output,
+#         # Data configuration
+#         "config_data_max_works": data.max_works,
+#         "config_data_deduplicator_target": (
+#             deduplicator._target_ if deduplicator is not None else None
+#         ),
+#         "config_data_deduplicator_min_sqdist": (
+#             deduplicator.min_sqdist if deduplicator is not None else None
+#         ),
+#         # Batch configuration
+#         "config_batch_num_gaps": batch.num_gaps,
+#         "config_batch_completion_window": batch.completion_window,
+#         "config_batch_generate_plots": batch.generate_plots,
+#         "config_batch_save_prompts": batch.save_prompts,
+#         "config_batch_save_batch_file": batch.save_batch_file,
+#         # Embedder configuration
+#         "config_embedder_model_name": _enum_name(embedder.model_name),
+#     }
 
-    return row
+#     return row
 
-def _gap_row(
+def _gap_row(*,
     g: GapWithContext,
-    config: ExperimentConfig,
     counts_map: dict[tuple[str, int], ProposalCounts],
 ) -> dict[str, Any]:
     """
@@ -113,10 +101,10 @@ def _gap_row(
     return {
         "topic_name": g.topic_name,
         "topic_id": g.topic_id,
-        "denoiser": config.cloud.denoiser,
-        "drop_k": config.cloud.drop_k,
-        "radius_fraction": config.gap.radius_fraction,
-        "cell_type": config.gap.cell_type.name,
+        # "denoiser": config.cloud.denoiser,
+        # "drop_k": config.cloud.drop_k,
+        # "radius_fraction": config.gap.radius_fraction,
+        # "cell_type": config.gap.cell_type.name,
         "gap_idx": g.gap_idx,
         "num_books": num_books,
         "num_articles": num_articles,
@@ -124,8 +112,8 @@ def _gap_row(
         "gap_size_percentile": g.gap_size_percentile,
         "gap_zscore": g.gap_zscore,
         "shapiro_log10_pval": g.shapiro_log10_pval,
-        "requested_num_prompt_articles": config.llm.num_articles,
-        "requested_num_prompt_books": config.llm.num_books,
+        # "requested_num_prompt_articles": config.llm.num_articles,
+        # "requested_num_prompt_books": config.llm.num_books,
         "actual_num_prompt_articles": actual_articles,
         "actual_num_prompt_books": actual_books,
     }
@@ -265,7 +253,7 @@ def generate_gaps_analysis_csv(
 
     # Build DataFrames
     counts_map = _build_counts_map(contexts)
-    gap_rows = [_gap_row(g, config, counts_map) for g in gaps]
+    gap_rows = [_gap_row(g=g, counts_map=counts_map) for g in gaps]
     gap_df = pd.DataFrame(gap_rows)
     gap_meta_map = {(row["topic_id"], row["gap_idx"]): row for row in gap_rows}
     rankings_by_gap = _compute_proposal_rankings_by_gap(gaps, proposals_grouped)
@@ -286,10 +274,10 @@ def generate_gaps_analysis_csv(
     key_cols = ["topic_id", "gap_idx"]
     merged = proposals_df.merge(gap_df, on=key_cols, how="left")
 
-    # Broadcast full experiment configuration across all rows
-    config_row = _config_row(config)
-    for key, value in config_row.items():
-        merged[key] = value
+    # # Broadcast full experiment configuration across all rows
+    # config_row = _config_row(config)
+    # for key, value in config_row.items():
+    #     merged[key] = value
 
     # Reorder columns to ensure proposal_title and proposal_abstract are last
     LAST_COLUMNS = ["proposal_title", "proposal_abstract"]

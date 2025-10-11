@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from bookgap.llm.protocols import (
     # Pydantic models with validation logic
-    Chapter,
+    # Chapter,
     # New batch-oriented data structures with behavior
     OpenAIModel,
     ChatMessage,
@@ -13,7 +13,6 @@ from bookgap.llm.protocols import (
     Book,
     Proposal,
     ProposalCounts,
-    PromptPair,
     ChatCompletionBody,
     BatchRequestData,
     ProposalContext,
@@ -40,18 +39,18 @@ class TestOpenAIModelBehavior:
         assert actual_models == expected_models
 
 
-class TestChapterValidation:
-    """Test Chapter Pydantic validation rules."""
+# class TestChapterValidation:
+#     """Test Chapter Pydantic validation rules."""
 
-    def test_empty_title_allowed(self):
-        """Empty titles are now permitted for in-progress outlines."""
-        chapter = Chapter(chapter_title="")
-        assert chapter.chapter_title == ""
+#     def test_empty_title_allowed(self):
+#         """Empty titles are now permitted for in-progress outlines."""
+#         chapter = Chapter(chapter_title="")
+#         assert chapter.chapter_title == ""
 
-    def test_empty_description_allowed(self):
-        """Empty summaries are permitted when outlining chapter shells."""
-        chapter = Chapter(chapter_title="Valid Title")
-        assert chapter.chapter_title == "Valid Title"
+#     def test_empty_description_allowed(self):
+#         """Empty summaries are permitted when outlining chapter shells."""
+#         chapter = Chapter(chapter_title="Valid Title")
+#         assert chapter.chapter_title == "Valid Title"
 
 
 class TestBatchRequestIntegration:
@@ -140,62 +139,62 @@ class TestTemperatureEdgeCases:
 class TestProposalValidation:
     """Test Proposal validation rules - these test actual business constraints."""
     
-    def test_chapter_count_constraints(self):
-        """Test chapter count validation with business rules."""
-        # Test too few chapters fails
-        few_chapters = [
-            Chapter(chapter_title=f"Chapter {i}")
-            for i in range(1, 10)  # 9 chapters (below minimum of 10)
-        ]
+    # def test_chapter_count_constraints(self):
+    #     """Test chapter count validation with business rules."""
+    #     # Test too few chapters fails
+    #     few_chapters = [
+    #         Chapter(chapter_title=f"Chapter {i}")
+    #         for i in range(1, 10)  # 9 chapters (below minimum of 10)
+    #     ]
         
-        with pytest.raises(ValidationError) as exc_info:
-            Proposal(
-                title="Too Small Book",
-                abstract="A book with too few chapters",
-                chapters=few_chapters
-            )
-        assert "List should have at least 10 items" in str(exc_info.value)
+    #     with pytest.raises(ValidationError) as exc_info:
+    #         Proposal(
+    #             title="Too Small Book",
+    #             abstract="A book with too few chapters",
+    #             chapters=few_chapters
+    #         )
+    #     assert "List should have at least 10 items" in str(exc_info.value)
         
-        # Test too many chapters fails
-        many_chapters = [
-            Chapter(chapter_title=f"Chapter {i}")
-            for i in range(1, 17)  # 16 chapters (exceeds max of 15)
-        ]
+    #     # Test too many chapters fails
+    #     many_chapters = [
+    #         Chapter(chapter_title=f"Chapter {i}")
+    #         for i in range(1, 17)  # 16 chapters (exceeds max of 15)
+    #     ]
         
-        with pytest.raises(ValidationError) as exc_info:
-            Proposal(
-                title="Too Large Book",
-                abstract="A book with too many chapters",
-                chapters=many_chapters
-            )
-        assert "List should have at most 15 items" in str(exc_info.value)
+    #     with pytest.raises(ValidationError) as exc_info:
+    #         Proposal(
+    #             title="Too Large Book",
+    #             abstract="A book with too many chapters",
+    #             chapters=many_chapters
+    #         )
+    #     assert "List should have at most 15 items" in str(exc_info.value)
         
-        # Test valid chapter count succeeds
-        valid_chapters = [
-            Chapter(chapter_title=f"Chapter {i}")
-            for i in range(1, 13)  # 12 chapters (within 10-15 range)
-        ]
+    #     # Test valid chapter count succeeds
+    #     valid_chapters = [
+    #         Chapter(chapter_title=f"Chapter {i}")
+    #         for i in range(1, 13)  # 12 chapters (within 10-15 range)
+    #     ]
         
-        proposal = Proposal(
-            title="Valid Book",
-            abstract="A book with appropriate number of chapters",
-            chapters=valid_chapters
-        )
-        # Test that the model was created successfully
-        assert len(proposal.chapters) == 12  # type: ignore
-        assert proposal.title == "Valid Book"  # type: ignore
+    #     proposal = Proposal(
+    #         title="Valid Book",
+    #         abstract="A book with appropriate number of chapters",
+    #         chapters=valid_chapters
+    #     )
+    #     # Test that the model was created successfully
+    #     assert len(proposal.chapters) == 12  # type: ignore
+    #     assert proposal.title == "Valid Book"  # type: ignore
     
     def test_empty_proposal_fields_allowed(self):
         """Empty title/abstract are allowed when seeding drafts."""
-        valid_chapters = [
-            Chapter(chapter_title=f"Chapter {i}")
-            for i in range(1, 11)
-        ]
+        # valid_chapters = [
+        #     Chapter(chapter_title=f"Chapter {i}")
+        #     for i in range(1, 11)
+        # ]
 
-        proposal_with_empty_title = Proposal(title="", abstract="Valid abstract", chapters=valid_chapters)
+        proposal_with_empty_title = Proposal(title="", abstract="Valid abstract")#, chapters=valid_chapters)
         assert proposal_with_empty_title.title == ""
 
-        proposal_with_empty_abstract = Proposal(title="Valid Title", abstract="", chapters=valid_chapters)
+        proposal_with_empty_abstract = Proposal(title="Valid Title", abstract="")#, chapters=valid_chapters)
         assert proposal_with_empty_abstract.abstract == ""
 
 

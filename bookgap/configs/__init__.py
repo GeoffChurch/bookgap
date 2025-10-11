@@ -11,7 +11,6 @@ from .llm.llm_config import LLMConfig
 from .batch.batch_config import BatchConfig
 from .output.output_config import OutputConfig
 from .output.export_formats import ExportFormat
-from .embedder.embedder_config import EmbedderConfig
 from .cloud.cloud_config import CloudConfig
 
 __all__ = [
@@ -20,7 +19,6 @@ __all__ = [
     "LLMConfig",
     "BatchConfig",
     "OutputConfig",
-    "EmbedderConfig",
     "ExportFormat",
     "CloudConfig",
 ]

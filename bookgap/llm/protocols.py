@@ -15,6 +15,35 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, Field
 
+from bookgap.gap_types import DistsAndIdxs
+from bookgap.subcloud import SubCloud
+
+class GapProtocol(Protocol):
+    """Protocol defining the common interface for gap analysis objects.
+    
+    This eliminates the need for isinstance checks by defining the methods
+    that both KballGap and VoronoiGap must implement.
+    """
+    
+    def get_dists_idxs(self) -> DistsAndIdxs:
+        """Return the distances and indices of articles in the gap."""
+        ...
+    
+    def get_ambient(self) -> SubCloud:
+        """Return the ambient space (articles)."""
+        ...
+        
+    def get_landmark(self) -> SubCloud:  
+        """Return the landmark space (books)."""
+        ...
+    
+    def get_covering_book_indices(self) -> list[np.intp]:
+        """Get the indices of books that cover articles in the gap."""
+        ...
+        
+    def get_book_to_articles_mapping(self) -> dict[np.intp, DistsAndIdxs]:
+        """Get mapping from book indices to their covered articles with distances."""
+        ...
 
 class OpenAIModel(Enum):
     """OpenAI model variants with their string representations."""
@@ -135,19 +164,19 @@ class ProposalGenerator(Protocol):
         ...
 
 
-# Pydantic models for structured output validation and data handling
-class Chapter(BaseModel):
-    """A chapter in a textbook proposal."""
-    chapter_title: str = Field(..., description="Chapter title")
-    # chapter_topics: list[str] = Field(..., description="Chapter topics")
-    # chapter_summary: str = Field(..., description="Chapter summary")
+# # Pydantic models for structured output validation and data handling
+# class Chapter(BaseModel):
+#     """A chapter in a textbook proposal."""
+#     chapter_title: str = Field(..., description="Chapter title")
+#     # chapter_topics: list[str] = Field(..., description="Chapter topics")
+#     # chapter_summary: str = Field(..., description="Chapter summary")
 
 
 class Proposal(BaseModel):
     """A complete textbook proposal with title, abstract, and chapters."""
     title: str = Field(..., description="Textbook title")
     abstract: str = Field(..., description="Textbook abstract")
-    chapters: list[Chapter] = Field(..., min_length=10, max_length=15, description="Textbook chapters")
+    # chapters: list[Chapter] = Field(..., min_length=10, max_length=15, description="Textbook chapters")
 
 
 @dataclass(frozen=True)

@@ -314,13 +314,32 @@ class NormalizedLPPDenoiser:
         safe_indices = degrees > 0
         inv_sqrt_deg[safe_indices] = np.power(degrees[safe_indices], -0.5)
         D_inv_sqrt = sp.diags(inv_sqrt_deg)
+        D = sp.diags(degrees)
         L_sym = sp.eye(N) - (D_inv_sqrt @ B @ D_inv_sqrt)
+        if not np.any(safe_indices):
+            LOGGER.warning("Normalized LPP: All nodes have zero degree; falling back to identity constraint.")
+            D = sp.eye(N)
+            D_inv_sqrt = sp.eye(N)
+            L_sym = sp.eye(N) - (D_inv_sqrt @ B @ D_inv_sqrt)
+        if N < d:
+            LOGGER.info(f"Normalized LPP: N < d, using dual formulation. N={N}, d={d}")
+            K = X @ adj(X)
+            subset = subset_range(n=N, subset_size=n_components, smallest=True)
+            a_dual = adj(K) @ L_sym @ K
+            b_dual = adj(K) @ D @ K
+            res = _solve_eigh_robustly(a_dual, b_dual, subset)
+            P = _recover_projector_from_dual(X, res.P_or_U)
+            P = P[:, ::-1]
+            eigvals = res.eigvals[::-1]
+            return P, eigvals
+
         a_matrix = adj(X) @ L_sym @ X
+        b_matrix = adj(X) @ D @ X
         subset = subset_range(n=d, subset_size=n_components, smallest=True)
         assert np.allclose(adj(a_matrix), a_matrix, atol=1e-6), "a_matrix is not Hermitian!"
-        eigvals, P = eigh(a_matrix, subset_by_index=subset)
-        P = P[:, ::-1]  # Reverse to put most important components first
-        eigvals = eigvals[::-1]  # Reverse to match projector order
+        res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
+        P = res.P_or_U[:, ::-1]
+        eigvals = res.eigvals[::-1]
         return P, eigvals
 
 class WDenoiser:

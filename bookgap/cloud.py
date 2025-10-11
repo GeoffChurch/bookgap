@@ -1,130 +1,26 @@
 from collections import OrderedDict, defaultdict
-from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import enum
 from functools import lru_cache
-import gc
 import heapq
 import itertools
 import json
-import matplotlib.pyplot as plt
-import torch
-from bookgap.plot_utils import PlotManager
+from bookgap.cloud_denoiser import ProjectiveDenoiserProjection, WorkDenoisers
 import re
 import time
-from typing import Any, Dict, Generator, List, Optional, Protocol, Tuple, TypeVar, Union, runtime_checkable
+from typing import Any, Dict, Generator, List, Optional, TypeVar
 import faiss
 import numpy as np
 from numpy.typing import NDArray
 import pyalex
-from scipy import sparse as sp
-import scipy.linalg
-from sentence_transformers import SentenceTransformer
 import tqdm
-import bookgap.denoisers as denoisers
-from bookgap.index import IndexInfo, build_index, IndexType, HNSW, FlatL2
-from bookgap.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, SubField, WorkType, TIMER, MEMORY, LOGGER, create_unicode_safe_filename, get_stats
+from bookgap.embedder import Embedder
+from bookgap.index import IndexInfo, build_index
+from bookgap.util import ARTIFACTS_DIR, CACHE_DIR, FilterPair, Filter, TIMER, MEMORY, LOGGER, WorkType, create_unicode_safe_filename, get_stats
 from bookgap.deduplicators import Deduplicator
+import scipy.linalg
 
-T = TypeVar('T', bound=np.generic)
-
-class Embedder:
-    class ModelName(enum.Enum):
-        GIST_SMALL = 'avsolatorio/GIST-small-Embedding-v0'
-        GEMMA_300M = 'google/embeddinggemma-300m'
-
-    def __init__(self, model_name: Union[str, 'Embedder.ModelName']):
-        resolved_model: Union[str, 'Embedder.ModelName'] = model_name
-        if isinstance(resolved_model, Embedder.ModelName):
-            resolved_model = resolved_model.value
-
-        self.model_name = str(resolved_model)
-        self._model_: Optional[SentenceTransformer] = None
-        self._embedding_dtype_: Optional[np.dtype[np.float32]] = None
-        self._embedding_dimension_: Optional[int] = None
-
-    def _model(self) -> SentenceTransformer:
-        if self._model_ is None:
-            self._model_ = SentenceTransformer(self.model_name)
-        return self._model_
-    
-    def __enter__(self):
-        """Context manager entry."""
-        return self
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - cleanup GPU resources."""
-        if self._model_ is not None:
-            # Delete the model reference
-            del self._model_
-            self._model_ = None
-    
-            # Aggressive GPU memory cleanup
-            if torch.cuda.is_available():
-                # Force garbage collection
-                gc.collect()
-                # Clear CUDA cache multiple times
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()  # Clean up inter-process communication cache
-                torch.cuda.empty_cache()  # Clear again after IPC cleanup
-                LOGGER.info("Performed aggressive CUDA cache cleanup")
-            
-    def _determine_embedding_space(self):
-        dummy = self._model().encode(["dummy"], show_progress_bar=False)
-        one, d = dummy.shape
-        if one != 1:
-            raise ValueError(f"Expected embedding of single input to have shape (1, d), got ({one}, {d})")
-        if self._model().get_sentence_embedding_dimension() is not None:
-            if d != self._model().get_sentence_embedding_dimension():
-                raise ValueError(f"Model's reported embedding dimension {self._model().get_sentence_embedding_dimension()} does not match actual dimension {d}")
-        if dummy.dtype != np.float32:
-            raise ValueError(f"Expected embedding dtype to be float32, got {dummy.dtype}")
-        self._embedding_dimension_ = dummy.shape[1]
-        self._embedding_dtype_ = dummy.dtype
-
-    def embedding_dimension(self):
-        if self._embedding_dimension_ is None:
-            self._determine_embedding_space()
-        assert self._embedding_dimension_ is not None
-        return self._embedding_dimension_
-    
-    def embedding_dtype(self) -> np.dtype[np.float32]:
-        if self._embedding_dtype_ is None:
-            self._determine_embedding_space()
-        assert self._embedding_dtype_ is not None
-        return self._embedding_dtype_
-    
-    def embed_texts(self, title_abstract_pairs: List[tuple[str, str]], batch_size: int = 32) -> NDArray[np.float32]:
-        if not title_abstract_pairs:
-            return np.empty((0, self.embedding_dimension()), dtype=self.embedding_dtype())
-        inputs = [f"{title}\n{abstract}" for title, abstract in title_abstract_pairs]
-        
-        embeddings = self._model().encode(inputs, batch_size=batch_size, show_progress_bar=False)
-        if embeddings.shape != (len(title_abstract_pairs), self.embedding_dimension()):
-            raise ValueError(f"Expected embeddings shape to be {(len(title_abstract_pairs), self.embedding_dimension())}, got {embeddings.shape}")
-        return embeddings
-
-@dataclass(frozen=True)
-class CloudData:
-    works: List[Dict[str, Any]]
-    embeddings: NDArray
-    def __post_init__(self):
-        assert len(self.works) == self.embeddings.shape[0], f"Works and embeddings length mismatch: {len(self.works)} != {self.embeddings.shape[0]}"
-
-@dataclass(frozen=True)
-class ProjectiveDenoiserProjection:
-    """Serialized payload describing a projective denoiser transformation."""
-
-    projection_matrix: NDArray
-    fit_mean: Optional[NDArray]
-
-    def apply(self, embeddings: NDArray) -> NDArray:
-        """Project embeddings into the cached denoised space."""
-
-        if self.fit_mean is not None:
-            embeddings = embeddings - self.fit_mean
-
-        return embeddings @ self.projection_matrix
+pyalex.config.email = "gchurchill@cs.stonybrook.edu"
 
 @dataclass(frozen=True)
 class Cloud:
@@ -218,8 +114,7 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 def get_cloud_embeddings(cloud: Cloud):
     works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     retained_idxs = get_cloud_retained_idxs(cloud)
-    denoiser = WorkDenoisers[cloud.denoiser]
-    return denoiser.value.denoise(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
+    return denoise(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
 
 
 @lru_cache(maxsize=1)
@@ -235,238 +130,8 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
     retained_works = [works[i] for i in retained_idxs]
     retained_embeddings = embeddings[retained_idxs]
 
-    return denoiser_impl.compute_projection_artifact(cloud, retained_works, retained_embeddings)
+    return denoiser_impl.compute_projection_artifact(cloud.drop_k, retained_works, retained_embeddings)
 
-class CloudDenoiserContext(denoisers.DenoiserContext):
-    def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, *filters: Filter):
-        self.works = works
-        self.filters = list(filters)
-        self._A: Optional[sp.csr_matrix] = None
-        self._X: NDArray = embeddings
-        self._X_subsets: List[Optional[NDArray]] = [None] * len(self.filters)
-
-    def A(self) -> sp.csr_matrix:
-        if self._A is None:
-            self._A = build_citation_graph(self.works)
-        return self._A
-    
-    def X(self) -> NDArray:
-        return self._X
-    
-    def X_n(self, n: int) -> NDArray:
-        """Get embeddings for the n-th subset (0-indexed)."""
-        if n >= len(self.filters):
-            raise IndexError(f"Subset {n} requested, but only {len(self.filters)} subsets available")
-        
-        if self._X_subsets[n] is None:
-            self._X_subsets[n] = self._X[self._get_mask(self.filters[n])]
-        
-        result = self._X_subsets[n]
-        assert result is not None, f"Subset {n} should not be None after initialization"
-        return result
-    
-    def num_subsets(self) -> int:
-        """Return the number of subsets available."""
-        return len(self.filters)
-    
-    def _get_mask(self, filter: Filter) -> NDArray:
-        """Get a boolean mask for works that match the filter."""
-        return np.array([filter.check_work(work) for work in self.works], dtype=bool)
-    
-@runtime_checkable
-class WorkDenoiser(Protocol):
-    """Protocol for denoising embeddings."""
-    def denoise(self, cloud: 'Cloud', works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
-        """Apply denoising to embeddings and return final denoised embeddings."""
-        ...
-
-    def compute_projection_artifact(
-        self,
-        cloud: Cloud,
-        works: List[Dict[str, Any]],
-        embeddings: NDArray[T],
-    ) -> ProjectiveDenoiserProjection:
-        """Return the projection metadata for downstream reuse."""
-        ...
-
-class NoneDenoiser:
-    """No-op denoiser that returns original embeddings unchanged."""
-    
-    def denoise(self, cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
-        if cloud.drop_k != 0:
-            raise ValueError(f"NoneDenoiser requires drop_k=0, got drop_k={cloud.drop_k}")
-        if cloud.normalize_embeddings:
-            return embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
-        return embeddings
-
-    def compute_projection_artifact(
-        self,
-        cloud: Cloud,
-        _works: List[Dict[str, Any]],
-        embeddings: NDArray[T],
-    ) -> ProjectiveDenoiserProjection:
-        if embeddings.ndim != 2:
-            raise ValueError(f"Expected 2D embeddings array, got shape {embeddings.shape}")
-        if embeddings.shape[0] == 0:
-            raise ValueError(f"Cloud {cloud.name()} -- Cannot build projection with zero embeddings")
-        if cloud.drop_k != 0:
-            raise ValueError(f"NoneDenoiser requires drop_k=0, got drop_k={cloud.drop_k}")
-
-        original_dim = embeddings.shape[1]
-        identity = np.eye(original_dim, dtype=embeddings.dtype)
-
-        return ProjectiveDenoiserProjection(
-            projection_matrix=identity,
-            fit_mean=None,
-        )
-
-class ProjectiveDenoiser:
-    """Projective denoiser with full orchestration including plotting and analysis."""
-    
-    def __init__(self, denoiser_impl, *filters: Filter):
-        self.denoiser_impl = denoiser_impl
-        self.filters = filters
-
-    def compute_projection_artifact(
-        self,
-        cloud: Cloud,
-        works: List[Dict[str, Any]],
-        embeddings: NDArray[T],
-    ) -> ProjectiveDenoiserProjection:
-        if embeddings.ndim != 2:
-            raise ValueError(f"Expected 2D embeddings array, got shape {embeddings.shape}")
-        if embeddings.shape[0] == 0:
-            raise ValueError(f"Cloud {cloud.name()} -- Cannot build projection with zero embeddings")
-
-        original_dim = embeddings.shape[1]
-        if cloud.drop_k >= original_dim:
-            raise ValueError(f"Cloud {cloud.name()} -- drop_k={cloud.drop_k} must be smaller than embedding dimension {original_dim}")
-
-        n_components = original_dim - cloud.drop_k
-        context = CloudDenoiserContext(works, embeddings, *self.filters)
-        projector, eigvals = self.denoiser_impl.projector(context, n_components)
-
-        projection_matrix = np.ascontiguousarray(np.asarray(projector, dtype=embeddings.dtype))
-        if projection_matrix.ndim != 2:
-            raise ValueError(f"Expected projector to be 2D, got {projection_matrix.ndim}D array")
-        if projection_matrix.shape[0] != original_dim:
-            raise ValueError(
-                f"Projector row dimension {projection_matrix.shape[0]} does not match embeddings dimension {original_dim}"
-            )
-
-        projected_dim = projection_matrix.shape[1]
-        if projected_dim != n_components:
-            LOGGER.warning(
-                "Cloud %s -- Requested %d components but projector produced %d components",
-                cloud.name(),
-                n_components,
-                projected_dim,
-            )
-
-        mean_vector = np.ascontiguousarray(np.asarray(embeddings.mean(axis=0), dtype=embeddings.dtype))
-
-        return ProjectiveDenoiserProjection(
-            projection_matrix=projection_matrix,
-            fit_mean=mean_vector,
-        )
-
-    def denoise(self, cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
-        """Apply projective denoising with full orchestration."""
-        cloud_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre) / f"{cloud.denoiser} drop_k={cloud.drop_k}"
-        cloud_dir.mkdir(parents=True, exist_ok=True)
-
-        # Pre-projection PCA for baseline singular values
-        s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0))  # type: ignore
-        
-        LOGGER.info(f"Cloud {cloud.name()} -- Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
-
-        # Dimensionality reduction/cleaning
-
-        projection = get_cloud_projection(cloud)
-
-        LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={embeddings.shape[1] - cloud.drop_k}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
-
-        denoised_embeddings: NDArray[T] = projection.apply(embeddings)
-
-        if cloud.normalize_embeddings:
-            norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
-            denoised_embeddings = denoised_embeddings / norms
-
-        s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0))  # type: ignore
-        
-        # Plot singular value comparison        
-        fig, ax = PlotManager.create_figure(figsize=(12, 5))
-        
-        # Scatter plot for original and post-denoising singular values
-        ax.scatter(np.arange(len(s_orig)), s_orig, color='b', label='Original', alpha=0.7)
-        ax.scatter(np.arange(len(s_post)), s_post, color='r', label='Post-denoising', alpha=0.7)
-        ax.set_xlabel('Component Index')
-        ax.set_ylabel('Singular Value')
-        ax.set_title('Singular Values')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Calculate variance decay
-        total_variance_orig = np.sum(s_orig**2)
-        total_variance_post = np.sum(s_post**2)
-        variance_retained = total_variance_post / total_variance_orig
-        
-        fig.suptitle(f'{cloud.denoiser} drop_k={cloud.drop_k} Denoising: {variance_retained:.2%} variance retained')
-        
-        plt.tight_layout()
-        PlotManager.save_and_close(fig, cloud_dir / f"singular_values_comparison.png")
-        
-        LOGGER.info(f"Cloud {cloud.name()} -- Variance retained after denoising: {variance_retained:.2%}")
-        LOGGER.info(f"Cloud {cloud.name()} -- Saved singular value analysis to {cloud_dir}")
-            
-        return denoised_embeddings
-
-class WorkDenoisers(enum.Enum):
-    # No-op denoiser
-    NONE = NoneDenoiser()
-    
-    # Simple denoisers
-    PCA = ProjectiveDenoiser(denoisers.PCADenoiser())
-    GPCA = ProjectiveDenoiser(denoisers.GPCADenoiser())
-    REL_AMP = ProjectiveDenoiser(denoisers.RelAmpDenoiser())
-    # NEIGHBOR_DIST_MIN = ProjectiveDenoiser(denoisers.NeighborDistMinDenoiser())
-    LPP = ProjectiveDenoiser(denoisers.LPPDenoiser())
-    AUG_LPP = ProjectiveDenoiser(denoisers.AugmentedLPPDenoiser())
-    ORTHO_MANIFOLD = ProjectiveDenoiser(denoisers.OrthogonalManifoldDenoiser())
-    NORM_LPP = ProjectiveDenoiser(denoisers.NormalizedLPPDenoiser())
-    # W = ProjectiveDenoiser(denoisers.WDenoiser())
-    # LDA = ProjectiveDenoiser(denoisers.LDADenoiser())
-    # SYM_LDA = ProjectiveDenoiser(denoisers.SymmetrizedLDADenoiser())
-    PLS = ProjectiveDenoiser(denoisers.PLSModeADenoiser())
-    CCA = ProjectiveDenoiser(denoisers.PLSModeBDenoiser())
-    # W_LPP = ProjectiveDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()))
-    # W_NEIGHBOR_DIST_MIN = ProjectiveDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()))
-    
-    ANTI_CSP = ProjectiveDenoiser(denoisers.AntiCSPDenoiser())
-
-    ANTI_LDA = ProjectiveDenoiser(denoisers.AntiLDADenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    DOM_INVAR = ProjectiveDenoiser(denoisers.DomainInvariantDenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,))) 
-    
-    CCLIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    CCLIP_1 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    CCLIP_01 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    CCP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    LIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    
-    # Joint Approximate Diagonalization denoisers
-    # JAD_1_4 = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.25, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Optimal 1:4 book:article ratio
-    # JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, wsubset1=1.0, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pre-sample-covariance optimal
-    # JAD_PRIO_T = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.5, wsubset2=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Equal emphasis
-    JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    JAD_HALF_L = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    JAD_CCP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    JAD_LIP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-
-    def __str__(self):
-        return self.name
-    
-    def __repr__(self):
-        return str(self)
 
 @lru_cache(maxsize=1)
 @TIMER.time()
@@ -534,35 +199,7 @@ def deduplicate_works_semantic(cloud, works, embeddings):
         LOGGER.info(f"Deduplication stats:\n{f.read()}")
     return retained_idxs
 
-
-@TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>"))
-def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
-    id_to_idx = {work["id"]: i for i, work in enumerate(works)}
-    n = len(works)
-    row = []
-    col = []
-    for i, work in enumerate(works):
-        # Add self-reference for safe normalization and stability. Don't use append on the original list!
-        refs: list[str] = work.get("referenced_works", []) + [work["id"]]  
-        for ref_id in refs:
-            if ref_id in id_to_idx:
-                row.append(i)
-                col.append(id_to_idx[ref_id])
-    data = np.ones(len(row), dtype=np.float32)
-    citation_graph = sp.csr_matrix((data, (row, col)), shape=(n, n))
-    row_sums = np.asarray(citation_graph.sum(axis=1)).squeeze(1)
-    assert row_sums.min() >= 1 # This is guaranteed by the self-references
-    
-    # In-place row normalization
-    assert citation_graph.data.dtype == np.float32, f"Expected float32 data type, got {citation_graph.data.dtype}"
-    citation_graph.data /= row_sums[citation_graph.indices]
-    
-    assert type(citation_graph) is sp.csr_matrix, f"Expected csr_matrix, got {type(citation_graph)}"
-    LOGGER.info(f"Built citation graph with shape {citation_graph.shape} and {citation_graph.nnz} non-zero entries")
-    return citation_graph
-
-
-def get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
+def _get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
     cache_dir = CACHE_DIR / "api_data" / create_unicode_safe_filename(pre_filter)
     cache_dir.mkdir(parents=True, exist_ok=True)
     state_file = cache_dir / "state.json"
@@ -581,6 +218,8 @@ def get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
     # This isn't actually necessary, but it's clearer
     if state["next_cursor"] is None:
         return
+
+    time.sleep(1.0) # Initial 1 second wait in case of earlier requests
 
     # Then yield new works
     last_time = time.time() # For rate limiting
@@ -612,7 +251,7 @@ def get_works(pre_filter: Filter) -> Generator[dict[str, Any], None, None]:
         # Yield works
         yield from works
         # Rate limit
-        min_time_diff = 0.25 # Minimum time between requests
+        min_time_diff = 1.0 # Minimum time between requests
         time.sleep(max(0, min_time_diff - (time.time() - last_time)))
         last_time = time.time()
 
@@ -662,7 +301,7 @@ class WorkFilter(enum.Enum):
     def __str__(self):
         return repr(self.value)
 
-def filter_works(work_filter: Filter):
+def _filter_works(work_filter: Filter):
     class PerTypeCounter:
         def __init__(self) -> None:
             self.total: int = 0
@@ -678,8 +317,9 @@ def filter_works(work_filter: Filter):
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
-        for work in tqdm.tqdm(get_works(work_filter), total=get_query(work_filter).count(),
-                            desc=f"Filtering works in {work_filter}", mininterval=1, delay=1):
+        total_expected = get_query(work_filter).count()
+        for work in tqdm.tqdm(_get_works(work_filter), total=total_expected,
+                            desc=f"Filtering works in {work_filter}", mininterval=1, delay=1, smoothing=1):
             invalidators = []
             total.insert(work)
             for filter in WorkFilter:
@@ -708,7 +348,7 @@ def filter_works(work_filter: Filter):
                             
 @MEMORY.cache
 def deduplicate_works_syntactic(work_filter: Filter):
-    works = list(filter_works(work_filter))
+    works = list(_filter_works(work_filter))
     deduped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     def normalize_work(work: dict[str, Any], _NONWORD_PAT=re.compile(r"\W")) -> str:
         s = f"{work['display_name']} {work['abstract']}"
@@ -849,74 +489,6 @@ def embed_works(
                     break
         return works[:max_works], embeddings
 
-@dataclass(frozen=True)
-class SubCloud:
-    parent: Cloud
-    post_filter: Filter
-
-    def works(self) -> List[Dict[str, Any]]:
-        parent_works = self.parent.works()
-        retained_idxs = get_subcloud_retained_idxs(self)
-        return [parent_works[i] for i in retained_idxs]        
-    
-    def work_ids(self) -> List[str]:
-        return get_subcloud_work_ids(self)
-    
-    def work_references(self) -> List[List[str]]:
-        return get_subcloud_work_references(self)
-    
-    def index(self) -> faiss.Index:
-        return get_subcloud_index(self)
-    
-    def embeddings(self):
-        return get_subcloud_embeddings(self)
-    
-    @property
-    def normalize_embeddings(self) -> bool:
-        return self.parent.normalize_embeddings
-
-# @lru_cache(maxsize=2)
-# @TIMER.time()
-# def get_subcloud_data(subcloud: SubCloud) -> CloudData:
-#     works = subcloud.parent.works()
-#     # Apply post-filtering
-#     retained_idxs = [i for i, work in enumerate(works) if subcloud.post_filter.check_work(work)]
-#     filtered_embeddings = subcloud.parent.embeddings()[retained_idxs]
-#     index = build_index(subcloud.parent.index_info, filtered_embeddings)
-#     return CloudData(works=[works[i] for i in retained_idxs], index=index, embeddings=filtered_embeddings)
-
-@lru_cache(maxsize=2)
-@MEMORY.cache
-def get_subcloud_retained_idxs(subcloud: SubCloud) -> NDArray[np.uint64]:
-    return np.array([i for i, work in enumerate(subcloud.parent.works()) if subcloud.post_filter.check_work(work)], dtype=np.uint64)
-
-@lru_cache(maxsize=2)
-@MEMORY.cache
-def get_subcloud_work_ids(subcloud: SubCloud) -> List[str]:
-    parent_work_ids = subcloud.parent.work_ids()
-    retained_idxs = get_subcloud_retained_idxs(subcloud)
-    return [parent_work_ids[i] for i in retained_idxs]
-
-@lru_cache(maxsize=2)
-@MEMORY.cache
-def get_subcloud_work_references(subcloud: SubCloud) -> List[List[str]]:
-    parent_work_references = subcloud.parent.work_references()
-    retained_idxs = get_subcloud_retained_idxs(subcloud)
-    return [parent_work_references[i] for i in retained_idxs]
-
-@lru_cache(maxsize=2)
-@MEMORY.cache
-def get_subcloud_index(subcloud: SubCloud) -> faiss.Index:
-    return build_index(subcloud.parent.index_info, get_subcloud_embeddings(subcloud))
-
-@lru_cache(maxsize=2)
-@MEMORY.cache
-def get_subcloud_embeddings(subcloud: SubCloud):
-    parent_embeddings = subcloud.parent.embeddings()
-    retained_idxs = get_subcloud_retained_idxs(subcloud)
-    return parent_embeddings[retained_idxs]
-
-
 def get_query(work_filter: Filter) -> pyalex.Works:
     params = work_filter.to_dict()
     type_param = params.pop("type", None)
@@ -952,81 +524,37 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
     words = [pos_to_word.get(i, "[[MISSING]]") for i in range(max_pos + 1)]
     return " ".join(words)
 
-# def build_cloud(
-#     drop_k: int,
-#     max_works: Optional[int],
-#     deduplicator: Optional[Deduplicator],
-#     denoiser: str,
-#     *,
-#     index: Optional[IndexInfo | Any] = None,
-#     index_type: Optional[IndexType] = None,
-#     hnsw_m: Optional[int] = None,
-#     hnsw_efc: Optional[int] = None,
-#     hnsw_efs: Optional[int] = None,
-#     embedder_model: Embedder.ModelName,
-#     filter_pair: Optional[FilterPair] = None,
-#     normalize_embeddings: bool = True,
-# ) -> Cloud:
-#     """Build and return a :class:`Cloud` object with the given parameters.
 
-#     This legacy helper remains for backwards compatibility with modules that
-#     predate the Hydra-based configuration system. New code should prefer
-#     instantiating :class:`Cloud` via :class:`bookgap.configs.cloud.CloudConfig`.
-#     """
+T = TypeVar('T', bound=np.generic)
 
-#     if index is not None and index_type is not None:
-#         raise ValueError("Specify either 'index' or 'index_type', not both")
+def denoise(cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+    """Apply projective denoising with full orchestration."""
+    # Pre-projection PCA for baseline singular values
+    s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0))  # type: ignore
+    
+    LOGGER.info(f"Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
 
-#     index_config: IndexInfo | Any
-#     if index is not None:
-#         index_config = index
-#     elif index_type is not None:
-#         if index_type == IndexType.HNSW:
-#             if hnsw_m is None or hnsw_efc is None or hnsw_efs is None:
-#                 raise ValueError("HNSW index requires hnsw_m, hnsw_efc, and hnsw_efs parameters")
-#             index_config = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
-#         elif index_type == IndexType.FLAT_L2:
-#             index_config = FlatL2()
-#         else:
-#             raise ValueError(f"Unsupported index_type: {index_type}")
-#     else:
-#         raise ValueError("Either 'index' or 'index_type' must be provided")
+    # Dimensionality reduction/cleaning
 
-#     if not isinstance(index_config, IndexInfo):
-#         from hydra.utils import instantiate
+    projection = get_cloud_projection(cloud)
 
-#         index_info = instantiate(index_config)
-#         if not isinstance(index_info, IndexInfo):
-#             raise TypeError(f"Instantiated index must be an IndexInfo, got {type(index_info)}")
-#     else:
-#         index_info = index_config
+    LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={embeddings.shape[1] - cloud.drop_k}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
 
-#     if deduplicator is not None and not isinstance(deduplicator, Deduplicator):
-#         from hydra.utils import instantiate
+    denoised_embeddings: NDArray[T] = projection.apply(embeddings)
 
-#         deduplicator = instantiate(deduplicator)  # type: ignore[assignment]
-#         if deduplicator is not None and not isinstance(deduplicator, Deduplicator):
-#             raise TypeError(f"Deduplicator must be a Deduplicator, got {type(deduplicator)}")
+    if cloud.normalize_embeddings:
+        norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
+        denoised_embeddings = denoised_embeddings / norms
 
-#     resolved_filter_pair = filter_pair or FilterPair(
-#         Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
-#         Filter()
-#     )
+    s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0))  # type: ignore
+    
 
-#     return Cloud(
-#         filter_pair=resolved_filter_pair,
-#         index_info=index_info,
-#         max_works=max_works,
-#         deduplicator=deduplicator,
-#         normalize_embeddings=normalize_embeddings,
-#         denoiser=denoiser,
-#         drop_k=drop_k,
-#         embedder_model=embedder_model,
-#     )
-
-
-def get_subclouds_for_topic(cloud: Cloud, topic_id: Optional[str]) -> tuple:
-    """Return (books, articles) SubClouds for the given topic_id."""
-    books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=(WorkType.BOOK.value,)))
-    articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=(WorkType.ARTICLE.value,)))
-    return books, articles
+    
+    # Calculate variance decay
+    total_variance_orig = np.sum(s_orig**2)
+    total_variance_post = np.sum(s_post**2)
+    variance_retained = total_variance_post / total_variance_orig
+    
+    LOGGER.info(f"Cloud {cloud.name()} -- Variance retained after denoising: {variance_retained:.2%}")
+        
+    return denoised_embeddings

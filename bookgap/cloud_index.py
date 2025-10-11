@@ -5,8 +5,9 @@ import numpy as np
 from numpy.typing import NDArray
 import tqdm
 
-from bookgap.cloud import Cloud, SubCloud
+from bookgap.cloud import Cloud
 from bookgap.index import range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims
+from bookgap.subcloud import SubCloud
 from bookgap.util import TIMER, MEMORY, LOGGER, get_stats
 
 @MEMORY.cache

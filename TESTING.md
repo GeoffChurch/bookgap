@@ -25,6 +25,20 @@ pytest tests/ -m ""
 - **Unit Tests**: Fast, no external dependencies
 - **Integration Tests**: Marked with `@pytest.mark.integration`, make real API calls
 
+### Focused Checks
+
+- **Projection Reuse Sanity Test**: Ensures proposal embeddings reuse the cached denoiser projection and stay normalized.
+
+```bash
+conda run -p /home/gchurchill/src/bookgap/.conda pytest tests/llm/test_workflow_functions.py::TestMonitorAndDownloadResults::test_projection_applied_via_monitoring
+```
+
+- **Embedding Projection Unit Test**: Exercises `_compute_proposal_embeddings` directly with a mocked embedder.
+
+```bash
+conda run -p /home/gchurchill/src/bookgap/.conda pytest tests/llm/test_workflow_functions.py::TestComputeProposalEmbeddings::test_projection_and_normalization_applied
+```
+
 ## Environment Variables
 
 - `OPENAI_API_KEY`: Required for integration tests that make real OpenAI API calls

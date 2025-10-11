@@ -11,11 +11,10 @@ from typing import List, Optional, Dict, Any, Tuple
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
-from bookgap.cloud import SubCloud
 from bookgap.cloud_index import knn
-from bookgap.gap_finder import GapProtocol
-from bookgap.llm.data_structures import GapWithContext
+from bookgap.llm.data_structures import GapProtocol, GapWithContext
 from bookgap.llm.protocols import ParsedProposal
+from bookgap.subcloud import SubCloud
 from bookgap.util import LOGGER
 
 from bookgap.visualization import VisualizationData, ProjectionMethod, PositionMap

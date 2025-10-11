@@ -36,7 +36,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["bookgap"]
+packages = ["bookgap", "artifacts_scripts"]
 
 [tool.pytest.ini_options]
 markers = [

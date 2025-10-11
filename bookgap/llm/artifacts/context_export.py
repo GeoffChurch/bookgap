@@ -13,10 +13,11 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any
 
+from bookgap.llm.artifacts.common import get_book_to_articles_mapping, group_gap_articles_by_covering_books
 from bookgap.llm.data_structures import GapWithContext
-from bookgap.gap_finder import group_gap_articles_by_covering_books, get_book_to_articles_mapping, TOP_ARTICLES_TO_DISPLAY
 from bookgap.util import create_unicode_safe_filename, LOGGER
 
+TOP_ARTICLES_TO_DISPLAY = 10 # Max number of top articles to show in gap analysis
 
 def save_gap_context(gap_with_context: GapWithContext, output_dir: Path) -> Dict[str, Path]:
     """Save gap context as both JSON and text analysis files.

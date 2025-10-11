@@ -167,6 +167,12 @@ proposal = Proposal(
 )
 ```
 
+#### Projection Consistency
+
+- Proposal embeddings share the exact same vector space as the cloud analysis. The projection matrix (and optional mean) produced by the configured denoiser is cached once and reapplied inside `_compute_proposal_embeddings`.
+- The helper `Cloud.denoiser_projection()` exposes the cached artifact without recomputation, allowing downstream workflows (proposal generation, visualization) to stay aligned.
+- Regression coverage: see `TestComputeProposalEmbeddings::test_projection_and_normalization_applied` (unit-level) and `TestMonitorAndDownloadResults::test_projection_applied_via_monitoring` (workflow-level) for examples of the reuse pattern.
+
 ## Contributing
 
 ### Code Style
