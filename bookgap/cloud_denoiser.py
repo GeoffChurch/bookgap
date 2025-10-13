@@ -158,7 +158,17 @@ class ProjectiveDenoiser:
         context = CloudDenoiserContext(works, embeddings, *self.filters)
         projector, eigvals = self.denoiser_impl.projector(context, n_components)
 
-        projection_matrix = np.ascontiguousarray(np.asarray(projector, dtype=embeddings.dtype))
+        projection_matrix = np.asarray(projector, dtype=np.float64, order="F")
+        Q, R = np.linalg.qr(projection_matrix, mode="reduced")
+        r_diag = np.abs(np.diag(R))
+        if r_diag.size:
+            tol = max(r_diag.max() * 1e-12, 1e-12)
+            num_flat = int(np.count_nonzero(r_diag < tol))
+            if num_flat:
+                raise ValueError(f"Projector is rank deficient; {num_flat} of {r_diag.size} diagonal entries are < {tol}")
+        projection_matrix = Q
+
+        projection_matrix = np.ascontiguousarray(np.asarray(projection_matrix, dtype=embeddings.dtype))
         if projection_matrix.ndim != 2:
             raise ValueError(f"Expected projector to be 2D, got {projection_matrix.ndim}D array")
         if projection_matrix.shape[0] != original_dim:
