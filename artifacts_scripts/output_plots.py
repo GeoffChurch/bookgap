@@ -510,37 +510,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-file",
         type=Path,
-        default=Path("artifacts") / "gap_rank_fraction_scatter.png",
+        default=Path("artifacts") / "gap_book_rank_fraction_scatter.png",
         help="Where to write the scatter plot (books).",
     )
     parser.add_argument(
         "--llm-counts-output-file",
         type=Path,
-        default=Path("artifacts") / "rank_fraction_by_llm_counts.png",
+        default=Path("artifacts") / "book_rank_fraction_by_llm_counts.png",
         help="Where to write the scatter plot colored by book rank fraction and keyed by LLM counts.",
     )
     parser.add_argument(
         "--rank-fraction-scatter-file",
         type=Path,
-        default=Path("artifacts") / "rank_fraction_scatter_linear.png",
+        default=Path("artifacts") / "book_rank_fraction_scatter_linear.png",
         help="Where to write the per-topic book rank fraction scatter plot (linear y-scale).",
     )
     parser.add_argument(
         "--rank-fraction-scatter-log-file",
         type=Path,
-        default=Path("artifacts") / "rank_fraction_scatter_log.png",
+        default=Path("artifacts") / "book_rank_fraction_scatter_log.png",
         help="Where to write the per-topic book rank fraction scatter plot (log y-scale).",
     )
     parser.add_argument(
         "--rank-fraction-violin-file",
         type=Path,
-        default=Path("artifacts") / "rank_fraction_violin_linear.png",
+        default=Path("artifacts") / "book_rank_fraction_violin_linear.png",
         help="Where to write the per-run book rank fraction violin plot (linear y-scale).",
     )
     parser.add_argument(
         "--rank-fraction-violin-log-file",
         type=Path,
-        default=Path("artifacts") / "rank_fraction_violin_log.png",
+        default=Path("artifacts") / "book_rank_fraction_violin_log.png",
         help="Where to write the per-run book rank fraction violin plot (log y-scale).",
     )
     parser.add_argument(

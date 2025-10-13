@@ -1,22 +1,44 @@
-// {"llm.num_articles": 0, "llm.num_books": 1}
-// {"llm.num_articles": 1, "llm.num_books": 0}
-// {"llm.num_articles": 1, "llm.num_books": 1}
 
-// {"llm.num_articles": 1, "llm.num_books": 5}
-// {"llm.num_articles": 5, "llm.num_books": 1}
-// {"llm.num_articles": 5, "llm.num_books": 5}
+// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
+// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
 
-// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 384}
-// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
-// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 50}
-// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 100}
-// {"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 200}
+// {"cloud.denoiser": "ANTI_CSP", "cloud.drop_k": 1}
+// {"cloud.denoiser": "ANTI_CSP", "cloud.drop_k": 2}
 
-// Promising denoiser sweeps (ordered high -> low)
+// // {"llm.num_articles": 10, "llm.num_books": 5}
+// // {"llm.num_articles": 0, "llm.num_books": 1}
+// // {"llm.num_articles": 1, "llm.num_books": 0}
+// // {"llm.num_articles": 1, "llm.num_books": 1}
+
+// // {"llm.num_articles": 1, "llm.num_books": 5}
+// // {"llm.num_articles": 5, "llm.num_books": 1}
+// // {"llm.num_articles": 5, "llm.num_books": 5}
+
+// // Promising denoiser sweeps (ordered high -> low)
 // {"cloud.denoiser": "NORM_LPP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-{"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-{"cloud.denoiser": "CCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-{"cloud.denoiser": "DOM_INVAR", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-{"cloud.denoiser": "NORM_LPP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
-{"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
-{"cloud.denoiser": "CCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
+// {"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
+// {"cloud.denoiser": "CCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
+// {"cloud.denoiser": "DOM_INVAR", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
+// {"cloud.denoiser": "NORM_LPP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
+// {"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
+// {"cloud.denoiser": "CCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
+
+// {"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 5}
+// {"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 15}
+// {"cloud.denoiser": "PLS", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 20}
+// {"cloud.denoiser": "CCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 5}
+// {"cloud.denoiser": "CCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 15}
+// {"cloud.denoiser": "NORM_LPP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 5}
+// {"cloud.denoiser": "PLS", "cloud.embedder_model": "GIST_SMALL", "cloud.drop_k": 1}
+// {"cloud.denoiser": "CCA", "cloud.embedder_model": "GIST_SMALL", "cloud.drop_k": 1}
+
+{"cloud.denoiser": "ANTI_CSP", "cloud.drop_k": 3}
+{"cloud.denoiser": "ANTI_CSP", "cloud.drop_k": 5}
+{"cloud.denoiser": "ANTI_CSP", "cloud.drop_k": 10}
+
+{"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 3}
+{"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 5}
+{"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 10}
+{"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 50}
+
+{"cloud.denoiser": "PLS", "cloud.drop_k": 2}

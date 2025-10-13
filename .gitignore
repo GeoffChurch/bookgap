@@ -11,8 +11,7 @@ __pycache__/
 # !/artifacts/*/*
 # /artifacts/*/plots
 
-# Or just keep stats
-/artifacts/*
-!/artifacts/avgref_rank_stats/
+# Keep artifacts, but drop per-run invalid listings
+/artifacts/**/invalid_works.txt
 
 /outputs

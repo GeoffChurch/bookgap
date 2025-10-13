@@ -1,0 +1,22 @@
+Total works: 1572348
+Unique works (before splitting by type): 1550718 (98.62%)
+Number of works with duplicates (before splitting by type): 20453
+Distribution of len(group) for all duplicate groups with at least 2 works (before splitting by type):
+{'mean': 2.057546570185303, 'median': 2.0, 'min': 2.0, 'max': 95.0, 'std': 0.8895177111863749, 'count': 20453}
+
+Unique works (after splitting duplicate groups by type): 1550927 (98.64%)
+Number of works with duplicates (after splitting duplicate groups by type): 20259
+Distribution of len(group) for all duplicate groups with at least 2 works (after splitting by type):
+{'mean': 2.0573572239498494, 'median': 2.0, 'min': 2.0, 'max': 95.0, 'std': 0.8932716810429671, 'count': 20259}
+
+Counts by type:
+	article -- total works: 1554662
+	article -- unique works: 1533354 (98.63%)
+	article -- distribution of len(group) for all duplicate groups with at least 2 works:
+{'mean': 2.056787184446759, 'median': 2.0, 'min': 2.0, 'max': 95.0, 'std': 0.8938608326285183, 'count': 20163}
+
+	book -- total works: 17686
+	book -- unique works: 17573 (99.36%)
+	book -- distribution of len(group) for all duplicate groups with at least 2 works:
+{'mean': 2.1770833333333335, 'median': 2.0, 'min': 2.0, 'max': 7.0, 'std': 0.7499276585481799, 'count': 96}
+
