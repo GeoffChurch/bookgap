@@ -122,7 +122,7 @@ def range_search_radii_(
     lims = [np.array([], dtype=np.uint64)] if return_lims else None
     dists = [np.array([], dtype=np.float32)] if return_dists else None
     ids = [np.array([], dtype=np.int64)] if return_ids else None
-    for i in tqdm.tqdm(range(len(query)), desc="Range search radii", mininterval=1, delay=1):
+    for i in tqdm.tqdm(range(len(query)), desc="Range search radii", mininterval=3, delay=3):
         batch = query[i:i+1]
         lims_, dists_, ids_ = index.range_search(batch, radii[i]) # type: ignore
         assert lims_.dtype == np.uint64
@@ -162,7 +162,7 @@ def range_search_radii_with(
     pbar = None
     cleanup_pbar = False
     if show_progress is True:
-        pbar = tqdm.tqdm(desc="Range search radii with kernel", total=len(query), mininterval=1, delay=1)
+        pbar = tqdm.tqdm(desc="Range search radii with kernel", total=len(query), mininterval=3, delay=3)
         cleanup_pbar = True
     elif show_progress is not False:
         pbar = show_progress
@@ -238,7 +238,7 @@ def range_search_with_(
                   for each query point
         batch_size: Number of queries to process at once
     """
-    with tqdm.tqdm(desc="Range search with kernel", total=len(query), mininterval=1, delay=1) as pbar:
+    with tqdm.tqdm(desc="Range search with kernel", total=len(query), mininterval=3, delay=3) as pbar:
         for i in range(0, len(query), batch_size):
             batch = query[i:i + batch_size]
             lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore
@@ -262,7 +262,7 @@ def kballs_with(ambient: faiss.Index, landmark: faiss.Index, query: NDArray,
                 show_progress: bool | tqdm.tqdm = True) -> None:
     D, _I = landmark.search(query, k=k) # type: ignore
     range_search_radii_with(ambient, query, radius_fraction * D[:, -1], kernel_fn,
-                            show_progress=tqdm.tqdm(range(len(query)), desc="k-balls with kernel", total=len(query), mininterval=1, delay=1) if show_progress is True else show_progress)
+                            show_progress=tqdm.tqdm(range(len(query)), desc="k-balls with kernel", total=len(query), mininterval=3, delay=3) if show_progress is True else show_progress)
 
 T = TypeVar('T', bound=np.generic)
 @dataclass(frozen=True)
@@ -324,6 +324,6 @@ def hypothetical_voronoi_coverage(
         radius_fraction=1.0,
         k=2 if ambient_is_landmark else 1,
         kernel_fn=go,
-        show_progress=tqdm.tqdm(desc="Voronoi coverage", total=len(query), mininterval=1, delay=1) if show_progress is True else show_progress
+        show_progress=tqdm.tqdm(desc="Voronoi coverage", total=len(query), mininterval=3, delay=3) if show_progress is True else show_progress
     )
     return counts

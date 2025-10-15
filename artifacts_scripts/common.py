@@ -11,6 +11,8 @@ from omegaconf import OmegaConf
 LOGGER = logging.getLogger(__name__)
 
 PROPOSAL_BOOK_RANK_FRACTION_COLUMN = "proposal_book_rank_fraction"
+PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN = "proposal_article_rank_fraction"
+GAP_COVERAGE_FRACTION_COLUMN = "gap_coverage_fraction"
 GAP_ZSCORE_COLUMN = "gap_zscore"
 
 

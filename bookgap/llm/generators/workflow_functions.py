@@ -3,7 +3,7 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from itertools import islice
 import json
@@ -27,7 +27,12 @@ from bookgap.cloud import Cloud, Embedder
 from bookgap.configs.gap.gap_config import CellType
 from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.llm.artifacts.common import group_gap_articles_by_covering_books
-from bookgap.llm.data_structures import BatchResults, GapWithContext, ArtifactPaths
+from bookgap.llm.data_structures import (
+    BatchResults,
+    GapWithContext,
+    ProposalOutrankCounts,
+    ProposalOutrankCountsMap,
+)
 from bookgap.llm.generators.batch_generator import BatchProposalGenerator
 from bookgap.subcloud import SubCloud, get_subclouds_for_topic
 from bookgap.util import LOGGER
@@ -36,6 +41,7 @@ from ..protocols import (
     Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
 from ..identifiers import parse_gap_proposal_id, GapProposalId
+from bookgap.index import range_search_radii_with
 from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
 from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
@@ -53,6 +59,7 @@ class ProposalGrouping:
     by_gap_idx: dict[int, list[ParsedProposal]]
     by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
     ordered: list[tuple[ParsedProposal, GapProposalId]]
+
 
 def find_gaps_for_topic(
     books: SubCloud,
@@ -123,6 +130,92 @@ def _index_proposals(proposals: list[ParsedProposal]) -> ProposalGrouping:
         by_topic_gap=dict(by_topic_gap),
         ordered=ordered,
     )
+
+
+def _compute_proposal_outrank_counts(
+    gaps: list[GapWithContext],
+    proposals_by_topic_gap: dict[tuple[str, int], list[ParsedProposal]],
+    *,
+    epsilon: float = float(np.finfo(np.float32).eps * 8),
+) -> ProposalOutrankCountsMap:
+    """Compute per-article outrank counts for each proposal keyed by (topic_id, gap_idx).
+
+    For each article within the gap we count how many books are strictly closer than the
+    proposal by using FAISS range searches with the article as the query center.
+    """
+
+    coverage: ProposalOutrankCountsMap = {}
+    if not gaps:
+        return coverage
+
+    gap_lookup = {(gap.topic_id, gap.gap_idx): gap for gap in gaps}
+
+    for key, gap in gap_lookup.items():
+        proposals = proposals_by_topic_gap.get(key)
+        if not proposals:
+            continue
+
+        gap_article_indices = gap.gap.get_dists_idxs().idxs
+        if len(gap_article_indices) == 0:
+            continue
+
+        article_embeddings_all = gap.articles.embeddings()
+        try:
+            gap_article_vecs = np.ascontiguousarray(
+                article_embeddings_all[np.asarray(gap_article_indices, dtype=int)],
+                dtype=np.float32,
+            )
+        except IndexError:
+            LOGGER.warning(
+                "Gap %s has invalid article indices; skipping coverage computation",
+                key,
+            )
+            continue
+
+        if gap_article_vecs.size == 0:
+            continue
+
+        try:
+            book_index = gap.books.index()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning(
+                "Failed to build book index for gap %s: %s", key, exc
+            )
+            continue
+
+        coverage_for_gap: dict[str, deque[ProposalOutrankCounts]] = defaultdict(deque)
+
+        for proposal in proposals:
+            proposal_vec = np.asarray(proposal.embedding, dtype=np.float32)
+
+            diffs = gap_article_vecs - proposal_vec
+            sq_dists = np.einsum("ij,ij->i", diffs, diffs, dtype=np.float32)
+
+            counts = np.zeros(len(gap_article_vecs), dtype=np.int32)
+
+            def kernel_fn(article_idx: int, neighbor_dists, _neighbor_ids) -> None:
+                threshold = float(sq_dists[article_idx]) - epsilon
+                if threshold <= 0.0:
+                    strictly_closer = 0
+                else:
+                    strictly_closer = int(np.count_nonzero(neighbor_dists < threshold))
+                counts[article_idx] = strictly_closer
+
+            range_search_radii_with(
+                book_index,
+                query=gap_article_vecs,
+                radii=sq_dists,
+                kernel_fn=kernel_fn,
+                show_progress=False,
+            )
+
+            coverage_for_gap[proposal.custom_id].append(
+                ProposalOutrankCounts(counts=counts)
+            )
+
+        coverage[key] = coverage_for_gap
+
+    return coverage
 
 class MetadataUtils:
     """Static utilities for metadata chunking and parsing."""
@@ -630,9 +723,15 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
 
     # Index proposals once for downstream artifact generation
     proposal_grouping = _index_proposals(results.proposals)
+
+    # Compute proposal outrank counts for coverage metrics
+    proposal_outrank_counts = _compute_proposal_outrank_counts(
+        gaps,
+        proposal_grouping.by_topic_gap,
+    )
     
     # ARTIFACTS: Generate plots
-    plot_paths = generate_gap_plots_for_results(
+    _plot_paths = generate_gap_plots_for_results(
         gaps,
         results.proposals,
         output_dir,
@@ -640,7 +739,7 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     )
 
     # ARTIFACTS: Generate simple results CSV (Step 2.2 minimal)
-    results_csv = generate_gaps_analysis_csv(
+    _results_csv = generate_gaps_analysis_csv(
         gaps,
         results.proposals,
         output_dir,
@@ -648,16 +747,13 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         contexts,
         proposals_grouped=proposal_grouping.by_topic_gap,
         ordered_proposals=proposal_grouping.ordered,
+        proposal_outrank_counts=proposal_outrank_counts,
     )
-    
-    
-    artifact_paths = ArtifactPaths(plots=plot_paths, context_files=context_paths, results_csv=results_csv)
-    
+
     # Return enhanced results with artifacts
     return BatchResults(
         proposals=results.proposals,
         metadata=results.metadata,
-        artifact_paths=artifact_paths
     )
 
 

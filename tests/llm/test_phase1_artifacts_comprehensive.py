@@ -2,7 +2,7 @@
 Comprehensive tests for Phase 1 artifacts (gap plots with proposals).
 
 Tests cover:
-- Data structures (ArtifactPaths, GapWithContext integration)
+- Data structures (GapWithContext integration)
 - Gap plotting functionality (gap_plots.py)
 - Error handling and validation
 - End-to-end modern plotting pipeline
@@ -17,14 +17,13 @@ from types import SimpleNamespace
 from contextlib import ExitStack
 
 from bookgap.subcloud import SubCloud
-from bookgap.gap_finder import GapProtocol
-from bookgap.llm.data_structures import ArtifactPaths, GapWithContext
+from bookgap.llm.data_structures import GapWithContext
 from bookgap.llm.identifiers import build_gap_proposal_id
 from bookgap.llm.artifacts.gap_plots import (
     generate_gap_plots_for_results,
     save_gap_plot_with_proposals,
 )
-from bookgap.llm.protocols import ParsedProposal, Proposal#, Chapter
+from bookgap.llm.protocols import GapProtocol, ParsedProposal, Proposal#, Chapter
 import tempfile
 
 
@@ -323,22 +322,6 @@ class TestPhase1EndToEndDictConfig:
             
         except Exception as e:
             pytest.fail(f"serialize_config integration failed: {e}")
-
-
-class TestPhase1ErrorHandling:
-    """Test error handling and edge cases for Phase 1."""
-    
-    def test_artifact_paths_requires_plots(self):
-        """Test that ArtifactPaths requires plots argument."""
-        # This now tests that we can create ArtifactPaths with empty plots
-        artifact_paths = ArtifactPaths(plots=[])
-        assert artifact_paths.plots == []
-    
-    def test_empty_plots_list_allowed(self):
-        """Test that empty plots list is allowed."""
-        artifact_paths = ArtifactPaths(plots=[])
-        assert artifact_paths.plots == []
-        assert len(artifact_paths.plots) == 0
     
 
 if __name__ == "__main__":

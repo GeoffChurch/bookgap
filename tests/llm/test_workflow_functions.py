@@ -774,10 +774,6 @@ class TestRunBatchWorkflow:
         assert isinstance(result, BatchResults)
         assert result.proposals == [proposal]
         assert result.metadata == metadata
-        assert result.artifact_paths is not None
-        assert result.artifact_paths.context_files == context_paths
-        assert result.artifact_paths.plots == plot_paths
-        assert result.artifact_paths.results_csv == results_csv
 
 
 class TestGenerateBatchRequests:

@@ -15,6 +15,8 @@ from bookgap.cloud import get_cloud_projection
 from bookgap.embedder import Embedder
 
 from .common import (
+    GAP_COVERAGE_FRACTION_COLUMN,
+    PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
     PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
     RunMetadata,
     find_run_directories,
@@ -32,8 +34,12 @@ class RunSummary:
     run_path: Path
     metadata: RunMetadata
     proposal_book_rank_fraction_mean: float
+    proposal_article_rank_fraction_mean: float
+    proposal_article_rank_fraction_median: float
     proposal_book_rank_fraction_std: float
     row_count: int
+    gap_coverage_fraction_mean: float
+    gap_coverage_fraction_median: float
     projector_skew: float
 
 
@@ -81,14 +87,38 @@ def summarize_run(run_dir: Path) -> Optional[RunSummary]:
         )
         return None
 
+    article_mean = float("nan")
+    article_median = float("nan")
+    coverage_mean = float("nan")
+    coverage_median = float("nan")
+    if PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN in df.columns:
+        article_column = df[PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN]
+        article_mask = article_column.notna() & (article_column != -1)
+        if article_mask.any():
+            article_values = article_column.loc[article_mask]
+            article_mean = float(article_values.mean())
+            article_median = float(article_values.median())
+
+    if GAP_COVERAGE_FRACTION_COLUMN in df.columns:
+        coverage_column = df[GAP_COVERAGE_FRACTION_COLUMN]
+        coverage_mask = coverage_column.notna() & (coverage_column >= 0)
+        if coverage_mask.any():
+            coverage_values = coverage_column.loc[coverage_mask]
+            coverage_mean = float(coverage_values.mean())
+            coverage_median = float(coverage_values.median())
+
     projector_skew = _compute_projector_skew(run_dir)
 
     return RunSummary(
         run_path=run_dir,
         metadata=metadata,
         proposal_book_rank_fraction_mean=float(filtered.mean()),
+        proposal_article_rank_fraction_mean=article_mean,
+        proposal_article_rank_fraction_median=article_median,
         proposal_book_rank_fraction_std=float(filtered.std()),
         row_count=int(filtered.shape[0]),
+        gap_coverage_fraction_mean=coverage_mean,
+        gap_coverage_fraction_median=coverage_median,
         projector_skew=projector_skew,
     )
 
@@ -101,7 +131,6 @@ def collect_summaries(outputs_dir: Path) -> List[RunSummary]:
             summaries.append(summary)
     summaries.sort(key=lambda s: s.run_path)
     return summaries
-
 
 def write_csv(summaries: Iterable[RunSummary], outputs_dir: Path, output_file: Path) -> None:
     records = []
@@ -116,8 +145,12 @@ def write_csv(summaries: Iterable[RunSummary], outputs_dir: Path, output_file: P
                 "llm_num_articles": metadata.num_articles,
                 "llm_num_books": metadata.num_books,
                 "proposal_book_rank_fraction_mean": summary.proposal_book_rank_fraction_mean,
+                "proposal_article_rank_fraction_mean": summary.proposal_article_rank_fraction_mean,
+                "proposal_article_rank_fraction_median": summary.proposal_article_rank_fraction_median,
                 "proposal_book_rank_fraction_std": summary.proposal_book_rank_fraction_std,
                 "row_count": summary.row_count,
+                "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
+                "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
                 "projector_skew_fro": summary.projector_skew,
             }
         )
@@ -126,6 +159,7 @@ def write_csv(summaries: Iterable[RunSummary], outputs_dir: Path, output_file: P
     if not df.empty:
         df = df.sort_values(
             [
+                "proposal_book_rank_fraction_mean",
                 "embedder_model",
                 "denoiser",
                 "drop_k",
@@ -137,7 +171,7 @@ def write_csv(summaries: Iterable[RunSummary], outputs_dir: Path, output_file: P
         )
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_file, index=False)
+    df.to_csv(output_file, index=False, float_format="%.5f")
     LOGGER.info("Wrote %s", output_file)
 
 

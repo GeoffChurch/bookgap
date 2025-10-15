@@ -169,8 +169,8 @@ def deduplicate_works_semantic(cloud, works, embeddings):
     retained_idxs = deduplicate_works_semantic_(
         cloud.deduplicator,
         cloud.index_info,
-    embeddings,
-    embeddings_key=(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model),
+        embeddings,
+        embeddings_key=(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model),
     )
     # Write total and per-type retention stats
     artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)
@@ -319,7 +319,7 @@ def _filter_works(work_filter: Filter):
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
         total_expected = get_query(work_filter).count()
         for work in tqdm.tqdm(_get_works(work_filter), total=total_expected,
-                            desc=f"Filtering works in {work_filter}", mininterval=1, delay=1, smoothing=1):
+                            desc=f"Filtering works in {work_filter}", mininterval=3, delay=3, smoothing=1):
             invalidators = []
             total.insert(work)
             for filter in WorkFilter:
@@ -475,7 +475,7 @@ def embed_works(
         dim = embedder.embedding_dimension()
         embeddings = np.empty(shape=(n_works, dim), dtype=embedder.embedding_dtype())
         idx = 0
-        with tqdm.tqdm(total=n_works, desc=f"Embedding works for {work_filter}", mininterval=1, delay=2, smoothing=1) as pbar:
+        with tqdm.tqdm(total=n_works, desc=f"Embedding works for {work_filter}", mininterval=3, delay=3, smoothing=1) as pbar:
             for batch in batches():
                 remaining = n_works - idx
                 if len(batch) > remaining:

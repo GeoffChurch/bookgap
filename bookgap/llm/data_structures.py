@@ -5,8 +5,10 @@ to avoid circular imports between different modules.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
-from pathlib import Path
+from typing import Deque, Dict, List, Tuple
+
+import numpy as np
+from numpy.typing import NDArray
 
 from bookgap.configs.config import ExperimentConfig
 from bookgap.subcloud import SubCloud
@@ -30,18 +32,23 @@ class GapWithContext:
 
 
 @dataclass(frozen=True)
-class ArtifactPaths:
-    """Container for all generated artifact file paths."""
-    plots: List[Path]
-    context_files: Optional[List[Path]] = None  # Will be added in Phase 2
-    proposal_files: Optional[List[Path]] = None  # Will be added in Phase 2
-    results_csv: Optional[Path] = None  # Will be added in Phase 2
-    latex_files: Optional[List[Path]] = None  # Will be added in Phase 4
-
-
-@dataclass(frozen=True)
 class BatchResults:
     """Immutable container for batch processing results."""
     proposals: List[ParsedProposal]
     metadata: ExperimentConfig
-    artifact_paths: Optional[ArtifactPaths] = None
+
+
+@dataclass(frozen=True)
+class ProposalOutrankCounts:
+    """Stores, per in-gap article, how many books outrank a proposal."""
+
+    counts: NDArray[np.int32]
+
+    def coverage_fraction(self) -> float:
+        num_covered = np.count_nonzero(self.counts == 0)
+        return float(num_covered / self.counts.size)
+
+
+ProposalOutrankCountsMap = Dict[
+    Tuple[str, int], Dict[str, Deque[ProposalOutrankCounts]]
+]

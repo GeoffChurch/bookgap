@@ -16,7 +16,7 @@ from bookgap.cloud_index import compute_proposal_rankings_for_gap
 from bookgap.configs.config import ExperimentConfig
 from bookgap.llm.identifiers import GapProposalId
 from bookgap.llm.protocols import ParsedProposal, ProposalContext, ProposalCounts
-from bookgap.llm.data_structures import GapWithContext
+from bookgap.llm.data_structures import GapWithContext, ProposalOutrankCountsMap
 from bookgap.util import LOGGER
 
 
@@ -241,6 +241,7 @@ def generate_gaps_analysis_csv(
     *,
     proposals_grouped: dict[tuple[str, int], list[ParsedProposal]],
     ordered_proposals: list[tuple[ParsedProposal, GapProposalId]],
+    proposal_outrank_counts: ProposalOutrankCountsMap,
 ) -> Path:
     """
     Create a minimal CSV joining proposals with basic gap metadata.
@@ -260,10 +261,17 @@ def generate_gaps_analysis_csv(
 
     prop_rows: list[dict[str, Any]] = []
     for proposal, parsed in ordered_proposals:
-        ranking_deque = rankings_by_gap.get((parsed.topic_id, parsed.gap_idx))
-        ranking_tuple = ranking_deque.popleft() if ranking_deque else None
-        gap_meta = gap_meta_map.get((parsed.topic_id, parsed.gap_idx))
-        prop_rows.append(_proposal_row(parsed, proposal, ranking_tuple, gap_meta))
+        key = (parsed.topic_id, parsed.gap_idx)
+        ranking_deque = rankings_by_gap[key]
+        ranking_tuple = ranking_deque.popleft()
+        gap_meta = gap_meta_map[key]
+
+        coverage_deque = proposal_outrank_counts[key][proposal.custom_id]
+        coverage_stats = coverage_deque.popleft()
+        gap_coverage_fraction = coverage_stats.coverage_fraction()
+        row = _proposal_row(parsed, proposal, ranking_tuple, gap_meta)
+        row["gap_coverage_fraction"] = gap_coverage_fraction
+        prop_rows.append(row)
 
     proposals_df = pd.DataFrame(prop_rows)
 

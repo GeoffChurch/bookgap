@@ -154,7 +154,6 @@ python bookgap/batch_generator.py --config-name standard batch.num_gaps=1
 - ✅ **Results CSV Delivery**: `generate_gaps_analysis_csv()` writes sanitized, proposals-centric CSVs with prompt counts and gap statistics
 - ✅ **Canonical IDs**: `bookgap/llm/identifiers.py` centralizes building/parsing of `gap_{idx}_topic_{topic_id}` custom IDs used across requests and exports
 - ✅ **Workflow Embeddings Pass**: Batch results now materialize `ParsedProposal` objects after a single `Embedder` pass via the new `PendingProposal` staging type
-- ✅ **ArtifactPaths Update**: Results CSV path is stored alongside plots and contexts for downstream integrations
 - ✅ **Targeted Tests**: Added `tests/llm/test_results_export.py` to cover CSV sanitization edge cases
 
 **Workflow Improvement - Early vs Late Artifacts**:
@@ -282,15 +281,6 @@ plots_dir.mkdir(parents=True, exist_ok=True)
 #### Step 5.2: Simple Integration
 **File**: `bookgap/llm/generators/workflow_artifacts.py`
 ```python
-@dataclass(frozen=True)
-class ArtifactPaths:
-    """Container for all generated artifact file paths."""
-    plots: List[Path]
-    context_files: List[Path]
-    proposal_files: List[Path]
-    results_csv: Path
-    latex_files: List[Path]
-
 # Example of how artifact generation works (inlined in workflow_functions.py):
 def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     # Step 1: Find gaps
@@ -312,15 +302,9 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
 
     csv_path = generate_gaps_analysis_csv(gaps, results.proposals, output_dir, config, contexts)
 
-    artifact_paths = ArtifactPaths(
-        plots=plot_paths,
-        context_files=context_paths,
-        results_csv=csv_path,
-    )
     return BatchResults(
         proposals=results.proposals,
         metadata=results.metadata,
-        artifact_paths=artifact_paths,
     )
 ```
 
@@ -366,16 +350,9 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     )
     LOGGER.info(f"Generated results CSV at {results_csv}")
 
-    artifact_paths = ArtifactPaths(
-        plots=plot_paths,
-        context_files=context_paths,
-        results_csv=results_csv,
-    )
-
     return BatchResults(
         proposals=results.proposals,
         metadata=results.metadata,
-        artifact_paths=artifact_paths
     )
 ```
 

@@ -15,6 +15,18 @@ from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 import numpy as np
 
+plt.rcParams.update(
+    {
+        "font.size": 9,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 5,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        "figure.titlesize": 11,
+    }
+)
+
 from .common import (
     GAP_ZSCORE_COLUMN,
     PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
@@ -57,9 +69,9 @@ def _format_metadata_label(metadata: Optional[RunMetadata], fallback_label: str)
     num_books = metadata.num_books if metadata.num_books is not None else "?"
     num_articles = metadata.num_articles if metadata.num_articles is not None else "?"
     return (
-        f"den={denoiser}\n"
+        f"{denoiser}\n"
         f"k={drop_k}\n"
-        f"embed={embedder_str}\n"
+        f"{embedder_str}\n"
         f"books={num_books}\n"
         f"articles={num_articles}"
     )
