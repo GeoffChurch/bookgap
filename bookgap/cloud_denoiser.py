@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Protocol, TypeVar, runtime_checkab
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse as sp
+from sklearn.preprocessing import normalize
 
 import bookgap.denoisers as denoisers
 from bookgap.util import Filter, WorkType, TIMER, LOGGER
@@ -119,10 +120,9 @@ def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
     citation_graph = sp.csr_matrix((data, (row, col)), shape=(n, n))
     row_sums = np.asarray(citation_graph.sum(axis=1)).squeeze(1)
     assert row_sums.min() >= 1 # This is guaranteed by the self-references
-    
-    # In-place row normalization
-    assert citation_graph.data.dtype == np.float32, f"Expected float32 data type, got {citation_graph.data.dtype}"
-    citation_graph.data /= row_sums[citation_graph.indices]
+
+    # Normalize rows so each citing work distributes equal total weight.
+    citation_graph = normalize(citation_graph, norm="l1", axis=1, copy=False)
     
     assert type(citation_graph) is sp.csr_matrix, f"Expected csr_matrix, got {type(citation_graph)}"
     LOGGER.info(f"Built citation graph with shape {citation_graph.shape} and {citation_graph.nnz} non-zero entries")
