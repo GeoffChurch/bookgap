@@ -264,7 +264,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
     
     gaps: list[GapWithContext] = []
     
-    # Analyze all topics from the AI subfield (matches gap_finder.main)
+    # Analyze all topics from the AI subfield
     
     subfields = pyalex.Subfields()
     subfield_obj = subfields["1702"]  # Hardcoded AI subfield (matches build_cloud)
@@ -274,7 +274,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
         LOGGER.warning(f"No topics found for AI subfield")
         return gaps
     
-    # Analyze all topics (matches gap_finder.main behavior)
+    # Analyze all topics
     for i, topic in enumerate(topics):
         topic_name = topic["display_name"]
         topic_id = topic["id"].split("/")[-1]
@@ -292,7 +292,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
             LOGGER.warning(f"No articles found for topic {topic_id}")
             continue  # Skip to next topic instead of returning
         
-        # Compute book gap sizes for statistics (matches gap_finder.write_gaps)
+        # Compute book gap sizes for statistics
         # Note: For book gaps, we call the algorithm directly with query=books
         book_gap_sizes = [
             len(g.get_dists_idxs().idxs)
@@ -320,6 +320,7 @@ def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
         topic_gaps: list[GapWithContext] = []
         for gap in islice(gap_generator, config.batch.num_gaps):
             gap_size = len(gap.get_dists_idxs().idxs)
+            LOGGER.info(f"Found gap of size {gap_size} articles")
             gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
 
             topic_gaps.append(

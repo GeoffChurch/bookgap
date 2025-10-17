@@ -1,13 +1,45 @@
+{}
+{"cloud.embedder_model": "GEMMA_300M"}
 
-// {"cloud.denoiser": "CCP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "CCLIP_01", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "CCLIP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "CCLIP_1", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "ORTHO_MANIFOLD", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "AUG_LPP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "GPCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "JAD_CCP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "JAD_EQUAL", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "JAD_HALF_L", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "JAD_LIP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
-// {"cloud.denoiser": "LIP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 1}
+{"num_articles": 1, "num_books": 0}
+{"num_articles": 1, "num_books": 0, "cloud.embedder_model": "GEMMA_300M"}
+{"num_articles": 0, "num_books": 1}
+{"num_articles": 0, "num_books": 1, "cloud.embedder_model": "GEMMA_300M"}
+{"num_articles": 1, "num_books": 1}
+{"num_articles": 1, "num_books": 1, "cloud.embedder_model": "GEMMA_300M"}
+{"num_articles": 5, "num_books": 0}
+{"num_articles": 5, "num_books": 0, "cloud.embedder_model": "GEMMA_300M"}
+{"num_articles": 0, "num_books": 5}
+{"num_articles": 0, "num_books": 5, "cloud.embedder_model": "GEMMA_300M"}
+{"num_articles": 5, "num_books": 5}
+{"num_articles": 5, "num_books": 5, "cloud.embedder_model": "GEMMA_300M"}
+
+
+{"cloud.denoiser": "ANTI_CSP", "cloud.drop_k": 2}
+{"cloud.denoiser": "ANTI_CSP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "ANTI_LDA", "cloud.drop_k": 2}
+{"cloud.denoiser": "ANTI_LDA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCP", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCLIP_01", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCLIP_01", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCLIP", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCLIP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCLIP_1", "cloud.drop_k": 2}
+{"cloud.denoiser": "CCLIP_1", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "ORTHO_MANIFOLD", "cloud.drop_k": 2}
+{"cloud.denoiser": "ORTHO_MANIFOLD", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "AUG_LPP", "cloud.drop_k": 2}
+{"cloud.denoiser": "AUG_LPP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "GPCA", "cloud.drop_k": 2}
+{"cloud.denoiser": "GPCA", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_CCP", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_CCP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_EQUAL", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_EQUAL", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_HALF_L", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_HALF_L", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_LIP", "cloud.drop_k": 2}
+{"cloud.denoiser": "JAD_LIP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}
+{"cloud.denoiser": "LIP", "cloud.drop_k": 2}
+{"cloud.denoiser": "LIP", "cloud.embedder_model": "GEMMA_300M", "cloud.drop_k": 2}

@@ -56,7 +56,7 @@ def register_configs():
         num_articles=10,                   # 10 gap articles per prompt
         num_books=5,                       # 5 covering books per prompt
         temperature=0.2,                   # Low temperature (focused responses)
-        max_tokens=8192,                   # Token limit for proposals
+        max_tokens=4096,                   # Token limit for proposals
         use_structured_output=True         # Use JSON schema for structured responses - enables parsing
     )
     
@@ -65,7 +65,7 @@ def register_configs():
     # ===== BATCH CONFIGURATIONS =====
     
     standard_batch = BatchConfig(
-        num_gaps=1,
+        num_gaps=2,
         completion_window="24h",
         generate_plots=True,
         save_prompts=True,

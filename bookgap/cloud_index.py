@@ -10,7 +10,6 @@ from bookgap.index import range_search_, range_search_radii_, FlatWithLims, from
 from bookgap.subcloud import SubCloud
 from bookgap.util import TIMER, MEMORY, LOGGER, get_stats
 
-@MEMORY.cache
 def get_kball_coverage(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 
                        radius_fraction: float, k: int, is_intra_cloud: bool):
     """

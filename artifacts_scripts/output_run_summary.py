@@ -6,13 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-import numpy as np
 import pandas as pd
-from hydra.utils import instantiate
-from omegaconf import OmegaConf
-
-from bookgap.cloud import get_cloud_projection
-from bookgap.embedder import Embedder
 
 from .common import (
     GAP_COVERAGE_FRACTION_COLUMN,
@@ -40,30 +34,6 @@ class RunSummary:
     row_count: int
     gap_coverage_fraction_mean: float
     gap_coverage_fraction_median: float
-    projector_skew: float
-
-
-def _compute_projector_skew(run_dir: Path) -> float:
-    config_path = run_dir / ".hydra" / "config.yaml"
-    config = OmegaConf.load(config_path)
-    cloud_cfg = OmegaConf.select(config, "cloud", default=None)
-
-    embedder_model_value = OmegaConf.select(cloud_cfg, "embedder_model", default=None)
-    enum_value = Embedder.ModelName[embedder_model_value]
-    cloud_cfg.embedder_model = enum_value
-
-    cloud = instantiate(cloud_cfg)
-    projection = get_cloud_projection(cloud)
-
-    matrix = projection.projection_matrix
-    if matrix.size == 0:
-        return 0.0
-
-    gram = matrix.T @ matrix
-    identity = np.eye(gram.shape[0], dtype=matrix.dtype)
-    skew = np.linalg.norm(gram - identity, ord="fro")
-    return float(skew)
-
 
 def summarize_run(run_dir: Path) -> Optional[RunSummary]:
     metadata = load_run_metadata(run_dir)
@@ -107,8 +77,6 @@ def summarize_run(run_dir: Path) -> Optional[RunSummary]:
             coverage_mean = float(coverage_values.mean())
             coverage_median = float(coverage_values.median())
 
-    projector_skew = _compute_projector_skew(run_dir)
-
     return RunSummary(
         run_path=run_dir,
         metadata=metadata,
@@ -119,7 +87,6 @@ def summarize_run(run_dir: Path) -> Optional[RunSummary]:
         row_count=int(filtered.shape[0]),
         gap_coverage_fraction_mean=coverage_mean,
         gap_coverage_fraction_median=coverage_median,
-        projector_skew=projector_skew,
     )
 
 
@@ -151,7 +118,6 @@ def write_csv(summaries: Iterable[RunSummary], outputs_dir: Path, output_file: P
                 "row_count": summary.row_count,
                 "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
                 "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
-                "projector_skew_fro": summary.projector_skew,
             }
         )
 

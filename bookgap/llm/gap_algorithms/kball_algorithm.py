@@ -57,10 +57,6 @@ class KballAlgorithm:
             dists = dists[order]
             idxs = idxs[order]
 
-            if query == ambient:
-                assert idxs[0] == highest_coverage_query
-                assert dists[0] == 0
-            
             yield KballGap(
                 ambient=ambient,
                 landmark=landmark,
@@ -151,8 +147,6 @@ class KballGap:
             raise ValueError("Squared distances must be a 1D array")
         if not self.dists_idxs.sqdists.shape == self.dists_idxs.idxs.shape:
             raise ValueError("Squared distances and indices must have the same shape")
-        if self.query == self.ambient and not self.dists_idxs.sqdists[0] == 0:
-            raise ValueError("The closest point in the gap must have squared distance 0 (it is the center point)")
 
     def get_covering_book_indices(self) -> list[np.intp]:
         """Get the indices of books that cover articles in the gap."""

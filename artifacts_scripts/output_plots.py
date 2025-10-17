@@ -5,13 +5,14 @@ import logging
 from dataclasses import dataclass
 from itertools import cycle
 from pathlib import Path
-from typing import Any, List, Optional, cast
+from typing import Any, Callable, List, Optional, Sequence, cast
 
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
+from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 import numpy as np
 
@@ -28,7 +29,9 @@ plt.rcParams.update(
 )
 
 from .common import (
+    GAP_COVERAGE_FRACTION_COLUMN,
     GAP_ZSCORE_COLUMN,
+    PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
     PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
     RunMetadata,
     find_run_directories,
@@ -54,6 +57,132 @@ class RankFractionEntry:
     median_value: float
     values: List[float]
     label: str
+
+
+@dataclass(frozen=True)
+class PlotFilenames:
+    zscore_scatter: str
+    llm_counts_scatter: str
+    scatter_linear: str
+    scatter_log: str
+    violin_linear: str
+    violin_log: str
+
+
+@dataclass(frozen=True)
+class PlotVariantSpec:
+    name: str
+    title_suffix: str
+    sort_key: Callable[[RankFractionEntry], float]
+    colorbar_label: str
+    color_aggregator: Callable[[pd.Series], float]
+
+
+@dataclass(frozen=True)
+class PlotMetricSpec:
+    column: str
+    label: str
+    filenames: PlotFilenames
+    variants: Sequence[PlotVariantSpec]
+
+
+def _mean_sort_key(entry: RankFractionEntry) -> float:
+    return entry.mean_value
+
+
+def _median_sort_key(entry: RankFractionEntry) -> float:
+    return entry.median_value
+
+
+def _create_variants(label: str) -> Sequence[PlotVariantSpec]:
+    def _mean_aggregator(series: pd.Series) -> float:
+        cleaned = series.dropna()
+        if cleaned.empty:
+            return 0.0
+        return float(np.mean(cleaned))
+
+    def _median_aggregator(series: pd.Series) -> float:
+        cleaned = series.dropna()
+        if cleaned.empty:
+            return 0.0
+        return float(np.median(cleaned))
+
+    return (
+        PlotVariantSpec(
+            name="mean",
+            title_suffix=" (sorted by mean)",
+            sort_key=_mean_sort_key,
+            colorbar_label=f"Mean {label}",
+            color_aggregator=_mean_aggregator,
+        ),
+        PlotVariantSpec(
+            name="median",
+            title_suffix=" (sorted by median)",
+            sort_key=_median_sort_key,
+            colorbar_label=f"Median {label}",
+            color_aggregator=_median_aggregator,
+        ),
+    )
+
+
+def _build_metric_specs() -> Sequence[PlotMetricSpec]:
+    return (
+        PlotMetricSpec(
+            column=PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
+            label="Proposal Book Rank Fraction",
+            filenames=PlotFilenames(
+                zscore_scatter="gap_book_rank_fraction_scatter.png",
+                llm_counts_scatter="book_rank_fraction_by_llm_counts.png",
+                scatter_linear="book_rank_fraction_scatter_linear.png",
+                scatter_log="book_rank_fraction_scatter_log.png",
+                violin_linear="book_rank_fraction_violin_linear.png",
+                violin_log="book_rank_fraction_violin_log.png",
+            ),
+            variants=_create_variants("Proposal Book Rank Fraction"),
+        ),
+        PlotMetricSpec(
+            column=PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
+            label="Proposal Article Rank Fraction",
+            filenames=PlotFilenames(
+                zscore_scatter="gap_article_rank_fraction_scatter.png",
+                llm_counts_scatter="article_rank_fraction_by_llm_counts.png",
+                scatter_linear="article_rank_fraction_scatter_linear.png",
+                scatter_log="article_rank_fraction_scatter_log.png",
+                violin_linear="article_rank_fraction_violin_linear.png",
+                violin_log="article_rank_fraction_violin_log.png",
+            ),
+            variants=_create_variants("Proposal Article Rank Fraction"),
+        ),
+        PlotMetricSpec(
+            column=GAP_COVERAGE_FRACTION_COLUMN,
+            label="Gap Coverage Fraction",
+            filenames=PlotFilenames(
+                zscore_scatter="gap_coverage_fraction_gap_zscore_scatter.png",
+                llm_counts_scatter="gap_coverage_fraction_by_llm_counts.png",
+                scatter_linear="gap_coverage_fraction_scatter_linear.png",
+                scatter_log="gap_coverage_fraction_scatter_log.png",
+                violin_linear="gap_coverage_fraction_violin_linear.png",
+                violin_log="gap_coverage_fraction_violin_log.png",
+            ),
+            variants=_create_variants("Gap Coverage Fraction"),
+        ),
+        PlotMetricSpec(
+            column=GAP_ZSCORE_COLUMN,
+            label="Gap Z-Score",
+            filenames=PlotFilenames(
+                zscore_scatter="gap_zscore_gap_zscore_scatter.png",
+                llm_counts_scatter="gap_zscore_by_llm_counts.png",
+                scatter_linear="gap_zscore_scatter_linear.png",
+                scatter_log="gap_zscore_scatter_log.png",
+                violin_linear="gap_zscore_violin_linear.png",
+                violin_log="gap_zscore_violin_log.png",
+            ),
+            variants=_create_variants("Gap Z-Score"),
+        ),
+    )
+
+
+METRIC_SPECS: Sequence[PlotMetricSpec] = _build_metric_specs()
 
 
 def _format_metadata_label(metadata: Optional[RunMetadata], fallback_label: str) -> str:
@@ -105,7 +234,6 @@ def build_rank_fraction_entries(
             )
         )
 
-    entries.sort(key=lambda entry: (entry.median_value, entry.mean_value))
     return entries
 
 
@@ -130,7 +258,7 @@ def _apply_yscale(ax: Axes, yscale: str, values: List[float], base_title: str) -
     return base_title
 
 
-def collect_run_points(outputs_dir: Path) -> List[RunPlotData]:
+def collect_run_points(outputs_dir: Path, metric: PlotMetricSpec) -> List[RunPlotData]:
     run_points: List[RunPlotData] = []
 
     for run_dir in find_run_directories(outputs_dir):
@@ -148,6 +276,7 @@ def collect_run_points(outputs_dir: Path) -> List[RunPlotData]:
         required_columns = {
             GAP_ZSCORE_COLUMN,
             PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
+            metric.column,
         }
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
@@ -155,8 +284,8 @@ def collect_run_points(outputs_dir: Path) -> List[RunPlotData]:
             continue
 
         requested_columns = [GAP_ZSCORE_COLUMN, PROPOSAL_BOOK_RANK_FRACTION_COLUMN]
-        if "proposal_article_rank_fraction" in df.columns:
-            requested_columns.append("proposal_article_rank_fraction")
+        if metric.column not in requested_columns:
+            requested_columns.append(metric.column)
 
         filtered_df = df.loc[mask, requested_columns].dropna(
             subset=[col for col in requested_columns if col != GAP_ZSCORE_COLUMN]
@@ -220,6 +349,8 @@ def plot_llm_counts_scatter(
     dpi: int,
     value_column: str,
     colorbar_label: str,
+    aggregator: Callable[[pd.Series], float],
+    title: str,
 ) -> None:
     marker_cycle = cycle(["o", "s", "^", "D", "v", "P", "X", "*", ">", "<", "H"])
     marker_for_config: dict[tuple, str] = {}
@@ -243,7 +374,7 @@ def plot_llm_counts_scatter(
 
         if value_column not in df.columns:
             continue
-        mean_rank_fraction = float(df[value_column].mean())
+        mean_rank_fraction = float(aggregator(df[value_column]))
         config_key = (
             metadata.denoiser or "UNKNOWN",
             metadata.drop_k,
@@ -303,7 +434,7 @@ def plot_llm_counts_scatter(
 
     ax.set_xlabel("LLM Number of Books")
     ax.set_ylabel("LLM Number of Articles")
-    ax.set_title("Mean Proposal Book Rank Fraction by LLM Counts")
+    ax.set_title(title)
     ax.grid(True, linewidth=0.3, linestyle="--", alpha=0.5)
 
     if legend_handles:
@@ -323,6 +454,135 @@ def plot_llm_counts_scatter(
     LOGGER.info("Wrote LLM scatter plot to %s", output_file)
 
 
+def _sorted_rank_fraction_entries(
+    run_points: List[RunPlotData],
+    value_column: str,
+    sort_key: Callable[[RankFractionEntry], float],
+) -> List[RankFractionEntry]:
+    entries = build_rank_fraction_entries(run_points, value_column)
+    entries.sort(key=lambda entry: (sort_key(entry), entry.median_value, entry.mean_value, entry.label))
+    return entries
+
+
+def _build_rank_fraction_scatter_plot(
+    entries: List[RankFractionEntry],
+    ylabel: str,
+) -> tuple[Figure, Axes, List[float]]:
+    figure_width = max(10, len(entries) * 0.6) if entries else 10
+    fig, ax = plt.subplots(figsize=(figure_width, 6))
+
+    all_values: List[float] = []
+    for idx, entry in enumerate(entries):
+        values = entry.values
+        if not values:
+            continue
+        all_values.extend(values)
+        n = len(values)
+        jitter = np.linspace(-0.2, 0.2, n) if n > 1 else np.zeros(1)
+        x_positions = idx + 1 + jitter
+        ax.scatter(
+            x_positions,
+            values,
+            alpha=0.6,
+            s=25,
+            color="#5DADE2",
+            edgecolors="black",
+            linewidths=0.3,
+        )
+        ax.scatter(
+            idx + 1,
+            entry.mean_value,
+            marker="D",
+            s=70,
+            color="#E74C3C",
+            edgecolors="black",
+            linewidths=0.5,
+            alpha=0.9,
+        )
+        ax.scatter(
+            idx + 1,
+            entry.median_value,
+            marker="P",
+            s=80,
+            color="#2ECC71",
+            edgecolors="black",
+            linewidths=0.5,
+            alpha=0.9,
+        )
+
+    labels = [entry.label for entry in entries]
+    ax.set_xticks(range(1, len(labels) + 1))
+    tick_texts = ax.set_xticklabels(labels)
+    for text in tick_texts:
+        text.set_fontsize(6)
+        text.set_horizontalalignment("center")
+
+    ax.set_ylabel(ylabel)
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="D",
+            color="none",
+            markerfacecolor="#E74C3C",
+            markeredgecolor="black",
+            markersize=7,
+            linestyle="None",
+            label="Mean",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="P",
+            color="none",
+            markerfacecolor="#2ECC71",
+            markeredgecolor="black",
+            markersize=8,
+            linestyle="None",
+            label="Median",
+        ),
+    ]
+    ax.legend(handles=legend_handles, loc="upper right", title="Summary Markers", fontsize="small")
+    ax.grid(True, linewidth=0.3, linestyle="--", alpha=0.5, axis="y")
+
+    return fig, ax, all_values
+
+
+def plot_rank_fraction_scatter_pair(
+    run_points: List[RunPlotData],
+    output_linear: Path,
+    output_log: Path,
+    dpi: int,
+    value_column: str,
+    ylabel: str,
+    base_title: str,
+    sort_key: Callable[[RankFractionEntry], float],
+) -> None:
+    entries = _sorted_rank_fraction_entries(run_points, value_column, sort_key)
+    if not entries:
+        LOGGER.warning("No %s data for scatter plot. Skipping generation.", ylabel)
+        return
+
+    fig, ax, all_values = _build_rank_fraction_scatter_plot(entries, ylabel)
+
+    output_linear.parent.mkdir(parents=True, exist_ok=True)
+    title_linear = _apply_yscale(ax, "linear", all_values, base_title)
+    ax.set_title(title_linear)
+    fig.tight_layout()
+    fig.savefig(output_linear, dpi=dpi)
+    LOGGER.info("Wrote scatter plot to %s", output_linear)
+
+    output_log.parent.mkdir(parents=True, exist_ok=True)
+    title_log = _apply_yscale(ax, "log", all_values, base_title)
+    ax.set_title(title_log)
+    fig.tight_layout()
+    fig.savefig(output_log, dpi=dpi)
+    LOGGER.info("Wrote scatter plot to %s", output_log)
+
+    plt.close(fig)
+
+
 def plot_rank_fraction_violin(
     run_points: List[RunPlotData],
     output_file: Path,
@@ -331,11 +591,11 @@ def plot_rank_fraction_violin(
     yscale: str,
     ylabel: str,
     base_title: str,
+    sort_key: Callable[[RankFractionEntry], float],
 ) -> None:
-    entries = build_rank_fraction_entries(run_points, value_column)
-
+    entries = _sorted_rank_fraction_entries(run_points, value_column, sort_key)
     if not entries:
-        LOGGER.warning("No proposal book rank fraction data for violin plot. Skipping generation.")
+        LOGGER.warning("No %s data for violin plot. Skipping generation.", ylabel)
         return
 
     data: List[List[float]] = [entry.values for entry in entries]
@@ -372,7 +632,6 @@ def plot_rank_fraction_violin(
         text.set_horizontalalignment("center")
 
     flattened = [value for entry in data for value in entry]
-    flattened = [value for entry in data for value in entry]
     title = _apply_yscale(ax, yscale, flattened, base_title)
 
     ax.set_ylabel(ylabel)
@@ -386,131 +645,11 @@ def plot_rank_fraction_violin(
     LOGGER.info("Wrote violin plot to %s", output_file)
 
 
-def plot_rank_fraction_scatter(
-    run_points: List[RunPlotData],
-    output_file: Path,
-    dpi: int,
-    value_column: str,
-    yscale: str,
-    ylabel: str,
-    base_title: str,
-    add_summary_markers: bool = False,
-) -> None:
-    entries = build_rank_fraction_entries(run_points, value_column)
-    if not entries:
-        LOGGER.warning("No proposal book rank fraction data for scatter plot. Skipping generation.")
-        return
-
-    figure_width = max(10, len(entries) * 0.6)
-    fig, ax = plt.subplots(figsize=(figure_width, 6))
-
-    all_values: List[float] = []
-    mean_handle: Optional[Line2D] = None
-    median_handle: Optional[Line2D] = None
-    for idx, entry in enumerate(entries):
-        values = entry.values
-        if not values:
-            continue
-        all_values.extend(values)
-        n = len(values)
-        if n > 1:
-            jitter = np.linspace(-0.2, 0.2, n)
-        else:
-            jitter = np.zeros(1)
-        x_positions = idx + 1 + jitter
-        ax.scatter(
-            x_positions,
-            values,
-            alpha=0.6,
-            s=25,
-            color="#5DADE2",
-            edgecolors="black",
-            linewidths=0.3,
-        )
-
-        if add_summary_markers:
-            mean_value = float(np.mean(values))
-            median_value = float(np.median(values))
-            ax.scatter(
-                idx + 1,
-                mean_value,
-                marker="D",
-                s=70,
-                color="#E74C3C",
-                edgecolors="black",
-                linewidths=0.5,
-                alpha=0.9,
-            )
-            ax.scatter(
-                idx + 1,
-                median_value,
-                marker="P",
-                s=80,
-                color="#2ECC71",
-                edgecolors="black",
-                linewidths=0.5,
-                alpha=0.9,
-            )
-            if mean_handle is None:
-                mean_handle = Line2D(
-                    [0],
-                    [0],
-                    marker="D",
-                    color="none",
-                    markerfacecolor="#E74C3C",
-                    markeredgecolor="black",
-                    markersize=7,
-                    linestyle="None",
-                    label="Mean",
-                )
-            if median_handle is None:
-                median_handle = Line2D(
-                    [0],
-                    [0],
-                    marker="P",
-                    color="none",
-                    markerfacecolor="#2ECC71",
-                    markeredgecolor="black",
-                    markersize=8,
-                    linestyle="None",
-                    label="Median",
-                )
-
-    labels = [entry.label for entry in entries]
-    ax.set_xticks(range(1, len(labels) + 1))
-    tick_texts = ax.set_xticklabels(labels)
-    for text in tick_texts:
-        text.set_fontsize(6)
-        text.set_horizontalalignment("center")
-
-    title = _apply_yscale(ax, yscale, all_values, base_title)
-
-    ax.set_ylabel(ylabel)
-
-    if add_summary_markers:
-        handles: List[Line2D] = []
-        if mean_handle is not None:
-            handles.append(mean_handle)
-        if median_handle is not None:
-            handles.append(median_handle)
-        if handles:
-            ax.legend(handles=handles, loc="upper right", title="Summary Markers", fontsize="small")
-    ax.set_title(title)
-    ax.grid(True, linewidth=0.3, linestyle="--", alpha=0.5, axis="y")
-
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(output_file, dpi=dpi)
-    plt.close(fig)
-    LOGGER.info("Wrote scatter plot to %s", output_file)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create plots for BookGap runs: gap_zscore versus proposal_book_rank_fraction, "
-            "mean rank fraction by LLM book/article counts, and per-run rank fraction distributions "
-            "rendered as scatter and violin plots with optional log-scale variants."
+            "Create plots for BookGap runs. For each metric column, generates gap z-score scatter, "
+            "LLM counts scatter, and rank-fraction scatter/violin plots sorted by mean and median."
         )
     )
     parser.add_argument(
@@ -520,196 +659,110 @@ def parse_args() -> argparse.Namespace:
         help="Path to the root outputs directory containing run subdirectories.",
     )
     parser.add_argument(
-        "--output-file",
+        "--artifacts-dir",
         type=Path,
-        default=Path("artifacts") / "gap_book_rank_fraction_scatter.png",
-        help="Where to write the scatter plot (books).",
+        default=Path("artifacts"),
+        help=(
+            "Directory where plot artifacts will be written. Each metric column gets its own "
+            "subdirectory containing 'mean' and 'median' folders."
+        ),
     )
     parser.add_argument(
-        "--llm-counts-output-file",
-        type=Path,
-        default=Path("artifacts") / "book_rank_fraction_by_llm_counts.png",
-        help="Where to write the scatter plot colored by book rank fraction and keyed by LLM counts.",
-    )
-    parser.add_argument(
-        "--rank-fraction-scatter-file",
-        type=Path,
-        default=Path("artifacts") / "book_rank_fraction_scatter_linear.png",
-        help="Where to write the per-topic book rank fraction scatter plot (linear y-scale).",
-    )
-    parser.add_argument(
-        "--rank-fraction-scatter-log-file",
-        type=Path,
-        default=Path("artifacts") / "book_rank_fraction_scatter_log.png",
-        help="Where to write the per-topic book rank fraction scatter plot (log y-scale).",
-    )
-    parser.add_argument(
-        "--rank-fraction-violin-file",
-        type=Path,
-        default=Path("artifacts") / "book_rank_fraction_violin_linear.png",
-        help="Where to write the per-run book rank fraction violin plot (linear y-scale).",
-    )
-    parser.add_argument(
-        "--rank-fraction-violin-log-file",
-        type=Path,
-        default=Path("artifacts") / "book_rank_fraction_violin_log.png",
-        help="Where to write the per-run book rank fraction violin plot (log y-scale).",
-    )
-    parser.add_argument(
-        "--article-output-file",
-        type=Path,
-        default=Path("artifacts") / "gap_article_rank_fraction_scatter.png",
-        help="Where to write the article scatter plot.",
-    )
-    parser.add_argument(
-        "--article-llm-counts-output-file",
-        type=Path,
-        default=Path("artifacts") / "article_rank_fraction_by_llm_counts.png",
-        help="Where to write the article scatter plot keyed by LLM counts.",
-    )
-    parser.add_argument(
-        "--article-rank-fraction-scatter-file",
-        type=Path,
-        default=Path("artifacts") / "article_rank_fraction_scatter_linear.png",
-        help="Where to write the per-topic article rank fraction scatter plot (linear y-scale).",
-    )
-    parser.add_argument(
-        "--article-rank-fraction-scatter-log-file",
-        type=Path,
-        default=Path("artifacts") / "article_rank_fraction_scatter_log.png",
-        help="Where to write the per-topic article rank fraction scatter plot (log y-scale).",
-    )
-    parser.add_argument(
-        "--article-rank-fraction-violin-file",
-        type=Path,
-        default=Path("artifacts") / "article_rank_fraction_violin_linear.png",
-        help="Where to write the per-run article rank fraction violin plot (linear y-scale).",
-    )
-    parser.add_argument(
-        "--article-rank-fraction-violin-log-file",
-        type=Path,
-        default=Path("artifacts") / "article_rank_fraction_violin_log.png",
-        help="Where to write the per-run article rank fraction violin plot (log y-scale).",
+        "--metrics",
+        type=str,
+        nargs="*",
+        help="Optional list of metric columns to plot (defaults to all known metrics).",
     )
     parser.add_argument(
         "--dpi",
         type=int,
         default=150,
-        help="Image resolution (dots per inch) for the generated plot.",
+        help="Image resolution (dots per inch) for generated plots.",
     )
     return parser.parse_args()
 
 
-def _generate_book_plots(run_points: List[RunPlotData], args: argparse.Namespace) -> None:
-    plot_points(
-        run_points,
-        args.output_file,
-        args.dpi,
-        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-        "Proposal Book Rank Fraction",
-        "Gap Z-Score vs Proposal Book Rank Fraction by Run",
-    )
-    plot_llm_counts_scatter(
-        run_points,
-        args.llm_counts_output_file,
-        args.dpi,
-        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-        "Mean Proposal Book Rank Fraction",
-    )
-    plot_rank_fraction_scatter(
-        run_points,
-        args.rank_fraction_scatter_file,
-        args.dpi,
-        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-        "linear",
-        "Proposal Book Rank Fraction",
-        "Proposal Book Rank Fraction by Run",
-    )
-    plot_rank_fraction_scatter(
-        run_points,
-        args.rank_fraction_scatter_log_file,
-        args.dpi,
-        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-        "log",
-        "Proposal Book Rank Fraction",
-        "Proposal Book Rank Fraction by Run",
-        add_summary_markers=True,
-    )
-    plot_rank_fraction_violin(
-        run_points,
-        args.rank_fraction_violin_file,
-        args.dpi,
-        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-        "linear",
-        "Proposal Book Rank Fraction",
-        "Distribution of Proposal Book Rank Fraction by Run",
-    )
-    plot_rank_fraction_violin(
-        run_points,
-        args.rank_fraction_violin_log_file,
-        args.dpi,
-        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-        "log",
-        "Proposal Book Rank Fraction",
-        "Distribution of Proposal Book Rank Fraction by Run",
-    )
+def select_metric_specs(requested_columns: Optional[Sequence[str]]) -> List[PlotMetricSpec]:
+    if not requested_columns:
+        return list(METRIC_SPECS)
+
+    column_to_spec = {spec.column: spec for spec in METRIC_SPECS}
+    selected: List[PlotMetricSpec] = []
+    for column in requested_columns:
+        spec = column_to_spec.get(column)
+        if spec is None:
+            LOGGER.warning("Unknown metric column '%s'; skipping.", column)
+            continue
+        selected.append(spec)
+    return selected
 
 
-def _generate_article_plots(run_points: List[RunPlotData], args: argparse.Namespace) -> None:
-    column = "proposal_article_rank_fraction"
-    ylabel = "Proposal Article Rank Fraction"
-    title_prefix = "Proposal Article Rank Fraction"
+def generate_metric_variant_plots(
+    run_points: List[RunPlotData],
+    metric: PlotMetricSpec,
+    variant: PlotVariantSpec,
+    metric_dir: Path,
+    dpi: int,
+) -> None:
+    variant_dir = metric_dir / variant.name
+    variant_dir.mkdir(parents=True, exist_ok=True)
+
+    variant_label = f"{metric.label}{variant.title_suffix}"
+    gap_vs_title = f"Gap Z-Score vs {variant_label}"
+    llm_title = f"{variant_label} by LLM Counts"
+    scatter_title = f"{variant_label} by Run"
+    distribution_title = f"Distribution of {variant_label} by Run"
+
     plot_points(
         run_points,
-        args.article_output_file,
-        args.dpi,
-        column,
-        ylabel,
-        "Gap Z-Score vs Proposal Article Rank Fraction by Run",
+        variant_dir / metric.filenames.zscore_scatter,
+        dpi,
+        metric.column,
+        metric.label,
+        gap_vs_title,
     )
+
     plot_llm_counts_scatter(
         run_points,
-        args.article_llm_counts_output_file,
-        args.dpi,
-        column,
-        "Mean Proposal Article Rank Fraction",
+        variant_dir / metric.filenames.llm_counts_scatter,
+        dpi,
+        metric.column,
+        variant.colorbar_label,
+        variant.color_aggregator,
+        llm_title,
     )
-    plot_rank_fraction_scatter(
+
+    plot_rank_fraction_scatter_pair(
         run_points,
-        args.article_rank_fraction_scatter_file,
-        args.dpi,
-        column,
-        "linear",
-        ylabel,
-        f"{title_prefix} by Run",
+        variant_dir / metric.filenames.scatter_linear,
+        variant_dir / metric.filenames.scatter_log,
+        dpi,
+        metric.column,
+        metric.label,
+        scatter_title,
+        variant.sort_key,
     )
-    plot_rank_fraction_scatter(
-        run_points,
-        args.article_rank_fraction_scatter_log_file,
-        args.dpi,
-        column,
-        "log",
-        ylabel,
-        f"{title_prefix} by Run",
-        add_summary_markers=True,
-    )
+
     plot_rank_fraction_violin(
         run_points,
-        args.article_rank_fraction_violin_file,
-        args.dpi,
-        column,
+        variant_dir / metric.filenames.violin_linear,
+        dpi,
+        metric.column,
         "linear",
-        ylabel,
-        f"Distribution of {title_prefix} by Run",
+        metric.label,
+        distribution_title,
+        variant.sort_key,
     )
+
     plot_rank_fraction_violin(
         run_points,
-        args.article_rank_fraction_violin_log_file,
-        args.dpi,
-        column,
+        variant_dir / metric.filenames.violin_log,
+        dpi,
+        metric.column,
         "log",
-        ylabel,
-        f"Distribution of {title_prefix} by Run",
+        metric.label,
+        distribution_title,
+        variant.sort_key,
     )
 
 
@@ -717,9 +770,25 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
 
-    run_points = collect_run_points(args.outputs_dir)
-    _generate_book_plots(run_points, args)
-    _generate_article_plots(run_points, args)
+    specs = select_metric_specs(args.metrics)
+    if not specs:
+        LOGGER.warning("No valid metrics selected; nothing to plot.")
+        return
+
+    args.artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    for metric in specs:
+        LOGGER.info("Collecting data for metric %s", metric.column)
+        run_points = collect_run_points(args.outputs_dir, metric)
+        if not run_points:
+            LOGGER.warning("No data found for metric %s; skipping.", metric.column)
+            continue
+        metric_dir = args.artifacts_dir / metric.column
+        for variant in metric.variants:
+            LOGGER.info(
+                "Generating plots for metric %s sorted by %s", metric.column, variant.name
+            )
+            generate_metric_variant_plots(run_points, metric, variant, metric_dir, args.dpi)
 
 
 if __name__ == "__main__":
