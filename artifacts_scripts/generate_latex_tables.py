@@ -710,28 +710,29 @@ def prepare_best_run_table(
         "proposal_book_rank",
         "proposal_article_rank",
         "gap_size",
+        "num_articles",
+        "num_books",
     ]
     for column in integer_columns:
         if column in working.columns:
             numeric = pd.to_numeric(working[column], errors="coerce")
             working[column] = numeric.round().astype("Int64")
 
-    display_columns: list[str] = []
-    if "topic_display_name" in working.columns:
-        display_columns.append("topic_display_name")
-    for column in BEST_RUN_REQUIRED_COLUMNS:
-        if column == "topic_id":
-            continue
-        display_columns.append(column)
-    optional_columns = [
+    desired_order = [
+        "topic_display_name",
+        "num_books",
+        "num_articles",
         "gap_size",
         "gap_size_percentile",
+        "gap_coverage_fraction",
     ]
-    for column in optional_columns:
-        if column in working.columns:
-            display_columns.append(column)
+    available_columns = [
+        column for column in desired_order if column in working.columns
+    ]
+    if not available_columns:
+        raise ValueError("No columns available for best run table output")
 
-    return working[display_columns]
+    return working[available_columns]
 
 
 def build_summary_caption(

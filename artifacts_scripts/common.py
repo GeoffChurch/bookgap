@@ -46,6 +46,8 @@ COLUMN_DISPLAY_NAME_MAP = {
     "gap_size": "Gap size",
     "gap_size_percentile": "Gap size percentile",
     "topic_display_name": "Topic",
+    "num_articles": "# articles",
+    "num_books": "# books",
 }
 
 
