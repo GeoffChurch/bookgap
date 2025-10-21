@@ -482,13 +482,29 @@ def write_latex(
 
     safe_df = escape_column_labels(escape_dataframe(df))
 
+    effective_formatters = formatters
+    if formatters:
+        escaped_formatters: dict[Hashable, Callable[[object], str]] = {}
+        for key, formatter in formatters.items():
+            if isinstance(key, tuple):
+                escaped_key = tuple(
+                    escape_latex(part) if isinstance(part, str) else part
+                    for part in key
+                )
+            elif isinstance(key, str):
+                escaped_key = escape_latex(key)
+            else:
+                escaped_key = key
+            escaped_formatters[escaped_key] = formatter
+        effective_formatters = escaped_formatters
+
     latex = safe_df.to_latex(
         index=False,
         escape=False,
         na_rep="",
         caption=escaped_caption,
         label=label,
-        formatters=formatters,
+        formatters=effective_formatters,
         multicolumn=True,
         multicolumn_format="c",
     )
@@ -954,6 +970,7 @@ def main() -> None:
             best_table_scaled = scale_percentage_columns(
                 best_table,
                 BEST_RUN_PERCENTAGE_COLUMNS,
+                decimals=2,
             )
             for column in (
                 "proposal_book_rank_fraction",
@@ -1000,6 +1017,7 @@ def main() -> None:
             best_summary_df = scale_percentage_columns(
                 best_summary_df,
                 TRIPLET_PERCENTAGE_COLUMNS,
+                decimals=2,
             )
 
             for column in ["llm_num_articles", "llm_num_books"]:
