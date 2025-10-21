@@ -344,6 +344,37 @@ def format_percentage_value(value: object) -> str:
     return f"{numeric:.2f}"
 
 
+def _bolden_value(value: object) -> object:
+    if value is None:
+        return value
+    try:
+        if pd.isna(value):  # type: ignore[arg-type]
+            return value
+    except TypeError:
+        pass
+    text = str(value)
+    if not text:
+        return value
+    if text.startswith("\\textbf{") and text.endswith("}"):
+        return text
+    return f"\\textbf{{{text}}}"
+
+
+def bolden_rows(df: pd.DataFrame, indices: Iterable[Hashable]) -> pd.DataFrame:
+    bold_indices = [index for index in indices if index in df.index]
+    if not bold_indices:
+        return df
+    working = df.copy()
+    for column in working.columns:
+        working[column] = working[column].astype(object)
+    positions = [pos for pos in working.index.get_indexer(bold_indices) if pos >= 0]
+    if not positions:
+        return working
+    for pos in positions:
+        working.iloc[pos, :] = working.iloc[pos, :].map(_bolden_value)
+    return working
+
+
 def truncate_text(text: str, max_length: int) -> str:
     if not isinstance(text, str):
         return ""
@@ -473,6 +504,7 @@ def write_latex(
     formatters: Mapping[Hashable, Callable[[object], str]] | None = None,
     overwrite: bool = False,
     group_breaks: Sequence[object] | None = None,
+    bold_rows: Sequence[Hashable] | None = None,
 ) -> None:
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
@@ -481,6 +513,9 @@ def write_latex(
     escaped_caption = escape_latex(caption) if caption is not None else None
 
     safe_df = escape_column_labels(escape_dataframe(df))
+
+    if bold_rows:
+        safe_df = bolden_rows(safe_df, bold_rows)
 
     effective_formatters = formatters
     if formatters:
@@ -884,6 +919,24 @@ def main() -> None:
                 else None
             )
 
+            highlight_indices: set[int] = set()
+            if {
+                "denoiser",
+                "gap_coverage_fraction_mean",
+            }.issubset(summary_sorted.columns):
+                for _, denoiser_group in summary_sorted.groupby(
+                    "denoiser", dropna=False
+                ):
+                    coverage = pd.to_numeric(
+                        denoiser_group["gap_coverage_fraction_mean"],
+                        errors="coerce",
+                    )
+                    if coverage.notna().any():
+                        max_value = coverage.max()
+                        highlight_indices.update(
+                            denoiser_group.loc[coverage == max_value].index.tolist()
+                        )
+
             try:
                 baseline_row = select_baseline_summary_row(group)
             except (KeyError, ValueError) as exc:
@@ -924,6 +977,7 @@ def main() -> None:
                 formatters=formatters_from_columns(summary_percentage_columns),
                 overwrite=args.overwrite,
                 group_breaks=group_breaks,
+                bold_rows=sorted(highlight_indices),
             )
 
             best_row = select_best_summary_row(group)
