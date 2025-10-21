@@ -260,14 +260,35 @@ def scale_percentage_columns(
     columns: Iterable[Hashable],
     *,
     factor: float = 100.0,
+    decimals: int | None = None,
 ) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     scaled = df.copy()
     for column in columns:
         if column in scaled.columns:
-            scaled[column] = pd.to_numeric(scaled[column], errors="coerce") * factor
+            numeric = pd.to_numeric(scaled[column], errors="coerce") * factor
+            if decimals is not None:
+                numeric = numeric.round(decimals)
+            scaled[column] = numeric
     return scaled
+
+
+def round_numeric_columns(
+    df: pd.DataFrame,
+    columns: Iterable[Hashable],
+    *,
+    decimals: int,
+) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    rounded = df.copy()
+    for column in columns:
+        if column in rounded.columns:
+            rounded[column] = pd.to_numeric(rounded[column], errors="coerce").round(
+                decimals
+            )
+    return rounded
 
 
 def build_triplet_directory(embedder_model: str, num_articles: int, num_books: int) -> str:
@@ -832,6 +853,7 @@ def main() -> None:
             summary_scaled = scale_percentage_columns(
                 summary_for_output,
                 SUMMARY_PERCENTAGE_COLUMNS,
+                decimals=2,
             )
             summary_display = summary_scaled.rename(columns=friendly_column_name)
             summary_percentage_columns = [
@@ -946,6 +968,11 @@ def main() -> None:
                         & (best_table_scaled[column] <= 100),
                         float("nan"),
                     )
+            best_table_scaled = round_numeric_columns(
+                best_table_scaled,
+                BEST_RUN_PERCENTAGE_COLUMNS,
+                decimals=2,
+            )
             formatter_columns = {
                 "proposal_book_rank_fraction",
                 "proposal_article_rank_fraction",
