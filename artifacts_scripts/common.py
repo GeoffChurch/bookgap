@@ -16,8 +16,8 @@ GAP_COVERAGE_FRACTION_COLUMN = "gap_coverage_fraction"
 GAP_ZSCORE_COLUMN = "gap_zscore"
 
 EMBEDDER_DISPLAY_NAME_MAP = {
-    "GIST_SMALL": "GISTEmbed",
-    "GEMMA_300M": "EmbeddingGemma",
+    "GIST_SMALL": "GIST",
+    "GEMMA_300M": "Gemma",
 }
 
 
@@ -38,10 +38,10 @@ COLUMN_DISPLAY_NAME_MAP = {
     "gap_coverage_fraction_median": "Gap coverage (median)",
     "row_count": "Rows",
     "proposal_book_rank": "Book rank",
-    "proposal_book_rank_fraction": "Book rank (fraction)",
+    "proposal_book_rank_fraction": "Book rank %",
     "proposal_article_rank": "Article rank",
-    "proposal_article_rank_fraction": "Article rank (fraction)",
-    "gap_coverage_fraction": "Gap coverage",
+    "proposal_article_rank_fraction": "Article rank %",
+    "gap_coverage_fraction": "Gap coverage %",
     "gap_idx": "Gap",
     "gap_size": "Gap size",
     "gap_size_percentile": "Gap size percentile",

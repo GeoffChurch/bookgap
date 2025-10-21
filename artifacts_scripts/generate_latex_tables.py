@@ -65,6 +65,18 @@ SUMMARY_FLOAT_COLUMNS: Iterable[str] = (
     "gap_coverage_fraction_median",
 )
 
+SUMMARY_PERCENTAGE_COLUMNS = SUMMARY_FLOAT_COLUMNS
+
+BEST_RUN_PERCENTAGE_COLUMNS: Iterable[str] = (
+    "proposal_book_rank_fraction",
+    "proposal_article_rank_fraction",
+    "gap_coverage_fraction",
+)
+
+TRIPLET_PERCENTAGE_COLUMNS: Iterable[str] = (
+    "gap_coverage_fraction_mean",
+)
+
 BEST_RUN_REQUIRED_COLUMNS: Iterable[str] = (
     "topic_id",
     "gap_idx",
@@ -243,6 +255,21 @@ def escape_column_labels(df: pd.DataFrame) -> pd.DataFrame:
     return escaped
 
 
+def scale_percentage_columns(
+    df: pd.DataFrame,
+    columns: Iterable[Hashable],
+    *,
+    factor: float = 100.0,
+) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    scaled = df.copy()
+    for column in columns:
+        if column in scaled.columns:
+            scaled[column] = pd.to_numeric(scaled[column], errors="coerce") * factor
+    return scaled
+
+
 def build_triplet_directory(embedder_model: str, num_articles: int, num_books: int) -> str:
     parts = (
         sanitize_component(embedder_model),
@@ -259,10 +286,41 @@ def formatters_from_columns(columns: Iterable[Hashable]) -> dict[Hashable, Calla
         if isinstance(value, str):
             return value
         if isinstance(value, numbers.Real):
-            return f"{float(value):.5f}"
+            return f"{float(value):.2f}"
         return str(value)
 
     return {column: float_formatter for column in columns}
+
+
+def format_integer_value(value: object) -> str:
+    if pd.isna(value):  # type: ignore[arg-type]
+        return ""
+    try:
+        numeric = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        try:
+            numeric = float(str(value))
+        except (TypeError, ValueError):
+            return str(value)
+    if pd.isna(numeric):  # type: ignore[arg-type]
+        return ""
+    try:
+        return f"{int(round(numeric))}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def format_percentage_value(value: object) -> str:
+    if pd.isna(value):  # type: ignore[arg-type]
+        return ""
+    try:
+        numeric = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        try:
+            numeric = float(str(value))
+        except (TypeError, ValueError):
+            return str(value)
+    return f"{numeric:.2f}"
 
 
 def truncate_text(text: str, max_length: int) -> str:
@@ -417,6 +475,69 @@ def write_latex(
     latex = _apply_group_hlines(latex, group_breaks)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(latex)
+    LOGGER.info("Wrote %s", output_file)
+
+
+def write_triplet_gap_coverage_table(
+    df: pd.DataFrame,
+    output_file: Path,
+    *,
+    caption: str | None,
+    label: str,
+    coverage_columns: Sequence[str],
+    overwrite: bool,
+) -> None:
+    if output_file.exists() and not overwrite:
+        LOGGER.info("Skipping existing file %s", output_file)
+        return
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    escaped_caption = escape_latex(caption) if caption is not None else None
+    column_labels = [
+        escape_latex(column)
+        for column in coverage_columns
+    ]
+
+    if coverage_columns:
+        tabular_spec = "cc|" + "c" * len(coverage_columns)
+    else:
+        tabular_spec = "cc"
+
+    lines: list[str] = ["\\begin{table}", "\\centering"]
+    lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
+    lines.append("\\toprule")
+
+    header_line = "\\multicolumn{1}{c}{\\#} & \\multicolumn{1}{c}{\\#}"
+    if coverage_columns:
+        header_line += (
+            f" & \\multicolumn{{{len(coverage_columns)}}}{{c}}{{Mean gap coverage}}"
+        )
+    lines.append(header_line + " " + "\\\\")
+
+    second_header = "articles & books"
+    for column_label in column_labels:
+        second_header += f" & {column_label}"
+    lines.append(second_header + " " + "\\\\")
+    lines.append("\\midrule")
+
+    for _, row in df.iterrows():
+        values: list[str] = [
+            format_integer_value(row.get("# articles")),
+            format_integer_value(row.get("# books")),
+        ]
+        for column in coverage_columns:
+            values.append(format_percentage_value(row.get(column)))
+        lines.append(" & ".join(values) + " " + "\\\\")
+
+    lines.append("\\bottomrule")
+    lines.append("\\end{tabular}")
+    if escaped_caption is not None:
+        lines.append(f"\\caption{{{escaped_caption}}}")
+    lines.append(f"\\label{{{label}}}")
+    lines.append("\\end{table}")
+
+    output_file.write_text("\n".join(lines))
     LOGGER.info("Wrote %s", output_file)
 
 
@@ -708,11 +829,15 @@ def main() -> None:
                 column for column in summary_hide_columns if column in summary_sorted.columns
             ]
             summary_for_output = summary_sorted.drop(columns=columns_to_drop, errors="ignore")
-            summary_display = summary_for_output.rename(columns=friendly_column_name)
-            summary_float_columns = [
+            summary_scaled = scale_percentage_columns(
+                summary_for_output,
+                SUMMARY_PERCENTAGE_COLUMNS,
+            )
+            summary_display = summary_scaled.rename(columns=friendly_column_name)
+            summary_percentage_columns = [
                 friendly_column_name(column)
-                for column in SUMMARY_FLOAT_COLUMNS
-                if column in summary_for_output.columns
+                for column in SUMMARY_PERCENTAGE_COLUMNS
+                if column in summary_scaled.columns
             ]
             group_breaks = (
                 summary_sorted["denoiser"].tolist()
@@ -757,7 +882,7 @@ def main() -> None:
                 gap_output_dir / "run_gap_summary.tex",
                 caption=caption,
                 label=label,
-                formatters=formatters_from_columns(summary_float_columns),
+                formatters=formatters_from_columns(summary_percentage_columns),
                 overwrite=args.overwrite,
                 group_breaks=group_breaks,
             )
@@ -789,6 +914,11 @@ def main() -> None:
                 LOGGER.warning("%s; skipping best run table for %s", exc, best_run_id)
                 continue
 
+            best_table = best_table.drop(
+                columns=["proposal_book_rank", "proposal_article_rank"],
+                errors="ignore",
+            )
+
             caption = build_best_run_caption(
                 best_run_id,
                 gap_idx,
@@ -799,13 +929,30 @@ def main() -> None:
                 f"tab:best_run_gap{gap_idx}_{sanitize_component(best_run_id).lower()}"
             )
 
+            best_table_scaled = scale_percentage_columns(
+                best_table,
+                BEST_RUN_PERCENTAGE_COLUMNS,
+            )
+            for column in (
+                "proposal_book_rank_fraction",
+                "proposal_article_rank_fraction",
+            ):
+                if column in best_table_scaled.columns:
+                    best_table_scaled[column] = 100.0 - pd.to_numeric(
+                        best_table_scaled[column], errors="coerce"
+                    )
+                    best_table_scaled[column] = best_table_scaled[column].where(
+                        (best_table_scaled[column] >= 0)
+                        & (best_table_scaled[column] <= 100),
+                        float("nan"),
+                    )
             formatter_columns = {
                 "proposal_book_rank_fraction",
                 "proposal_article_rank_fraction",
                 "gap_coverage_fraction",
                 "gap_size_percentile",
-            } & set(best_table.columns)
-            best_table_display = best_table.rename(columns=friendly_column_name)
+            } & set(best_table_scaled.columns)
+            best_table_display = best_table_scaled.rename(columns=friendly_column_name)
             formatter_columns_display = [
                 friendly_column_name(column)
                 for column in formatter_columns
@@ -823,6 +970,10 @@ def main() -> None:
 
         if baseline_rows:
             best_summary_df = pd.DataFrame(baseline_rows)
+            best_summary_df = scale_percentage_columns(
+                best_summary_df,
+                TRIPLET_PERCENTAGE_COLUMNS,
+            )
 
             for column in ["llm_num_articles", "llm_num_books"]:
                 if column in best_summary_df.columns:
@@ -885,15 +1036,6 @@ def main() -> None:
                 if column not in {"# articles", "# books"}
             ]
 
-            multiindex_columns = [
-                ("", "# articles"),
-                ("", "# books"),
-                *[("Mean gap coverage", column) for column in coverage_columns],
-            ]
-            pivot_df.columns = pd.MultiIndex.from_tuples(multiindex_columns)
-
-            float_columns = [("Mean gap coverage", column) for column in coverage_columns]
-
             friendly_embedder_list = [column for column in coverage_columns if column]
             unique_embedder_names = list(dict.fromkeys(friendly_embedder_list))
             if not unique_embedder_names:
@@ -909,7 +1051,7 @@ def main() -> None:
                 )
 
             gap_root_dir = args.output_root / f"gap{gap_idx}"
-            write_latex(
+            write_triplet_gap_coverage_table(
                 pivot_df,
                 gap_root_dir / "triplet_gap_coverage.tex",
                 caption=(
@@ -917,7 +1059,7 @@ def main() -> None:
                     f"{friendly_embedder_text}."
                 ),
                 label=f"tab:triplet_gap_coverage_gap{gap_idx}",
-                formatters=formatters_from_columns(float_columns),
+                coverage_columns=coverage_columns,
                 overwrite=args.overwrite,
             )
         else:
