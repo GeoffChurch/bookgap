@@ -7,11 +7,12 @@
 __pycache__/
 .env
 
+/artifacts
+
 # Keep all but plots
-# !/artifacts/*/*
 # /artifacts/*/plots
 
 # Keep artifacts, but drop per-run invalid listings
-/artifacts/**/invalid_works.txt
+# /artifacts/**/invalid_works.txt
 
 /outputs

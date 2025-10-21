@@ -194,25 +194,24 @@ def sanitize_component(value: str) -> str:
     return cleaned or "value"
 
 
-LATEX_ESCAPE_MAP = {
-    "\\": r"\\textbackslash{}",
-    "&": r"\\&",
-    "%": r"\\%",
-    "$": r"\\$",
-    "#": r"\\#",
-    "_": r"\\_",
-    "{": r"\\{",
-    "}": r"\\}",
-    "~": r"\\textasciitilde{}",
-    "^": r"\\textasciicircum{}",
+LATEX_SIMPLE_ESCAPE_CHARS = "&%$#_{}"
+LATEX_SPECIAL_ESCAPE_MAP = {
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
 }
+LATEX_SIMPLE_ESCAPE_PATTERN = re.compile(
+    rf"(?<!\\)([{re.escape(LATEX_SIMPLE_ESCAPE_CHARS)}])"
+)
 
 
 def escape_latex(text: object | None) -> str:
     if text is None or (isinstance(text, float) and pd.isna(text)):
         return ""
     value = str(text)
-    return "".join(LATEX_ESCAPE_MAP.get(char, char) for char in value)
+    value = LATEX_SIMPLE_ESCAPE_PATTERN.sub(r"\\\1", value)
+    for char, replacement in LATEX_SPECIAL_ESCAPE_MAP.items():
+        value = re.sub(rf"(?<!\\){re.escape(char)}", replacement, value)
+    return value
 
 
 def escape_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -355,6 +354,37 @@ def get_topic_display_name_map(topic_ids: Iterable[object]) -> dict[str, str]:
     return {topic_id: TOPIC_DISPLAY_NAME_CACHE.get(topic_id, "") for topic_id in normalized}
 
 
+def _apply_group_hlines(latex: str, group_breaks: Sequence[object] | None) -> str:
+    if not group_breaks:
+        return latex
+
+    lines = latex.splitlines()
+    try:
+        data_start = next(i for i, line in enumerate(lines) if line.strip() == "\\midrule") + 1
+        data_end = next(i for i, line in enumerate(lines) if line.strip() == "\\bottomrule")
+    except StopIteration:
+        return latex
+
+    body_lines = lines[data_start:data_end]
+    if len(body_lines) != len(group_breaks):
+        LOGGER.debug(
+            "Skipping group hlines due to length mismatch: %s rows vs %s breaks",
+            len(body_lines),
+            len(group_breaks),
+        )
+        return latex
+
+    normalized_breaks = ["" if value is None else str(value) for value in group_breaks]
+    new_body_lines: list[str] = []
+    for idx, line in enumerate(body_lines):
+        new_body_lines.append(line)
+        if idx < len(body_lines) - 1 and normalized_breaks[idx] != normalized_breaks[idx + 1]:
+            new_body_lines.append("\\hline")
+
+    lines[data_start:data_end] = new_body_lines
+    return "\n".join(lines)
+
+
 def write_latex(
     df: pd.DataFrame,
     output_file: Path,
@@ -363,6 +393,7 @@ def write_latex(
     label: str | None = None,
     formatters: Mapping[Hashable, Callable[[object], str]] | None = None,
     overwrite: bool = False,
+    group_breaks: Sequence[object] | None = None,
 ) -> None:
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
@@ -383,6 +414,7 @@ def write_latex(
         multicolumn_format="c",
     )
     latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\1", latex)
+    latex = _apply_group_hlines(latex, group_breaks)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(latex)
     LOGGER.info("Wrote %s", output_file)
@@ -682,6 +714,11 @@ def main() -> None:
                 for column in SUMMARY_FLOAT_COLUMNS
                 if column in summary_for_output.columns
             ]
+            group_breaks = (
+                summary_sorted["denoiser"].tolist()
+                if "denoiser" in summary_sorted.columns
+                else None
+            )
 
             try:
                 baseline_row = select_baseline_summary_row(group)
@@ -722,6 +759,7 @@ def main() -> None:
                 label=label,
                 formatters=formatters_from_columns(summary_float_columns),
                 overwrite=args.overwrite,
+                group_breaks=group_breaks,
             )
 
             best_row = select_best_summary_row(group)
