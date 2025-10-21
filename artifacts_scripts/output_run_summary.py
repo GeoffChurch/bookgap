@@ -4,7 +4,8 @@ import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from collections import defaultdict
+from typing import DefaultDict, Dict, Iterable, List, Mapping, Optional
 
 import pandas as pd
 
@@ -27,6 +28,7 @@ LOGGER = logging.getLogger(__name__)
 class RunSummary:
     run_path: Path
     metadata: RunMetadata
+    per_topic_gap_idx: int
     proposal_book_rank_fraction_mean: float
     proposal_article_rank_fraction_mean: float
     proposal_article_rank_fraction_median: float
@@ -35,110 +37,159 @@ class RunSummary:
     gap_coverage_fraction_mean: float
     gap_coverage_fraction_median: float
 
-def summarize_run(run_dir: Path) -> Optional[RunSummary]:
+def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
     metadata = load_run_metadata(run_dir)
     if metadata is None:
-        return None
+        return {}
 
     df = load_results_dataframe(run_dir)
     if df is None:
-        return None
+        return {}
 
     try:
         mask = valid_rank_fraction_mask(df)
     except KeyError as exc:
         LOGGER.warning("%s in %s", exc, run_dir)
-        return None
+        return {}
 
-    filtered = df.loc[mask, PROPOSAL_BOOK_RANK_FRACTION_COLUMN]
-    if filtered.empty:
+    valid_df = df.loc[mask].copy()
+    if valid_df.empty:
         LOGGER.warning(
             "No valid values for %s in %s", PROPOSAL_BOOK_RANK_FRACTION_COLUMN, run_dir
         )
-        return None
+        return {}
 
-    article_mean = float("nan")
-    article_median = float("nan")
-    coverage_mean = float("nan")
-    coverage_median = float("nan")
-    if PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN in df.columns:
-        article_column = df[PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN]
-        article_mask = article_column.notna() & (article_column != -1)
-        if article_mask.any():
-            article_values = article_column.loc[article_mask]
-            article_mean = float(article_values.mean())
-            article_median = float(article_values.median())
+    if "topic_id" not in valid_df.columns:
+        raise ValueError(f"Column 'topic_id' missing from results in {run_dir}")
+    if "gap_size" not in valid_df.columns:
+        raise ValueError(f"Column 'gap_size' missing from results in {run_dir}")
 
-    if GAP_COVERAGE_FRACTION_COLUMN in df.columns:
-        coverage_column = df[GAP_COVERAGE_FRACTION_COLUMN]
-        coverage_mask = coverage_column.notna() & (coverage_column >= 0)
-        if coverage_mask.any():
-            coverage_values = coverage_column.loc[coverage_mask]
-            coverage_mean = float(coverage_values.mean())
-            coverage_median = float(coverage_values.median())
+    summaries: Dict[int, RunSummary] = {}
 
-    return RunSummary(
-        run_path=run_dir,
-        metadata=metadata,
-        proposal_book_rank_fraction_mean=float(filtered.mean()),
-        proposal_article_rank_fraction_mean=article_mean,
-        proposal_article_rank_fraction_median=article_median,
-        proposal_book_rank_fraction_std=float(filtered.std()),
-        row_count=int(filtered.shape[0]),
-        gap_coverage_fraction_mean=coverage_mean,
-        gap_coverage_fraction_median=coverage_median,
+    for topic_id, topic_df in valid_df.groupby("topic_id", sort=False):
+        gap_sizes = topic_df["gap_size"].tolist()
+        previous_size = None
+        for size in gap_sizes:
+            if previous_size is not None and pd.notna(previous_size) and pd.notna(size):
+                if float(size) > float(previous_size):
+                    raise ValueError(
+                        f"Gap size increased within topic {topic_id} in {run_dir}"
+                    )
+            previous_size = size
+
+    valid_df["per_topic_gap_idx"] = (
+        valid_df.groupby("topic_id", sort=False).cumcount()
     )
 
+    for gap_idx, gap_df in valid_df.groupby("per_topic_gap_idx"):
+        gap_idx_int = int(gap_idx)  # type: ignore[arg-type]
+        book_values = gap_df[PROPOSAL_BOOK_RANK_FRACTION_COLUMN]
+        article_mean = float("nan")
+        article_median = float("nan")
+        coverage_mean = float("nan")
+        coverage_median = float("nan")
 
-def collect_summaries(outputs_dir: Path) -> List[RunSummary]:
-    summaries: List[RunSummary] = []
-    for run_dir in find_run_directories(outputs_dir):
-        summary = summarize_run(run_dir)
-        if summary is not None:
-            summaries.append(summary)
-    summaries.sort(key=lambda s: s.run_path)
+        if PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN in gap_df.columns:
+            article_column = gap_df[PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN]
+            article_mask = article_column.notna() & (article_column != -1)
+            if article_mask.any():
+                article_values = article_column.loc[article_mask]
+                article_mean = float(article_values.mean())
+                article_median = float(article_values.median())
+
+        if GAP_COVERAGE_FRACTION_COLUMN in gap_df.columns:
+            coverage_column = gap_df[GAP_COVERAGE_FRACTION_COLUMN]
+            coverage_mask = coverage_column.notna() & (coverage_column >= 0)
+            if coverage_mask.any():
+                coverage_values = coverage_column.loc[coverage_mask]
+                coverage_mean = float(coverage_values.mean())
+                coverage_median = float(coverage_values.median())
+
+        summaries[gap_idx_int] = RunSummary(
+            run_path=run_dir,
+            metadata=metadata,
+            per_topic_gap_idx=gap_idx_int,
+            proposal_book_rank_fraction_mean=float(book_values.mean()),
+            proposal_article_rank_fraction_mean=article_mean,
+            proposal_article_rank_fraction_median=article_median,
+            proposal_book_rank_fraction_std=float(book_values.std()),
+            row_count=int(gap_df.shape[0]),
+            gap_coverage_fraction_mean=coverage_mean,
+            gap_coverage_fraction_median=coverage_median,
+        )
+
     return summaries
 
-def write_csv(summaries: Iterable[RunSummary], outputs_dir: Path, output_file: Path) -> None:
-    records = []
-    for summary in summaries:
-        metadata = summary.metadata
-        records.append(
-            {
-                "run": str(relative_run_path(summary.run_path, outputs_dir)),
-                "embedder_model": metadata.embedder_model,
-                "denoiser": metadata.denoiser,
-                "drop_k": metadata.drop_k,
-                "llm_num_articles": metadata.num_articles,
-                "llm_num_books": metadata.num_books,
-                "proposal_book_rank_fraction_mean": summary.proposal_book_rank_fraction_mean,
-                "proposal_article_rank_fraction_mean": summary.proposal_article_rank_fraction_mean,
-                "proposal_article_rank_fraction_median": summary.proposal_article_rank_fraction_median,
-                "proposal_book_rank_fraction_std": summary.proposal_book_rank_fraction_std,
-                "row_count": summary.row_count,
-                "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
-                "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
-            }
-        )
 
-    df = pd.DataFrame.from_records(records)
-    if not df.empty:
-        df = df.sort_values(
-            [
-                "proposal_book_rank_fraction_mean",
-                "embedder_model",
-                "denoiser",
-                "drop_k",
-                "llm_num_articles",
-                "llm_num_books",
-                "run",
-            ],
-            na_position="last",
-        )
+def collect_summaries(outputs_dir: Path) -> Dict[int, List[RunSummary]]:
+    summaries: DefaultDict[int, List[RunSummary]] = defaultdict(list)
+    for run_dir in find_run_directories(outputs_dir):
+        summary = summarize_run(run_dir)
+        for gap_idx, run_summary in summary.items():
+            summaries[gap_idx].append(run_summary)
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_file, index=False, float_format="%.5f")
-    LOGGER.info("Wrote %s", output_file)
+    for gap_summaries in summaries.values():
+        gap_summaries.sort(key=lambda s: s.run_path)
+
+    return dict(sorted(summaries.items()))
+
+def gap_output_path(base_path: Path, gap_idx: int) -> Path:
+    return base_path.with_name(f"{base_path.stem}_gap{gap_idx}{base_path.suffix}")
+
+
+def write_csvs(
+    summaries_by_gap: Mapping[int, Iterable[RunSummary]],
+    outputs_dir: Path,
+    output_file: Path,
+) -> None:
+    if not summaries_by_gap:
+        gap_output = gap_output_path(output_file, 0)
+        gap_output.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame.from_records([]).to_csv(gap_output, index=False)
+        LOGGER.info("Wrote empty summary to %s", gap_output)
+        return
+
+    for gap_idx, summaries in summaries_by_gap.items():
+        records = []
+        for summary in summaries:
+            metadata = summary.metadata
+            records.append(
+                {
+                    "run": str(relative_run_path(summary.run_path, outputs_dir)),
+                    "embedder_model": metadata.embedder_model,
+                    "denoiser": metadata.denoiser,
+                    "drop_k": metadata.drop_k,
+                    "llm_num_articles": metadata.num_articles,
+                    "llm_num_books": metadata.num_books,
+                    "proposal_book_rank_fraction_mean": summary.proposal_book_rank_fraction_mean,
+                    "proposal_article_rank_fraction_mean": summary.proposal_article_rank_fraction_mean,
+                    "proposal_article_rank_fraction_median": summary.proposal_article_rank_fraction_median,
+                    "proposal_book_rank_fraction_std": summary.proposal_book_rank_fraction_std,
+                    "row_count": summary.row_count,
+                    "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
+                    "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
+                }
+            )
+
+        df = pd.DataFrame.from_records(records)
+        if not df.empty:
+            df = df.sort_values(
+                [
+                    "proposal_book_rank_fraction_mean",
+                    "embedder_model",
+                    "denoiser",
+                    "drop_k",
+                    "llm_num_articles",
+                    "llm_num_books",
+                    "run",
+                ],
+                na_position="last",
+            )
+
+        gap_output = gap_output_path(output_file, gap_idx)
+        gap_output.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(gap_output, index=False, float_format="%.5f")
+        LOGGER.info("Wrote %s for gap index %s", gap_output, gap_idx)
 
 
 def parse_args() -> argparse.Namespace:
@@ -173,17 +224,21 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
 
-    if args.output_file.exists() and not args.overwrite:
-        LOGGER.error(
-            "Output file %s already exists. Use --overwrite to replace it.", args.output_file
-        )
-        raise SystemExit(1)
-
-    summaries = collect_summaries(args.outputs_dir)
-    if not summaries:
+    summaries_by_gap = collect_summaries(args.outputs_dir)
+    if not summaries_by_gap:
         LOGGER.warning("No summaries created from outputs in %s", args.outputs_dir)
 
-    write_csv(summaries, args.outputs_dir, args.output_file)
+    planned_indices = list(summaries_by_gap.keys()) or [0]
+    if not args.overwrite:
+        for gap_idx in planned_indices:
+            candidate = gap_output_path(args.output_file, gap_idx)
+            if candidate.exists():
+                LOGGER.error(
+                    "Output file %s already exists. Use --overwrite to replace it.", candidate
+                )
+                raise SystemExit(1)
+
+    write_csvs(summaries_by_gap, args.outputs_dir, args.output_file)
 
 
 if __name__ == "__main__":

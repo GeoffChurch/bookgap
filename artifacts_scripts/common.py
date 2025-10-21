@@ -15,6 +15,45 @@ PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN = "proposal_article_rank_fraction"
 GAP_COVERAGE_FRACTION_COLUMN = "gap_coverage_fraction"
 GAP_ZSCORE_COLUMN = "gap_zscore"
 
+EMBEDDER_DISPLAY_NAME_MAP = {
+    "GIST_SMALL": "GISTEmbed",
+    "GEMMA_300M": "EmbeddingGemma",
+}
+
+
+def friendly_embedder_name(embedder_model: Optional[str]) -> str:
+    if embedder_model is None:
+        return ""
+    return EMBEDDER_DISPLAY_NAME_MAP.get(embedder_model, embedder_model)
+
+
+COLUMN_DISPLAY_NAME_MAP = {
+    "denoiser": "Denoiser",
+    "drop_k": "Drop k",
+    "proposal_book_rank_fraction_mean": "Book rank (mean)",
+    "proposal_article_rank_fraction_mean": "Article rank (mean)",
+    "proposal_article_rank_fraction_median": "Article rank (median)",
+    "proposal_book_rank_fraction_std": "Book rank (std)",
+    "gap_coverage_fraction_mean": "Gap coverage (mean)",
+    "gap_coverage_fraction_median": "Gap coverage (median)",
+    "row_count": "Rows",
+    "proposal_book_rank": "Book rank",
+    "proposal_book_rank_fraction": "Book rank (fraction)",
+    "proposal_article_rank": "Article rank",
+    "proposal_article_rank_fraction": "Article rank (fraction)",
+    "gap_coverage_fraction": "Gap coverage",
+    "gap_idx": "Gap",
+    "gap_size": "Gap size",
+    "gap_size_percentile": "Gap size percentile",
+    "topic_display_name": "Topic",
+}
+
+
+def friendly_column_name(column: object) -> object:
+    if isinstance(column, str):
+        return COLUMN_DISPLAY_NAME_MAP.get(column, column)
+    return column
+
 
 @dataclass
 class RunMetadata:

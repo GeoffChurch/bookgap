@@ -39,7 +39,6 @@ FONT_SIZE = 7
 
 # Import plotting utilities to eliminate duplication
 from bookgap.plot_utils import PlotManager
-from bookgap.results_manager import BookArticleResults
 
 def get_denoiser_display_name(denoiser: str) -> str:
     """Map denoiser names to display-friendly names with LaTeX math notation."""
