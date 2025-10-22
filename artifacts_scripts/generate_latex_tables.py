@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, cast
 
 from artifacts_scripts.common import (
     EMBEDDER_DISPLAY_NAME_MAP,
+    add_per_topic_gap_idx,
+    filter_to_gap_idx,
     friendly_column_name,
     friendly_embedder_name,
 )
@@ -709,6 +711,7 @@ def load_best_run_details(
 def prepare_best_run_table(
     df: pd.DataFrame,
     *,
+    gap_idx: int,
     max_rows: int,
     max_title_length: int,
     topic_name_length: int,
@@ -720,6 +723,19 @@ def prepare_best_run_table(
         )
 
     working = df.copy()
+    
+    # Add per_topic_gap_idx if not already present
+    if "per_topic_gap_idx" not in working.columns:
+        working = add_per_topic_gap_idx(working)
+    
+    # Filter to only the specified gap index
+    working = filter_to_gap_idx(working, gap_idx)
+    
+    if working.empty:
+        LOGGER.warning(
+            "No rows found after filtering to gap_idx=%s", gap_idx
+        )
+    
     if "proposal_title" in working.columns:
         if max_title_length > 0:
             working["proposal_title"] = working["proposal_title"].map(
@@ -1011,6 +1027,7 @@ def main() -> None:
             try:
                 best_table = prepare_best_run_table(
                     best_run_df,
+                    gap_idx=gap_idx,
                     max_rows=args.max_gap_rows,
                     max_title_length=args.max_title_length,
                     topic_name_length=args.topic_name_length,

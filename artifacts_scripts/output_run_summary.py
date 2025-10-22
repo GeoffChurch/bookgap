@@ -14,6 +14,7 @@ from .common import (
     PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
     PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
     RunMetadata,
+    add_per_topic_gap_idx,
     find_run_directories,
     load_results_dataframe,
     load_run_metadata,
@@ -66,20 +67,10 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
 
     summaries: Dict[int, RunSummary] = {}
 
-    for topic_id, topic_df in valid_df.groupby("topic_id", sort=False):
-        gap_sizes = topic_df["gap_size"].tolist()
-        previous_size = None
-        for size in gap_sizes:
-            if previous_size is not None and pd.notna(previous_size) and pd.notna(size):
-                if float(size) > float(previous_size):
-                    raise ValueError(
-                        f"Gap size increased within topic {topic_id} in {run_dir}"
-                    )
-            previous_size = size
-
-    valid_df["per_topic_gap_idx"] = (
-        valid_df.groupby("topic_id", sort=False).cumcount()
-    )
+    try:
+        valid_df = add_per_topic_gap_idx(valid_df)
+    except ValueError as exc:
+        raise ValueError(f"Invalid gap ordering in {run_dir}: {exc}") from exc
 
     for gap_idx, gap_df in valid_df.groupby("per_topic_gap_idx"):
         gap_idx_int = int(gap_idx)  # type: ignore[arg-type]

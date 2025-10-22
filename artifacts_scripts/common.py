@@ -131,3 +131,70 @@ def relative_run_path(run_dir: Path, outputs_dir: Path) -> Path:
         return run_dir.relative_to(outputs_dir)
     except ValueError:
         return run_dir
+
+
+def add_per_topic_gap_idx(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add a 'per_topic_gap_idx' column to the dataframe.
+    
+    This column represents the gap index within each topic, computed as the
+    cumulative count of rows within each topic_id group. Gaps are assumed to
+    be ordered by decreasing gap_size within each topic.
+    
+    If a 'gap_size' column is present, validates that gap sizes are non-increasing
+    within each topic.
+    
+    Args:
+        df: DataFrame containing at least a 'topic_id' column
+        
+    Returns:
+        A copy of the input DataFrame with the 'per_topic_gap_idx' column added
+        
+    Raises:
+        ValueError: If 'topic_id' column is missing from the dataframe or if
+                   gap_size increases within any topic
+    """
+    if "topic_id" not in df.columns:
+        raise ValueError("Column 'topic_id' missing from dataframe")
+    
+    # Validate gap_size is non-increasing within each topic
+    if "gap_size" in df.columns:
+        for topic_id, topic_df in df.groupby("topic_id", sort=False):
+            gap_sizes = topic_df["gap_size"].tolist()
+            previous_size = None
+            for size in gap_sizes:
+                if previous_size is not None and pd.notna(previous_size) and pd.notna(size):
+                    if float(size) > float(previous_size):
+                        raise ValueError(
+                            f"Gap size increased within topic {topic_id}: "
+                            f"{previous_size} -> {size}"
+                        )
+                previous_size = size
+    
+    result = df.copy()
+    result["per_topic_gap_idx"] = result.groupby("topic_id", sort=False).cumcount()
+    return result
+
+
+def filter_to_gap_idx(df: pd.DataFrame, gap_idx: int) -> pd.DataFrame:
+    """
+    Filter dataframe to only include rows matching the specified gap index.
+    
+    Args:
+        df: DataFrame containing a 'per_topic_gap_idx' column
+        gap_idx: The gap index to filter to (0 = first/largest gap per topic)
+        
+    Returns:
+        A filtered copy of the DataFrame containing only rows where
+        per_topic_gap_idx equals gap_idx
+        
+    Raises:
+        ValueError: If 'per_topic_gap_idx' column is missing from the dataframe
+    """
+    if "per_topic_gap_idx" not in df.columns:
+        raise ValueError(
+            "Column 'per_topic_gap_idx' missing from dataframe. "
+            "Did you forget to call add_per_topic_gap_idx()?"
+        )
+    
+    return df[df["per_topic_gap_idx"] == gap_idx].copy()
