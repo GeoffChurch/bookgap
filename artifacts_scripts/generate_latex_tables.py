@@ -180,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--topic-name-length",
         type=int,
-        default=15,
+        default=20,
         help=(
             "Maximum character length for topic display names in best-run tables. "
             "Use a negative value to leave names untrimmed."
@@ -358,6 +358,18 @@ def _bolden_value(value: object) -> object:
     if text.startswith("\\textbf{") and text.endswith("}"):
         return text
     return f"\\textbf{{{text}}}"
+
+
+def format_monospace_value(value: object) -> str:
+    try:
+        if pd.isna(value):  # type: ignore[arg-type]
+            return ""
+    except TypeError:
+        pass
+    text = str(value) if value is not None else ""
+    if not text:
+        return ""
+    return f"\\texttt{{{text}}}"
 
 
 def bolden_rows(df: pd.DataFrame, indices: Iterable[Hashable]) -> pd.DataFrame:
@@ -1057,6 +1069,13 @@ def main() -> None:
                 for column in formatter_columns
             ]
             formatters = formatters_from_columns(formatter_columns_display)
+            topic_column_label = friendly_column_name("topic_display_name")
+            if (
+                isinstance(topic_column_label, str)
+                and topic_column_label in best_table_display.columns
+            ):
+                formatters = dict(formatters)
+                formatters[topic_column_label] = format_monospace_value
 
             write_latex(
                 best_table_display,
