@@ -389,6 +389,29 @@ def bolden_rows(df: pd.DataFrame, indices: Iterable[Hashable]) -> pd.DataFrame:
     return working
 
 
+def bolden_cells(
+    df: pd.DataFrame,
+    indices: Iterable[Hashable],
+    columns: Iterable[Hashable],
+) -> pd.DataFrame:
+    """Bold specific cells at the intersection of given row indices and columns."""
+    bold_indices = [index for index in indices if index in df.index]
+    if not bold_indices:
+        return df
+    
+    bold_columns = [column for column in columns if column in df.columns]
+    if not bold_columns:
+        return df
+    
+    working = df.copy()
+    for column in bold_columns:
+        working[column] = working[column].astype(object)
+        # Bold only the cells in this column at the specified indices
+        for index in bold_indices:
+            working.at[index, column] = _bolden_value(working.at[index, column])  # type: ignore[index, assignment]
+    return working
+
+
 def truncate_text(text: str, max_length: int) -> str:
     if not isinstance(text, str):
         return ""
@@ -519,6 +542,7 @@ def write_latex(
     overwrite: bool = False,
     group_breaks: Sequence[object] | None = None,
     bold_rows: Sequence[Hashable] | None = None,
+    bold_columns: Sequence[Hashable] | None = None,
 ) -> None:
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
@@ -529,7 +553,12 @@ def write_latex(
     safe_df = escape_column_labels(escape_dataframe(df))
 
     if bold_rows:
-        safe_df = bolden_rows(safe_df, bold_rows)
+        if bold_columns:
+            # Bold only specific columns in the specified rows
+            safe_df = bolden_cells(safe_df, bold_rows, bold_columns)
+        else:
+            # Bold entire rows
+            safe_df = bolden_rows(safe_df, bold_rows)
 
     effective_formatters = formatters
     if formatters:
@@ -1006,6 +1035,7 @@ def main() -> None:
                 overwrite=args.overwrite,
                 group_breaks=group_breaks,
                 bold_rows=sorted(highlight_indices),
+                bold_columns=["Gap coverage \\%"],
             )
 
             best_row = select_best_summary_row(group)
