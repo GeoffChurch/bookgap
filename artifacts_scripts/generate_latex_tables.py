@@ -182,7 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--topic-name-length",
         type=int,
-        default=20,
+        default=30,
         help=(
             "Maximum character length for topic display names in best-run tables. "
             "Use a negative value to leave names untrimmed."
@@ -238,22 +238,34 @@ def escape_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return working
 
 
+def escape_column_label(text: object) -> str:
+    """Escape a single column label, preserving known LaTeX commands like \\makecell."""
+    if text is None:
+        return ""
+    text_str = str(text)
+    if text_str.startswith("\\makecell"):
+        return text_str
+    return escape_latex(text_str)
+
+
 def escape_column_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Escape column labels, but preserve LaTeX commands like \\makecell."""
+
     escaped = df.copy()
     if isinstance(escaped.columns, pd.MultiIndex):
         escaped.columns = pd.MultiIndex.from_tuples(
-            tuple(escape_latex(part) for part in column)
+            tuple(escape_column_label(part) for part in column)
             for column in escaped.columns
         )
         if escaped.columns.names is not None:
             escaped.columns.names = [
-                escape_latex(name) if name is not None else None
+                escape_column_label(name) if name is not None else None
                 for name in escaped.columns.names
             ]
     else:
-        escaped.columns = [escape_latex(column) for column in escaped.columns]
+        escaped.columns = [escape_column_label(column) for column in escaped.columns]
         if escaped.columns.name is not None:
-            escaped.columns.name = escape_latex(escaped.columns.name)
+            escaped.columns.name = escape_column_label(escaped.columns.name)
     return escaped
 
 
@@ -566,28 +578,46 @@ def write_latex(
         for key, formatter in formatters.items():
             if isinstance(key, tuple):
                 escaped_key = tuple(
-                    escape_latex(part) if isinstance(part, str) else part
+                    escape_column_label(part) if isinstance(part, str) else part
                     for part in key
                 )
             elif isinstance(key, str):
-                escaped_key = escape_latex(key)
+                escaped_key = escape_column_label(key)
             else:
                 escaped_key = key
             escaped_formatters[escaped_key] = formatter
         effective_formatters = escaped_formatters
 
+    # Generate without caption/label, pandas won't add table environment
     latex = safe_df.to_latex(
         index=False,
         escape=False,
         na_rep="",
-        caption=escaped_caption,
-        label=label,
+        caption=None,
+        label=None,
         formatters=effective_formatters,
         multicolumn=True,
         multicolumn_format="c",
     )
     latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\1", latex)
     latex = _apply_group_hlines(latex, group_breaks)
+    
+    # Wrap in table environment with caption and label at the bottom
+    lines = latex.splitlines()
+    
+    # Add table environment wrapper
+    result_lines = ["\\begin{table}", "\\centering"]
+    result_lines.extend(lines)
+    
+    # Add caption and label at the bottom (before \end{table})
+    if escaped_caption:
+        result_lines.append(f"\\caption{{{escaped_caption}}}")
+    if label:
+        result_lines.append(f"\\label{{{label}}}")
+    
+    result_lines.append("\\end{table}")
+    latex = "\n".join(result_lines)
+    
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(latex)
     LOGGER.info("Wrote %s", output_file)
@@ -623,17 +653,18 @@ def write_triplet_gap_coverage_table(
     lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
     lines.append("\\toprule")
 
-    header_line = "\\multicolumn{1}{c}{\\#} & \\multicolumn{1}{c}{\\#}"
+    header_line = "\\makecell{\\#\\\\articles} & \\makecell{\\#\\\\books}"
     if coverage_columns:
         header_line += (
-            f" & \\multicolumn{{{len(coverage_columns)}}}{{c}}{{Mean gap coverage}}"
+            f" & \\multicolumn{{{len(coverage_columns)}}}{{c}}{{\\makecell{{Mean gap\\\\coverage}}}}"
         )
     lines.append(header_line + " " + "\\\\")
 
-    second_header = "articles & books"
-    for column_label in column_labels:
-        second_header += f" & {column_label}"
-    lines.append(second_header + " " + "\\\\")
+    if coverage_columns:
+        second_header = " & "  # Empty cells under # articles and # books
+        for column_label in column_labels:
+            second_header += f" & {column_label}"
+        lines.append(second_header + " " + "\\\\")
     lines.append("\\midrule")
 
     for _, row in df.iterrows():
@@ -1026,16 +1057,19 @@ def main() -> None:
                 f"a{int(num_articles)}_b{int(num_books)}"
             )
 
+            # Create formatters for all numeric columns in the display
+            summary_formatters = formatters_from_columns(summary_percentage_columns)
+
             write_latex(
                 summary_display,
                 gap_output_dir / "run_gap_summary.tex",
                 caption=caption,
                 label=label,
-                formatters=formatters_from_columns(summary_percentage_columns),
+                formatters=summary_formatters,
                 overwrite=args.overwrite,
                 group_breaks=group_breaks,
                 bold_rows=sorted(highlight_indices),
-                bold_columns=["Gap coverage \\%"],
+                bold_columns=[r"\makecell{Gap\\coverage \%}"],
             )
 
             best_row = select_best_summary_row(group)
