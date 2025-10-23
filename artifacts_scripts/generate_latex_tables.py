@@ -7,7 +7,7 @@ import os
 import re
 from itertools import islice
 from pathlib import Path
-from typing import Any, Callable, Hashable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Hashable, Iterable, Mapping, Sequence, Literal
 
 import pandas as pd
 from typing import TYPE_CHECKING, cast
@@ -555,10 +555,14 @@ def write_latex(
     group_breaks: Sequence[object] | None = None,
     bold_rows: Sequence[Hashable] | None = None,
     bold_columns: Sequence[Hashable] | None = None,
+    table_environment: Literal["table", "longtable"] = "table",
 ) -> None:
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
         return
+
+    if table_environment not in {"table", "longtable"}:
+        raise ValueError(f"Unsupported table environment: {table_environment}")
 
     escaped_caption = escape_latex(caption) if caption is not None else None
 
@@ -588,7 +592,25 @@ def write_latex(
             escaped_formatters[escaped_key] = formatter
         effective_formatters = escaped_formatters
 
-    # Generate without caption/label, pandas won't add table environment
+    if table_environment == "longtable":
+        latex = safe_df.to_latex(
+            index=False,
+            escape=False,
+            na_rep="",
+            caption=escaped_caption,
+            label=label,
+            formatters=effective_formatters,
+            multicolumn=True,
+            multicolumn_format="c",
+            longtable=True,
+        )
+        latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", latex)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(latex)
+        LOGGER.info("Wrote %s", output_file)
+        return
+
+    # Default: wrap in standard table environment
     latex = safe_df.to_latex(
         index=False,
         escape=False,
@@ -599,25 +621,21 @@ def write_latex(
         multicolumn=True,
         multicolumn_format="c",
     )
-    latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\1", latex)
+    latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", latex)
     latex = _apply_group_hlines(latex, group_breaks)
-    
-    # Wrap in table environment with caption and label at the bottom
+
     lines = latex.splitlines()
-    
-    # Add table environment wrapper
     result_lines = ["\\begin{table}", "\\centering"]
     result_lines.extend(lines)
-    
-    # Add caption and label at the bottom (before \end{table})
+
     if escaped_caption:
         result_lines.append(f"\\caption{{{escaped_caption}}}")
     if label:
         result_lines.append(f"\\label{{{label}}}")
-    
+
     result_lines.append("\\end{table}")
     latex = "\n".join(result_lines)
-    
+
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(latex)
     LOGGER.info("Wrote %s", output_file)
@@ -1165,6 +1183,7 @@ def main() -> None:
                 label=label,
                 formatters=formatters,
                 overwrite=args.overwrite,
+                table_environment="longtable",
             )
 
         if baseline_rows:
