@@ -65,7 +65,7 @@ def register_configs():
     # ===== BATCH CONFIGURATIONS =====
     
     standard_batch = BatchConfig(
-        num_gaps=2,
+        num_gaps=1,
         completion_window="24h",
         generate_plots=True,
         save_prompts=True,
