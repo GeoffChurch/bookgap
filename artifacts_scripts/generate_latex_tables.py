@@ -75,6 +75,17 @@ BEST_RUN_PERCENTAGE_COLUMNS: Iterable[str] = (
     "gap_coverage_fraction",
 )
 
+SUMMARY_RANK_FRACTION_COLUMNS: Iterable[str] = (
+    "proposal_book_rank_fraction_mean",
+    "proposal_article_rank_fraction_mean",
+    "proposal_article_rank_fraction_median",
+)
+
+BEST_RUN_RANK_FRACTION_COLUMNS: Iterable[str] = (
+    "proposal_book_rank_fraction",
+    "proposal_article_rank_fraction",
+)
+
 TRIPLET_PERCENTAGE_COLUMNS: Iterable[str] = (
     "gap_coverage_fraction_mean",
 )
@@ -303,6 +314,22 @@ def round_numeric_columns(
                 decimals
             )
     return rounded
+
+
+def invert_fraction_columns(
+    df: pd.DataFrame,
+    columns: Iterable[Hashable],
+) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    inverted = df.copy()
+    for column in columns:
+        if column in inverted.columns:
+            numeric = pd.to_numeric(inverted[column], errors="coerce")
+            inverted_values = 1.0 - numeric
+            valid_mask = numeric.isna() | ((numeric >= 0.0) & (numeric <= 1.0))
+            inverted[column] = inverted_values.where(valid_mask, float("nan"))
+    return inverted
 
 
 def build_triplet_directory(embedder_model: str, num_articles: int, num_books: int) -> str:
@@ -555,6 +582,7 @@ def write_latex(
     group_breaks: Sequence[object] | None = None,
     bold_rows: Sequence[Hashable] | None = None,
     bold_columns: Sequence[Hashable] | None = None,
+    bold_cell_map: Mapping[Hashable, Sequence[Hashable]] | None = None,
     table_environment: Literal["table", "longtable"] = "table",
 ) -> None:
     if output_file.exists() and not overwrite:
@@ -575,6 +603,25 @@ def write_latex(
         else:
             # Bold entire rows
             safe_df = bolden_rows(safe_df, bold_rows)
+
+    if bold_cell_map:
+        escaped_map: dict[Hashable, Sequence[Hashable]] = {}
+        for key, indices in bold_cell_map.items():
+            if isinstance(key, tuple):
+                escaped_key: Hashable = tuple(
+                    escape_column_label(part) if isinstance(part, str) else part
+                    for part in key
+                )
+            elif isinstance(key, str):
+                escaped_key = escape_column_label(key)
+            else:
+                escaped_key = key
+            escaped_map[escaped_key] = indices
+
+        for column, indices in escaped_map.items():
+            if not indices:
+                continue
+            safe_df = bolden_cells(safe_df, indices, [column])
 
     effective_formatters = formatters
     if formatters:
@@ -711,20 +758,35 @@ def sort_summary_frame(df: pd.DataFrame) -> pd.DataFrame:
         "drop_k",
         "gap_coverage_fraction_mean",
         "proposal_book_rank_fraction_mean",
+        "proposal_article_rank_fraction_mean",
         "run",
     ]
     available = [column for column in sort_columns if column in df.columns]
     if not available:
         return df
-    return df.sort_values(available, na_position="last")
+    descending_columns = {
+        "gap_coverage_fraction_mean",
+        "proposal_book_rank_fraction_mean",
+        "proposal_article_rank_fraction_mean",
+    }
+    ascending = [column not in descending_columns for column in available]
+    return df.sort_values(available, ascending=ascending, na_position="last")
 
 
 def select_best_summary_row(df: pd.DataFrame) -> pd.Series | None:
     if "gap_coverage_fraction_mean" not in df.columns:
         return None
+    sort_columns = [
+        "gap_coverage_fraction_mean",
+        "proposal_book_rank_fraction_mean",
+        "proposal_article_rank_fraction_mean",
+    ]
+    available_columns = [column for column in sort_columns if column in df.columns]
+    if not available_columns:
+        return None
     ranked = df.sort_values(
-        ["gap_coverage_fraction_mean", "proposal_book_rank_fraction_mean"],
-        ascending=[False, True],
+        available_columns,
+        ascending=[False] * len(available_columns),
         na_position="last",
     )
     if ranked.empty:
@@ -752,9 +814,15 @@ def select_baseline_summary_row(df: pd.DataFrame) -> pd.Series:
     if baseline.empty:
         raise ValueError("No baseline row with denoiser=NONE and drop_k=0 was found")
 
-    sort_columns = ["gap_coverage_fraction_mean", "proposal_book_rank_fraction_mean"]
+    sort_columns = [
+        "gap_coverage_fraction_mean",
+        "proposal_book_rank_fraction_mean",
+        "proposal_article_rank_fraction_mean",
+    ]
     available_columns = [column for column in sort_columns if column in baseline.columns]
-    ascending = [column != "gap_coverage_fraction_mean" for column in available_columns]
+    if not available_columns:
+        raise ValueError("Baseline group is missing sorting columns")
+    ascending = [False] * len(available_columns)
 
     ranked = baseline.sort_values(
         available_columns,
@@ -845,6 +913,8 @@ def prepare_best_run_table(
 
     if max_rows is not None and max_rows > 0:
         working = working.head(max_rows)
+
+    working = invert_fraction_columns(working, BEST_RUN_RANK_FRACTION_COLUMNS)
 
     integer_columns = [
         "gap_idx",
@@ -997,6 +1067,11 @@ def main() -> None:
                 errors="ignore",
             )
 
+            summary_subset = invert_fraction_columns(
+                summary_subset,
+                SUMMARY_RANK_FRACTION_COLUMNS,
+            )
+
             summary_sorted = sort_summary_frame(summary_subset)
             summary_hide_columns = {
                 "run",
@@ -1025,26 +1100,48 @@ def main() -> None:
                 else None
             )
 
-            highlight_indices: set[int] = set()
-            if {
-                "denoiser",
+            highlight_source_columns = [
                 "gap_coverage_fraction_mean",
-            }.issubset(summary_sorted.columns):
+                "proposal_book_rank_fraction_mean",
+                "proposal_article_rank_fraction_mean",
+            ]
+            highlight_indices_by_column: dict[Hashable, list[Hashable]] = {}
+            if "denoiser" in summary_sorted.columns:
                 for _, denoiser_group in summary_sorted.groupby(
                     "denoiser", dropna=False
                 ):
-                    coverage = pd.to_numeric(
-                        denoiser_group["gap_coverage_fraction_mean"],
-                        errors="coerce",
-                    )
-                    if coverage.notna().any():
-                        max_value = coverage.max()
-                        highlight_indices.update(
-                            denoiser_group.loc[coverage == max_value].index.tolist()
+                    for column in highlight_source_columns:
+                        if column not in denoiser_group.columns:
+                            continue
+                        numeric_values = pd.to_numeric(
+                            denoiser_group[column], errors="coerce"
                         )
+                        if not numeric_values.notna().any():
+                            continue
+                        max_value = numeric_values.max()
+                        if pd.isna(max_value):
+                            continue
+                        winners = denoiser_group.loc[
+                            numeric_values == max_value
+                        ].index.tolist()
+                        if not winners:
+                            continue
+                        target_list = highlight_indices_by_column.setdefault(column, [])
+                        for winner in winners:
+                            if winner not in target_list:
+                                target_list.append(winner)
+
+            bold_cell_map: dict[Hashable, Sequence[Hashable]] = {}
+            for column, indices in highlight_indices_by_column.items():
+                if not indices:
+                    continue
+                friendly_name = friendly_column_name(column)
+                if friendly_name not in summary_display.columns:
+                    continue
+                bold_cell_map[friendly_name] = list(indices)
 
             try:
-                baseline_row = select_baseline_summary_row(group)
+                baseline_row = select_baseline_summary_row(summary_subset)
             except (KeyError, ValueError) as exc:
                 raise RuntimeError(
                     "Unable to build baseline summary for "
@@ -1086,11 +1183,10 @@ def main() -> None:
                 formatters=summary_formatters,
                 overwrite=args.overwrite,
                 group_breaks=group_breaks,
-                bold_rows=sorted(highlight_indices),
-                bold_columns=[r"\makecell{Gap\\coverage \%}"],
+                bold_cell_map=bold_cell_map or None,
             )
 
-            best_row = select_best_summary_row(group)
+            best_row = select_best_summary_row(summary_subset)
             if best_row is None:
                 LOGGER.warning(
                     "No best run identified for gap %s, %s (articles=%s, books=%s)",
@@ -1138,19 +1234,6 @@ def main() -> None:
                 BEST_RUN_PERCENTAGE_COLUMNS,
                 decimals=2,
             )
-            for column in (
-                "proposal_book_rank_fraction",
-                "proposal_article_rank_fraction",
-            ):
-                if column in best_table_scaled.columns:
-                    best_table_scaled[column] = 100.0 - pd.to_numeric(
-                        best_table_scaled[column], errors="coerce"
-                    )
-                    best_table_scaled[column] = best_table_scaled[column].where(
-                        (best_table_scaled[column] >= 0)
-                        & (best_table_scaled[column] <= 100),
-                        float("nan"),
-                    )
             best_table_scaled = round_numeric_columns(
                 best_table_scaled,
                 BEST_RUN_PERCENTAGE_COLUMNS,
