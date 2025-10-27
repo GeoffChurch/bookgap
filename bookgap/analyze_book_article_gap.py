@@ -14,9 +14,12 @@ import pyalex
 import plotly.express as px
 import plotly.graph_objects as go
 
-from bookgap.cloud import Cloud, CloudDenoiserContext, SubCloud, WorkDenoisers, get_subclouds_for_topic
+from bookgap.cloud import Cloud, WorkDenoisers
+from bookgap.cloud_denoiser import CloudDenoiserContext
 from bookgap.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
+from bookgap.embedder import Embedder
 from bookgap.parse_args import get_explicit_args, parse_args
+from bookgap.subcloud import SubCloud, get_subclouds_for_topic
 from bookgap.util import Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
 from bookgap.deduplicators import Deduplicator
 from bookgap.index import HNSW, IndexType
@@ -63,6 +66,114 @@ def get_denoiser_display_name(denoiser: str) -> str:
 
 ARTIFACTS_DIR = Path("artifacts")
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class BookArticleResults:
+    """Manages a CSV file storing book-article analysis results across topics, denoisers, and embedders."""
+    
+    def __init__(self, csv_path: Path):
+        self.csv_path = csv_path
+        self._df: Optional[pd.DataFrame] = None
+        self._load_or_initialize()
+    
+    def _load_or_initialize(self) -> None:
+        """Load existing CSV or initialize empty DataFrame with correct schema."""
+        if self.csv_path.exists():
+            try:
+                self._df = pd.read_csv(self.csv_path)
+                LOGGER.info(f"Loaded {len(self._df)} existing results from {self.csv_path}")
+            except Exception as e:
+                LOGGER.warning(f"Failed to load {self.csv_path}: {e}. Starting fresh.")
+                self._df = self._create_empty_df()
+        else:
+            self._df = self._create_empty_df()
+            LOGGER.info(f"Initialized new results file at {self.csv_path}")
+    
+    def _create_empty_df(self) -> pd.DataFrame:
+        """Create an empty DataFrame with the expected schema."""
+        return pd.DataFrame(columns=[
+            'topic_name', 'topic_id', 'denoiser', 'drop_k', 'embedder_model',
+            'num_books', 'num_articles', 'kball_size', 
+            'num_books_with_avgref', 'avgref_mean_rank'
+        ])
+    
+    def get_df(self) -> pd.DataFrame:
+        """Return a copy of the current results DataFrame."""
+        assert self._df is not None
+        return self._df.copy()
+    
+    def has_row(self, **kwargs):
+        """
+        Check if a row matching the given criteria already exists.
+        
+        Args:
+            **kwargs: Column values to match (e.g., topic_name='X', denoiser='Y')
+        
+        Returns:
+            True if a matching row exists, False otherwise.
+        """
+        assert self._df is not None
+        
+        if self._df.empty:
+            return False
+        
+        mask = pd.Series([True] * len(self._df))
+        for key, value in kwargs.items():
+            if key not in self._df.columns:
+                LOGGER.warning(f"Column '{key}' not found in results DataFrame")
+                return False
+            mask &= (self._df[key] == value)
+        
+        return mask.any()
+    
+    def add_row(self, **kwargs) -> None:
+        """
+        Add a new row to the results and save to CSV.
+        
+        Args:
+            **kwargs: Column values for the new row (must include all required columns)
+        """
+        assert self._df is not None
+        
+        # If DataFrame is empty, create directly from the dict to avoid concatenation issues
+        if len(self._df) == 0:
+            self._df = pd.DataFrame([kwargs])
+        else:
+            # Create a single-row DataFrame with the same column order
+            new_row = pd.DataFrame([kwargs])
+            
+            # Ensure new_row has all columns from _df (fill missing with NaN)
+            for col in self._df.columns:
+                if col not in new_row.columns:
+                    new_row[col] = pd.NA
+            
+            # Ensure _df has all columns from new_row (fill missing with NaN)
+            for col in new_row.columns:
+                if col not in self._df.columns:
+                    self._df[col] = pd.NA
+            
+            # Reorder new_row columns to match _df
+            new_row = new_row[self._df.columns]
+            
+            # Append to existing DataFrame
+            self._df = pd.concat([self._df, new_row], ignore_index=True)
+        
+        # Save to CSV
+        self._save()
+        
+        LOGGER.info(f"Added row: {', '.join(f'{k}={v}' for k, v in kwargs.items() if k in ['topic_name', 'denoiser', 'drop_k', 'embedder_model'])}")
+    
+    def _save(self) -> None:
+        """Save the current DataFrame to CSV."""
+        assert self._df is not None
+        
+        # Ensure parent directory exists
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save to CSV
+        self._df.to_csv(self.csv_path, index=False)
+        LOGGER.debug(f"Saved {len(self._df)} results to {self.csv_path}")
+
 
 # Global BookArticleResults instance
 _book_article_results = BookArticleResults(csv_path=ARTIFACTS_DIR / "book_article_analysis.csv")
@@ -145,7 +256,7 @@ def avgref_rank(index_clouds: Collection[Cloud | SubCloud], query: Cloud | SubCl
     LOGGER.info(f"Rank stats: {get_stats(ranks)}")
 
     return AvgrefRankResult(
-        avgref_mean_rank=np.mean(ranks),
+        avgref_mean_rank=ranks.mean(),
         num_queries_with_avgref=len(res.avgref_res.corresponding_query_idxs)
     )
     
@@ -1097,20 +1208,26 @@ def variance_retention_main():
     setup_logging(log_name=__name__.split('.')[-1], explicit_args=explicit_args)
     
     if 'drop_k' in dict(explicit_args):
-        raise ValueError("many_main should not be called with a specific drop_k. Use the main function instead.")
+        raise ValueError("variance_retention_main should not be called with a specific drop_k. Use the main function instead.")
     if 'radius_fraction' in dict(explicit_args):
-        raise ValueError("many_main should not be called with a specific radius_fraction. Use the main function instead.")
+        raise ValueError("variance_retention_main should not be called with a specific radius_fraction. Use the main function instead.")
+    if 'embedder_model' in dict(explicit_args):
+        raise ValueError("variance_retention_main should not be called with a specific embedder_model.")
     
     args = vars(parse_args())
     del args['drop_k']
     del args['radius_fraction']
+    
+    # Default to GIST_SMALL if not specified
+    embedder_model = Embedder.ModelName.GIST_SMALL
 
     plot_variance_retention(
         filter_pair=FilterPair(Filter(subfield=SubField.AI.value), Filter()),
+        embedder_model=embedder_model,
         **args)
 
 def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int,
-                            max_works: Optional[int], deduplicator: Optional[Deduplicator], denoiser: str) -> None:
+                            max_works: Optional[int], deduplicator: Optional[Deduplicator], denoiser: str, embedder_model: Embedder.ModelName) -> None:
     if index_type == IndexType.HNSW:
         index_info = HNSW(hnsw_m=hnsw_m, hnsw_efc=hnsw_efc, hnsw_efs=hnsw_efs)
     else:
@@ -1121,15 +1238,41 @@ def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw
         max_works=max_works,
         deduplicator=deduplicator,
         normalize_embeddings=True,
-        denoiser=None,
-        drop_k=0
+        denoiser="NONE",
+        drop_k=0,
+        embedder_model=embedder_model
     )
     original_embeddings = original_cloud.embeddings()
     N, d = original_embeddings.shape
-    context = CloudDenoiserContext(original_cloud.works(), original_embeddings, Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    S_T = context.S_T()
-    S_L = context.S_L()
-    S_B = context.S_B()
+    
+    # Build cloud with the actual denoiser to get the projection
+    denoiser_cloud = replace(original_cloud, denoiser=denoiser, drop_k=0)
+    projection = denoiser_cloud.denoiser_projection()
+    P = projection.projection_matrix
+    
+    # Compute scatter matrices using CloudDenoiserContext
+    context = CloudDenoiserContext(
+        original_cloud.works(), 
+        original_embeddings, 
+        Filter(work_types=(WorkType.BOOK.value,)), 
+        Filter(work_types=(WorkType.ARTICLE.value,))
+    )
+    
+    # Compute total, local, and between scatter matrices
+    X = context.X()
+    X_centered = X - X.mean(axis=0)
+    S_T = X_centered.T @ X_centered / N
+    
+    # Local scatter (within-class)
+    S_L = np.zeros((d, d))
+    for i in range(context.num_subsets()):
+        X_i = context.X_n(i)
+        if len(X_i) > 0:
+            X_i_centered = X_i - X_i.mean(axis=0)
+            S_L += (X_i_centered.T @ X_i_centered) / N
+    
+    # Between scatter
+    S_B = S_T - S_L
 
     assert S_T.shape == (d, d), f"Expected S_T shape {(d, d)}, got {S_T.shape}"
     assert S_L.shape == (d, d), f"Expected S_L shape {(d, d)}, got {S_L.shape}"
@@ -1138,8 +1281,6 @@ def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw
     S_T_var = np.linalg.trace(S_T)
     S_L_var = np.linalg.trace(S_L)
     S_B_var = np.linalg.trace(S_B)
-
-    P = WorkDenoisers[denoiser].value.projector(original_cloud.works(), original_embeddings, n_components=d)
 
     S_T_proj = P @ S_T @ P.T
     S_L_proj = P @ S_L @ P.T
@@ -1196,7 +1337,7 @@ def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw
 
 
 def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplicator], radius_fraction: float, denoiser: str,
-         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int):
+         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, embedder_model: Embedder.ModelName):
 
     # Standard cloud configuration
     if index_type == IndexType.HNSW:
@@ -1212,23 +1353,24 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         max_works=max_works,
         deduplicator=deduplicator,
         normalize_embeddings=True,
-        denoiser=denoiser if denoiser != "NONE" else None,
-        drop_k=drop_k
+        denoiser=denoiser,
+        drop_k=drop_k,
+        embedder_model=embedder_model
     )
     
     
 
     topics, _topic_work_counts = get_sorted_topics_by_work_count(
-        # Use the AI cloud with denoiser=None and drop_k=0 for caching
-        replace(ai_cloud, denoiser=None, drop_k=0),
+        # Use the AI cloud with denoiser="NONE" and drop_k=0 for caching
+        replace(ai_cloud, denoiser="NONE", drop_k=0),
         subfield=SubField.AI.value)
 
     for i, topic in enumerate(topics):
         topic_name = topic["display_name"]
-        if _book_article_results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k):
+        if _book_article_results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k, embedder_model=embedder_model.value):
             continue
         topic_id = topic["id"]
-        LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})\nDenoiser: {denoiser}, Drop_k: {drop_k}\n" + "-+-"*10)
+        LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})\nDenoiser: {denoiser}, Drop_k: {drop_k}, Embedder: {embedder_model.value}\n" + "-+-"*10)
         topic_id_suf = topic_id.split("/")[-1]
         analysis = analyze_book_article_gap(ai_cloud, topic_id_suf, radius_fraction=radius_fraction)
         result_row = {
@@ -1236,6 +1378,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
             'topic_id': topic_id,
             'denoiser': denoiser,
             'drop_k': drop_k,
+            'embedder_model': embedder_model.value,
             **vars(analysis)
         }
         _book_article_results.add_row(**result_row)
@@ -1250,6 +1393,8 @@ def many_main():
         raise ValueError("many_main should not be called with a specific denoiser. Use the main function instead.")
     if 'drop_k' in dict(explicit_args):
         raise ValueError("many_main should not be called with a specific drop_k. Use the main function instead.")
+    if 'embedder_model' in dict(explicit_args):
+        raise ValueError("many_main should not be called with a specific embedder_model. Use the main function instead.")
     
     work_denoisers = [denoiser.name for denoiser in WorkDenoisers]
     allowed_denoisers = [wd.name for wd in ALLOWED_WORK_DENOISERS]
@@ -1257,21 +1402,27 @@ def many_main():
     drop_ks = [1, 2, 3, 4, 5, 6, 7, 8]
     LOGGER.info(f"All drop_k values: {drop_ks}")
     
+    embedder_models = list(Embedder.ModelName)
+    LOGGER.info(f"All embedder models: {[model.value for model in embedder_models]}")
+
     args = vars(parse_args())
     del args['denoiser']
     del args['drop_k']
 
     do_plots(ARTIFACTS_DIR)
 
-    if "NONE" in ALLOWED_DENOISER_NAMES:
-        # Run with denoiser=None first
-        LOGGER.info("Running analysis with denoiser=None (baseline)")
-        main(**args, denoiser="NONE", drop_k=0)
-    
-    for drop_k in drop_ks:
-        for denoiser in allowed_denoisers:
-            LOGGER.info(f"Running analysis with denoiser={denoiser}, drop_k={drop_k}")
-            main(**args, denoiser=denoiser, drop_k=drop_k)
+    for embedder_model in embedder_models:
+        LOGGER.info(f"Processing embedder model: {embedder_model.value}")
+        
+        if "NONE" in ALLOWED_DENOISER_NAMES:
+            # Run with denoiser=None first
+            LOGGER.info(f"Running analysis with denoiser=None (baseline), embedder={embedder_model.value}")
+            main(**args, denoiser="NONE", drop_k=0, embedder_model=embedder_model)
+        
+        for drop_k in drop_ks:
+            for denoiser in allowed_denoisers:
+                LOGGER.info(f"Running analysis with denoiser={denoiser}, drop_k={drop_k}, embedder={embedder_model.value}")
+                main(**args, denoiser=denoiser, drop_k=drop_k, embedder_model=embedder_model)
 
 if __name__ == "__main__":
     from bookgap.script_utils import run_script_main
