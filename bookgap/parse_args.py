@@ -20,6 +20,7 @@ class Args:
     hnsw_m: int
     hnsw_efc: int
     hnsw_efs: int
+    per_topic: bool
 
 def _get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -35,6 +36,8 @@ def _get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hnsw_m", type=int, default=16, help="HNSW M parameter")
     parser.add_argument("--hnsw_efc", type=int, default=512, help="HNSW efConstruction parameter")
     parser.add_argument("--hnsw_efs", type=int, default=1024, help="HNSW efSearch parameter")
+    parser.add_argument("--per_topic", action="store_true", default=False, help="Analyze each topic separately")
+    parser.add_argument("--no_per_topic", dest="per_topic", action="store_false", help="Analyze the entire AI cloud without breaking down by topics (default: False)")
     return parser
 
 def _process_deduplication_args(parsed_args: dict[str, Any]):

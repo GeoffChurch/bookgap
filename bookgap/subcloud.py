@@ -58,12 +58,10 @@ def get_subcloud_work_references(subcloud: SubCloud) -> list[list[str]]:
     return [parent_work_references[i] for i in retained_idxs]
 
 @lru_cache(maxsize=2)
-@MEMORY.cache
 def get_subcloud_index(subcloud: SubCloud) -> faiss.Index:
     return build_index(subcloud.parent.index_info, get_subcloud_embeddings(subcloud))
 
 @lru_cache(maxsize=2)
-@MEMORY.cache
 def get_subcloud_embeddings(subcloud: SubCloud):
     parent_embeddings = subcloud.parent.embeddings()
     retained_idxs = get_subcloud_retained_idxs(subcloud)

@@ -20,23 +20,28 @@ from bookgap.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
 from bookgap.embedder import Embedder
 from bookgap.parse_args import get_explicit_args, parse_args
 from bookgap.subcloud import SubCloud, get_subclouds_for_topic
-from bookgap.util import Filter, WorkType, LOGGER, MEMORY, FilterPair, SubField, setup_logging, get_stats
+from bookgap.util import Filter, WorkType, LOGGER, MEMORY, TIMER, FilterPair, SubField, setup_logging, get_stats
 from bookgap.deduplicators import Deduplicator
 from bookgap.index import HNSW, IndexType
 
-# Define allowed denoisers using actual enum members for better static checking
-ALLOWED_WORK_DENOISERS = [
+ALLOWED_DENOISERS = [
+    WorkDenoisers.NONE,
     WorkDenoisers.PCA,
-    WorkDenoisers.LPP,
     WorkDenoisers.ANTI_CSP,
+    WorkDenoisers.ANTI_LDA,
+    WorkDenoisers.AUG_LPP,
+    WorkDenoisers.CCLIP,
+    WorkDenoisers.CCLIP_01,
+    WorkDenoisers.CCLIP_1,
+    WorkDenoisers.CCP,
+    WorkDenoisers.GPCA,
+    WorkDenoisers.JAD_CCP,
     WorkDenoisers.JAD_EQUAL,
     WorkDenoisers.JAD_HALF_L,
-    WorkDenoisers.JAD_CCP,
     WorkDenoisers.JAD_LIP,
+    WorkDenoisers.LIP,
+    WorkDenoisers.ORTHO_MANIFOLD,
 ]
-
-# Helper to include 'NONE' as a special case (since it's not a WorkDenoiser enum member)
-ALLOWED_DENOISER_NAMES = ['NONE'] + [wd.name for wd in ALLOWED_WORK_DENOISERS]
 
 FONT_SIZE = 7
 
@@ -93,8 +98,11 @@ class BookArticleResults:
         """Create an empty DataFrame with the expected schema."""
         return pd.DataFrame(columns=[
             'topic_name', 'topic_id', 'denoiser', 'drop_k', 'embedder_model',
-            'num_books', 'num_articles', 'kball_size', 
-            'num_books_with_avgref', 'avgref_mean_rank'
+            'num_books', 'num_articles', 'kball_size',
+            'books_in_books_frac_with_avgref', 'books_in_books_avgref_mean_rank',
+            'books_in_articles_frac_with_avgref', 'books_in_articles_avgref_mean_rank',
+            'articles_in_books_frac_with_avgref', 'articles_in_books_avgref_mean_rank',
+            'articles_in_articles_frac_with_avgref', 'articles_in_articles_avgref_mean_rank'
         ])
     
     def get_df(self) -> pd.DataFrame:
@@ -185,22 +193,46 @@ class BookArticleAnalysis:
     num_books: int
     num_articles: int
     kball_size: float
-    num_books_with_avgref: int
-    avgref_mean_rank: float
+    # Books querying in books
+    books_in_books_frac_with_avgref: float
+    books_in_books_avgref_mean_rank: float
+    # Books querying in articles
+    books_in_articles_frac_with_avgref: float
+    books_in_articles_avgref_mean_rank: float
+    # Articles querying in books
+    articles_in_books_frac_with_avgref: float
+    articles_in_books_avgref_mean_rank: float
+    # Articles querying in articles
+    articles_in_articles_frac_with_avgref: float
+    articles_in_articles_avgref_mean_rank: float
 
-def analyze_book_article_gap(cloud: Cloud, topic_id: str, radius_fraction: float) -> BookArticleAnalysis:
+def analyze_book_article_gap(cloud: Cloud, topic_id: Optional[str], radius_fraction: float) -> BookArticleAnalysis:
     books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
     num_articles = len(articles.embeddings())
 
-    avgref_rank_res = avgref_rank([cloud], books)
+    # Compute all 4 combinations: avgref of {books, articles} among {books, articles}
+    books_in_books = avgref_rank([books], books)
+    books_in_articles = avgref_rank([articles], books)
+    articles_in_books = avgref_rank([books], articles)
+    articles_in_articles = avgref_rank([articles], articles)
 
     return BookArticleAnalysis(
         num_books=num_books,
         num_articles=num_articles,
         kball_size=kball_size(articles, books, k=1),
-        num_books_with_avgref=avgref_rank_res.num_queries_with_avgref,
-        avgref_mean_rank=float(avgref_rank_res.avgref_mean_rank)
+        # Books querying in books
+        books_in_books_frac_with_avgref=books_in_books.num_queries_with_avgref / num_books if num_books > 0 else float('nan'),
+        books_in_books_avgref_mean_rank=float(books_in_books.avgref_mean_rank),
+        # Books querying in articles
+        books_in_articles_frac_with_avgref=books_in_articles.num_queries_with_avgref / num_books if num_books > 0 else float('nan'),
+        books_in_articles_avgref_mean_rank=float(books_in_articles.avgref_mean_rank),
+        # Articles querying in books
+        articles_in_books_frac_with_avgref=articles_in_books.num_queries_with_avgref / num_articles if num_articles > 0 else float('nan'),
+        articles_in_books_avgref_mean_rank=float(articles_in_books.avgref_mean_rank),
+        # Articles querying in articles
+        articles_in_articles_frac_with_avgref=articles_in_articles.num_queries_with_avgref / num_articles if num_articles > 0 else float('nan'),
+        articles_in_articles_avgref_mean_rank=float(articles_in_articles.avgref_mean_rank)
     )
 
 
@@ -213,7 +245,7 @@ def _df_from_file(csv_path: Path) -> pd.DataFrame:
         LOGGER.info(f"No existing results found at {csv_path}, starting fresh.")
     return df
 
-
+@TIMER.time()
 def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
     """
     Calculates the mean k-ball size.
@@ -829,7 +861,7 @@ def plot_col_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y:
             name=get_denoiser_display_name('NONE'),
             line=dict(color='black', width=4, dash='dash'),
             hovertemplate=(
-                f'<b>{get_denoiser_display_name("NONE")}</b><br>' +
+                f'<b>{get_denoiser_display_name(WorkDenoisers.NONE.name)}</b><br>' +
                 f'{y_axis_title}: {baseline_value:.3f}<br>' +
                 '<extra></extra>'
             )
@@ -1146,12 +1178,19 @@ def do_plots(artifacts_dir: Path):
 
     df['total_works'] = df['num_books'] + df['num_articles']
 
-    df = df[df['denoiser'].isin(ALLOWED_DENOISER_NAMES)]
+    # df = df[df['denoiser'].isin(ALLOWED_DENOISERS)]
+    df = df[df['denoiser'].isin([d.name for d in ALLOWED_DENOISERS])]
 
     df['kball_lift'] = df['kball_size'] * df['num_books'] / df['num_articles']
     df['kball_log_lift'] = np.log2(df['kball_lift'])
+    
+    # Use books querying in articles as the primary avgref metric (closest to original behavior)
+    df['avgref_mean_rank'] = df['books_in_articles_avgref_mean_rank']
     df['avgref_mean_rank_lift'] = df['avgref_mean_rank'] * df['num_books'] / df['num_articles']
     df['avgref_mean_rank_log_lift'] = np.log2(df['avgref_mean_rank_lift'])
+    
+    # Create a weight column based on fraction of books with avgref
+    df['num_books_with_avgref'] = df['books_in_articles_frac_with_avgref'] * df['num_books']
 
     plot_books_vs_articles(df, artifacts_dir, show_labels=True, log_scale=True, min_articles=0)
     plot_books_vs_articles_pyplot(df, artifacts_dir, show_labels=True, log_scale=True, min_articles=0)
@@ -1222,7 +1261,7 @@ def variance_retention_main():
     embedder_model = Embedder.ModelName.GIST_SMALL
 
     plot_variance_retention(
-        filter_pair=FilterPair(Filter(subfield=SubField.AI.value), Filter()),
+        filter_pair=FilterPair(Filter(subfield=SubField.AI.value), Filter(work_types=(WorkType.ARTICLE.value,))),
         embedder_model=embedder_model,
         **args)
 
@@ -1238,7 +1277,7 @@ def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw
         max_works=max_works,
         deduplicator=deduplicator,
         normalize_embeddings=True,
-        denoiser="NONE",
+        denoiser=WorkDenoisers.NONE.name,
         drop_k=0,
         embedder_model=embedder_model
     )
@@ -1337,7 +1376,7 @@ def plot_variance_retention(filter_pair: FilterPair, index_type: IndexType, hnsw
 
 
 def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplicator], radius_fraction: float, denoiser: str,
-         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, embedder_model: Embedder.ModelName):
+         index_type: IndexType, hnsw_m: int, hnsw_efc: int, hnsw_efs: int, embedder_model: Embedder.ModelName, per_topic: bool):
 
     # Standard cloud configuration
     if index_type == IndexType.HNSW:
@@ -1346,7 +1385,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         index_info = index_type.value()
     # Use passed-in values for max_works, deduplicator, normalize_embeddings, denoiser, drop_k
     # Create the AI cloud (subfield=AI, topic=None)
-    ai_filter_pair = FilterPair(Filter(subfield=SubField.AI.value), Filter())
+    ai_filter_pair = FilterPair(Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)), Filter())
     ai_cloud = Cloud(
         filter_pair=ai_filter_pair,
         index_info=index_info,
@@ -1358,27 +1397,35 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         embedder_model=embedder_model
     )
     
+    if per_topic:
+        # Get sorted list of topics
+        all_topics, _topic_work_counts = get_sorted_topics_by_work_count(
+            # Use the AI cloud with denoiser="NONE" and drop_k=0 for caching
+            replace(ai_cloud, denoiser=WorkDenoisers.NONE.name, drop_k=0),
+            subfield=SubField.AI.value
+        )
+        # Extract topic information as (topic_id_suf, topic_name, full_topic_id)
+        topics = [(topic["id"].split("/")[-1], topic["display_name"], topic["id"]) for topic in all_topics]
+    else:
+        # Analyze entire AI cloud without breaking down by topics
+        topics = [(None, "AI (All Topics)", "AI")]
     
-
-    topics, _topic_work_counts = get_sorted_topics_by_work_count(
-        # Use the AI cloud with denoiser="NONE" and drop_k=0 for caching
-        replace(ai_cloud, denoiser="NONE", drop_k=0),
-        subfield=SubField.AI.value)
-
-    for i, topic in enumerate(topics):
-        topic_name = topic["display_name"]
-        if _book_article_results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k, embedder_model=embedder_model.value):
+    for i, (topic_id_suf, topic_name, topic_id) in enumerate(topics):
+        if _book_article_results.has_row(topic_name=topic_name, denoiser=denoiser, drop_k=drop_k, embedder_model=embedder_model):
             continue
-        topic_id = topic["id"]
-        LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})\nDenoiser: {denoiser}, Drop_k: {drop_k}, Embedder: {embedder_model.value}\n" + "-+-"*10)
-        topic_id_suf = topic_id.split("/")[-1]
+        
+        if per_topic:
+            LOGGER.info("-+-"*10 + f"\nAnalyzing topic {i+1}/{len(topics)}: {topic_name} ({topic_id})\nDenoiser: {denoiser}, Drop_k: {drop_k}, Embedder: {embedder_model}\n" + "-+-"*10)
+        else:
+            LOGGER.info("-+-"*10 + f"\nAnalyzing entire AI cloud\nDenoiser: {denoiser}, Drop_k: {drop_k}, Embedder: {embedder_model}\n" + "-+-"*10)
+        
         analysis = analyze_book_article_gap(ai_cloud, topic_id_suf, radius_fraction=radius_fraction)
         result_row = {
             'topic_name': topic_name,
             'topic_id': topic_id,
             'denoiser': denoiser,
             'drop_k': drop_k,
-            'embedder_model': embedder_model.value,
+            'embedder_model': embedder_model,
             **vars(analysis)
         }
         _book_article_results.add_row(**result_row)
@@ -1396,14 +1443,12 @@ def many_main():
     if 'embedder_model' in dict(explicit_args):
         raise ValueError("many_main should not be called with a specific embedder_model. Use the main function instead.")
     
-    work_denoisers = [denoiser.name for denoiser in WorkDenoisers]
-    allowed_denoisers = [wd.name for wd in ALLOWED_WORK_DENOISERS]
-    LOGGER.info(f"All denoisers: {ALLOWED_DENOISER_NAMES}")
-    drop_ks = [1, 2, 3, 4, 5, 6, 7, 8]
+    # Use denoisers and drop_k values from the LaTeX summary tables
+    drop_ks = [1, 2, 50, 100, 200]
     LOGGER.info(f"All drop_k values: {drop_ks}")
-    
-    embedder_models = list(Embedder.ModelName)
-    LOGGER.info(f"All embedder models: {[model.value for model in embedder_models]}")
+
+    embedder_models = [Embedder.ModelName.GEMMA_300M]
+    LOGGER.info(f"All embedder models: {embedder_models}")
 
     args = vars(parse_args())
     del args['denoiser']
@@ -1412,18 +1457,21 @@ def many_main():
     do_plots(ARTIFACTS_DIR)
 
     for embedder_model in embedder_models:
-        LOGGER.info(f"Processing embedder model: {embedder_model.value}")
+        LOGGER.info(f"Processing embedder model: {embedder_model}")
         
-        if "NONE" in ALLOWED_DENOISER_NAMES:
+        if WorkDenoisers.NONE in ALLOWED_DENOISERS:
             # Run with denoiser=None first
-            LOGGER.info(f"Running analysis with denoiser=None (baseline), embedder={embedder_model.value}")
-            main(**args, denoiser="NONE", drop_k=0, embedder_model=embedder_model)
+            LOGGER.info(f"Running analysis with denoiser=None (baseline), embedder={embedder_model}")
+            main(**args, denoiser=WorkDenoisers.NONE.name, drop_k=0, embedder_model=embedder_model)
         
         for drop_k in drop_ks:
-            for denoiser in allowed_denoisers:
-                LOGGER.info(f"Running analysis with denoiser={denoiser}, drop_k={drop_k}, embedder={embedder_model.value}")
-                main(**args, denoiser=denoiser, drop_k=drop_k, embedder_model=embedder_model)
+            for denoiser in ALLOWED_DENOISERS:
+                if denoiser == WorkDenoisers.NONE:
+                    continue  # Already ran NONE above
+                LOGGER.info(f"Running analysis with denoiser={denoiser}, drop_k={drop_k}, embedder={embedder_model}")
+                main(**args, denoiser=denoiser.name, drop_k=drop_k, embedder_model=embedder_model)
 
 if __name__ == "__main__":
-    from bookgap.script_utils import run_script_main
-    run_script_main(main, __file__)
+    # from bookgap.script_utils import run_script_main
+    # run_script_main(main, __file__)
+    many_main()

@@ -67,7 +67,7 @@ def register_configs():
     standard_batch = BatchConfig(
         num_gaps=1,
         completion_window="24h",
-        generate_plots=True,
+        generate_plots=False,
         save_prompts=True,
         save_batch_file=True
     )
@@ -102,71 +102,3 @@ def register_configs():
         ),
     )
     cs.store(name="standard", node=standard_experiment)
-
-    cs.store(name="anti_lda_drop1", node=ExperimentConfig(
-        gap=standard_gap,
-        llm=standard_llm,
-        batch=standard_batch,
-        output=standard_output,
-        cloud=CloudConfig(
-            filter_pair=ai_filter_pair,
-            index_info=hnsw_index,
-            denoiser=WorkDenoisers.ANTI_LDA.name,
-            drop_k=1,
-            embedder_model=Embedder.ModelName.GEMMA_300M,
-            max_works=None,
-            deduplicator=deduplicator_config,
-            normalize_embeddings=True,
-        ),
-    ))
-
-    cs.store(name="anti_csp_drop1", node=ExperimentConfig(
-        gap=standard_gap,
-        llm=standard_llm,
-        batch=standard_batch,
-        output=standard_output,
-        cloud=CloudConfig(
-            filter_pair=ai_filter_pair,
-            index_info=hnsw_index,
-            denoiser=WorkDenoisers.ANTI_CSP.name,
-            drop_k=1,
-            embedder_model=Embedder.ModelName.GEMMA_300M,
-            max_works=None,
-            deduplicator=deduplicator_config,
-            normalize_embeddings=True,
-        ),
-    ))
-
-    cs.store(name="anti_csp_drop2", node=ExperimentConfig(
-        gap=standard_gap,
-        llm=standard_llm,
-        batch=standard_batch,
-        output=standard_output,
-        cloud=CloudConfig(
-            filter_pair=ai_filter_pair,
-            index_info=hnsw_index,
-            denoiser=WorkDenoisers.ANTI_CSP.name,
-            drop_k=2,
-            embedder_model=Embedder.ModelName.GEMMA_300M,
-            max_works=None,
-            deduplicator=deduplicator_config,
-            normalize_embeddings=True,
-        ),
-    ))
-
-    cs.store(name="gemma_drop0", node=ExperimentConfig(
-        gap=standard_gap,
-        llm=standard_llm,
-        batch=standard_batch,
-        output=standard_output,
-        cloud=CloudConfig(
-            filter_pair=ai_filter_pair,
-            index_info=hnsw_index,
-            denoiser=WorkDenoisers.NONE.name,
-            drop_k=0,
-            embedder_model=Embedder.ModelName.GEMMA_300M,
-            max_works=None,
-            deduplicator=deduplicator_config,
-            normalize_embeddings=True,
-        ),
-    ))
