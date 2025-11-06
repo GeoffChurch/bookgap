@@ -527,11 +527,55 @@ def _apply_group_hlines(latex: str, group_breaks: Sequence[object] | None) -> st
         return latex
 
     lines = latex.splitlines()
-    try:
-        data_start = next(i for i, line in enumerate(lines) if line.strip() == "\\midrule") + 1
-        data_end = next(i for i, line in enumerate(lines) if line.strip() == "\\bottomrule")
-    except StopIteration:
+    is_longtable = any("\\begin{longtable" in line for line in lines)
+
+    data_start: int | None = None
+    data_end: int | None = None
+
+    if is_longtable:
+        try:
+            last_endlastfoot = max(
+                i for i, line in enumerate(lines) if line.strip() == "\\endlastfoot"
+            )
+            data_start = last_endlastfoot + 1
+        except ValueError:
+            endhead_positions = [
+                i for i, line in enumerate(lines) if line.strip() == "\\endhead"
+            ]
+            if not endhead_positions:
+                return latex
+            data_start = max(endhead_positions) + 1
+            while (
+                data_start < len(lines)
+                and lines[data_start].strip() in {"", "\\midrule", "\\toprule"}
+            ) or (
+                data_start < len(lines)
+                and lines[data_start].strip().startswith("\\multicolumn")
+            ):
+                data_start += 1
+
+        try:
+            data_end = next(
+                i for i in range(len(lines) - 1, -1, -1)
+                if lines[i].strip().startswith("\\end{longtable}")
+            )
+        except StopIteration:
+            data_end = len(lines)
+    else:
+        try:
+            data_start = next(
+                i for i, line in enumerate(lines) if line.strip() == "\\midrule"
+            ) + 1
+            data_end = next(
+                i for i, line in enumerate(lines) if line.strip() == "\\bottomrule"
+            )
+        except StopIteration:
+            return latex
+
+    if data_start is None:
         return latex
+    if data_end is None:
+        data_end = len(lines)
 
     body_lines = lines[data_start:data_end]
     if len(body_lines) != len(group_breaks):
@@ -607,7 +651,7 @@ def write_latex(
 
     effective_formatters = formatters
     if formatters:
-        escaped_formatters: dict[str, Callable[[object], str]] = {}
+        escaped_formatters: dict[Hashable, Callable[[object], str]] = {}
         for key, formatter in formatters.items():
             if isinstance(key, tuple):
                 escaped_key = tuple(
@@ -633,6 +677,7 @@ def write_latex(
             multicolumn_format="c",
             longtable=True,
         )
+        latex = _apply_group_hlines(latex, group_breaks)
         latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", latex)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(latex)
@@ -1221,6 +1266,7 @@ def main() -> None:
                 label=label,
                 formatters=summary_formatters,
                 overwrite=args.overwrite,
+                table_environment="longtable",
                 group_breaks=group_breaks,
                 bold_cell_map=bold_cell_map or None,
             )
