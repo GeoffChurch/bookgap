@@ -20,20 +20,7 @@ from artifacts_scripts.common import (
     friendly_embedder_name,
 )
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    import pyalex as _pyalex_module
-else:  # pragma: no cover - runtime import
-    _pyalex_module = None
-try:  # pragma: no cover - import guard
-    import pyalex as _pyalex_runtime
-except ModuleNotFoundError as exc:  # pragma: no cover - external dependency
-    _pyalex_runtime = None
-    PYALEX_IMPORT_ERROR = exc
-else:
-    PYALEX_IMPORT_ERROR = None
-
-pyalex = cast(Any, _pyalex_runtime)
-
+import pyalex
 
 LOGGER = logging.getLogger(__name__)
 
@@ -341,7 +328,7 @@ def build_triplet_directory(embedder_model: str, num_articles: int, num_books: i
     return "_".join(parts)
 
 
-def formatters_from_columns(columns: Iterable[Hashable]) -> dict[Hashable, Callable[[object], str]]:
+def formatters_from_columns(columns: Iterable[str]) -> dict[str, Callable[[object], str]]:
     def float_formatter(value: object) -> str:
         if pd.isna(value):  # type: ignore[arg-type]
             return ""
@@ -470,11 +457,6 @@ def chunked(iterable: Iterable[str], size: int) -> Iterable[list[str]]:
 
 
 def configure_pyalex() -> None:
-    if pyalex is None:  # pragma: no cover - import guard
-        raise RuntimeError(
-            "pyalex is required to resolve topic names. Install it or run the script "
-            "in the environment where pyalex is available."
-        ) from PYALEX_IMPORT_ERROR
     if not getattr(pyalex.config, "email", None):
         email = os.environ.get("PYALEX_EMAIL", DEFAULT_PYALEX_EMAIL)
         pyalex.config.email = email
@@ -577,12 +559,12 @@ def write_latex(
     *,
     caption: str | None = None,
     label: str | None = None,
-    formatters: Mapping[Hashable, Callable[[object], str]] | None = None,
+    formatters: Mapping[str, Callable[[object], str]] | None = None,
     overwrite: bool = False,
     group_breaks: Sequence[object] | None = None,
     bold_rows: Sequence[Hashable] | None = None,
     bold_columns: Sequence[Hashable] | None = None,
-    bold_cell_map: Mapping[Hashable, Sequence[Hashable]] | None = None,
+    bold_cell_map: Mapping[str, Sequence[Hashable]] | None = None,
     table_environment: Literal["table", "longtable"] = "table",
 ) -> None:
     if output_file.exists() and not overwrite:
@@ -625,7 +607,7 @@ def write_latex(
 
     effective_formatters = formatters
     if formatters:
-        escaped_formatters: dict[Hashable, Callable[[object], str]] = {}
+        escaped_formatters: dict[str, Callable[[object], str]] = {}
         for key, formatter in formatters.items():
             if isinstance(key, tuple):
                 escaped_key = tuple(
@@ -797,7 +779,7 @@ def select_best_summary_row(df: pd.DataFrame) -> pd.Series | None:
     return best
 
 
-def select_baseline_summary_row(df: pd.DataFrame) -> pd.Series:
+def select_baseline_summary_row(df: pd.DataFrame, embedder_model: str) -> pd.Series:
     required_columns = {"denoiser", "drop_k", "gap_coverage_fraction_mean"}
     missing = [column for column in required_columns if column not in df.columns]
     if missing:
@@ -806,13 +788,16 @@ def select_baseline_summary_row(df: pd.DataFrame) -> pd.Series:
             + ", ".join(missing)
         )
 
+    denoiser_target, drop_k_target = get_baseline_criteria(embedder_model)
+
     working = df.copy()
-    denoiser_series = working["denoiser"].astype(str).str.strip().str.lower()
+    denoiser_series = working["denoiser"].astype(str).str.strip()
     drop_k_numeric = pd.to_numeric(working["drop_k"], errors="coerce")
-    baseline = working.loc[(denoiser_series == "none") & (drop_k_numeric == 0)]
+    denoiser_target_stripped = denoiser_target.strip() if isinstance(denoiser_target, str) else denoiser_target
+    baseline = working.loc[(denoiser_series == denoiser_target_stripped) & (drop_k_numeric == drop_k_target)]
 
     if baseline.empty:
-        raise ValueError("No baseline row with denoiser=NONE and drop_k=0 was found")
+        raise ValueError(f"No baseline row with denoiser={denoiser_target} and drop_k={drop_k_target} was found")
 
     sort_columns = [
         "gap_coverage_fraction_mean",
@@ -835,6 +820,54 @@ def select_baseline_summary_row(df: pd.DataFrame) -> pd.Series:
             "Baseline row has missing gap_coverage_fraction_mean value"
         )
     return selected
+
+
+def select_summary_row_by_criteria(df: pd.DataFrame, denoiser: str, drop_k: int) -> pd.Series:
+    required_columns = {"denoiser", "drop_k", "gap_coverage_fraction_mean"}
+    missing = [column for column in required_columns if column not in df.columns]
+    if missing:
+        raise KeyError(
+            "Missing required summary columns for selection: "
+            + ", ".join(missing)
+        )
+
+    working = df.copy()
+    denoiser_series = working["denoiser"].astype(str).str.strip()
+    drop_k_numeric = pd.to_numeric(working["drop_k"], errors="coerce")
+    denoiser_target = denoiser.strip() if isinstance(denoiser, str) else denoiser
+    selected = working.loc[(denoiser_series == denoiser_target) & (drop_k_numeric == drop_k)]
+
+    if selected.empty:
+        raise ValueError(f"No row with denoiser={denoiser} and drop_k={drop_k} was found")
+
+    sort_columns = [
+        "gap_coverage_fraction_mean",
+        "proposal_book_rank_fraction_mean",
+        "proposal_article_rank_fraction_mean",
+    ]
+    available_columns = [column for column in sort_columns if column in selected.columns]
+    if not available_columns:
+        raise ValueError("Selected group is missing sorting columns")
+    ascending = [False] * len(available_columns)
+
+    ranked = selected.sort_values(
+        available_columns,
+        ascending=ascending,
+        na_position="last",
+    )
+    selected_row = ranked.iloc[0]
+    if pd.isna(selected_row.get("gap_coverage_fraction_mean")):
+        raise ValueError(
+            "Selected row has missing gap_coverage_fraction_mean value"
+        )
+    return selected_row
+
+
+def get_baseline_criteria(embedder_model: str) -> tuple[str, int]:
+    if "gemma" in embedder_model.lower():
+        return "CCLIP", 100
+    else:
+        return "NONE", 0
 
 
 def load_best_run_details(
@@ -1105,7 +1138,7 @@ def main() -> None:
                 "proposal_book_rank_fraction_mean",
                 "proposal_article_rank_fraction_mean",
             ]
-            highlight_indices_by_column: dict[Hashable, list[Hashable]] = {}
+            highlight_indices_by_column: dict[str, list[Hashable]] = {}
             if "denoiser" in summary_sorted.columns:
                 for _, denoiser_group in summary_sorted.groupby(
                     "denoiser", dropna=False
@@ -1131,7 +1164,7 @@ def main() -> None:
                             if winner not in target_list:
                                 target_list.append(winner)
 
-            bold_cell_map: dict[Hashable, Sequence[Hashable]] = {}
+            bold_cell_map: dict[str, Sequence[Hashable]] = {}
             for column, indices in highlight_indices_by_column.items():
                 if not indices:
                     continue
@@ -1141,13 +1174,17 @@ def main() -> None:
                 bold_cell_map[friendly_name] = list(indices)
 
             try:
-                baseline_row = select_baseline_summary_row(summary_subset)
+                baseline_row = select_baseline_summary_row(summary_subset, embedder_model_str)
             except (KeyError, ValueError) as exc:
-                raise RuntimeError(
-                    "Unable to build baseline summary for "
-                    f"gap={gap_idx}, embedder_model={friendly_embedder}, articles={num_articles}, "
-                    f"books={num_books}: {exc}"
-                ) from exc
+                LOGGER.warning(
+                    "Unable to find baseline for gap=%s, embedder_model=%s, articles=%s, books=%s: %s. Using NaN.",
+                    gap_idx, friendly_embedder, num_articles, num_books, exc
+                )
+                baseline_row = pd.Series({
+                    "gap_coverage_fraction_mean": float("nan"),
+                    "denoiser": None,
+                    "drop_k": None,
+                })
 
             baseline_rows.append(
                 {
@@ -1157,6 +1194,8 @@ def main() -> None:
                     "gap_coverage_fraction_mean": baseline_row.get(
                         "gap_coverage_fraction_mean"
                     ),
+                    "denoiser": baseline_row.get("denoiser"),
+                    "drop_k": baseline_row.get("drop_k"),
                 }
             )
 
@@ -1285,6 +1324,21 @@ def main() -> None:
                         .astype("Int64")
                     )
 
+            embedder_settings: dict[str, tuple[Any, Any]] = {}
+            for row in baseline_rows:
+                embedder = row["embedder_model"]
+                denoiser = row["denoiser"]
+                drop_k = row["drop_k"]
+                embedder_settings[embedder] = (denoiser, drop_k)
+
+            for column in ["# articles", "# books"]:
+                if column in best_summary_df.columns:
+                    best_summary_df[column] = (
+                        pd.to_numeric(best_summary_df[column], errors="coerce")
+                        .round()
+                        .astype("Int64")
+                    )
+
             best_summary_df = best_summary_df.rename(
                 columns={
                     "llm_num_articles": "# articles",
@@ -1340,16 +1394,24 @@ def main() -> None:
 
             friendly_embedder_list = [column for column in coverage_columns if column]
             unique_embedder_names = list(dict.fromkeys(friendly_embedder_list))
-            if not unique_embedder_names:
+            embedder_descriptions = []
+            for embedder in unique_embedder_names:
+                denoiser, drop_k = embedder_settings.get(embedder, (None, None))
+                if denoiser is not None and drop_k is not None:
+                    desc = f"{embedder} (denoiser={denoiser}, drop_k={drop_k})"
+                else:
+                    desc = embedder
+                embedder_descriptions.append(desc)
+            if not embedder_descriptions:
                 friendly_embedder_text = "the available embedder models"
-            elif len(unique_embedder_names) == 1:
-                friendly_embedder_text = unique_embedder_names[0]
-            elif len(unique_embedder_names) == 2:
-                friendly_embedder_text = " and ".join(unique_embedder_names)
+            elif len(embedder_descriptions) == 1:
+                friendly_embedder_text = embedder_descriptions[0]
+            elif len(embedder_descriptions) == 2:
+                friendly_embedder_text = " and ".join(embedder_descriptions)
             else:
                 friendly_embedder_text = (
-                    ", ".join(unique_embedder_names[:-1])
-                    + f", and {unique_embedder_names[-1]}"
+                    ", ".join(embedder_descriptions[:-1])
+                    + f", and {embedder_descriptions[-1]}"
                 )
 
             gap_root_dir = args.output_root / f"gap{gap_idx}"

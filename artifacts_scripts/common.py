@@ -51,11 +51,8 @@ COLUMN_DISPLAY_NAME_MAP = {
 }
 
 
-def friendly_column_name(column: object) -> object:
-    if isinstance(column, str):
-        return COLUMN_DISPLAY_NAME_MAP.get(column, column)
-    return column
-
+def friendly_column_name(column: str) -> str:
+    return COLUMN_DISPLAY_NAME_MAP.get(column, column)
 
 @dataclass
 class RunMetadata:
@@ -69,8 +66,7 @@ class RunMetadata:
 def find_run_directories(outputs_dir: Path) -> Iterable[Path]:
     """Yield candidate run directories containing a Hydra config."""
     if not outputs_dir.exists():
-        LOGGER.warning("Outputs directory %s does not exist", outputs_dir)
-        return []
+        raise FileNotFoundError(f"Outputs directory {outputs_dir} does not exist")
 
     config_paths = sorted(outputs_dir.rglob("config.yaml"))
     for config_path in config_paths:
