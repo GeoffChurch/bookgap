@@ -27,14 +27,22 @@ def subset_range(n: int, subset_size: int, smallest: bool) -> tuple[int, int]:
 def adj(A):
     return A.conj().T
 
-def scatter(M: NDArray) -> NDArray:
-    # M_centered = M - M.mean(axis=0, keepdims=True)
-    # n = M.shape[0]
-    # if n <= 1:
-    #     # Avoid division by zero for single-sample case
-    #     return M_centered.T @ M_centered
-    # return M_centered.T @ M_centered / (n - 1)
-    return adj(M) @ M / M.shape[0]
+def scatter(M: NDArray, centered: bool = False) -> NDArray:
+    """
+    Computes the scatter matrix (unnormalized population covariance).
+    If centered=False, it computes the mean and centers the data.
+    If centered=True, it assumes M is already centered.
+    """
+    M_centered = M
+    if not centered and M.shape[0] > 0:
+        M_centered = M - M.mean(axis=0, keepdims=True)
+    
+    n = M_centered.shape[0]
+    if n == 0:
+        return np.zeros((M_centered.shape[1], M_centered.shape[1]), dtype=M.dtype)
+        
+    # S = Xc.T @ Xc / n
+    return adj(M_centered) @ M_centered / n
 
 # def orthonormalize(P: NDArray) -> NDArray:
 #     Q: NDArray
@@ -59,7 +67,32 @@ def scatter(M: NDArray) -> NDArray:
 class DenoiserContext(abc.ABC):
     """
     Abstract interface for providing data to denoiser strategies.
+    Provides data and consistently centered scatter matrices.
     """
+    def __init__(self):
+        self._X_mean: Optional[NDArray] = None
+        self._X_centered: Optional[NDArray] = None
+
+    def _init_centering(self):
+        """Initializes and caches the centered data."""
+        if self._X_centered is None:
+            X = self.X()
+            self._X_mean = X.mean(axis=0, keepdims=True)
+            self._X_centered = X - self._X_mean
+            LOGGER.info(f"DenoiserContext: Centered X, {self._X_centered.shape=}")
+
+    def X_centered(self) -> NDArray:
+        """The centered full embeddings matrix (X - X.mean())."""
+        self._init_centering()
+        assert self._X_centered is not None
+        return self._X_centered
+    
+    def X_mean(self) -> NDArray:
+        """The global mean of the full embeddings matrix."""
+        self._init_centering()
+        assert self._X_mean is not None
+        return self._X_mean
+
     @abc.abstractmethod
     def A(self) -> sp.csr_matrix:
         """The citation graph affinity matrix."""
@@ -94,13 +127,13 @@ class DenoiserContext(abc.ABC):
     
     def S_T(self) -> NDArray:
         """The total scatter matrix (covariance matrix of X)."""
-        return scatter(self.X())
+        self._init_centering()
+        return scatter(self.X_centered(), centered=True)
     
     def S_L(self) -> NDArray:
-        """The graph Laplacian scatter matrix X^T L X."""
-        X = self.X()
-        X_centered = X - X.mean(axis=0)
-        return adj(X_centered) @ self.L() @ X_centered
+        """The graph Laplacian scatter matrix X_c^T L X_c."""
+        self._init_centering()
+        return adj(self.X_centered()) @ self.L() @ self.X_centered()
     
     def S_B(self) -> NDArray:
         """The between-class scatter matrix for two subsets X1 and X2 (backward compatibility)."""
@@ -109,6 +142,7 @@ class DenoiserContext(abc.ABC):
     
     def S_B_multi(self, subset_indices: list[int]) -> NDArray:
         """The between-class scatter matrix for multiple subsets."""
+        self._init_centering()
         if len(subset_indices) < 2:
             d = self.X().shape[1]
             return np.zeros((d, d))
@@ -122,25 +156,61 @@ class DenoiserContext(abc.ABC):
             d = self.X().shape[1]
             return np.zeros((d, d))
         
-        # Compute weighted overall mean
-        overall_mean = np.zeros(self.X().shape[1])
-        for subset, size in zip(subsets, sizes):
-            if size > 0:
-                overall_mean += size * subset.mean(axis=0)
-        overall_mean /= total_size
+        # Use the pre-computed global mean for all calculations
+        overall_mean = self.X_mean().squeeze()
         
         # Compute between-class scatter matrix
-        S_B = np.zeros((self.X().shape[1], self.X().shape[1]))
+        S_B = np.zeros((self.X().shape[1], self.X().shape[1]), dtype=self.X().dtype)
         for subset, size in zip(subsets, sizes):
             if size > 0:
-                mu_diff = subset.mean(axis=0) - overall_mean
-                S_B += size * np.outer(mu_diff, mu_diff)
+                # subset.mean(axis=0) is the mean of the uncentered subset
+                # (subset.mean(axis=0) - overall_mean) is the mean of the centered subset
+                mu_diff_centered = subset.mean(axis=0) - overall_mean
+                S_B += size * np.outer(mu_diff_centered, mu_diff_centered)
         
         return S_B / total_size
     
     def S_subset(self, subset_index: int) -> NDArray:
-        """The scatter matrix for a specific subset."""
-        return scatter(self.X_n(subset_index))
+        """The scatter matrix for a specific subset, relative to the global mean."""
+        self._init_centering()
+        X_n_centered = self.X_n(subset_index) - self.X_mean()
+        return scatter(X_n_centered, centered=True)
+
+    @TIMER.time()
+    def S_C(self) -> NDArray:
+        """The citation-error scatter matrix (V_c - C_c)^T (V_c - C_c)."""        
+        self._init_centering()
+        X_c = self.X_centered()
+        A = self.A() # Assumes A[i, j] > 0 means i cites j
+        N, d = X_c.shape
+        
+        # Ensure A is in CSR format for efficient row slicing
+        if not sp.isspmatrix_csr(A):
+            A = A.tocsr()
+            
+        D_error = np.zeros_like(X_c)
+        
+        for i in range(N):
+            # Find the indices of works cited by work i
+            cited_indices = A.indices[A.indptr[i] : A.indptr[i+1]]
+            
+            if len(cited_indices) > 0:
+                v_i_c = X_c[i] # Use centered embedding
+                
+                # Get the CENTERED embeddings of the cited works
+                V_cited_c = X_c[cited_indices]
+                
+                # Compute the centroid of the CENTERED cited works
+                c_i_c = V_cited_c.mean(axis=0)
+                
+                # Compute the error vector (difference of centered vectors)
+                D_error[i] = v_i_c - c_i_c
+            # else: D_error[i] remains zero, which is correct
+            
+        LOGGER.info(f"Computed citation error matrix D_error with shape {D_error.shape}")
+        
+        # S_C should be the covariance of the error vectors
+        return scatter(D_error, centered=False) # D_error may not be zero-mean
 
 @dataclass(frozen=True)
 class SolveEighRobustlyResult:
@@ -197,45 +267,47 @@ def _recover_projector_from_dual(X: NDArray, U: NDArray) -> NDArray:
 
 class PCADenoiser:
     def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        X = context.X()
-        min_cs = min(X.shape)
+        X_c = context.X_centered() # Use centered data
+        min_cs = min(X_c.shape)
         if n_components > min_cs:
             n_components = min_cs
+        # PCA in sklearn handles centering, but we provide centered data
+        # which it will just re-center (no harm)
         pca = PCA(n_components=n_components)
-        pca.fit(X)
+        pca.fit(X_c)
         P = pca.components_.T
         return P, pca.singular_values_
 
 class GPCADenoiser:
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         B = context.A_sym()
-        M = adj(X) @ B @ X
-        d = X.shape[1]
+        M = adj(X_c) @ B @ X_c # Use centered data
+        d = X_c.shape[1]
         subset = subset_range(n=d, subset_size=n_components, smallest=False)
         eigvals, P = eigh(M, subset_by_index=subset)
         return P, eigvals
 
 class RelAmpDenoiser:
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         A = context.A()
-        N, d = X.shape
+        N, d = X_c.shape
         B = context.A_sym()
         
         if N < d:
             LOGGER.info(f"RelAmp: N < d, using dual formulation. N={N}, d={d}")
-            K = X @ adj(X)
+            K = X_c @ adj(X_c) # Use centered data
             subset = subset_range(n=N, subset_size=n_components, smallest=False)
             a_dual = adj(K) @ B @ K
             b_dual = adj(K) @ K
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
-            P = _recover_projector_from_dual(X, res.P_or_U)
+            P = _recover_projector_from_dual(X_c, res.P_or_U) # Use centered data
             return P, res.eigvals
         else:
             subset = subset_range(n=d, subset_size=n_components, smallest=False)
-            a_matrix = adj(X) @ B @ X
-            b_matrix = adj(X) @ X
+            a_matrix = adj(X_c) @ B @ X_c # Use centered data
+            b_matrix = adj(X_c) @ X_c # Use centered data
             res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
             P = res.P_or_U
             return P, res.eigvals
@@ -265,8 +337,8 @@ class RelAmpDenoiser:
 
 class LPPDenoiser:
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
-        N, d = X.shape
+        X_c = context.X_centered() # Use centered data
+        N, d = X_c.shape
         B = context.A_sym()
 
         negatives = B < 0
@@ -283,32 +355,28 @@ class LPPDenoiser:
 
         if N < d:
             LOGGER.info(f"LPP: N < d, using dual formulation. N={N}, d={d}")
-            K = X @ adj(X)
+            K = X_c @ adj(X_c) # Use centered data
             subset = subset_range(n=N, subset_size=n_components, smallest=True)
             a_dual = adj(K) @ L @ K
             LOGGER.info(f"{type(a_dual)=} {a_dual.shape=}")
             b_dual = adj(K) @ D @ K
             LOGGER.info(f"{type(b_dual)=} {b_dual.shape=}")
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
-            P = _recover_projector_from_dual(X, res.P_or_U)
-            P = P[:, ::-1]  # Reverse to put most important components first
-            eigvals = res.eigvals[::-1]  # Reverse to match projector order
-            return P, eigvals
+            P = _recover_projector_from_dual(X_c, res.P_or_U) # Use centered data
+            return P, res.eigvals
         else:
             subset = subset_range(n=d, subset_size=n_components, smallest=True)
-            a_matrix = adj(X) @ L @ X
-            b_matrix = adj(X) @ D @ X
+            a_matrix = adj(X_c) @ L @ X_c # Use centered data
+            b_matrix = adj(X_c) @ D @ X_c # Use centered data
             res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
             P = res.P_or_U
-            P = P[:, ::-1]  # Reverse to put most important components first
-            eigvals = res.eigvals[::-1]  # Reverse to match projector order
-            return P, eigvals
+            return P, res.eigvals
 
 class NormalizedLPPDenoiser:
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         B = context.A_sym()
-        N, d = X.shape
+        N, d = X_c.shape
         degrees = np.array(B.sum(axis=1)).ravel()
         inv_sqrt_deg = np.zeros_like(degrees, dtype=float)
         safe_indices = degrees > 0
@@ -323,35 +391,31 @@ class NormalizedLPPDenoiser:
             L_sym = sp.eye(N) - (D_inv_sqrt @ B @ D_inv_sqrt)
         if N < d:
             LOGGER.info(f"Normalized LPP: N < d, using dual formulation. N={N}, d={d}")
-            K = X @ adj(X)
+            K = X_c @ adj(X_c) # Use centered data
             subset = subset_range(n=N, subset_size=n_components, smallest=True)
             a_dual = adj(K) @ L_sym @ K
             b_dual = adj(K) @ D @ K
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
-            P = _recover_projector_from_dual(X, res.P_or_U)
-            P = P[:, ::-1]
-            eigvals = res.eigvals[::-1]
-            return P, eigvals
+            P = _recover_projector_from_dual(X_c, res.P_or_U) # Use centered data
+            return P, res.eigvals
 
-        a_matrix = adj(X) @ L_sym @ X
-        b_matrix = adj(X) @ D @ X
+        a_matrix = adj(X_c) @ L_sym @ X_c # Use centered data
+        b_matrix = adj(X_c) @ D @ X_c # Use centered data
         subset = subset_range(n=d, subset_size=n_components, smallest=True)
         assert np.allclose(adj(a_matrix), a_matrix, atol=1e-6), "a_matrix is not Hermitian!"
         res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
-        P = res.P_or_U[:, ::-1]
-        eigvals = res.eigvals[::-1]
-        return P, eigvals
+        return res.P_or_U, res.eigvals
 
 class WDenoiser:
     """
-    Learns W where XW ≈ AX, then uses rank-reduced W for projection.
+    Learns W where X_c W ≈ A X_c, then uses rank-reduced W for projection.
     """
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         A = context.A()
-        # Solve for W in XW ≈ AX
-        target = A @ X
-        W, _, _, _ = lstsq(X, target, rcond=None)
+        # Solve for W in X_c W ≈ A X_c
+        target = A @ X_c # Use centered data
+        W, _, _, _ = lstsq(X_c, target, rcond=None) # Use centered data
         U, s, Vt = svd(W)
         P = U[:, :n_components]
         return P, s[:n_components]
@@ -381,38 +445,37 @@ class TwoSubsetScatterDenoiser(ABC):
     Subclasses must implement get_within_class_scatter.
     """
     @abstractmethod
-    def get_within_class_scatter(self, X1: NDArray, X2: NDArray, X: NDArray) -> NDArray:
+    def get_within_class_scatter(self, X1_c: NDArray, X2_c: NDArray, X_c: NDArray) -> NDArray:
         ...
 
     def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        # Get data and global mean from context
+        X_mean = context.X_mean()
         X1 = context.X_n(0)
         X2 = context.X_n(1)
-        X = context.X()
-        if X is None:
-            X_combined = np.vstack([X1, X2])
-        else:
-            X_combined = X
+        X_c = context.X_centered()
+        
         N1, d = X1.shape
         N2, _ = X2.shape
         N_total = N1 + N2
-        # Center all data using the full embeddings set (or combined data if X is None)
-        X_mean = X_combined.mean(axis=0)
-        X1_centered = X1 - X_mean
-        X2_centered = X2 - X_mean
-        X_combined_centered = X_combined - X_mean
+        
+        # Center all data using the pre-computed global mean
+        X1_c = X1 - X_mean
+        X2_c = X2 - X_mean
+        
         # Within-class scatter (subclass-specific)
-        S_W = self.get_within_class_scatter(X1_centered, X2_centered, X_combined_centered)
-        # Between-class scatter
-        mu1_centered = X1_centered.mean(axis=0)
-        mu2_centered = X2_centered.mean(axis=0)
-        mu_diff = mu1_centered - mu2_centered
-        S_B = (N1 * N2 / N_total) * np.outer(mu_diff, mu_diff)
+        S_W = self.get_within_class_scatter(X1_c, X2_c, X_c)
+        
+        # Between-class scatter (already defined in context, but re-calc for clarity)
+        mu1_c = X1_c.mean(axis=0)
+        mu2_c = X2_c.mean(axis=0)
+        mu_diff_c = mu1_c - mu2_c
+        S_B = (N1 * N2 / N_total) * np.outer(mu_diff_c, mu_diff_c)
+        
         subset = subset_range(n=d, subset_size=n_components, smallest=True)
         res = _solve_eigh_robustly(a_matrix=S_B, b_matrix=S_W, subset=subset)
         P_basis = res.P_or_U
         eigvals = res.eigvals
-        P_basis = P_basis[:, ::-1]  # Reverse to put most important components first
-        eigvals = eigvals[::-1]  # Reverse to match projector order
         return P_basis, eigvals
 
 class AntiLDADenoiser(TwoSubsetScatterDenoiser):
@@ -420,16 +483,19 @@ class AntiLDADenoiser(TwoSubsetScatterDenoiser):
     Anti-LDA denoiser that removes the directions that best discriminate between two groups.
     It minimizes the ratio of between-class scatter to within-class scatter.
     """
-    def get_within_class_scatter(self, X1: NDArray, X2: NDArray, X: NDArray) -> NDArray:
-        return scatter(X1) + scatter(X2)
+    def get_within_class_scatter(self, X1_c: NDArray, X2_c: NDArray, X_c: NDArray) -> NDArray:
+        # S_W = S_subset1 + S_subset2
+        # Use scatter(centered=True) since X1_c and X2_c are already centered
+        return scatter(X1_c, centered=True) + scatter(X2_c, centered=True)
 
 class DomainInvariantDenoiser(TwoSubsetScatterDenoiser):
     """
     Removes directions that discriminate between two groups by minimizing the ratio of 
     between-class scatter to total scatter.
     """
-    def get_within_class_scatter(self, X1: NDArray, X2: NDArray, X: NDArray) -> NDArray:
-        return scatter(X)
+    def get_within_class_scatter(self, X1_c: NDArray, X2_c: NDArray, X_c: NDArray) -> NDArray:
+        # S_W = S_T
+        return scatter(X_c, centered=True)
 
 # class EmbeddedGraphDenoiser:
 #     def __init__(self, wrapped_denoiser):
@@ -456,58 +522,72 @@ class AugmentedLPPDenoiser:
     This is achieved by summing their respective scatter matrices in the numerator.
     """
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         B = context.A_sym()
-        N, d = X.shape
+        N, d = X_c.shape
         D = sp.diags(np.asarray(B.sum(axis=1)).squeeze())
         L = D - B
         # Tuning parameter to balance the two objectives
         gamma = 1.0
         if N < d:
             LOGGER.info(f"AugmentedLPP: N < d, using dual formulation. N={N}, d={d}")
-            K = X @ adj(X)
+            K = X_c @ adj(X_c) # Use centered data
             M_lpp = L
             M_new = adj(B - sp.eye(N)) @ (B - sp.eye(N))
             a_dual = K @ (M_lpp + gamma * M_new) @ K
             b_dual = K @ D @ K
             subset = subset_range(n=N, subset_size=n_components, smallest=True)
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
-            P = _recover_projector_from_dual(X, res.P_or_U)
-            P = P[:, ::-1]  # Reverse to put most important components first
-            eigvals = res.eigvals[::-1]  # Reverse to match projector order
-            return P, eigvals
+            P = _recover_projector_from_dual(X_c, res.P_or_U) # Use centered data
+            return P, res.eigvals
         else:
             # Primal formulation
-            S_W_lpp = adj(X) @ L @ X
-            S_W_new = adj(B @ X - X) @ (B @ X - X)
+            S_W_lpp = adj(X_c) @ L @ X_c # Use centered data
+            # S_W_new must also be centered
+            B_X_c = B @ X_c
+            B_X_c_centered = B_X_c - B_X_c.mean(axis=0, keepdims=True)
+            X_c_centered = X_c # already centered
+            S_W_new = adj(B_X_c_centered - X_c_centered) @ (B_X_c_centered - X_c_centered) / N
+
             S_A_combined = S_W_lpp + gamma * S_W_new
-            S_B_lpp = adj(X) @ D @ X
+            S_B_lpp = adj(X_c) @ D @ X_c # Use centered data
             subset = subset_range(n=d, subset_size=n_components, smallest=True)
             res = _solve_eigh_robustly(S_A_combined, S_B_lpp, subset)
             P = res.P_or_U
-            P = P[:, ::-1]  # Reverse to put most important components first
-            eigvals = res.eigvals[::-1]  # Reverse to match projector order
-            return P, eigvals
+            return P, res.eigvals
 
 class OrthogonalManifoldDenoiser:
     """
     A monolithic approach that balances preserving global, non-local structure against
     minimizing the error introduced by graph-smoothing (the AX-X distance).
-    S_B = Xᵀ(I - L)X  (preserves global variance while shrinking neighbor distances)
-    S_W = (AX - X)ᵀ(AX - X) (minimizes the smoothing error)
+
+    The "pure" objective is to find a subspace that maximizes "signal" (S_T)
+    while minimizing "noise" (S_W).
+    Objective: max (w^T S_T w) / (w^T S_W w)
+    
+    We solve the generalized eigenvalue problem: S_T w = λ S_W w
+    ...and take the eigenvectors with the LARGEST eigenvalues.
     """
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         B = context.A_sym()
-        N, d = X.shape
-        # Numerator: S_B represents non-local scatter (Total Scatter - Local Scatter)
-        D = sp.diags(np.asarray(B.sum(axis=1)).squeeze())
-        L = D - B
-        S_B = adj(X) @ (sp.eye(N) - L) @ X
-        # Denominator: S_W represents the smoothing error to be minimized
-        S_W = adj(B @ X - X) @ (B @ X - X)
+        N, d = X_c.shape
+        
+        # Numerator: S_T represents total signal (now centered)
+        S_T = context.S_T()
+        
+        # Denominator: S_W represents the smoothing error (noise)
+        # We must use centered data here too.
+        B_X_c = B @ X_c
+        # We need to center (B @ X_c) and (X_c) relative to their own means
+        # before taking the scatter of their difference.
+        B_X_c_centered = B_X_c - B_X_c.mean(axis=0, keepdims=True)
+        X_c_centered = X_c # already centered
+        
+        S_W = scatter(B_X_c_centered - X_c_centered, centered=True) # S_W = scatter( (AX_c - mean(AX_c)) - (X_c) )
+        
         subset = subset_range(n=d, subset_size=n_components, smallest=False)
-        res = _solve_eigh_robustly(a_matrix=S_B, b_matrix=S_W, subset=subset)
+        res = _solve_eigh_robustly(a_matrix=S_T, b_matrix=S_W, subset=subset)
         P_basis = res.P_or_U
         return P_basis, res.eigvals
 
@@ -517,12 +597,15 @@ class _PLSDenoiser(ABC):
     Subclasses should override get_cross_matrix.
     """
     def projector(self, context: DenoiserContext, n_components: int):
-        X = context.X()
+        X_c = context.X_centered() # Use centered data
         B = context.A_sym()
-        N, d = X.shape
-        Y = B @ X
-        X_centered = X - X.mean(axis=0)
-        Y_centered = Y - Y.mean(axis=0)
+        N, d = X_c.shape
+        
+        Y = B @ X_c # Target is A @ X_c
+        
+        X_centered = X_c # Already centered
+        Y_centered = Y - Y.mean(axis=0, keepdims=True) # Center the target
+        
         # Get the cross-matrix (covariance or correlation)
         C = self.get_cross_matrix(X_centered, Y_centered, N)
         U, s, Vt = svd(C)
@@ -588,12 +671,13 @@ class CCLIPDenoiser:
         """
         Computes the projection matrix for CCLIP.
         """
-        X = context.X()
-        N, d = X.shape
+        X = context.X() # Not needed, context will handle it
+        N, d = context.X().shape
         
         # Get precomputed scatter matrices from context
+        # All these methods will now return centered matrices
         S_T = context.S_T()
-        S_B = context.S_B()
+        S_B = context.S_B_multi(list(range(context.num_subsets()))) 
         S_L = context.S_L()
 
         # Construct the numerator matrix using the alpha mixing parameter
@@ -605,8 +689,6 @@ class CCLIPDenoiser:
 
         P = res.P_or_U
         eigvals = res.eigvals
-        P = P[:, ::-1]  # Ensure the projector is in descending order of eigenvalues
-        eigvals = eigvals[::-1]  # Reverse to match projector order
         return P, eigvals
 
 class AntiCSPDenoiser:
@@ -616,8 +698,8 @@ class AntiCSPDenoiser:
     closest to 0.5.
     """
     def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        S1 = scatter(context.X_n(0))
-        S2 = scatter(context.X_n(1))
+        S1 = context.S_subset(0) # Use context to get CENTERED subset scatter
+        S2 = context.S_subset(1) # Use context to get CENTERED subset scatter
         
         # 1. Use the robust solver to get the full set of orthogonal eigenvectors.
         result = _solve_eigh_robustly(a_matrix=S1, b_matrix=(S1 + S2), subset=None)
@@ -690,11 +772,11 @@ class JADDenoiser:
         N, d = X.shape
         num_subsets = context.num_subsets()
         
-        # Get the scatter matrices
+        # Get the scatter matrices (all are now centered)
         S_T = context.S_T()
         S_L = context.S_L()
         
-        # Get all subset scatter matrices
+        # Get all subset scatter matrices (all are now centered)
         subset_scatter_matrices = []
         for i in range(num_subsets):
             subset_scatter_matrices.append(context.S_subset(i))
@@ -794,3 +876,52 @@ class JADDenoiser:
         LOGGER.info(f"JAD: Final projection shape {P_final.shape}, quality scores: {scores_final}")
         return P_final, scores_final
         
+
+class CitationErrorDenoiser:
+    """
+    Finds the subspace that minimizes the "citation error" (distance between
+    a work and the centroid of its citations).
+    
+    This is the "null-space" approach and may find low-variance noise dimensions.
+    Objective: min_w (w^T S_C w)
+    Solution: Eigenvectors of S_C with the SMALLEST eigenvalues.
+    """
+    def projector(self, context: DenoiserContext, n_components: int):
+        S_C = context.S_C() # This is now centered
+        d = S_C.shape[0]
+        
+        # We want the k SMALLEST eigenvectors
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        res = _solve_eigh_robustly(a_matrix=S_C, b_matrix=None, subset=subset)
+        
+        P = res.P_or_U
+        eigvals = res.eigvals
+        # No need to reverse, as we want the smallest
+        return P, eigvals
+
+class CitationErrorLDADenoiser:
+    """
+    Finds the subspace that balances minimizing "citation error" (S_C) against
+    maximizing "citation signal" (S_T - S_C).
+    
+    This is the "purest" formulation of the objective.
+    It solves the generalized eigenvalue problem: S_C w = λ (S_T - S_C) w
+    We seek the eigenvectors with the SMALLEST eigenvalues (minimizing the ratio).
+    Objective: min (w^T S_C w) / (w^T (S_T - S_C) w)
+    """
+    def projector(self, context: DenoiserContext, n_components: int):
+        S_C = context.S_C() # This is now centered
+        S_T = context.S_T() # This is now centered
+        d = S_C.shape[0]
+
+        # The "signal" matrix is Total Variance minus the "error" variance
+        S_Signal = S_T - S_C
+
+        # We want the k SMALLEST eigenvalues
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        res = _solve_eigh_robustly(a_matrix=S_C, b_matrix=S_Signal, subset=subset)
+        
+        P = res.P_or_U
+        eigvals = res.eigvals
+        # No need to reverse, as we want the smallest
+        return P, eigvals

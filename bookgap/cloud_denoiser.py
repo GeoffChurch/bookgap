@@ -29,6 +29,7 @@ class ProjectiveDenoiserProjection:
 
 class CloudDenoiserContext(denoisers.DenoiserContext):
     def __init__(self, works: List[Dict[str, Any]], embeddings: NDArray, *filters: Filter):
+        super().__init__()
         self.works = works
         self.filters = list(filters)
         self._A: Optional[sp.csr_matrix] = None
