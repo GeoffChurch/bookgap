@@ -1,4 +1,3 @@
-from collections import deque
 from types import SimpleNamespace
 from typing import cast
 
@@ -16,8 +15,12 @@ from bookgap.llm.artifacts.results_export import (
     _sanitize_text_field,
     generate_gaps_analysis_csv,
 )
-from bookgap.llm.data_structures import ProposalAnalytics, ProposalGapStats, ProposalOutrankCounts
-from bookgap.llm.data_structures import GapWithContext
+from bookgap.llm.data_structures import (
+    GapWithContext,
+    ProposalAnalyticsStore,
+    ProposalGapStats,
+    ProposalOutrankCounts,
+)
 from bookgap.llm.identifiers import GapProposalId, build_gap_proposal_id
 from bookgap.llm.protocols import (
     Article,
@@ -156,24 +159,19 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
 
     monkeypatch.setattr(results_export, "compute_proposal_rankings_for_gap", fake_compute)
 
-    proposal_analytics = {
-        ("topic-1", 0): {
-            parsed_proposal.custom_id: ProposalAnalytics(
-                gap_stats=deque(
-                    [
-                        ProposalGapStats(
-                            gap_size=5,
-                            gap_size_percentile=0.75,
-                            gap_zscore=1.5,
-                        )
-                    ]
-                ),
-                outrank_counts=deque(
-                    [ProposalOutrankCounts(counts=np.array([0, 1], dtype=np.int32))]
-                ),
-            )
-        }
-    }
+    analytics_store = ProposalAnalyticsStore()
+    analytics_store.add_gap_stats(
+        parsed_proposal.custom_id,
+        ProposalGapStats(
+            gap_size=5,
+            gap_size_percentile=0.75,
+            gap_zscore=1.5,
+        ),
+    )
+    analytics_store.add_outrank_counts(
+        parsed_proposal.custom_id,
+        ProposalOutrankCounts(counts=np.array([0, 1], dtype=np.int32)),
+    )
 
     csv_path = generate_gaps_analysis_csv(
         gaps=[gap_with_context],
@@ -183,7 +181,7 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
         contexts=[context],
         proposals_grouped=proposals_grouped,
         ordered_proposals=ordered_proposals,
-        proposal_analytics=proposal_analytics,
+        proposal_analytics=analytics_store,
     )
 
     df = pd.read_csv(csv_path)
@@ -289,38 +287,31 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         ),
     )
 
-    proposal_analytics = {
-        ("topic-1", 0): {
-            proposal_a.custom_id: ProposalAnalytics(
-                gap_stats=deque(
-                    [
-                        ProposalGapStats(
-                            gap_size=3,
-                            gap_size_percentile=0.2,
-                            gap_zscore=-1.0,
-                        )
-                    ]
-                ),
-                outrank_counts=deque(
-                    [ProposalOutrankCounts(counts=np.array([0, 0, 1], dtype=np.int32))]
-                ),
-            ),
-            proposal_b.custom_id: ProposalAnalytics(
-                gap_stats=deque(
-                    [
-                        ProposalGapStats(
-                            gap_size=6,
-                            gap_size_percentile=0.8,
-                            gap_zscore=2.0,
-                        )
-                    ]
-                ),
-                outrank_counts=deque(
-                    [ProposalOutrankCounts(counts=np.array([1, 2, 0], dtype=np.int32))]
-                ),
-            ),
-        }
-    }
+    analytics_store = ProposalAnalyticsStore()
+    analytics_store.add_gap_stats(
+        proposal_a.custom_id,
+        ProposalGapStats(
+            gap_size=3,
+            gap_size_percentile=0.2,
+            gap_zscore=-1.0,
+        ),
+    )
+    analytics_store.add_gap_stats(
+        proposal_b.custom_id,
+        ProposalGapStats(
+            gap_size=6,
+            gap_size_percentile=0.8,
+            gap_zscore=2.0,
+        ),
+    )
+    analytics_store.add_outrank_counts(
+        proposal_a.custom_id,
+        ProposalOutrankCounts(counts=np.array([0, 0, 1], dtype=np.int32)),
+    )
+    analytics_store.add_outrank_counts(
+        proposal_b.custom_id,
+        ProposalOutrankCounts(counts=np.array([1, 2, 0], dtype=np.int32)),
+    )
 
     csv_path = generate_gaps_analysis_csv(
         gaps=[gap_with_context],
@@ -330,7 +321,7 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         contexts=[context],
         proposals_grouped=proposals_grouped,
         ordered_proposals=ordered_proposals,
-        proposal_analytics=proposal_analytics,
+        proposal_analytics=analytics_store,
     )
 
     df = pd.read_csv(csv_path).sort_values("proposal_title").reset_index(drop=True)

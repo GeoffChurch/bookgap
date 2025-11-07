@@ -4,13 +4,17 @@ import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast, Optional
+from typing import Any, cast, Optional
 
 import numpy as np
+import faiss
 import pytest
 from unittest.mock import Mock, patch
 
 from omegaconf import OmegaConf, DictConfig
+
+from bookgap.gap_types import DistsAndIdxs
+from bookgap.subcloud import SubCloud
 
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import Embedder
@@ -30,6 +34,7 @@ from bookgap.llm.generators.workflow_functions import (
 )
 from bookgap.llm.identifiers import build_gap_proposal_id
 from bookgap.llm.protocols import (
+    GapProtocol,
     ProposalContext,
     BatchRequestData,
     ChatCompletionBody,
@@ -707,8 +712,80 @@ class TestRunBatchWorkflow:
     def test_complete_workflow(self, mock_monitor, mock_submit, mock_generate, 
                              mock_build_contexts, mock_find_gaps):
         """Test the complete workflow orchestration."""
-        # Setup mocks
-        mock_gaps = [Mock(), Mock()]
+        # Setup deterministic gap contexts to exercise analytics steps
+        books_embeddings = np.eye(3, dtype=np.float32)
+        articles_embeddings = np.array(
+            [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+            dtype=np.float32,
+        )
+
+        class _StubSubCloud:
+            def __init__(self, embeddings: np.ndarray):
+                self._embeddings = embeddings
+
+            def embeddings(self) -> np.ndarray:
+                return self._embeddings
+
+            def index(self):
+                index = faiss.IndexFlatL2(self._embeddings.shape[1])
+                vectors = np.ascontiguousarray(self._embeddings, dtype=np.float32)
+                cast(Any, index).add(vectors)
+                return index
+
+        class _StubGap:
+            def __init__(self, center_idx: int, ambient: SubCloud, landmark: SubCloud):
+                self._dists_idxs = DistsAndIdxs(
+                    sqdists=np.array([0.0], dtype=np.float32),
+                    idxs=np.array([center_idx], dtype=np.intp),
+                )
+                self._ambient = ambient
+                self._landmark = landmark
+
+            def get_dists_idxs(self) -> DistsAndIdxs:
+                return self._dists_idxs
+
+            def get_ambient(self) -> SubCloud:
+                return self._ambient
+
+            def get_landmark(self) -> SubCloud:
+                return self._landmark
+
+            def get_covering_book_indices(self):  # pragma: no cover - unused in test
+                return []
+
+            def get_book_to_articles_mapping(self):  # pragma: no cover - unused in test
+                return {}
+
+        books_subcloud = cast(SubCloud, _StubSubCloud(books_embeddings))
+        articles_subcloud = cast(SubCloud, _StubSubCloud(articles_embeddings))
+
+        gap0 = GapWithContext(
+            gap=cast(GapProtocol, _StubGap(center_idx=0, ambient=articles_subcloud, landmark=books_subcloud)),
+            topic_name="Topic",
+            topic_id="topic-1",
+            gap_idx=0,
+            books=books_subcloud,
+            articles=articles_subcloud,
+            book_gap_sizes=[1, 2, 3],
+            gap_size=1,
+            gap_size_percentile=0.5,
+            gap_zscore=0.0,
+            shapiro_log10_pval=0.0,
+        )
+        gap1 = GapWithContext(
+            gap=cast(GapProtocol, _StubGap(center_idx=1, ambient=articles_subcloud, landmark=books_subcloud)),
+            topic_name="Topic",
+            topic_id="topic-2",
+            gap_idx=1,
+            books=books_subcloud,
+            articles=articles_subcloud,
+            book_gap_sizes=[1, 2, 3],
+            gap_size=1,
+            gap_size_percentile=0.5,
+            gap_zscore=0.0,
+            shapiro_log10_pval=0.0,
+        )
+        mock_gaps = [gap0, gap1]
         mock_find_gaps.return_value = mock_gaps
         
         mock_contexts = [Mock(), Mock()]
@@ -730,10 +807,22 @@ class TestRunBatchWorkflow:
         )
         metadata = cast(ExperimentConfig, OmegaConf.create({"batch": {"num_gaps": 2}}))
         mock_monitor.return_value = BatchResults(proposals=[proposal], metadata=metadata)
-        
-        mock_config = Mock()
-        mock_config.batch.num_gaps = 2
-        
+
+        class _StubAlgorithm:
+            def compute_gap_sizes_for_embeddings(self, *, embeddings, **_kwargs):
+                return np.full(embeddings.shape[0], 2, dtype=np.int32)
+
+        mock_config = cast(
+            ExperimentConfig,
+            SimpleNamespace(
+                batch=SimpleNamespace(num_gaps=2),
+                gap=SimpleNamespace(
+                    radius_fraction=0.5,
+                    cell_type=SimpleNamespace(value=_StubAlgorithm()),
+                ),
+            ),
+        )
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
             with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \

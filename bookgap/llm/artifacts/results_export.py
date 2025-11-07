@@ -16,7 +16,7 @@ from bookgap.cloud_index import compute_proposal_rankings_for_gap
 from bookgap.configs.config import ExperimentConfig
 from bookgap.llm.identifiers import GapProposalId
 from bookgap.llm.protocols import ParsedProposal, ProposalContext, ProposalCounts
-from bookgap.llm.data_structures import GapWithContext, ProposalAnalyticsMap
+from bookgap.llm.data_structures import GapWithContext, ProposalAnalyticsStore
 from bookgap.util import LOGGER
 
 
@@ -241,7 +241,7 @@ def generate_gaps_analysis_csv(
     *,
     proposals_grouped: dict[tuple[str, int], list[ParsedProposal]],
     ordered_proposals: list[tuple[ParsedProposal, GapProposalId]],
-    proposal_analytics: ProposalAnalyticsMap,
+    proposal_analytics: ProposalAnalyticsStore,
 ) -> Path:
     """
     Create a minimal CSV joining proposals with basic gap metadata.
@@ -266,9 +266,24 @@ def generate_gaps_analysis_csv(
         ranking_tuple = ranking_deque.popleft()
         gap_meta = gap_meta_map[key]
 
-        analytics_entry = proposal_analytics[key][proposal.custom_id]
-        gap_stats_entry, coverage_stats = analytics_entry.popleft()
-        gap_coverage_fraction = coverage_stats.coverage_fraction() if coverage_stats else float("nan")
+        analytics_entry = proposal_analytics.get(proposal.custom_id)
+        if analytics_entry is None:
+            LOGGER.warning(
+                "No analytics found for proposal custom_id=%s (topic_id=%s, gap_idx=%s)",
+                proposal.custom_id,
+                parsed.topic_id,
+                parsed.gap_idx,
+            )
+            gap_stats_entry = None
+            gap_coverage_fraction = float("nan")
+        else:
+            gap_stats_entry = analytics_entry.gap_stats
+            coverage_fraction = analytics_entry.gap_coverage_fraction()
+            gap_coverage_fraction = (
+                float(coverage_fraction)
+                if coverage_fraction is not None
+                else float("nan")
+            )
         row = _proposal_row(parsed, proposal, ranking_tuple, gap_meta)
         row["gap_coverage_fraction"] = gap_coverage_fraction
         if gap_stats_entry is not None:

@@ -3,7 +3,7 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
 from itertools import islice
 import json
@@ -30,12 +30,9 @@ from bookgap.llm.artifacts.common import group_gap_articles_by_covering_books
 from bookgap.llm.data_structures import (
     BatchResults,
     GapWithContext,
-    ProposalAnalytics,
-    ProposalAnalyticsMap,
+    ProposalAnalyticsStore,
     ProposalGapStats,
-    ProposalGapStatsMap,
     ProposalOutrankCounts,
-    ProposalOutrankCountsMap,
 )
 from bookgap.llm.generators.batch_generator import BatchProposalGenerator
 from bookgap.subcloud import SubCloud, get_subclouds_for_topic
@@ -139,18 +136,15 @@ def _index_proposals(proposals: list[ParsedProposal]) -> ProposalGrouping:
 def _compute_proposal_outrank_counts(
     gaps: list[GapWithContext],
     proposals_by_topic_gap: dict[tuple[str, int], list[ParsedProposal]],
+    analytics_store: ProposalAnalyticsStore,
+    proposal_id_lookup: dict[str, GapProposalId],
     *,
     epsilon: float = float(np.finfo(np.float32).eps * 8),
-) -> ProposalOutrankCountsMap:
-    """Compute per-article outrank counts for each proposal keyed by (topic_id, gap_idx).
+) -> None:
+    """Compute per-article outrank counts and record them in the analytics store."""
 
-    For each article within the gap we count how many books are strictly closer than the
-    proposal by using FAISS range searches with the article as the query center.
-    """
-
-    coverage: ProposalOutrankCountsMap = {}
     if not gaps:
-        return coverage
+        return
 
     gap_lookup = {(gap.topic_id, gap.gap_idx): gap for gap in gaps}
 
@@ -182,12 +176,8 @@ def _compute_proposal_outrank_counts(
         try:
             book_index = gap.books.index()
         except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.warning(
-                "Failed to build book index for gap %s: %s", key, exc
-            )
+            LOGGER.warning("Failed to build book index for gap %s: %s", key, exc)
             continue
-
-        coverage_for_gap: dict[str, deque[ProposalOutrankCounts]] = defaultdict(deque)
 
         for proposal in proposals:
             proposal_vec = np.asarray(proposal.embedding, dtype=np.float32)
@@ -213,25 +203,31 @@ def _compute_proposal_outrank_counts(
                 show_progress=False,
             )
 
-            coverage_for_gap[proposal.custom_id].append(
-                ProposalOutrankCounts(counts=counts)
+            proposal_id = proposal_id_lookup.get(proposal.custom_id)
+            if proposal_id is None:
+                LOGGER.warning(
+                    "Unhandled proposal custom_id %s while recording outrank counts",
+                    proposal.custom_id,
+                )
+                continue
+
+            analytics_store.add_outrank_counts(
+                proposal.custom_id,
+                ProposalOutrankCounts(counts=counts),
             )
-
-        coverage[key] = coverage_for_gap
-
-    return coverage
 
 
 def _compute_proposal_gap_stats(
     gaps: list[GapWithContext],
     proposals_by_topic_gap: dict[tuple[str, int], list[ParsedProposal]],
     config: ExperimentConfig,
-) -> ProposalGapStatsMap:
-    """Compute hypothetical gap sizes for proposals treated as landmark candidates."""
+    analytics_store: ProposalAnalyticsStore,
+    proposal_id_lookup: dict[str, GapProposalId],
+) -> None:
+    """Compute hypothetical gap sizes and record them in the analytics store."""
 
-    stats: ProposalGapStatsMap = {}
     if not gaps:
-        return stats
+        return
 
     gap_lookup = {(gap.topic_id, gap.gap_idx): gap for gap in gaps}
     algorithm = config.gap.cell_type.value
@@ -241,7 +237,6 @@ def _compute_proposal_gap_stats(
             continue
 
         gap = gap_lookup[key]
-
         embeddings = np.stack(
             [np.asarray(proposal.embedding, dtype=np.float32) for proposal in proposals],
             axis=0,
@@ -256,59 +251,27 @@ def _compute_proposal_gap_stats(
             is_intra_cloud=False,
         )
 
-        stats_for_gap: dict[str, deque[ProposalGapStats]] = defaultdict(deque)
         book_gap_sizes = gap.book_gap_sizes
 
-        proposal_gap_iter = zip(proposals, gap_sizes, strict=True)
+        for proposal, gap_size in zip(proposals, gap_sizes, strict=True):
+            proposal_id = proposal_id_lookup.get(proposal.custom_id)
+            if proposal_id is None:
+                LOGGER.warning(
+                    "Unhandled proposal custom_id %s while recording gap stats",
+                    proposal.custom_id,
+                )
+                continue
 
-        for proposal, gap_size in proposal_gap_iter:
             percentile, zscore, _ = compute_gap_statistics(gap_size, book_gap_sizes)
 
-            stats_for_gap[proposal.custom_id].append(
+            analytics_store.add_gap_stats(
+                proposal.custom_id,
                 ProposalGapStats(
                     gap_size=gap_size,
                     gap_size_percentile=percentile,
                     gap_zscore=zscore,
-                )
+                ),
             )
-
-        stats[key] = stats_for_gap
-
-    return stats
-
-
-def _assemble_proposal_analytics(
-    gap_stats: ProposalGapStatsMap,
-    outrank_counts: ProposalOutrankCountsMap,
-) -> ProposalAnalyticsMap:
-    """Combine gap statistics and outrank counts into a unified analytics map."""
-
-    analytics: ProposalAnalyticsMap = {}
-    for key in set(gap_stats) | set(outrank_counts):
-        stats_for_gap = gap_stats.get(key, {})
-        counts_for_gap = outrank_counts.get(key, {})
-        custom_ids = set(stats_for_gap) | set(counts_for_gap)
-        if not custom_ids:
-            continue
-
-        gap_entry: dict[str, ProposalAnalytics] = {}
-        for custom_id in custom_ids:
-            gap_stats_deque = stats_for_gap.get(custom_id)
-            if gap_stats_deque is None:
-                gap_stats_deque = deque()
-
-            outrank_counts_deque = counts_for_gap.get(custom_id)
-            if outrank_counts_deque is None:
-                outrank_counts_deque = deque()
-
-            gap_entry[custom_id] = ProposalAnalytics(
-                gap_stats=gap_stats_deque,
-                outrank_counts=outrank_counts_deque,
-            )
-
-        analytics[key] = gap_entry
-
-    return analytics
 
 class MetadataUtils:
     """Static utilities for metadata chunking and parsing."""
@@ -818,21 +781,26 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     # Index proposals once for downstream artifact generation
     proposal_grouping = _index_proposals(results.proposals)
 
+    proposal_id_lookup = {
+        proposal.custom_id: parsed
+        for proposal, parsed in proposal_grouping.ordered
+    }
+    analytics_store = ProposalAnalyticsStore()
+
     # Compute proposal outrank counts for coverage metrics
-    proposal_outrank_counts = _compute_proposal_outrank_counts(
+    _compute_proposal_outrank_counts(
         gaps,
         proposal_grouping.by_topic_gap,
+        analytics_store,
+        proposal_id_lookup,
     )
 
-    proposal_gap_stats = _compute_proposal_gap_stats(
+    _compute_proposal_gap_stats(
         gaps,
         proposal_grouping.by_topic_gap,
         config,
-    )
-
-    proposal_analytics = _assemble_proposal_analytics(
-        proposal_gap_stats,
-        proposal_outrank_counts,
+        analytics_store,
+        proposal_id_lookup,
     )
     
     # ARTIFACTS: Generate plots
@@ -852,7 +820,7 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         contexts,
         proposals_grouped=proposal_grouping.by_topic_gap,
         ordered_proposals=proposal_grouping.ordered,
-        proposal_analytics=proposal_analytics,
+        proposal_analytics=analytics_store,
     )
 
     # Return enhanced results with artifacts

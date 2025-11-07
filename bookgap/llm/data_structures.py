@@ -4,8 +4,7 @@ This module contains common data structures used across the LLM workflow
 to avoid circular imports between different modules.
 """
 
-from dataclasses import dataclass
-from typing import Deque, Dict, List, Tuple
+from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
@@ -24,7 +23,7 @@ class GapWithContext:
     gap_idx: int
     books: SubCloud
     articles: SubCloud
-    book_gap_sizes: List[int]  # Gap sizes for all books in topic (for statistics)
+    book_gap_sizes: list[int]  # Gap sizes for all books in topic (for statistics)
     gap_size: int
     gap_size_percentile: float
     gap_zscore: float
@@ -34,7 +33,7 @@ class GapWithContext:
 @dataclass(frozen=True)
 class BatchResults:
     """Immutable container for batch processing results."""
-    proposals: List[ParsedProposal]
+    proposals: list[ParsedProposal]
     metadata: ExperimentConfig
 
 
@@ -49,11 +48,6 @@ class ProposalOutrankCounts:
         return float(num_covered / self.counts.size)
 
 
-ProposalOutrankCountsMap = Dict[
-    Tuple[str, int], Dict[str, Deque[ProposalOutrankCounts]]
-]
-
-
 @dataclass(frozen=True)
 class ProposalGapStats:
     """Computed gap statistics for a proposal considered as a hypothetical book."""
@@ -63,22 +57,40 @@ class ProposalGapStats:
     gap_zscore: float
 
 
-ProposalGapStatsMap = Dict[
-    Tuple[str, int], Dict[str, Deque[ProposalGapStats]]
-]
+@dataclass
+class ProposalAnalytics:
+    """Aggregated analytics captured for a single proposal."""
+
+    gap_stats: ProposalGapStats | None = None
+    outrank_counts: ProposalOutrankCounts | None = None
+
+    def gap_coverage_fraction(self) -> float | None:
+        return (
+            self.outrank_counts.coverage_fraction()
+            if self.outrank_counts is not None
+            else None
+        )
 
 
 @dataclass
-class ProposalAnalytics:
-    """Aggregated analytics queues for a proposal keyed by custom_id."""
+class ProposalAnalyticsStore:
+    """Mutable container for analytics keyed by proposal custom ID."""
 
-    gap_stats: Deque[ProposalGapStats]
-    outrank_counts: Deque[ProposalOutrankCounts]
+    _analytics: dict[str, ProposalAnalytics] = field(default_factory=dict)
 
-    def popleft(self) -> tuple[ProposalGapStats | None, ProposalOutrankCounts | None]:
-        stats = self.gap_stats.popleft() if self.gap_stats else None
-        coverage = self.outrank_counts.popleft() if self.outrank_counts else None
-        return stats, coverage
+    def _entry(self, proposal_custom_id: str) -> ProposalAnalytics:
+        return self._analytics.setdefault(proposal_custom_id, ProposalAnalytics())
 
+    def add_gap_stats(self, proposal_custom_id: str, stats: ProposalGapStats) -> None:
+        self._entry(proposal_custom_id).gap_stats = stats
 
-ProposalAnalyticsMap = Dict[Tuple[str, int], Dict[str, ProposalAnalytics]]
+    def add_outrank_counts(
+        self, proposal_custom_id: str, counts: ProposalOutrankCounts
+    ) -> None:
+        self._entry(proposal_custom_id).outrank_counts = counts
+
+    def get(self, proposal_custom_id: str) -> ProposalAnalytics | None:
+        return self._analytics.get(proposal_custom_id)
+
+    def items(self):
+        return self._analytics.items()
