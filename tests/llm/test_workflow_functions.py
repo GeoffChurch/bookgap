@@ -769,6 +769,7 @@ class TestRunBatchWorkflow:
         assert csv_args == (mock_gaps, result.proposals, Path(tmp_dir), mock_config, mock_contexts)
         assert list(csv_kwargs.get("proposals_grouped", {}).keys()) == [("topic-1", 0)]
         assert csv_kwargs.get("ordered_proposals")
+        assert "proposal_analytics" in csv_kwargs
         
         # Verify result
         assert isinstance(result, BatchResults)

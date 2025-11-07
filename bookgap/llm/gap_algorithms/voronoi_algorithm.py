@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
+
 from bookgap.cloud_index import knn
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import hypothetical_voronoi_coverage
@@ -58,6 +59,37 @@ class VoronoiAlgorithm:
                 ambient_to_nearest_landmark_idxs=ambient_nearest_landmark[reassigned_idxs],
                 ambient_to_query_sqdists=reassigned_dists,
                 query_idx=query_idx)
+
+    @staticmethod
+    def compute_gap_sizes_for_embeddings(
+        *,
+        ambient: SubCloud,
+        landmark: SubCloud,
+        embeddings: NDArray[np.float32],
+        radius_fraction: float | None,
+        k: int | None,
+        is_intra_cloud: bool | None,
+    ) -> NDArray[np.int32]:
+        """Return Voronoi coverage counts for arbitrary query embeddings."""
+
+        if embeddings.size == 0:
+            return np.zeros((0,), dtype=np.int32)
+
+        query_embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+        if query_embeddings.ndim != 2:
+            raise ValueError(
+                f"Query embeddings must be 2D (N, D); received shape {query_embeddings.shape}"
+            )
+
+        counts = hypothetical_voronoi_coverage(
+            ambient=ambient.index(),
+            landmark=landmark.index(),
+            query=query_embeddings,
+            ambient_is_landmark=ambient == landmark,
+            show_progress=False,
+        )
+
+        return counts.astype(np.int32, copy=False)
     
     @property
     def name(self):

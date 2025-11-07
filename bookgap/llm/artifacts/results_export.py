@@ -16,7 +16,7 @@ from bookgap.cloud_index import compute_proposal_rankings_for_gap
 from bookgap.configs.config import ExperimentConfig
 from bookgap.llm.identifiers import GapProposalId
 from bookgap.llm.protocols import ParsedProposal, ProposalContext, ProposalCounts
-from bookgap.llm.data_structures import GapWithContext, ProposalOutrankCountsMap
+from bookgap.llm.data_structures import GapWithContext, ProposalAnalyticsMap
 from bookgap.util import LOGGER
 
 
@@ -241,7 +241,7 @@ def generate_gaps_analysis_csv(
     *,
     proposals_grouped: dict[tuple[str, int], list[ParsedProposal]],
     ordered_proposals: list[tuple[ParsedProposal, GapProposalId]],
-    proposal_outrank_counts: ProposalOutrankCountsMap,
+    proposal_analytics: ProposalAnalyticsMap,
 ) -> Path:
     """
     Create a minimal CSV joining proposals with basic gap metadata.
@@ -266,11 +266,19 @@ def generate_gaps_analysis_csv(
         ranking_tuple = ranking_deque.popleft()
         gap_meta = gap_meta_map[key]
 
-        coverage_deque = proposal_outrank_counts[key][proposal.custom_id]
-        coverage_stats = coverage_deque.popleft()
-        gap_coverage_fraction = coverage_stats.coverage_fraction()
+        analytics_entry = proposal_analytics[key][proposal.custom_id]
+        gap_stats_entry, coverage_stats = analytics_entry.popleft()
+        gap_coverage_fraction = coverage_stats.coverage_fraction() if coverage_stats else float("nan")
         row = _proposal_row(parsed, proposal, ranking_tuple, gap_meta)
         row["gap_coverage_fraction"] = gap_coverage_fraction
+        if gap_stats_entry is not None:
+            row["proposal_gap_size"] = gap_stats_entry.gap_size
+            row["proposal_gap_size_percentile"] = gap_stats_entry.gap_size_percentile
+            row["proposal_gap_zscore"] = gap_stats_entry.gap_zscore
+        else:
+            row["proposal_gap_size"] = float("nan")
+            row["proposal_gap_size_percentile"] = float("nan")
+            row["proposal_gap_zscore"] = float("nan")
         prop_rows.append(row)
 
     proposals_df = pd.DataFrame(prop_rows)

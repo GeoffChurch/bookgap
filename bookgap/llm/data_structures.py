@@ -52,3 +52,33 @@ class ProposalOutrankCounts:
 ProposalOutrankCountsMap = Dict[
     Tuple[str, int], Dict[str, Deque[ProposalOutrankCounts]]
 ]
+
+
+@dataclass(frozen=True)
+class ProposalGapStats:
+    """Computed gap statistics for a proposal considered as a hypothetical book."""
+
+    gap_size: int
+    gap_size_percentile: float
+    gap_zscore: float
+
+
+ProposalGapStatsMap = Dict[
+    Tuple[str, int], Dict[str, Deque[ProposalGapStats]]
+]
+
+
+@dataclass
+class ProposalAnalytics:
+    """Aggregated analytics queues for a proposal keyed by custom_id."""
+
+    gap_stats: Deque[ProposalGapStats]
+    outrank_counts: Deque[ProposalOutrankCounts]
+
+    def popleft(self) -> tuple[ProposalGapStats | None, ProposalOutrankCounts | None]:
+        stats = self.gap_stats.popleft() if self.gap_stats else None
+        coverage = self.outrank_counts.popleft() if self.outrank_counts else None
+        return stats, coverage
+
+
+ProposalAnalyticsMap = Dict[Tuple[str, int], Dict[str, ProposalAnalytics]]

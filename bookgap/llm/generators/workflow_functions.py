@@ -30,6 +30,10 @@ from bookgap.llm.artifacts.common import group_gap_articles_by_covering_books
 from bookgap.llm.data_structures import (
     BatchResults,
     GapWithContext,
+    ProposalAnalytics,
+    ProposalAnalyticsMap,
+    ProposalGapStats,
+    ProposalGapStatsMap,
     ProposalOutrankCounts,
     ProposalOutrankCountsMap,
 )
@@ -216,6 +220,95 @@ def _compute_proposal_outrank_counts(
         coverage[key] = coverage_for_gap
 
     return coverage
+
+
+def _compute_proposal_gap_stats(
+    gaps: list[GapWithContext],
+    proposals_by_topic_gap: dict[tuple[str, int], list[ParsedProposal]],
+    config: ExperimentConfig,
+) -> ProposalGapStatsMap:
+    """Compute hypothetical gap sizes for proposals treated as landmark candidates."""
+
+    stats: ProposalGapStatsMap = {}
+    if not gaps:
+        return stats
+
+    gap_lookup = {(gap.topic_id, gap.gap_idx): gap for gap in gaps}
+    algorithm = config.gap.cell_type.value
+
+    for key, proposals in proposals_by_topic_gap.items():
+        if not proposals:
+            continue
+
+        gap = gap_lookup[key]
+
+        embeddings = np.stack(
+            [np.asarray(proposal.embedding, dtype=np.float32) for proposal in proposals],
+            axis=0,
+        )
+
+        gap_sizes = algorithm.compute_gap_sizes_for_embeddings(
+            ambient=gap.articles,
+            landmark=gap.books,
+            embeddings=embeddings,
+            radius_fraction=config.gap.radius_fraction,
+            k=1,
+            is_intra_cloud=False,
+        )
+
+        stats_for_gap: dict[str, deque[ProposalGapStats]] = defaultdict(deque)
+        book_gap_sizes = gap.book_gap_sizes
+
+        proposal_gap_iter = zip(proposals, gap_sizes, strict=True)
+
+        for proposal, gap_size in proposal_gap_iter:
+            percentile, zscore, _ = compute_gap_statistics(gap_size, book_gap_sizes)
+
+            stats_for_gap[proposal.custom_id].append(
+                ProposalGapStats(
+                    gap_size=gap_size,
+                    gap_size_percentile=percentile,
+                    gap_zscore=zscore,
+                )
+            )
+
+        stats[key] = stats_for_gap
+
+    return stats
+
+
+def _assemble_proposal_analytics(
+    gap_stats: ProposalGapStatsMap,
+    outrank_counts: ProposalOutrankCountsMap,
+) -> ProposalAnalyticsMap:
+    """Combine gap statistics and outrank counts into a unified analytics map."""
+
+    analytics: ProposalAnalyticsMap = {}
+    for key in set(gap_stats) | set(outrank_counts):
+        stats_for_gap = gap_stats.get(key, {})
+        counts_for_gap = outrank_counts.get(key, {})
+        custom_ids = set(stats_for_gap) | set(counts_for_gap)
+        if not custom_ids:
+            continue
+
+        gap_entry: dict[str, ProposalAnalytics] = {}
+        for custom_id in custom_ids:
+            gap_stats_deque = stats_for_gap.get(custom_id)
+            if gap_stats_deque is None:
+                gap_stats_deque = deque()
+
+            outrank_counts_deque = counts_for_gap.get(custom_id)
+            if outrank_counts_deque is None:
+                outrank_counts_deque = deque()
+
+            gap_entry[custom_id] = ProposalAnalytics(
+                gap_stats=gap_stats_deque,
+                outrank_counts=outrank_counts_deque,
+            )
+
+        analytics[key] = gap_entry
+
+    return analytics
 
 class MetadataUtils:
     """Static utilities for metadata chunking and parsing."""
@@ -730,6 +823,17 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         gaps,
         proposal_grouping.by_topic_gap,
     )
+
+    proposal_gap_stats = _compute_proposal_gap_stats(
+        gaps,
+        proposal_grouping.by_topic_gap,
+        config,
+    )
+
+    proposal_analytics = _assemble_proposal_analytics(
+        proposal_gap_stats,
+        proposal_outrank_counts,
+    )
     
     # ARTIFACTS: Generate plots
     _plot_paths = generate_gap_plots_for_results(
@@ -748,7 +852,7 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
         contexts,
         proposals_grouped=proposal_grouping.by_topic_gap,
         ordered_proposals=proposal_grouping.ordered,
-        proposal_outrank_counts=proposal_outrank_counts,
+        proposal_analytics=proposal_analytics,
     )
 
     # Return enhanced results with artifacts

@@ -4,11 +4,12 @@ K-ball gap finding algorithm implementation.
 from collections import defaultdict
 from dataclasses import dataclass
 import numpy as np
+from numpy.typing import NDArray
+
 from bookgap.subcloud import SubCloud
 from bookgap.cloud_index import get_kball_coverage, knn
 from bookgap.gap_types import DistsAndIdxs
-from bookgap.util import LOGGER
-
+from bookgap.index import kballs_with
 
 class KballAlgorithm:
     """Wrapper class for k-ball gap finding algorithm."""
@@ -71,6 +72,44 @@ class KballAlgorithm:
                 mask = np.isin(idxs_, idxs, invert=True)
                 covered_ambient_points[idx] = (dists_[mask], idxs_[mask])
     
+    @staticmethod
+    def compute_gap_sizes_for_embeddings(
+        *,
+        ambient: SubCloud,
+        landmark: SubCloud,
+        embeddings: NDArray[np.float32],
+        radius_fraction: float,
+        k: int,
+        is_intra_cloud: bool,
+    ) -> list[int]:
+        """Return k-ball coverage counts for arbitrary query embeddings."""
+        query = np.ascontiguousarray(embeddings)
+        if query.ndim != 2:
+            raise ValueError(f"Query embeddings must be 2D (N, D); received shape {query.shape}")
+
+        counts = [-1] * query.shape[0]
+        effective_k = k + 1 if is_intra_cloud else k
+        if effective_k <= 0:
+            raise ValueError(f"Effective k must be positive; got {effective_k}")
+
+        def kernel_fn(query_idx: int, _neighbor_dists, neighbor_ids) -> None:
+            counts[query_idx] = len(neighbor_ids)
+
+        kballs_with(
+            ambient=ambient.index(),
+            landmark=landmark.index(),
+            query=query,
+            radius_fraction=radius_fraction,
+            k=effective_k,
+            kernel_fn=kernel_fn,
+            show_progress=False,
+        )
+
+        if (num_negative := sum(1 for count in counts if count < 0)) > 0:
+            raise RuntimeError(f"kballs_with did not visit every query point; counts contain {num_negative} negative values")
+
+        return counts
+
     @property
     def name(self):
         return "kball"

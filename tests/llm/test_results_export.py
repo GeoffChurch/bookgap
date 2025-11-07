@@ -16,7 +16,7 @@ from bookgap.llm.artifacts.results_export import (
     _sanitize_text_field,
     generate_gaps_analysis_csv,
 )
-from bookgap.llm.data_structures import ProposalOutrankCounts
+from bookgap.llm.data_structures import ProposalAnalytics, ProposalGapStats, ProposalOutrankCounts
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.llm.identifiers import GapProposalId, build_gap_proposal_id
 from bookgap.llm.protocols import (
@@ -156,6 +156,25 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
 
     monkeypatch.setattr(results_export, "compute_proposal_rankings_for_gap", fake_compute)
 
+    proposal_analytics = {
+        ("topic-1", 0): {
+            parsed_proposal.custom_id: ProposalAnalytics(
+                gap_stats=deque(
+                    [
+                        ProposalGapStats(
+                            gap_size=5,
+                            gap_size_percentile=0.75,
+                            gap_zscore=1.5,
+                        )
+                    ]
+                ),
+                outrank_counts=deque(
+                    [ProposalOutrankCounts(counts=np.array([0, 1], dtype=np.int32))]
+                ),
+            )
+        }
+    }
+
     csv_path = generate_gaps_analysis_csv(
         gaps=[gap_with_context],
         proposals=[parsed_proposal],
@@ -164,13 +183,7 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
         contexts=[context],
         proposals_grouped=proposals_grouped,
         ordered_proposals=ordered_proposals,
-        proposal_outrank_counts={
-            ("topic-1", 0): {
-                parsed_proposal.custom_id: deque(
-                    [ProposalOutrankCounts(counts=np.array([0, 1], dtype=np.int32))]
-                )
-            }
-        },
+        proposal_analytics=proposal_analytics,
     )
 
     df = pd.read_csv(csv_path)
@@ -189,6 +202,9 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
     )
     assert "gap_coverage_fraction" in df.columns
     assert df.loc[0, "gap_coverage_fraction"] == pytest.approx(0.5)
+    assert df.loc[0, "proposal_gap_size"] == 5
+    assert df.loc[0, "proposal_gap_size_percentile"] == pytest.approx(0.75)
+    assert df.loc[0, "proposal_gap_zscore"] == pytest.approx(1.5)
 
 
 def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
@@ -273,6 +289,39 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         ),
     )
 
+    proposal_analytics = {
+        ("topic-1", 0): {
+            proposal_a.custom_id: ProposalAnalytics(
+                gap_stats=deque(
+                    [
+                        ProposalGapStats(
+                            gap_size=3,
+                            gap_size_percentile=0.2,
+                            gap_zscore=-1.0,
+                        )
+                    ]
+                ),
+                outrank_counts=deque(
+                    [ProposalOutrankCounts(counts=np.array([0, 0, 1], dtype=np.int32))]
+                ),
+            ),
+            proposal_b.custom_id: ProposalAnalytics(
+                gap_stats=deque(
+                    [
+                        ProposalGapStats(
+                            gap_size=6,
+                            gap_size_percentile=0.8,
+                            gap_zscore=2.0,
+                        )
+                    ]
+                ),
+                outrank_counts=deque(
+                    [ProposalOutrankCounts(counts=np.array([1, 2, 0], dtype=np.int32))]
+                ),
+            ),
+        }
+    }
+
     csv_path = generate_gaps_analysis_csv(
         gaps=[gap_with_context],
         proposals=[proposal_a, proposal_b],
@@ -281,16 +330,7 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         contexts=[context],
         proposals_grouped=proposals_grouped,
         ordered_proposals=ordered_proposals,
-        proposal_outrank_counts={
-            ("topic-1", 0): {
-                proposal_a.custom_id: deque(
-                    [ProposalOutrankCounts(counts=np.array([0, 0, 1], dtype=np.int32))]
-                ),
-                proposal_b.custom_id: deque(
-                    [ProposalOutrankCounts(counts=np.array([1, 2, 0], dtype=np.int32))]
-                ),
-            }
-        },
+        proposal_analytics=proposal_analytics,
     )
 
     df = pd.read_csv(csv_path).sort_values("proposal_title").reset_index(drop=True)
@@ -309,3 +349,6 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
 
     expected_coverage = [2 / 3, 1 / 3]
     assert list(df["gap_coverage_fraction"]) == pytest.approx(expected_coverage)
+    assert list(df["proposal_gap_size"]) == [3, 6]
+    assert list(df["proposal_gap_size_percentile"]) == pytest.approx([0.2, 0.8])
+    assert list(df["proposal_gap_zscore"]) == pytest.approx([-1.0, 2.0])
