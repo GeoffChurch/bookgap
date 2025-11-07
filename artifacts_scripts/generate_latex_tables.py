@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Callable, Hashable, Iterable, Mapping, Sequence, Literal
 
 import pandas as pd
-from typing import TYPE_CHECKING, cast
 
 from artifacts_scripts.common import (
     EMBEDDER_DISPLAY_NAME_MAP,
@@ -27,6 +26,8 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
 TOPIC_DISPLAY_NAME_CACHE: dict[str, str] = {}
+
+EXCLUDED_DENOISERS: set[str] = {"AUG_LPP", "CCLIP_01", "CCLIP_1", "CCA", "CCP", "JAD_CCP", "JAD_HALF_L", "ORTHO_MANIFOLD"}
 
 
 SUMMARY_COLUMNS: Iterable[str] = (
@@ -1080,6 +1081,26 @@ def main() -> None:
                 gap_idx,
             )
             continue
+
+        if EXCLUDED_DENOISERS and "denoiser" in summary_df.columns:
+            before_count = len(summary_df)
+            summary_df = summary_df[
+                ~summary_df["denoiser"].astype(str).isin(EXCLUDED_DENOISERS)
+            ]
+            filtered_count = before_count - len(summary_df)
+            if filtered_count > 0:
+                LOGGER.info(
+                    "Filtered %s rows for excluded denoisers %s in gap %s",
+                    filtered_count,
+                    ", ".join(sorted(EXCLUDED_DENOISERS)),
+                    gap_idx,
+                )
+            if summary_df.empty:
+                LOGGER.warning(
+                    "All rows excluded after filtering denoisers for gap %s; skipping",
+                    gap_idx,
+                )
+                continue
 
         missing_summary_columns = [
             column for column in SUMMARY_COLUMNS if column not in summary_df.columns

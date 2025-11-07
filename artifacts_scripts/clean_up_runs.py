@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .common import find_run_directories
+from artifacts_scripts.common import find_run_directories
 
 LOGGER = logging.getLogger(__name__)
 
