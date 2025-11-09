@@ -37,6 +37,7 @@ class RunSummary:
     row_count: int
     gap_coverage_fraction_mean: float
     gap_coverage_fraction_median: float
+    proposal_gap_size_percentile_mean: float
 
 def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
     metadata = load_run_metadata(run_dir)
@@ -79,6 +80,7 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
         article_median = float("nan")
         coverage_mean = float("nan")
         coverage_median = float("nan")
+        gap_size_percentile_mean = float("nan")
 
         if PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN in gap_df.columns:
             article_column = gap_df[PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN]
@@ -96,6 +98,15 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
                 coverage_mean = float(coverage_values.mean())
                 coverage_median = float(coverage_values.median())
 
+        if "proposal_gap_size_percentile" in gap_df.columns:
+            gap_size_percentile_column = gap_df["proposal_gap_size_percentile"]
+            gap_size_percentile_mask = gap_size_percentile_column.notna()
+            if gap_size_percentile_mask.any():
+                gap_size_percentile_values = gap_size_percentile_column.loc[
+                    gap_size_percentile_mask
+                ]
+                gap_size_percentile_mean = float(gap_size_percentile_values.mean())
+
         summaries[gap_idx_int] = RunSummary(
             run_path=run_dir,
             metadata=metadata,
@@ -107,6 +118,7 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
             row_count=int(gap_df.shape[0]),
             gap_coverage_fraction_mean=coverage_mean,
             gap_coverage_fraction_median=coverage_median,
+            proposal_gap_size_percentile_mean=gap_size_percentile_mean,
         )
 
     return summaries
@@ -159,6 +171,7 @@ def write_csvs(
                     "row_count": summary.row_count,
                     "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
                     "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
+                    "proposal_gap_size_percentile_mean": summary.proposal_gap_size_percentile_mean,
                 }
             )
 

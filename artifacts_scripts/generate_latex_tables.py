@@ -27,7 +27,7 @@ DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
 TOPIC_DISPLAY_NAME_CACHE: dict[str, str] = {}
 
-EXCLUDED_DENOISERS: set[str] = {"AUG_LPP", "CCLIP_01", "CCLIP_1", "CCA", "CCP", "JAD_CCP", "JAD_HALF_L", "ORTHO_MANIFOLD"}
+EXCLUDED_DENOISERS: set[str] = set()#{"AUG_LPP", "CCLIP_01", "CCLIP_1", "CCA", "CCP", "JAD_CCP", "JAD_HALF_L", "ORTHO_MANIFOLD"}
 
 
 SUMMARY_COLUMNS: Iterable[str] = (
@@ -44,6 +44,7 @@ SUMMARY_COLUMNS: Iterable[str] = (
     "row_count",
     "gap_coverage_fraction_mean",
     "gap_coverage_fraction_median",
+    "proposal_gap_size_percentile_mean",
 )
 
 SUMMARY_FLOAT_COLUMNS: Iterable[str] = (
@@ -53,6 +54,7 @@ SUMMARY_FLOAT_COLUMNS: Iterable[str] = (
     "proposal_book_rank_fraction_std",
     "gap_coverage_fraction_mean",
     "gap_coverage_fraction_median",
+    "proposal_gap_size_percentile_mean",
 )
 
 SUMMARY_PERCENTAGE_COLUMNS = SUMMARY_FLOAT_COLUMNS
@@ -1203,6 +1205,7 @@ def main() -> None:
                 "gap_coverage_fraction_mean",
                 "proposal_book_rank_fraction_mean",
                 "proposal_article_rank_fraction_mean",
+                "proposal_gap_size_percentile_mean",
             ]
             highlight_indices_by_column: dict[str, list[Hashable]] = {}
             if "denoiser" in summary_sorted.columns:
