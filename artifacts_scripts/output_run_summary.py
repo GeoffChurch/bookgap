@@ -179,7 +179,8 @@ def write_csvs(
         if not df.empty:
             df = df.sort_values(
                 [
-                    "proposal_book_rank_fraction_mean",
+                    "proposal_gap_size_percentile_mean",
+                    # "proposal_book_rank_fraction_mean",
                     "embedder_model",
                     "denoiser",
                     "drop_k",

@@ -1,3 +1,6 @@
+# USAGE:
+# python -m artifacts_scripts.clean_up_runs --delete-grace-period-hours 1
+
 from __future__ import annotations
 
 import argparse

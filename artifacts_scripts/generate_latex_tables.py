@@ -783,7 +783,10 @@ def write_triplet_gap_coverage_table(
 
 
 def sort_summary_frame(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+
     sort_columns = [
+        "__denoiser_priority",
         "denoiser",
         "drop_k",
         "gap_coverage_fraction_mean",
@@ -791,16 +794,29 @@ def sort_summary_frame(df: pd.DataFrame) -> pd.DataFrame:
         "proposal_article_rank_fraction_mean",
         "run",
     ]
-    available = [column for column in sort_columns if column in df.columns]
+
+    if "denoiser" in working.columns:
+        priority_order = ["NONE"]
+        priority_map = {name: index for index, name in enumerate(priority_order)}
+        default_priority = len(priority_order)
+        working["__denoiser_priority"] = (
+            working["denoiser"]
+            .astype(str)
+            .map(lambda value: priority_map.get(value, default_priority))
+        )
+
+    available = [column for column in sort_columns if column in working.columns]
     if not available:
-        return df
+        return working
+
     descending_columns = {
         "gap_coverage_fraction_mean",
         "proposal_book_rank_fraction_mean",
         "proposal_article_rank_fraction_mean",
     }
     ascending = [column not in descending_columns for column in available]
-    return df.sort_values(available, ascending=ascending, na_position="last")
+    sorted_df = working.sort_values(available, ascending=ascending, na_position="last")
+    return sorted_df.drop(columns="__denoiser_priority", errors="ignore")
 
 
 def select_best_summary_row(df: pd.DataFrame) -> pd.Series | None:
@@ -1474,8 +1490,6 @@ def main() -> None:
                 embedder_descriptions.append(desc)
             if not embedder_descriptions:
                 friendly_embedder_text = "the available embedder models"
-            elif len(embedder_descriptions) == 1:
-                friendly_embedder_text = embedder_descriptions[0]
             elif len(embedder_descriptions) == 2:
                 friendly_embedder_text = " and ".join(embedder_descriptions)
             else:

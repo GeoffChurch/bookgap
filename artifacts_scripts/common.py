@@ -36,7 +36,7 @@ COLUMN_DISPLAY_NAME_MAP = {
     "proposal_book_rank_fraction_std": r"\makecell{Book rank \%\\(std)}",
     "gap_coverage_fraction_mean": r"\makecell{Gap\\coverage \%}",
     "gap_coverage_fraction_median": r"\makecell{Gap coverage \%\\(median)}",
-    "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\Gap Size\\\%-ile}",
+    "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\Gap \%-ile}",
     "row_count": "Rows",
     "proposal_book_rank": r"\makecell{Book\\rank}",
     "proposal_book_rank_fraction": r"\makecell{Book\\rank \%}",
