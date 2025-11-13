@@ -513,30 +513,13 @@ def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig
     return contexts
 
 
-def submit_batch_job(batch_requests: list[BatchRequestData], config: ExperimentConfig) -> str:
-    """Submit batch job to OpenAI API.
-    
-    Args:
-        batch_requests: List of formatted batch request data
-        config: Experiment configuration with batch settings
-        
-    Returns:
-        Batch job ID string
-        
-    Raises:
-        Exception: If batch submission fails
-    """
+def save_batch_input_jsonl(batch_requests: list[BatchRequestData], batch_input_filename: Path, config: ExperimentConfig) -> None:
+    """Save batch requests to JSONL file for OpenAI batch API."""
     if not batch_requests:
         raise ValueError("No batch requests to submit")
     
-    # Initialize OpenAI client
-    client = OpenAI()  # Uses OPENAI_API_KEY environment variable
-    
     # Create JSONL content for batch API
     jsonl_lines = []
-    
-    # Prepare batch metadata with config using utility
-    metadata = MetadataUtils.serialize_config(config)
     
     # Determine the correct token parameter based on the model from config
     if config.llm.model.uses_max_completion_tokens:
@@ -545,7 +528,6 @@ def submit_batch_job(batch_requests: list[BatchRequestData], config: ExperimentC
         token_param = "max_tokens"
 
     for request in batch_requests:
-        
         jsonl_line = {
             "custom_id": request.custom_id,
             "method": "POST",
@@ -569,13 +551,24 @@ def submit_batch_job(batch_requests: list[BatchRequestData], config: ExperimentC
         jsonl_lines.append(json.dumps(jsonl_line))
     
     # Write JSONL to persistent file in Hydra output directory
-    batch_input_filename = Path(HydraConfig.get().runtime.output_dir) / f"batch_input.jsonl"
     with open(batch_input_filename, 'w') as f:
         for line in jsonl_lines:
             f.write(line + '\n')
+    LOGGER.info(f"Batch input file saved as: {batch_input_filename}")
+
+def submit_batch_job(batch_input_filename: Path, config: ExperimentConfig) -> str:
+    """Submit batch job to OpenAI API.
+
+    Returns:
+        Batch job ID string
+    """
+    
+    # Initialize OpenAI client
+    client = OpenAI()  # Uses OPENAI_API_KEY environment variable
+    
     
     # Upload file
-    LOGGER.info(f"Uploading batch file with {len(batch_requests)} requests from {batch_input_filename}")
+    LOGGER.info(f"Uploading {batch_input_filename}")
     with open(batch_input_filename, 'rb') as file:
         batch_input_file = client.files.create(
             file=file,
@@ -585,14 +578,13 @@ def submit_batch_job(batch_requests: list[BatchRequestData], config: ExperimentC
     # Create batch job
     LOGGER.info(f"Creating batch job with completion window: {config.batch.completion_window}")
     batch = client.batches.create(
-        input_file_id=batch_input_file.id,
-        endpoint="/v1/chat/completions",
-        completion_window=config.batch.completion_window,  # type: ignore
-        metadata=metadata
+        input_file_id = batch_input_file.id,
+        endpoint = "/v1/chat/completions",
+        completion_window = config.batch.completion_window,  # type: ignore
+        metadata = MetadataUtils.serialize_config(config)    
     )
     
     LOGGER.info(f"Batch job created successfully: {batch.id}")
-    LOGGER.info(f"Batch input file saved as: {batch_input_filename}")
     return batch.id
 
 
@@ -766,12 +758,17 @@ def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
     contexts = build_contexts_for_gaps(gaps, config)
     LOGGER.info(f"Built {len(contexts)} proposal contexts")
     
+
     # Step 3: Generate batch requests
     requests = generate_batch_requests(contexts, config)
     LOGGER.info(f"Generated {len(requests)} batch requests")
-    
+
+    batch_input_filename = Path(HydraConfig.get().runtime.output_dir) / f"batch_input.jsonl"
+
+    save_batch_input_jsonl(requests, batch_input_filename, config)
+
     # Step 4: Submit batch job
-    batch_job_id = submit_batch_job(requests, config)
+    batch_job_id = submit_batch_job(batch_input_filename, config)
     LOGGER.info(f"Submitted batch job: {batch_job_id}")
     
     # Step 5: Monitor and download results
