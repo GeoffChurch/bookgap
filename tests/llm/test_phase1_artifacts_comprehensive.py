@@ -265,8 +265,8 @@ class TestPhase1EndToEndDictConfig:
         except Exception as e:
             pytest.fail(f"serialize_config failed with DictConfig (this was the original bug): {e}")
     
-    def test_serialize_config_dictconfig_only(self):
-        """Test that serialize_config now only handles DictConfig objects (after simplification)."""
+    def test_serialize_config_accepts_dataclass(self):
+        """serialize_config should gracefully handle DictConfig and dataclasses."""
         from omegaconf import OmegaConf
         from dataclasses import dataclass
         from bookgap.llm.generators.workflow_functions import MetadataUtils
@@ -277,7 +277,7 @@ class TestPhase1EndToEndDictConfig:
         assert isinstance(metadata_dict, dict)
         assert len(metadata_dict) > 0
         
-        # Test with a regular dataclass - should now raise ValueError
+        # Test with a regular dataclass - should now be converted automatically
         @dataclass
         class TestConfig:
             model: str
@@ -285,11 +285,11 @@ class TestPhase1EndToEndDictConfig:
         
         dataclass_config = TestConfig(model="gpt-4", temp=0.5)
         
-        # This should now raise an error since we simplified to DictConfig-only
-        with pytest.raises(ValueError, match="Config must be an OmegaConf DictConfig"):
-            MetadataUtils.serialize_config(dataclass_config)
+        metadata_from_dataclass = MetadataUtils.serialize_config(dataclass_config)
+        assert isinstance(metadata_from_dataclass, dict)
+        assert ''.join(metadata_from_dataclass.values()).startswith('{')
         
-        print("✅ serialize_config correctly enforces DictConfig-only behavior")
+        print("✅ serialize_config correctly handles DictConfig and dataclass inputs")
     
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
     def test_submit_batch_job_serialize_config_integration(self, mock_openai_class):

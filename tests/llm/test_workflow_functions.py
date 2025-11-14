@@ -19,6 +19,7 @@ from bookgap.subcloud import SubCloud
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import Embedder
 from bookgap.llm.data_structures import BatchResults, GapWithContext
+from bookgap.llm.generators.run_state import RunStateManager
 from bookgap.llm.generators.workflow_functions import (
     PendingProposal,
     _compute_proposal_embeddings,
@@ -28,6 +29,7 @@ from bookgap.llm.generators.workflow_functions import (
     get_supported_models,
     find_gaps_for_config,
     build_contexts_for_gaps,
+    save_batch_input_jsonl,
     submit_batch_job,
     monitor_and_download_results,
     run_batch_workflow,
@@ -272,9 +274,9 @@ class TestBuildContextsForGaps:
         assert context.counts.num_articles_for_llm == 2
 
 
-class TestSubmitBatchJob:
-    """Test submit_batch_job function."""
-    
+class TestBatchInputSerialization:
+    """Tests for JSONL batch input persistence."""
+
     @staticmethod
     def _make_config(max_completion_tokens: bool = False) -> DictConfig:
         return OmegaConf.create(
@@ -283,25 +285,11 @@ class TestSubmitBatchJob:
                 "llm": {
                     "model": {"uses_max_completion_tokens": max_completion_tokens}
                 },
-                "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
             }
         )
 
-    @patch('bookgap.llm.generators.workflow_functions.OpenAI')
-    def test_successful_batch_submission(self, mock_openai_class):
-        """Test successful batch job submission."""
-        mock_client = Mock()
-        mock_openai_class.return_value = mock_client
-
-        mock_file = Mock()
-        mock_file.id = "file-123"
-        mock_client.files.create.return_value = mock_file
-
-        mock_batch = Mock()
-        mock_batch.id = "batch-456"
-        mock_client.batches.create.return_value = mock_batch
-
-        batch_requests = [
+    def _make_requests(self) -> list[BatchRequestData]:
+        return [
             BatchRequestData(
                 custom_id="test-1",
                 body=ChatCompletionBody(
@@ -315,31 +303,60 @@ class TestSubmitBatchJob:
             )
         ]
 
+    def test_save_batch_input_jsonl_creates_file(self):
         config = cast(ExperimentConfig, self._make_config())
+        requests = self._make_requests()
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
-            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime):
-                result = submit_batch_job(batch_requests, config)
-                written_file = Path(tmp_dir) / "batch_input.jsonl"
-                assert written_file.exists()
-                assert written_file.read_text().strip() != ""
+            batch_path = Path(tmp_dir) / "batch_input.jsonl"
+            save_batch_input_jsonl(requests, batch_path, config)
+            assert batch_path.exists()
+            payload = json.loads(batch_path.read_text().strip())
+            assert payload["custom_id"] == "test-1"
 
-        assert result == "batch-456"
-        mock_client.files.create.assert_called_once()
-        mock_client.batches.create.assert_called_once()
+    def test_save_batch_input_handles_optional_fields(self):
+        config = cast(ExperimentConfig, self._make_config(max_completion_tokens=True))
+        requests = [
+            BatchRequestData(
+                custom_id="test-with-temp",
+                body=ChatCompletionBody(
+                    model="gpt-4o",
+                    messages=[ChatMessage(role="user", content="Test.")],
+                    temperature=0.7,
+                    max_tokens=500,
+                    response_format={"type": "json_object"},
+                ),
+            )
+        ]
 
-    def test_empty_requests_error(self):
-        """Test error handling for empty batch requests."""
-        mock_config = cast(ExperimentConfig, self._make_config())
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            batch_path = Path(tmp_dir) / "batch_input.jsonl"
+            save_batch_input_jsonl(requests, batch_path, config)
+            payload = json.loads(batch_path.read_text().strip())
+            assert payload["body"].get("response_format") == {"type": "json_object"}
+            assert payload["body"].get("temperature") == 0.7
+            assert "max_completion_tokens" in payload["body"]
 
+    def test_save_batch_requires_requests(self):
+        config = cast(ExperimentConfig, self._make_config())
+        batch_path = Path(tempfile.gettempdir()) / "batch_input.jsonl"
         with pytest.raises(ValueError, match="No batch requests to submit"):
-            submit_batch_job([], mock_config)
+            save_batch_input_jsonl([], batch_path, config)
+
+
+class TestSubmitBatchJob:
+    """Tests for uploading JSONL files to the batch API."""
+
+    @staticmethod
+    def _make_config() -> DictConfig:
+        return OmegaConf.create(
+            {
+                "batch": {"completion_window": "24h"},
+            }
+        )
 
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
-    def test_request_serialization(self, mock_openai_class):
-        """Test that requests are properly serialized to JSONL format."""
-        # Setup mocks
+    def test_successful_batch_submission(self, mock_openai_class):
         mock_client = Mock()
         mock_openai_class.return_value = mock_client
 
@@ -349,35 +366,22 @@ class TestSubmitBatchJob:
 
         mock_batch = Mock()
         mock_batch.id = "batch-456"
+        mock_batch.metadata = MetadataUtils.serialize_config(self._make_config())
         mock_client.batches.create.return_value = mock_batch
 
-        # Test data with optional fields
-        batch_requests = [
-            BatchRequestData(
-                custom_id="test-with-temp",
-                body=ChatCompletionBody(
-                    model="gpt-4o",
-                    messages=[ChatMessage(role="user", content="Test.")],
-                    temperature=0.7,
-                    max_tokens=500,
-                    response_format={"type": "json_object"}
-                )
-            )
-        ]
-        
         config = cast(ExperimentConfig, self._make_config())
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
-            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime):
-                submit_batch_job(batch_requests, config)
-                batch_input = Path(tmp_dir) / "batch_input.jsonl"
-                assert batch_input.exists()
-                lines = batch_input.read_text().strip().splitlines()
-                assert len(lines) == 1
-                payload = json.loads(lines[0])
-                assert payload["body"].get("response_format") == {"type": "json_object"}
-                assert payload["body"].get("temperature") == 0.7
+            batch_path = Path(tmp_dir) / "batch_input.jsonl"
+            batch_path.write_text("{}\n")
+            result = submit_batch_job(batch_path, config)
+
+        assert result == "batch-456"
+        mock_client.files.create.assert_called_once()
+        mock_client.batches.create.assert_called_once()
+        batch_kwargs = mock_client.batches.create.call_args.kwargs
+        assert batch_kwargs["metadata"] == MetadataUtils.serialize_config(config)
+
  
 class TestComputeProposalEmbeddings:
     """Tests for proposal embedding projection reuse."""
@@ -511,9 +515,8 @@ class TestMonitorAndDownloadResults:
         mock_batch_completed.metadata = expected_metadata
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
-            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
-                 patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
+            output_dir = Path(tmp_dir)
+            with patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
                  patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed:
 
                 mock_parse.side_effect = [
@@ -522,9 +525,9 @@ class TestMonitorAndDownloadResults:
                 ]
                 mock_embed.return_value = np.zeros((2, 3), dtype=np.float32)
 
-                result = monitor_and_download_results("batch-123", config)
+                result = monitor_and_download_results("batch-123", config, output_dir)
 
-                output_path = Path(tmp_dir) / "batch_results.jsonl"
+                output_path = output_dir / "batch_results.jsonl"
                 assert output_path.exists()
                 assert output_path.read_text().strip() != ""
 
@@ -608,16 +611,15 @@ class TestMonitorAndDownloadResults:
         mock_client.files.content.return_value = mock_file_response
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
-            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
-                 patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse:
+            output_dir = Path(tmp_dir)
+            with patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse:
 
                 mock_parse.side_effect = [
                     PendingProposal(proposal=self._make_proposal("A"), custom_id="id-1"),
                     PendingProposal(proposal=self._make_proposal("B"), custom_id="id-2"),
                 ]
 
-                result = monitor_and_download_results("batch-xyz", config)
+                result = monitor_and_download_results("batch-xyz", config, output_dir)
 
         mock_parse.assert_called()
 
@@ -650,8 +652,9 @@ class TestMonitorAndDownloadResults:
         }
         config = cast(ExperimentConfig, OmegaConf.create(config_data))
 
-        with pytest.raises(Exception, match="Batch job failed with status: failed"):
-            monitor_and_download_results("batch-failed", config)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(Exception, match="Batch job failed with status: failed"):
+                monitor_and_download_results("batch-failed", config, Path(tmp_dir))
 
     @patch('bookgap.llm.generators.workflow_functions.OpenAI')
     @patch('time.sleep')
@@ -685,15 +688,14 @@ class TestMonitorAndDownloadResults:
         mock_batch_completed.metadata = MetadataUtils.serialize_config(config)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
-            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
-                 patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
+            output_dir = Path(tmp_dir)
+            with patch('bookgap.llm.generators.workflow_functions.parse_batch_result_to_proposal') as mock_parse, \
                  patch('bookgap.llm.generators.workflow_functions._compute_proposal_embeddings') as mock_embed:
 
                 mock_parse.return_value = PendingProposal(proposal=self._make_proposal("Single"), custom_id="id-1")
                 mock_embed.return_value = np.zeros((1, 3), dtype=np.float32)
 
-                result = monitor_and_download_results("batch-progression", config)
+                result = monitor_and_download_results("batch-progression", config, output_dir)
 
         assert mock_client.batches.retrieve.call_count == len(statuses)
         assert isinstance(result, BatchResults)
@@ -815,7 +817,7 @@ class TestRunBatchWorkflow:
         mock_config = cast(
             ExperimentConfig,
             SimpleNamespace(
-                batch=SimpleNamespace(num_gaps=2),
+                batch=SimpleNamespace(num_gaps=2, completion_window="24h"),
                 gap=SimpleNamespace(
                     radius_fraction=0.5,
                     cell_type=SimpleNamespace(value=_StubAlgorithm()),
@@ -824,42 +826,44 @@ class TestRunBatchWorkflow:
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            hydra_runtime = SimpleNamespace(runtime=SimpleNamespace(output_dir=tmp_dir))
-            with patch('bookgap.llm.generators.workflow_functions.HydraConfig.get', return_value=hydra_runtime), \
-                 patch('bookgap.llm.generators.workflow_functions.generate_all_contexts') as mock_generate_contexts, \
+            output_dir = Path(tmp_dir)
+            state_manager = RunStateManager(output_dir)
+            with patch('bookgap.llm.generators.workflow_functions.generate_all_contexts') as mock_generate_contexts, \
                  patch('bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results') as mock_generate_plots, \
-                 patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv:
+                 patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv, \
+                 patch('bookgap.llm.generators.workflow_functions.save_batch_input_jsonl') as mock_save_jsonl:
 
-                context_paths = [Path(tmp_dir) / "context.json"]
-                plot_paths = [Path(tmp_dir) / "plot.png"]
-                results_csv = Path(tmp_dir) / "results.csv"
+                context_paths = [output_dir / "context.json"]
+                plot_paths = [output_dir / "plot.png"]
+                results_csv = output_dir / "results.csv"
 
                 mock_generate_contexts.return_value = context_paths
                 mock_generate_plots.return_value = plot_paths
                 mock_generate_csv.return_value = results_csv
 
                 # Call function
-                result = run_batch_workflow(mock_config)
+                result = run_batch_workflow(mock_config, output_dir, state_manager)
         
         # Verify all steps were called in order
         mock_find_gaps.assert_called_once_with(mock_config)
         mock_build_contexts.assert_called_once_with(mock_gaps, mock_config)
         mock_generate.assert_called_once_with(mock_contexts, mock_config)
-        mock_submit.assert_called_once_with(mock_requests, mock_config)
-        mock_monitor.assert_called_once_with("batch-123", mock_config)
-        mock_generate_contexts.assert_called_once_with(mock_gaps, Path(tmp_dir))
+        mock_save_jsonl.assert_called_once_with(mock_requests, output_dir / "batch_input.jsonl", mock_config)
+        mock_submit.assert_called_once_with(output_dir / "batch_input.jsonl", mock_config)
+        mock_monitor.assert_called_once_with("batch-123", mock_config, output_dir, reuse_existing=False)
+        mock_generate_contexts.assert_called_once_with(mock_gaps, output_dir)
         mock_generate_plots.assert_called_once()
         plot_args, plot_kwargs = mock_generate_plots.call_args
-        assert plot_args == (mock_gaps, result.proposals, Path(tmp_dir))
+        assert plot_args == (mock_gaps, result.proposals, output_dir)
         assert plot_kwargs.get("proposals_by_gap") == {0: [proposal]}
 
         mock_generate_csv.assert_called_once()
         csv_args, csv_kwargs = mock_generate_csv.call_args
-        assert csv_args == (mock_gaps, result.proposals, Path(tmp_dir), mock_config, mock_contexts)
+        assert csv_args == (mock_gaps, result.proposals, output_dir, mock_config, mock_contexts)
         assert list(csv_kwargs.get("proposals_grouped", {}).keys()) == [("topic-1", 0)]
         assert csv_kwargs.get("ordered_proposals")
         assert "proposal_analytics" in csv_kwargs
-        
+
         # Verify result
         assert isinstance(result, BatchResults)
         assert result.proposals == [proposal]

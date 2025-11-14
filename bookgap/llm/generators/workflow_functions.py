@@ -11,9 +11,8 @@ import random
 import time
 import hashlib
 from pathlib import Path
-from typing import Optional, Any, Union
+from typing import Any, Optional
 
-from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from openai import OpenAI
@@ -46,6 +45,7 @@ from bookgap.index import range_search_radii_with
 from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
 from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
+from .run_state import RunStateManager, RunStep
 
 @dataclass(frozen=True)
 class PendingProposal:
@@ -60,6 +60,28 @@ class ProposalGrouping:
     by_gap_idx: dict[int, list[ParsedProposal]]
     by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
     ordered: list[tuple[ParsedProposal, GapProposalId]]
+
+
+def _stringify_config_value(value: Any, default: str = "unknown") -> str:
+    if value is None:
+        return default
+    if hasattr(value, "value"):
+        try:
+            return str(value.value)
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+    return str(value)
+
+
+def _cloud_params_from_config(config: ExperimentConfig) -> tuple[str, str, str]:
+    cloud_cfg = getattr(config, "cloud", None)
+    if cloud_cfg is None:
+        return ("unknown", "unknown", "unknown")
+
+    embedder = _stringify_config_value(getattr(cloud_cfg, "embedder_model", None))
+    denoiser = _stringify_config_value(getattr(cloud_cfg, "denoiser", None))
+    drop_k = _stringify_config_value(getattr(cloud_cfg, "drop_k", None), default="0")
+    return (embedder, denoiser, drop_k)
 
 
 def find_gaps_for_topic(
@@ -289,7 +311,7 @@ class MetadataUtils:
             Dictionary with chunked metadata (keys are string indices "0", "1", etc.)
         """
         if not OmegaConf.is_config(config):
-            raise ValueError("Config must be an OmegaConf DictConfig or similar object")
+            config = OmegaConf.structured(config)
         config_dict = OmegaConf.to_container(config, resolve=True)
         config_json = json.dumps(config_dict, default=str, indent=None, separators=(',', ':'))
         
@@ -609,12 +631,81 @@ def parse_batch_result_to_proposal(result: dict[str, Any]) -> PendingProposal:
         custom_id=result["custom_id"]
     )
 
-def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) -> BatchResults:
+def _parse_batch_results_content(result_content: str, config: ExperimentConfig) -> tuple[list[ParsedProposal], dict[str, int]]:
+    """Convert raw JSONL batch output into parsed proposals and statistics."""
+
+    raw_results = result_content.splitlines()
+    pending_proposals: list[PendingProposal] = []
+    num_empty = 0
+    num_errors = 0
+    num_stop_reason_length = 0
+
+    for line in raw_results:
+        if not line.strip():
+            num_empty += 1
+            continue
+
+        try:
+            line_json = json.loads(line)
+        except json.JSONDecodeError as exc:
+            num_errors += 1
+            LOGGER.error("Failed to decode batch result line: %s", exc)
+            continue
+
+        try:
+            finish_reason = line_json["response"]["body"]["choices"][0]["finish_reason"]
+        except (KeyError, IndexError, TypeError):
+            finish_reason = None
+
+        if finish_reason == "length":
+            num_stop_reason_length += 1
+            continue
+
+        try:
+            pending = parse_batch_result_to_proposal(line_json)
+            pending_proposals.append(pending)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            num_errors += 1
+            LOGGER.error("Failed to parse line in batch results: %s", exc)
+
+    parsed_proposals: list[ParsedProposal] = []
+    if pending_proposals:
+        embeddings = _compute_proposal_embeddings(pending_proposals, config=config)
+        parsed_proposals = [
+            ParsedProposal(
+                proposal=pending.proposal,
+                custom_id=pending.custom_id,
+                embedding=embedding,
+            )
+            for pending, embedding in zip(pending_proposals, embeddings, strict=True)
+        ]
+
+    stats = {
+        "raw_count": len(raw_results),
+        "parsed_count": len(parsed_proposals),
+        "empty_count": num_empty,
+        "error_count": num_errors,
+        "length_stop_count": num_stop_reason_length,
+    }
+
+    return parsed_proposals, stats
+
+
+def monitor_and_download_results(
+    batch_job_id: str,
+    config: ExperimentConfig,
+    output_dir: Path,
+    *,
+    reuse_existing: bool = True,
+    state_manager: Optional[RunStateManager] = None,
+) -> BatchResults:
     """Monitor batch job and download results when complete.
     
     Args:
         batch_job_id: Batch job ID to monitor
         config: Experiment configuration
+        output_dir: Destination directory for outputs and artifacts
+        reuse_existing: When True, re-use an existing results file if present
         
     Returns:
         BatchResults frozen dataclass containing proposals and parsed config
@@ -623,7 +714,8 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         Exception: If monitoring or download fails
     """
     client = OpenAI()
-    
+    results_path = output_dir / "batch_results.jsonl"
+
     LOGGER.info(f"Monitoring batch job: {batch_job_id}")
     
     # Poll for completion
@@ -637,6 +729,9 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
             LOGGER.info("Batch completed successfully")
             break
         elif status in ["failed", "expired", "cancelled"]:
+            LOGGER.warning("Batch %s reached terminal status %s", batch_job_id, status)
+            if state_manager is not None:
+                state_manager.mark_ready_for_resubmission(status=status)
             raise Exception(f"Batch job failed with status: {status}")
         elif status in ["validating", "in_progress", "finalizing"]:
             # Still processing, wait and check again
@@ -644,136 +739,146 @@ def monitor_and_download_results(batch_job_id: str, config: ExperimentConfig) ->
         else:
             LOGGER.warning(f"Unknown batch status: {status}")
             time.sleep(30)
-    
-    # Download results
-    if batch.output_file_id:
+    expected_metadata = MetadataUtils.serialize_config(config)
+    if batch.metadata != expected_metadata:
+        LOGGER.error("Batch metadata does not match expected serialized config.")
+        LOGGER.error(f"Expected metadata: {expected_metadata}")
+        LOGGER.error(f"Actual metadata: {batch.metadata}")
+        raise ValueError("Batch metadata does not match expected serialized config.")
+
+    if reuse_existing and results_path.exists():
+        LOGGER.info(f"Reusing existing batch results from {results_path}")
+        result_content = results_path.read_text(encoding="utf-8")
+    else:
+        if not batch.output_file_id:
+            LOGGER.error("Batch completed but no output file available. Batch info:")
+            LOGGER.error(f"  Batch ID: {batch.id}")
+            LOGGER.error(f"  Status: {batch.status}")
+            LOGGER.error(f"  Input file ID: {batch.input_file_id}")
+            LOGGER.error(f"  Output file ID: {batch.output_file_id}")
+            LOGGER.error(f"  Error file ID: {getattr(batch, 'error_file_id', 'N/A')}")
+            if batch.request_counts:
+                LOGGER.error(
+                    "  Request counts: total=%s, completed=%s, failed=%s",
+                    batch.request_counts.total,
+                    batch.request_counts.completed,
+                    batch.request_counts.failed,
+                )
+
+            error_file_id = getattr(batch, "error_file_id", None)
+            if error_file_id:
+                LOGGER.error("Downloading error file for details...")
+                try:
+                    error_file_response = client.files.content(error_file_id)
+                    error_content = error_file_response.content.decode("utf-8")
+                    LOGGER.error(f"Error file content: {error_content}")
+                except Exception as exc:
+                    LOGGER.error("Failed to download error file: %s", exc)
+
+            raise Exception(
+                f"Batch {batch_job_id} completed but no output file available. Status: {batch.status}"
+            )
+
         LOGGER.info("Downloading batch results")
         result_file_response = client.files.content(batch.output_file_id)
-        result_content = result_file_response.content.decode('utf-8')
+        result_content = result_file_response.content.decode("utf-8")
 
-        # Write results to Hydra output directory
-        with open(Path(HydraConfig.get().runtime.output_dir) / f"batch_results.jsonl", "w") as f:
+        with open(results_path, "w", encoding="utf-8") as f:
             f.write(result_content)
-        
-        # Parse JSONL results into PendingProposal instances
-        pending_proposals: list[PendingProposal] = []
 
-        raw_results = result_content.strip().split('\n')
+    parsed_proposals, stats = _parse_batch_results_content(result_content, config)
 
-        num_errors = 0
-        num_empty = 0
-        num_stop_reason_length = 0
+    LOGGER.info(
+        "Parsed %s proposals out of %s results (%s empty, %s errors, %s stopped by length)",
+        stats["parsed_count"],
+        stats["raw_count"],
+        stats["empty_count"],
+        stats["error_count"],
+        stats["length_stop_count"],
+    )
 
-        for line in raw_results:
-            if not line.strip():
-                num_empty += 1
-                continue
-            line_json = json.loads(line)
-            if line_json["response"]["body"]["choices"][0]["finish_reason"] == "length":
-                num_stop_reason_length += 1
-                continue
-            try:
-                pending = parse_batch_result_to_proposal(line_json)
-                LOGGER.info(f"Parsed proposal title: {pending.proposal.title}")
-                pending_proposals.append(pending)
-            except Exception as e:
-                num_errors += 1
-                LOGGER.error(f"Failed to parse line in results: {e}. Line:\n{line}")
-        
-        LOGGER.info(f"Downloaded and parsed {len(pending_proposals)} proposals out of {len(raw_results)} results ({num_empty} empty results, {num_errors} errors, {num_stop_reason_length} with stop_reason='length')")
+    if parsed_proposals:
+        LOGGER.info("Embedded %s proposals for downstream artifacts", len(parsed_proposals))
 
-        # Compute embeddings once for all proposals and materialize ParsedProposal instances
-        embeddings = _compute_proposal_embeddings(pending_proposals, config=config)
-
-        parsed_proposals = [
-            ParsedProposal(
-                proposal=pending.proposal,
-                custom_id=pending.custom_id,
-                embedding=embedding,
-            )
-            for pending, embedding in zip(pending_proposals, embeddings, strict=True)
-        ]
-
-        LOGGER.info(f"Embedded {len(parsed_proposals)} proposals for downstream artifacts")
-        
-        expected_metadata = MetadataUtils.serialize_config(config)
-        if batch.metadata != expected_metadata:
-            LOGGER.error("Batch metadata does not match expected serialized config.")
-            LOGGER.error(f"Expected metadata: {expected_metadata}")
-            LOGGER.error(f"Actual metadata: {batch.metadata}")
-            raise ValueError("Batch metadata does not match expected serialized config.")
-
-        return BatchResults(
-            proposals=parsed_proposals,
-            metadata=config
-        )
-    else:
-        # Log detailed batch information for debugging
-        LOGGER.error(f"Batch completed but no output file available. Batch info:")
-        LOGGER.error(f"  Batch ID: {batch.id}")
-        LOGGER.error(f"  Status: {batch.status}")
-        LOGGER.error(f"  Input file ID: {batch.input_file_id}")
-        LOGGER.error(f"  Output file ID: {batch.output_file_id}")
-        LOGGER.error(f"  Error file ID: {getattr(batch, 'error_file_id', 'N/A')}")
-        if batch.request_counts:
-            LOGGER.error(f"  Request counts: total={batch.request_counts.total}, completed={batch.request_counts.completed}, failed={batch.request_counts.failed}")
-        
-        # Check if there's an error file available
-        if hasattr(batch, 'error_file_id') and batch.error_file_id:
-            LOGGER.error("Downloading error file for details...")
-            try:
-                error_file_response = client.files.content(batch.error_file_id)
-                error_content = error_file_response.content.decode('utf-8')
-                LOGGER.error(f"Error file content: {error_content}")
-            except Exception as e:
-                LOGGER.error(f"Failed to download error file: {e}")
-        
-        raise Exception(f"Batch {batch_job_id} completed but no output file available. Status: {batch.status}")
-    
+    return BatchResults(
+        proposals=parsed_proposals,
+        metadata=config,
+    )
     
 
 
-def run_batch_workflow(config: ExperimentConfig) -> BatchResults:
-    """Run the complete batch workflow from gap finding to results.
-    
-    This is the main function that coordinates the entire pipeline.
-    
+
+def run_batch_workflow(
+    config: ExperimentConfig,
+    output_dir: Path,
+    state_manager: RunStateManager,
+    *,
+    reuse_existing_results: bool = True,
+) -> BatchResults:
+    """Run the complete batch workflow from gap finding to result ingestion.
+
     Args:
         config: Experiment configuration
-        
+        output_dir: Directory for all batch artifacts
+        state_manager: Persistence helper for resumable runs
+        reuse_existing_results: Allow reusing an existing results JSONL file
+
     Returns:
         BatchResults frozen dataclass containing proposals, metadata, and artifact paths
     """
-    LOGGER.info(f"Starting batch workflow with {config.batch.num_gaps} gaps per topic")
-    output_dir = Path(HydraConfig.get().runtime.output_dir)
-    
+    LOGGER.info("Starting batch workflow with %s gaps per topic", config.batch.num_gaps)
+
     # Step 1: Find gaps
     gaps = find_gaps_for_config(config)
-    LOGGER.info(f"Found {len(gaps)} gaps")
-    
+    LOGGER.info("Found %s gaps", len(gaps))
+
     # ARTIFACTS: Generate context files
     context_paths = generate_all_contexts(gaps, output_dir)
 
     # Step 2: Build contexts
     contexts = build_contexts_for_gaps(gaps, config)
-    LOGGER.info(f"Built {len(contexts)} proposal contexts")
-    
+    LOGGER.info("Built %s proposal contexts", len(contexts))
 
     # Step 3: Generate batch requests
     requests = generate_batch_requests(contexts, config)
-    LOGGER.info(f"Generated {len(requests)} batch requests")
+    LOGGER.info("Generated %s batch requests", len(requests))
 
-    batch_input_filename = Path(HydraConfig.get().runtime.output_dir) / f"batch_input.jsonl"
-
+    batch_input_filename = output_dir / "batch_input.jsonl"
     save_batch_input_jsonl(requests, batch_input_filename, config)
 
-    # Step 4: Submit batch job
-    batch_job_id = submit_batch_job(batch_input_filename, config)
-    LOGGER.info(f"Submitted batch job: {batch_job_id}")
-    
+    embedder_model, denoiser_name, drop_k_value = _cloud_params_from_config(config)
+
+    state_manager.mark_ready_to_submit(
+        gap_count=len(gaps),
+        context_file_count=len(context_paths),
+        request_count=len(requests),
+        embedder_model=embedder_model,
+        denoiser=denoiser_name,
+        drop_k=drop_k_value,
+    )
+
+    reuse_existing_results_flag = state_manager.state.step == RunStep.COMPLETED
+
+    # Step 4: Submit batch job (if needed)
+    if state_manager.state.step in {RunStep.SUBMITTED, RunStep.COMPLETED}:
+        batch_job_id = state_manager.require_batch_job_id()
+        LOGGER.info("Using recorded batch job id: %s", batch_job_id)
+    else:
+        batch_job_id = submit_batch_job(batch_input_filename, config)
+        state_manager.mark_submitted(batch_job_id, request_count=len(requests))
+        LOGGER.info("Submitted batch job: %s", batch_job_id)
+        reuse_existing_results_flag = False
+
     # Step 5: Monitor and download results
-    results = monitor_and_download_results(batch_job_id, config)
-    LOGGER.info(f"Completed! Generated {len(results.proposals)} proposals")
+    results = monitor_and_download_results(
+        batch_job_id,
+        config,
+        output_dir,
+        reuse_existing=reuse_existing_results_flag,
+        state_manager=state_manager,
+    )
+    state_manager.mark_completed(batch_job_id, proposal_count=len(results.proposals))
+    LOGGER.info("Completed! Generated %s proposals", len(results.proposals))
 
     # Index proposals once for downstream artifact generation
     proposal_grouping = _index_proposals(results.proposals)
