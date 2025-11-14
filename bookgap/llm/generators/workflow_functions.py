@@ -13,6 +13,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
+import joblib
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from openai import OpenAI
@@ -60,6 +61,23 @@ class ProposalGrouping:
     by_gap_idx: dict[int, list[ParsedProposal]]
     by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
     ordered: list[tuple[ParsedProposal, GapProposalId]]
+
+
+GAPS_CACHE_FILENAME = "gaps.joblib"
+
+
+def _gaps_cache_path(output_dir: Path) -> Path:
+    return output_dir / GAPS_CACHE_FILENAME
+
+
+def _load_cached_gaps(cache_path: Path) -> Optional[list[GapWithContext]]:
+    if not cache_path.exists():
+        return None
+    return joblib.load(cache_path)
+
+
+def _persist_gaps(cache_path: Path, gaps: list[GapWithContext]) -> None:
+    joblib.dump(gaps, cache_path)
 
 
 def _stringify_config_value(value: Any, default: str = "unknown") -> str:
@@ -324,20 +342,42 @@ class MetadataUtils:
         return metadata
 
 
-def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
-    """Find gaps using the provided configuration.
-    
-    Uses the data and gap configuration to build cloud and find gaps for each topic.
-    
-    Args:
-        config: Experiment configuration with gap detection settings
-        
-    Returns:
-        List of GapWithContext objects found across all topics
-        
-    Raises:
-        Exception: If gap finding fails
+def load_cached_gaps(output_dir: Path) -> list[GapWithContext]:
+    """Load cached gaps from the specified output directory."""
+
+    cache_path = _gaps_cache_path(output_dir)
+    cached_gaps = _load_cached_gaps(cache_path)
+    if cached_gaps is None:
+        raise FileNotFoundError(f"Cached gaps not found at {cache_path}")
+    return cached_gaps
+
+
+def find_gaps_for_config(
+    config: ExperimentConfig,
+    output_dir: Path,
+    *,
+    state_manager: Optional[RunStateManager] = None,
+) -> None:
+    """Ensure gaps for the configuration are cached under ``output_dir``.
+
+    This function writes ``gaps.joblib`` if it does not already exist. Subsequent stages
+    should call :func:`load_cached_gaps` to retrieve the serialized ``GapWithContext``
+    instances. The function returns ``None`` to emphasize the side-effect driven
+    contract.
     """
+
+    cache_path = _gaps_cache_path(output_dir)
+    cached_gaps = _load_cached_gaps(cache_path)
+    if cached_gaps is not None:
+        LOGGER.info(
+            "Loaded %s cached gaps from %s",
+            len(cached_gaps),
+            cache_path,
+        )
+        if state_manager is not None:
+            state_manager.mark_gaps_ready(gap_count=len(cached_gaps))
+        return None
+
     cloud = instantiate(config.cloud)
     
     gaps: list[GapWithContext] = []
@@ -423,7 +463,15 @@ def find_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
         gaps.extend(topic_gaps)
  
     LOGGER.info(f"Found {len(gaps)} gaps total")
-    return gaps
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _persist_gaps(cache_path, gaps)
+    LOGGER.info("Persisted %s gaps to %s", len(gaps), cache_path)
+
+    if state_manager is not None:
+        state_manager.mark_gaps_ready(gap_count=len(gaps))
+
+    return None
 
 
 def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig) -> list[ProposalContext]:
@@ -828,8 +876,9 @@ def run_batch_workflow(
     """
     LOGGER.info("Starting batch workflow with %s gaps per topic", config.batch.num_gaps)
 
-    # Step 1: Find gaps
-    gaps = find_gaps_for_config(config)
+    # Step 1: Find gaps (writes cache) and load them for downstream steps
+    find_gaps_for_config(config, output_dir, state_manager=state_manager)
+    gaps = load_cached_gaps(output_dir)
     LOGGER.info("Found %s gaps", len(gaps))
 
     # ARTIFACTS: Generate context files

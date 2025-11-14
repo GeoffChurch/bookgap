@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -12,6 +13,7 @@ from omegaconf import OmegaConf
 from bookgap.llm.generators.run_state import RunState, RunStep
 
 OUTPUT_ROOT = Path("outputs")
+RESUME_MARKER_FILENAME = "resumed.txt"
 
 
 def discover_runs(root: Path) -> list[Path]:
@@ -31,6 +33,32 @@ def read_state(output_dir: Path) -> Optional[RunState]:
     with open(state_path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
     return RunState.from_dict(data)
+
+
+def read_resume_marker(output_dir: Path) -> Optional[str]:
+    marker_path = output_dir / RESUME_MARKER_FILENAME
+    if not marker_path.exists():
+        return None
+    return marker_path.read_text(encoding="utf-8")
+
+
+def write_resume_marker(
+    output_dir: Path,
+    *,
+    direct_cmd: str,
+    nohup_cmd: str,
+    log_filename: Path,
+) -> None:
+    marker_path = output_dir / RESUME_MARKER_FILENAME
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    content = (
+        f"Resumed at {timestamp} UTC\n"
+        f"Command: {direct_cmd}\n"
+        f"nohup: {nohup_cmd}\n"
+        f"Log file: {log_filename}\n"
+        "Remove this file if you need to resume this run again.\n"
+    )
+    marker_path.write_text(content, encoding="utf-8")
 
 
 def extract_cloud_params_from_state(state: Optional[RunState]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -120,6 +148,7 @@ def main() -> int:
     run_dirs = discover_runs(OUTPUT_ROOT)
     candidates: list[tuple[int, Path, RunState]] = []
     missing: list[Path] = []
+    already_resumed: list[tuple[Path, RunState, str]] = []
 
     for output_dir in run_dirs:
         state = read_state(output_dir)
@@ -128,9 +157,13 @@ def main() -> int:
             continue
         if state.step == RunStep.COMPLETED:
             continue
+        marker = read_resume_marker(output_dir)
+        if marker:
+            already_resumed.append((output_dir, state, marker))
+            continue
         candidates.append((len(candidates) + 1, output_dir, state))
 
-    if not candidates and not missing:
+    if not candidates and not missing and not already_resumed:
         print("All runs under outputs/ are completed.")
         return 0
 
@@ -140,6 +173,14 @@ def main() -> int:
             print(f"  [{idx}] {output_dir} -> {describe_state(output_dir, state)}")
     else:
         print("No runs have resumable state.")
+
+    if already_resumed:
+        print("\nAlready resumed (marker present - remove marker to resume again):")
+        for output_dir, state, marker in already_resumed:
+            marker_line = marker.splitlines()[0] if marker else "(empty marker)"
+            print(
+                f"  [R] {output_dir} -> {describe_state(output_dir, state)} | {marker_line}"
+            )
 
     if missing:
         print("\nRuns missing run_state.json (backfill required before resume):")
@@ -188,6 +229,14 @@ def main() -> int:
         f"  drop_k: {drop_k}\n"
         f"  nohup log: {log_filename}\n"
     )
+
+    write_resume_marker(
+        chosen_dir,
+        direct_cmd=direct_cmd,
+        nohup_cmd=nohup_cmd,
+        log_filename=log_filename,
+    )
+
     return 0
 
 

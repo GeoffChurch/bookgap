@@ -2,20 +2,6 @@
 
 This folder contains helper scripts for working with BookGap experiment outputs. All commands below assume you run them from the repository root with your project environment activated.
 
-## `clean_up_runs.py`
-
-Remove incomplete runs under `outputs/` (missing `gaps_analysis_results.csv`) and optionally delete empty date folders.
-
-```bash
-python -m artifacts_scripts.clean_up_runs
-```
-
-### Notable flags
-- `--no-delete-missing`: report missing runs without deleting them.
-- `--delete-grace-period-hours 4`: wait at least 4 hours from the last modification before deleting.
-- `--dry-run`: show what would be removed without making changes.
-- `--no-cleanup-empty-date-dirs`: keep empty `outputs/<date>/` directories.
-
 ## `do_sweep.py`
 
 Launch a batch of `bookgap.batch_generator` jobs based on override patches defined in JSON or JSONL files.

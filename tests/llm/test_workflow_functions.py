@@ -28,6 +28,7 @@ from bookgap.llm.generators.workflow_functions import (
     validate_batch_requests,
     get_supported_models,
     find_gaps_for_config,
+    load_cached_gaps,
     build_contexts_for_gaps,
     save_batch_input_jsonl,
     submit_batch_job,
@@ -56,7 +57,7 @@ class TestFindGapsForConfig:
     @patch('pyalex.Subfields')  # Patch the actual module
     @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
     @patch('bookgap.llm.generators.workflow_functions.find_gaps_for_topic')
-    def test_successful_gap_finding(self, mock_find_gaps, mock_get_subclouds, mock_subfields, mock_instantiate):
+    def test_successful_gap_finding(self, mock_find_gaps, mock_get_subclouds, mock_subfields, mock_instantiate, tmp_path: Path):
         """Test successful gap finding with proper configuration."""
         # Setup mocks
         mock_config = Mock()
@@ -105,26 +106,42 @@ class TestFindGapsForConfig:
         book_gap_mock2.get_dists_idxs.return_value = Mock(idxs=[0, 1, 2])
         mock_cell_type_value.find_gaps.return_value = [book_gap_mock1, book_gap_mock2]
 
-        # Call function
-        result = find_gaps_for_config(mock_config)
+        persisted: dict[str, Any] = {}
 
-        # Assertions
-        assert len(result) == 2
-        assert all(isinstance(gap, GapWithContext) for gap in result)
-        assert result[0].topic_name == "Machine Learning"
-        assert result[0].topic_id == "T123"  # ID after splitting on "/"
-        assert result[0].gap_idx == 0
-        assert result[1].gap_idx == 1
+        def fake_load(cache_path: Path) -> Optional[list[GapWithContext]]:
+            return persisted.get("gaps")
+
+        def fake_persist(cache_path: Path, gaps: list[GapWithContext]) -> None:
+            persisted["path"] = cache_path
+            persisted["gaps"] = gaps
+
+        state_manager = Mock()
+
+        with patch("bookgap.llm.generators.workflow_functions._load_cached_gaps", side_effect=fake_load) as mock_load, \
+             patch("bookgap.llm.generators.workflow_functions._persist_gaps", side_effect=fake_persist) as mock_persist:
+            result = find_gaps_for_config(mock_config, tmp_path, state_manager=state_manager)
+            assert result is None
+
+            cached = load_cached_gaps(tmp_path)
+            assert len(cached) == 2
+            assert all(isinstance(gap, GapWithContext) for gap in cached)
+            assert cached[0].topic_name == "Machine Learning"
+            assert cached[0].topic_id == "T123"  # ID after splitting on "/"
+            assert cached[0].gap_idx == 0
+            assert cached[1].gap_idx == 1
         
         # Verify all mocks were called correctly
         mock_instantiate.assert_called_once_with(mock_config.cloud)
         mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
         mock_find_gaps.assert_called_once()
+        mock_load.assert_called()
+        mock_persist.assert_called_once()
+        state_manager.mark_gaps_ready.assert_called_once_with(gap_count=2)
 
     @patch('bookgap.llm.generators.workflow_functions.instantiate')
     @patch('pyalex.Subfields')  # Patch the actual module
     @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
-    def test_no_articles_found(self, mock_get_subclouds, mock_subfields, mock_instantiate):
+    def test_no_articles_found(self, mock_get_subclouds, mock_subfields, mock_instantiate, tmp_path: Path):
         """Test handling when no articles are found for a topic."""
         # Setup mocks
         mock_config = Mock()
@@ -151,11 +168,40 @@ class TestFindGapsForConfig:
         mock_articles.embeddings.return_value = []  # No articles for topic
         mock_get_subclouds.return_value = (mock_books, mock_articles)
 
-        result = find_gaps_for_config(mock_config)
+        persisted: dict[str, Any] = {}
 
-        assert result == []
+        def fake_load(_path: Path) -> Optional[list[GapWithContext]]:
+            return persisted.get("gaps")
+
+        def fake_persist(_path: Path, gaps: list[GapWithContext]) -> None:
+            persisted["gaps"] = gaps
+
+        with patch("bookgap.llm.generators.workflow_functions._load_cached_gaps", side_effect=fake_load), \
+             patch("bookgap.llm.generators.workflow_functions._persist_gaps", side_effect=fake_persist):
+            result = find_gaps_for_config(mock_config, tmp_path)
+            assert result is None
+            cached = load_cached_gaps(tmp_path)
+            assert cached == []
         mock_instantiate.assert_called_once_with(mock_config.cloud)
         mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
+
+    def test_uses_cached_gaps_when_available(self, tmp_path: Path):
+        """When cached gaps exist they should be loaded without recomputation."""
+
+        cached_gaps = ["cached"]
+        state_manager = Mock()
+
+        with patch("bookgap.llm.generators.workflow_functions._load_cached_gaps", return_value=cached_gaps) as mock_load, \
+             patch("bookgap.llm.generators.workflow_functions._persist_gaps") as mock_persist, \
+             patch("bookgap.llm.generators.workflow_functions.instantiate") as mock_instantiate:
+            result = find_gaps_for_config(Mock(), tmp_path, state_manager=state_manager)
+            assert result is None
+            assert load_cached_gaps(tmp_path) == cached_gaps
+
+        mock_instantiate.assert_not_called()
+        state_manager.mark_gaps_ready.assert_called_once_with(gap_count=len(cached_gaps))
+        mock_load.assert_called()
+        mock_persist.assert_not_called()
 
 class TestBuildContextsForGaps:
     """Test build_contexts_for_gaps function."""
@@ -788,16 +834,16 @@ class TestRunBatchWorkflow:
             shapiro_log10_pval=0.0,
         )
         mock_gaps = [gap0, gap1]
-        mock_find_gaps.return_value = mock_gaps
-        
+        mock_find_gaps.return_value = None
+
         mock_contexts = [Mock(), Mock()]
         mock_build_contexts.return_value = mock_contexts
-        
+
         mock_requests = [Mock(), Mock()]
         mock_generate.return_value = mock_requests
-        
+
         mock_submit.return_value = "batch-123"
-        
+
         proposal = ParsedProposal(
             proposal=Proposal(
                 title="Title",
@@ -828,11 +874,13 @@ class TestRunBatchWorkflow:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
             state_manager = RunStateManager(output_dir)
-            with patch('bookgap.llm.generators.workflow_functions.generate_all_contexts') as mock_generate_contexts, \
-                 patch('bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results') as mock_generate_plots, \
-                 patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv, \
-                 patch('bookgap.llm.generators.workflow_functions.save_batch_input_jsonl') as mock_save_jsonl:
-
+            with (
+                patch('bookgap.llm.generators.workflow_functions.generate_all_contexts') as mock_generate_contexts,
+                patch('bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results') as mock_generate_plots,
+                patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv,
+                patch('bookgap.llm.generators.workflow_functions.save_batch_input_jsonl') as mock_save_jsonl,
+                patch('bookgap.llm.generators.workflow_functions.load_cached_gaps', return_value=mock_gaps) as mock_load_gaps,
+            ):
                 context_paths = [output_dir / "context.json"]
                 plot_paths = [output_dir / "plot.png"]
                 results_csv = output_dir / "results.csv"
@@ -845,12 +893,12 @@ class TestRunBatchWorkflow:
                 result = run_batch_workflow(mock_config, output_dir, state_manager)
         
         # Verify all steps were called in order
-        mock_find_gaps.assert_called_once_with(mock_config)
+        mock_find_gaps.assert_called_once_with(mock_config, output_dir, state_manager=state_manager)
         mock_build_contexts.assert_called_once_with(mock_gaps, mock_config)
         mock_generate.assert_called_once_with(mock_contexts, mock_config)
         mock_save_jsonl.assert_called_once_with(mock_requests, output_dir / "batch_input.jsonl", mock_config)
         mock_submit.assert_called_once_with(output_dir / "batch_input.jsonl", mock_config)
-        mock_monitor.assert_called_once_with("batch-123", mock_config, output_dir, reuse_existing=False)
+        mock_monitor.assert_called_once_with("batch-123", mock_config, output_dir, reuse_existing=False, state_manager=state_manager)
         mock_generate_contexts.assert_called_once_with(mock_gaps, output_dir)
         mock_generate_plots.assert_called_once()
         plot_args, plot_kwargs = mock_generate_plots.call_args
@@ -863,6 +911,8 @@ class TestRunBatchWorkflow:
         assert list(csv_kwargs.get("proposals_grouped", {}).keys()) == [("topic-1", 0)]
         assert csv_kwargs.get("ordered_proposals")
         assert "proposal_analytics" in csv_kwargs
+
+        mock_load_gaps.assert_called_once_with(output_dir)
 
         # Verify result
         assert isinstance(result, BatchResults)
@@ -958,7 +1008,7 @@ class TestValidateBatchRequests:
                     model="gpt-4o",
                     messages=[ChatMessage(role="user", content="Test 2")]
                 )
-            )
+            ),
         ]
         
         # Should not raise any exception

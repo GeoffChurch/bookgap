@@ -5,18 +5,22 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import IntEnum
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-class RunStep(str, Enum):
+class RunStep(IntEnum):
     """Enumerated stages of the batch workflow lifecycle."""
 
-    INITIALIZED = "initialized"
-    READY_TO_SUBMIT = "ready_to_submit"
-    SUBMITTED = "submitted"
-    COMPLETED = "completed"
+    INITIALIZED = 0
+    GAPS_READY = 1
+    READY_TO_SUBMIT = 2
+    SUBMITTED = 3
+    COMPLETED = 4
+
+    def __str__(self) -> str:  # pragma: no cover - convenience
+        return self.name
 
 
 @dataclass
@@ -32,7 +36,7 @@ class RunState:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "step": self.step.value,
+            "step": self.step.name,
             "batch_job_id": self.batch_job_id,
             "details": self.details,
             "last_updated": self.last_updated,
@@ -40,13 +44,16 @@ class RunState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RunState":
-        step_value = data.get("step", RunStep.INITIALIZED.value)
-        step = RunStep(step_value)
+        raw_step = data.get("step", RunStep.INITIALIZED.name)
+        step = RunStep[raw_step]
         state = cls(
             step=step,
             batch_job_id=data.get("batch_job_id"),
             details=data.get("details", {}),
-            last_updated=data.get("last_updated", datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            last_updated=data.get(
+                "last_updated",
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
         )
         return state
 
@@ -98,8 +105,17 @@ class RunStateManager:
                 "drop_k": drop_k,
             }
         )
-        if self.state.step in {RunStep.INITIALIZED, RunStep.READY_TO_SUBMIT}:
-            self.state.step = RunStep.READY_TO_SUBMIT
+        self.state.step = max(self.state.step, RunStep.READY_TO_SUBMIT)
+        if self.state.step == RunStep.READY_TO_SUBMIT:
+            self.state.batch_job_id = None
+        self._persist()
+
+    def mark_gaps_ready(self, *, gap_count: int) -> None:
+        """Record that gaps have been prepared and persisted to disk."""
+
+        self.state.details["gap_count"] = gap_count
+        self.state.step = max(self.state.step, RunStep.GAPS_READY)
+        if self.state.step == RunStep.GAPS_READY:
             self.state.batch_job_id = None
         self._persist()
 
