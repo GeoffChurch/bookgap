@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -36,7 +37,7 @@ COLUMN_DISPLAY_NAME_MAP = {
     "proposal_book_rank_fraction_std": r"\makecell{Book rank \%\\(std)}",
     "gap_coverage_fraction_mean": r"\makecell{Gap\\coverage \%}",
     "gap_coverage_fraction_median": r"\makecell{Gap coverage \%\\(median)}",
-    "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\Gap \%-ile}",
+    "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\gap \%-ile}",
     "row_count": "Rows",
     "proposal_book_rank": r"\makecell{Book\\rank}",
     "proposal_book_rank_fraction": r"\makecell{Book\\rank \%}",
@@ -52,8 +53,23 @@ COLUMN_DISPLAY_NAME_MAP = {
 }
 
 
-def friendly_column_name(column: str) -> str:
-    return COLUMN_DISPLAY_NAME_MAP.get(column, column)
+_MAKECELL_PATTERN = re.compile(r"\\makecell\{(.*)\}")
+_DOUBLE_BACKSLASH_PATTERN = re.compile(r"\s*\\\\\s*")
+_SINGLE_BACKSLASH_PATTERN = re.compile(r"\\")
+
+
+def friendly_column_name(column: str, latex: bool = True) -> str:
+    value = COLUMN_DISPLAY_NAME_MAP.get(column, column)
+    if latex:
+        return value
+
+    match = _MAKECELL_PATTERN.fullmatch(value)
+    if match:
+        value = match.group(1)
+
+    value = _DOUBLE_BACKSLASH_PATTERN.sub(" ", value)
+    value = _SINGLE_BACKSLASH_PATTERN.sub("", value)
+    return value
 
 @dataclass
 class RunMetadata:

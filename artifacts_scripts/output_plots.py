@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from itertools import cycle
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, cast
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -34,6 +34,8 @@ from .common import (
     PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
     PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
     RunMetadata,
+    friendly_column_name,
+    friendly_embedder_name,
     find_run_directories,
     load_run_metadata,
     load_results_dataframe,
@@ -42,6 +44,11 @@ from .common import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+ENABLED_PLOT_TASKS: set[str] = {
+    # "metric_variants",
+    "embedder_metric_grids",
+}
 
 
 @dataclass
@@ -84,6 +91,30 @@ class PlotMetricSpec:
     label: str
     filenames: PlotFilenames
     variants: Sequence[PlotVariantSpec]
+
+
+EMBEDDER_METRIC_COLUMNS: Sequence[str] = (
+    "proposal_book_rank_fraction_mean",
+    "proposal_article_rank_fraction_mean",
+    "gap_coverage_fraction_mean",
+    "proposal_gap_size_percentile_mean",
+)
+
+RANK_FRACTION_INVERT_COLUMNS: Set[str] = {
+    "proposal_book_rank_fraction_mean",
+    "proposal_article_rank_fraction_mean",
+}
+def _invert_fraction_columns_inplace(df: pd.DataFrame, columns: Set[str]) -> None:
+    if df.empty:
+        return
+    for column in columns:
+        if column not in df.columns:
+            continue
+        numeric = pd.to_numeric(df[column], errors="coerce")
+        valid_mask = numeric.notna() & (numeric >= 0.0) & (numeric <= 1.0)
+        inverted = pd.Series(np.nan, index=df.index, dtype=float)
+        inverted.loc[valid_mask] = 1.0 - numeric.loc[valid_mask]
+        df[column] = inverted
 
 
 def _mean_sort_key(entry: RankFractionEntry) -> float:
@@ -256,6 +287,57 @@ def _apply_yscale(ax: Axes, yscale: str, values: List[float], base_title: str) -
 
     ax.set_yscale("linear")
     return base_title
+
+
+def _reverse_log_transform(values: Sequence[float], epsilon: float = 1e-6) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return np.array([], dtype=float)
+    arr = np.clip(arr, 0.0, 1.0 - epsilon)
+    return -np.log10(1.0 - arr)
+
+
+def _inverse_reverse_log_transform(values: Sequence[float]) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return np.array([], dtype=float)
+    return 1.0 - np.power(10.0, -arr)
+
+
+def _select_reverse_log_ticks(
+    min_val: float,
+    max_val: float,
+    max_ticks: int = 8,
+    epsilon: float = 1e-6,
+) -> List[float]:
+    if not np.isfinite(min_val) or not np.isfinite(max_val):
+        return []
+    if min_val > max_val:
+        min_val, max_val = max_val, min_val
+
+    min_val = float(np.clip(min_val, 0.0, 1.0 - epsilon))
+    max_val = float(np.clip(max_val, 0.0, 1.0 - epsilon))
+    if np.isclose(min_val, max_val, atol=1e-8):
+        return [min_val]
+
+    span = max_val - min_val
+    if span <= 1e-6:
+        return [min_val, max_val]
+
+    num_ticks = max(3, min(max_ticks, int(round(span * max_ticks)) + 2))
+
+    start = max(1.0 - max_val, epsilon)
+    end = max(1.0 - min_val, epsilon)
+
+    if np.isclose(start, end, rtol=1e-6):
+        tick_candidates = np.array([min_val, max_val], dtype=float)
+    else:
+        tick_candidates = 1.0 - np.geomspace(start, end, num=num_ticks)
+
+    tick_candidates = np.clip(tick_candidates, 0.0, 1.0)
+    tick_candidates = np.concatenate((tick_candidates, np.array([min_val, max_val])))
+    tick_candidates = np.unique(np.round(tick_candidates, 6))
+    return tick_candidates.tolist()
 
 
 def collect_run_points(outputs_dir: Path, metric: PlotMetricSpec) -> List[RunPlotData]:
@@ -645,6 +727,369 @@ def plot_rank_fraction_violin(
     LOGGER.info("Wrote violin plot to %s", output_file)
 
 
+def _load_summary_dataframe(outputs_dir: Path, artifacts_dir: Path, gap_idx: int = 0) -> pd.DataFrame:
+    summary_path = artifacts_dir / f"run_gap_summary_gap{gap_idx}.csv"
+    if summary_path.exists():
+        try:
+            return pd.read_csv(summary_path)
+        except Exception as exc:  # pragma: no cover - unexpected IO errors
+            LOGGER.warning("Failed to read summary CSV %s: %s", summary_path, exc)
+
+    try:
+        from .output_run_summary import collect_summaries
+    except Exception as exc:  # pragma: no cover - optional dependency
+        LOGGER.warning(
+            "Could not import collect_summaries from output_run_summary: %s", exc
+        )
+        return pd.DataFrame()
+
+    summaries_by_gap = collect_summaries(outputs_dir)
+    gap_summaries = summaries_by_gap.get(gap_idx)
+    if not gap_summaries:
+        return pd.DataFrame()
+
+    records = []
+    for summary in gap_summaries:
+        metadata = summary.metadata
+        records.append(
+            {
+                "run": str(relative_run_path(summary.run_path, outputs_dir)),
+                "embedder_model": metadata.embedder_model,
+                "denoiser": metadata.denoiser,
+                "drop_k": metadata.drop_k,
+                "llm_num_articles": metadata.num_articles,
+                "llm_num_books": metadata.num_books,
+                "proposal_book_rank_fraction_mean": summary.proposal_book_rank_fraction_mean,
+                "proposal_article_rank_fraction_mean": summary.proposal_article_rank_fraction_mean,
+                "proposal_article_rank_fraction_median": summary.proposal_article_rank_fraction_median,
+                "proposal_book_rank_fraction_std": summary.proposal_book_rank_fraction_std,
+                "row_count": summary.row_count,
+                "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
+                "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
+                "proposal_gap_size_percentile_mean": summary.proposal_gap_size_percentile_mean,
+            }
+        )
+
+    return pd.DataFrame.from_records(records)
+
+
+def _plot_metric_by_drop_k(
+    ax: Axes,
+    df: pd.DataFrame,
+    column: str,
+    color_lookup: Mapping[str, Any],
+    include_labels: bool,
+    show_ylabel: bool,
+    highlight_denoisers: Optional[Set[str]] = None,
+) -> Dict[str, Line2D]:
+    if column not in df.columns:
+        ax.set_title(friendly_column_name(column, latex=False))
+        ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return {}
+
+    column_df = df.dropna(subset=["drop_k", column, "denoiser"]).copy()
+    column_df["drop_k_plot"] = np.log1p(column_df["drop_k"].astype(float))
+    column_df["denoiser"] = column_df["denoiser"].astype(str)
+    if column_df.empty:
+        ax.set_title(friendly_column_name(column, latex=False))
+        ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return {}
+
+    lines: Dict[str, Line2D] = {}
+    collected_values: List[float] = []
+    highlight_set = {str(den) for den in highlight_denoisers} if highlight_denoisers else set()
+    present_denoisers = sorted(column_df["denoiser"].unique())
+
+    background_denoisers = [den for den in present_denoisers if den not in highlight_set and den != "NONE"]
+    highlighted_denoisers = [den for den in present_denoisers if den in highlight_set and den != "NONE"]
+    none_denoisers = [den for den in present_denoisers if den == "NONE"]
+
+    plot_order = background_denoisers + highlighted_denoisers + none_denoisers
+
+    for denoiser in plot_order:
+        series_df = column_df[column_df["denoiser"] == denoiser]
+        if series_df.empty:
+            continue
+        grouped = (
+            series_df.groupby(["drop_k", "drop_k_plot"], as_index=False)
+            .agg({column: "mean"})
+            .sort_values(by="drop_k")
+        )
+        if grouped.empty:
+            continue
+        original_values = grouped[column].astype(float).to_numpy()
+        if original_values.size == 0:
+            continue
+        transformed_values = _reverse_log_transform(original_values.tolist())
+
+        is_highlighted = denoiser in highlight_set and denoiser != "NONE"
+        is_none_denoiser = denoiser == "NONE"
+
+        if is_none_denoiser:
+            label = denoiser if include_labels else None
+            aggregated_value = float(np.mean(original_values))
+            transformed_level = _reverse_log_transform([aggregated_value])[0]
+            line = ax.axhline(
+                y=transformed_level,
+                linestyle="--",
+                linewidth=1.0,
+                color="black",
+                alpha=0.8,
+                label=label,
+                zorder=2.5,
+            )
+        elif is_highlighted:
+            color = color_lookup.get(denoiser, "black")
+            label = denoiser if include_labels else None
+            line = ax.plot(
+                grouped["drop_k_plot"],
+                transformed_values,
+                marker="o",
+                linestyle="-",
+                linewidth=1.5,
+                markersize=4,
+                color=color,
+                label=label,
+                zorder=2,
+            )[0]
+        else:
+            line = ax.plot(
+                grouped["drop_k_plot"],
+                transformed_values,
+                linestyle="-",
+                linewidth=0.8,
+                color="black",
+                alpha=0.3,
+                zorder=1,
+            )[0]
+
+        setattr(line, "_bookgap_original_metric_values", original_values)
+        collected_values.extend(original_values.tolist())
+        if is_highlighted or is_none_denoiser:
+            lines.setdefault(str(denoiser), line)
+
+    ax.set_title(friendly_column_name(column, latex=False))
+    if show_ylabel:
+        ax.set_ylabel(friendly_column_name(column, latex=False))
+    else:
+        ax.set_ylabel("")
+    ax.grid(True, linewidth=0.3, linestyle="--", alpha=0.5)
+
+    if collected_values:
+        min_val = float(min(collected_values))
+        max_val = float(max(collected_values))
+        tick_values = _select_reverse_log_ticks(min_val, max_val)
+        if tick_values:
+            tick_positions = _reverse_log_transform(tick_values)
+            tick_labels = [f"{value:.2f}" for value in tick_values]
+            ax.set_yticks(tick_positions)
+            ax.set_yticklabels(tick_labels)
+
+        transformed_all = _reverse_log_transform(collected_values)
+        if transformed_all.size:
+            lower = float(transformed_all.min())
+            upper = float(transformed_all.max())
+            if not np.isfinite(lower) or not np.isfinite(upper):
+                lower, upper = 0.0, 1.0
+            padding = 0.05 * max(upper - lower, 1e-6)
+            ax.set_ylim(bottom=lower - padding, top=upper + padding)
+
+    return lines
+
+
+def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: int) -> None:
+    summary_df = _load_summary_dataframe(outputs_dir, artifacts_dir)
+    if summary_df.empty:
+        LOGGER.info(
+            "No run summary data available; skipping embedder metric grid generation."
+        )
+        return
+
+    if "drop_k" not in summary_df.columns:
+        LOGGER.warning("Summary dataframe missing drop_k column; skipping grid plots.")
+        return
+
+    summary_df = summary_df.copy()
+    summary_df["drop_k"] = pd.to_numeric(summary_df["drop_k"], errors="coerce")
+    summary_df = summary_df.dropna(subset=["embedder_model", "denoiser", "drop_k"])
+    if summary_df.empty:
+        LOGGER.warning("Summary dataframe has no usable rows after filtering; skipping grids.")
+        return
+
+    _invert_fraction_columns_inplace(summary_df, RANK_FRACTION_INVERT_COLUMNS)
+
+    embedder_dir = artifacts_dir / "embedder_metric_grids"
+    embedder_dir.mkdir(parents=True, exist_ok=True)
+
+    cmap = plt.get_cmap("hsv")
+
+    for embedder_model, embedder_df in summary_df.groupby("embedder_model"):
+        if embedder_df.empty:
+            continue
+        embedder_df = embedder_df.copy()
+        embedder_df["denoiser"] = embedder_df["denoiser"].astype(str)
+
+        per_metric_selected: dict[str, Set[str]] = {}
+        all_selected: Set[str] = set()
+        has_none_denoiser = "NONE" in set(embedder_df["denoiser"].astype(str))
+        for column in EMBEDDER_METRIC_COLUMNS:
+            metric_df = embedder_df.dropna(subset=["denoiser", "drop_k", column])
+            if metric_df.empty:
+                continue
+            best_by_denoiser = metric_df.groupby("denoiser")[column].max().dropna()
+            if best_by_denoiser.empty:
+                continue
+            top_denoisers = best_by_denoiser.sort_values(ascending=False).head(4).index
+            selected_set = {str(den) for den in top_denoisers}
+            if has_none_denoiser:
+                selected_set.add("NONE")
+            if selected_set:
+                per_metric_selected[column] = selected_set
+                all_selected.update(selected_set)
+
+        if has_none_denoiser:
+            all_selected.add("NONE")
+
+        if not all_selected:
+            LOGGER.warning(
+                "Embedder %s has no qualifying denoiser series; skipping.", embedder_model
+            )
+            continue
+
+        ordered_highlighted = sorted(den for den in all_selected if den != "NONE")
+        if not ordered_highlighted:
+            color_lookup = {}
+        elif len(ordered_highlighted) == 1:
+            color_lookup = {ordered_highlighted[0]: cmap(0.0)}
+        else:
+            color_positions = np.linspace(0.0, 1.0, num=len(ordered_highlighted), endpoint=False)
+            color_lookup = {
+                denoiser: cmap(float(position))
+                for denoiser, position in zip(ordered_highlighted, color_positions)
+            }
+
+        legend_order: List[str] = ordered_highlighted.copy()
+        if has_none_denoiser:
+            legend_order.append("NONE")
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+        axes_flat = axes.flatten()
+        legend_lines_map: Dict[str, Line2D] = {}
+        plotted_any = False
+
+        for idx, column in enumerate(EMBEDDER_METRIC_COLUMNS):
+            ax = axes_flat[idx]
+            include_labels = idx == 0
+            show_ylabel = idx % 2 == 0
+            allowed = per_metric_selected.get(column, set())
+            lines = _plot_metric_by_drop_k(
+                ax,
+                embedder_df,
+                column,
+                color_lookup,
+                include_labels,
+                show_ylabel,
+                highlight_denoisers=allowed,
+            )
+            if lines:
+                plotted_any = True
+                for denoiser, line in lines.items():
+                    legend_lines_map.setdefault(denoiser, line)
+
+        if not plotted_any:
+            LOGGER.warning(
+                "Embedder %s did not produce any series after filtering; skipping plot.",
+                embedder_model,
+            )
+            plt.close(fig)
+            continue
+
+        # Clean up extra axes if the metric list is shorter than grid size
+        for idx in range(len(EMBEDDER_METRIC_COLUMNS), len(axes_flat)):
+            axes_flat[idx].set_visible(False)
+
+        xtick_source = embedder_df[embedder_df["denoiser"] != "NONE"]["drop_k"].dropna()
+        if xtick_source.empty:
+            xtick_source = embedder_df["drop_k"].dropna()
+        xtick_values = sorted({value for value in xtick_source if float(value) > 0})
+        if xtick_values:
+            xtick_labels = [str(int(value)) if float(value).is_integer() else f"{value}" for value in xtick_values]
+            tick_positions = np.log1p(np.array(xtick_values, dtype=float))
+            left_bound = tick_positions.min() - 0.1
+            right_bound = tick_positions.max() + 0.1
+        else:
+            xtick_labels = []
+            tick_positions = np.array([], dtype=float)
+            left_bound = 0.0
+            right_bound = 1.0
+        for ax in axes_flat:
+            if not ax.lines:
+                continue
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(xtick_labels)
+            ax.set_xlim(left=left_bound, right=right_bound)
+        for ax in axes[1, :]:
+            ax.set_xlabel(friendly_column_name("drop_k", latex=False))
+
+        embedder_key = str(embedder_model)
+        embedder_display = friendly_embedder_name(embedder_key)
+        if embedder_display and embedder_display != embedder_key:
+            title = embedder_display
+        else:
+            title = embedder_key
+        fig.suptitle(f"{title} Metrics by Denoiser and Drop k")
+
+        legend_lines: List[Line2D] = []
+        legend_labels: List[str] = []
+        for denoiser in legend_order:
+            line = legend_lines_map.get(denoiser)
+            if line is None:
+                if denoiser == "NONE":
+                    line = Line2D(
+                        [0, 1],
+                        [0, 0],
+                        linestyle="--",
+                        linewidth=1.0,
+                        color="black",
+                    )
+                else:
+                    color = color_lookup.get(denoiser, "black")
+                    line = Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        linestyle="-",
+                        linewidth=1.5,
+                        markersize=4,
+                        color=color,
+                    )
+            legend_lines.append(line)
+            legend_labels.append(denoiser)
+
+        if legend_lines:
+            fig.legend(
+                legend_lines,
+                legend_labels,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.02),
+                ncol=min(4, len(legend_labels)),
+                fontsize="small",
+            )
+
+        fig.tight_layout(rect=(0, 0.05, 1, 0.95))
+
+        embedder_slug_source = embedder_key or "unknown_embedder"
+        embedder_slug = embedder_slug_source.replace("/", "_")
+        output_path = embedder_dir / f"{embedder_slug}_metric_grid.png"
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        LOGGER.info("Wrote embedder metric grid to %s", output_path)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -770,25 +1215,28 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
 
-    specs = select_metric_specs(args.metrics)
-    if not specs:
-        LOGGER.warning("No valid metrics selected; nothing to plot.")
-        return
-
     args.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    for metric in specs:
-        LOGGER.info("Collecting data for metric %s", metric.column)
-        run_points = collect_run_points(args.outputs_dir, metric)
-        if not run_points:
-            LOGGER.warning("No data found for metric %s; skipping.", metric.column)
-            continue
-        metric_dir = args.artifacts_dir / metric.column
-        for variant in metric.variants:
-            LOGGER.info(
-                "Generating plots for metric %s sorted by %s", metric.column, variant.name
-            )
-            generate_metric_variant_plots(run_points, metric, variant, metric_dir, args.dpi)
+    if "metric_variants" in ENABLED_PLOT_TASKS:
+        specs = select_metric_specs(args.metrics)
+        if not specs:
+            LOGGER.warning("No valid metrics selected; nothing to plot.")
+        for metric in specs:
+            LOGGER.info("Collecting data for metric %s", metric.column)
+            run_points = collect_run_points(args.outputs_dir, metric)
+            if not run_points:
+                LOGGER.warning("No data found for metric %s; skipping.", metric.column)
+                continue
+            metric_dir = args.artifacts_dir / metric.column
+            for variant in metric.variants:
+                LOGGER.info(
+                    "Generating plots for metric %s sorted by %s", metric.column, variant.name
+                )
+                generate_metric_variant_plots(run_points, metric, variant, metric_dir, args.dpi)
+
+    if "embedder_metric_grids" in ENABLED_PLOT_TASKS:
+        LOGGER.info("Generating embedder metric grids")
+        generate_embedder_metric_grids(args.outputs_dir, args.artifacts_dir, args.dpi)
 
 
 if __name__ == "__main__":
