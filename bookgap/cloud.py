@@ -85,7 +85,6 @@ def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
 
 @lru_cache(maxsize=1)
 @TIMER.time()
-@MEMORY.cache
 def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
     works, _ = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     retained_idxs = get_cloud_retained_idxs(cloud)
@@ -112,9 +111,9 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_embeddings(cloud: Cloud):
-    works, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    _, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     retained_idxs = get_cloud_retained_idxs(cloud)
-    return denoise(cloud, [works[i] for i in retained_idxs], embeddings[retained_idxs])
+    return denoise(cloud, embeddings[retained_idxs])
 
 
 @lru_cache(maxsize=1)
@@ -527,7 +526,7 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
 
 T = TypeVar('T', bound=np.generic)
 
-def denoise(cloud: Cloud, works: List[Dict[str, Any]], embeddings: NDArray[T]) -> NDArray[T]:
+def denoise(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
     """Apply projective denoising with full orchestration."""
     # Pre-projection PCA for baseline singular values
     s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0))  # type: ignore
