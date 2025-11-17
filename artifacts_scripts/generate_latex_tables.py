@@ -722,8 +722,8 @@ def write_triplet_gap_coverage_table(
     df: pd.DataFrame,
     output_file: Path,
     *,
-    caption: str | None,
-    label: str,
+    # caption: str | None,
+    # label: str,
     coverage_columns: Sequence[str],
     overwrite: bool,
 ) -> None:
@@ -733,7 +733,7 @@ def write_triplet_gap_coverage_table(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    escaped_caption = escape_latex(caption) if caption is not None else None
+    # escaped_caption = escape_latex(caption) if caption is not None else None
     column_labels = [
         escape_latex(column)
         for column in coverage_columns
@@ -744,7 +744,8 @@ def write_triplet_gap_coverage_table(
     else:
         tabular_spec = "cc"
 
-    lines: list[str] = ["\\begin{table}", "\\centering"]
+    # lines: list[str] = ["\\begin{table}", "\\centering"]
+    lines: list[str] = []
     lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
     lines.append("\\toprule")
 
@@ -773,10 +774,10 @@ def write_triplet_gap_coverage_table(
 
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
-    if escaped_caption is not None:
-        lines.append(f"\\caption{{{escaped_caption}}}")
-    lines.append(f"\\label{{{label}}}")
-    lines.append("\\end{table}")
+    # if escaped_caption is not None:
+    #     lines.append(f"\\caption{{{escaped_caption}}}")
+    # lines.append(f"\\label{{{label}}}")
+    # lines.append("\\end{table}")
 
     output_file.write_text("\n".join(lines))
     LOGGER.info("Wrote %s", output_file)
@@ -1050,7 +1051,8 @@ def build_summary_caption(
     num_books: int,
 ) -> str:
     return (
-        f"Run summary for {friendly_embedder} (gap={gap_idx}, "
+        # f"Run summary for {friendly_embedder} (gap={gap_idx}, "
+        f"Denoiser results for {friendly_embedder} ("
         f"articles={num_articles}, books={num_books})"
     )
 
@@ -1193,7 +1195,9 @@ def main() -> None:
             summary_hide_columns = {
                 "run",
                 "proposal_article_rank_fraction_median",
+                "proposal_article_rank_fraction_mean",
                 "proposal_book_rank_fraction_std",
+                "proposal_book_rank_fraction_mean",
                 "gap_coverage_fraction_median",
             }
             columns_to_drop = [
@@ -1502,11 +1506,11 @@ def main() -> None:
             write_triplet_gap_coverage_table(
                 pivot_df,
                 gap_root_dir / "triplet_gap_coverage.tex",
-                caption=(
-                    "Gap coverage fraction averaged over all topics for various settings of the number of example articles and books given to the LLM, comparing "
-                    f"{friendly_embedder_text}."
-                ),
-                label=f"tab:triplet_gap_coverage_gap{gap_idx}",
+                # caption=(
+                #     "Gap coverage fraction averaged over all topics for various settings of the number of example articles and books given to the LLM, comparing "
+                #     f"{friendly_embedder_text}."
+                # ),
+                # label=f"tab:triplet_gap_coverage_gap{gap_idx}",
                 coverage_columns=coverage_columns,
                 overwrite=args.overwrite,
             )
