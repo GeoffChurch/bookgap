@@ -14,7 +14,6 @@
 import abc
 from dataclasses import dataclass, field
 import enum
-from functools import partial
 from typing import Callable, Generic, Optional, TypeVar
 
 import faiss
@@ -39,11 +38,8 @@ def init_hnsw_(d: int, index_info: 'HNSW') -> faiss.IndexHNSWFlat:
     return index
 
 class IndexType(enum.Enum):
-    HNSW = partial(init_hnsw_)
-    FLAT_L2 = partial(init_flatl2_)
-    
-    def __init__(self, init_fn):
-        self.init_fn = init_fn
+    HNSW = "HNSW"
+    FLAT_L2 = "FLAT_L2"
 
     def __str__(self):
         return self.name
@@ -53,8 +49,15 @@ class IndexType(enum.Enum):
     
     def build(self, vectors: NDArray, index_info: 'IndexInfo') -> faiss.Index:
         d = vectors.shape[1]
-        index = self.value(d, index_info)
-        index.add(vectors)
+        if self is IndexType.HNSW:
+            assert isinstance(index_info, HNSW), f"Expected HNSW IndexInfo, got {type(index_info)!r}"
+            index = init_hnsw_(d, index_info)
+        elif self is IndexType.FLAT_L2:
+            assert isinstance(index_info, FlatL2), f"Expected FlatL2 IndexInfo, got {type(index_info)!r}"
+            index = init_flatl2_(d, index_info)
+        else:  # pragma: no cover - defensive guard for future enum members
+            raise ValueError(f"Unsupported IndexType: {self}")
+        index.add(np.asarray(vectors))  # type: ignore[arg-type]
 
         return index
 
