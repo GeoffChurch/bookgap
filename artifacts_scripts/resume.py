@@ -212,9 +212,7 @@ def main() -> int:
         f"python -m bookgap.batch_generator --resume-output-dir {chosen_dir}"
     )
     run_slug = build_run_slug(chosen_dir)
-    log_filename = chosen_dir / (
-        f"nohup_resume_{run_slug}_{slugify(embedder)}_{slugify(denoiser)}_drop{slugify(drop_k)}.log"
-    )
+    log_filename =  f"nohup_resume_{run_slug}_{slugify(embedder)}_{slugify(denoiser)}_drop{slugify(drop_k)}.log"
     nohup_cmd = f"nohup {direct_cmd} > {log_filename} 2>&1 &"
 
     print("\nResume command:\n" + direct_cmd)
