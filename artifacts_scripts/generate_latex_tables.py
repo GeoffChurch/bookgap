@@ -63,6 +63,7 @@ BEST_RUN_PERCENTAGE_COLUMNS: Iterable[str] = (
     "proposal_book_rank_fraction",
     "proposal_article_rank_fraction",
     "gap_coverage_fraction",
+    "proposal_gap_size_percentile",
 )
 
 SUMMARY_RANK_FRACTION_COLUMNS: Iterable[str] = (
@@ -76,8 +77,8 @@ BEST_RUN_RANK_FRACTION_COLUMNS: Iterable[str] = (
     "proposal_article_rank_fraction",
 )
 
-TRIPLET_PERCENTAGE_COLUMNS: Iterable[str] = (
-    "gap_coverage_fraction_mean",
+TRIPLET_PERCENTILE_COLUMNS: Iterable[str] = (
+    "proposal_gap_size_percentile_mean",
 )
 
 BEST_RUN_REQUIRED_COLUMNS: Iterable[str] = (
@@ -88,6 +89,7 @@ BEST_RUN_REQUIRED_COLUMNS: Iterable[str] = (
     "proposal_article_rank",
     "proposal_article_rank_fraction",
     "gap_coverage_fraction",
+    "proposal_gap_size_percentile",
 )
 
 GAP_FILE_PATTERN = re.compile(r"(?P<prefix>.+)_gap(?P<idx>\d+)$")
@@ -183,7 +185,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--topic-name-length",
         type=int,
-        default=30,
+        default=40,
         help=(
             "Maximum character length for topic display names in best-run tables. "
             "Use a negative value to leave names untrimmed."
@@ -718,13 +720,76 @@ def write_latex(
     LOGGER.info("Wrote %s", output_file)
 
 
+# def write_triplet_gap_coverage_table(
+#     df: pd.DataFrame,
+#     output_file: Path,
+#     *,
+#     # caption: str | None,
+#     # label: str,
+#     coverage_columns: Sequence[str],
+#     overwrite: bool,
+# ) -> None:
+#     if output_file.exists() and not overwrite:
+#         LOGGER.info("Skipping existing file %s", output_file)
+#         return
+#
+#     output_file.parent.mkdir(parents=True, exist_ok=True)
+#
+#     # escaped_caption = escape_latex(caption) if caption is not None else None
+#     column_labels = [
+#         escape_latex(column)
+#         for column in coverage_columns
+#     ]
+#
+#     if coverage_columns:
+#         tabular_spec = "cc|" + "c" * len(coverage_columns)
+#     else:
+#         tabular_spec = "cc"
+#
+#     # lines: list[str] = ["\\begin{table}", "\\centering"]
+#     lines: list[str] = []
+#     lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
+#     lines.append("\\toprule")
+#
+#     header_line = "\\makecell{\\#\\\\articles} & \\makecell{\\#\\\\books}"
+#     if coverage_columns:
+#         header_line += (
+#             f" & \\multicolumn{{{len(coverage_columns)}}}{{c}}{{\\makecell{{Mean gap\\\\coverage}}}}"
+#         )
+#     lines.append(header_line + " " + "\\\\")
+#
+#     if coverage_columns:
+#         second_header = " & "  # Empty cells under # articles and # books
+#         for column_label in column_labels:
+#             second_header += f" & {column_label}"
+#         lines.append(second_header + " " + "\\\\")
+#     lines.append("\\midrule")
+#
+#     for _, row in df.iterrows():
+#         values: list[str] = [
+#             format_integer_value(row.get("# articles")),
+#             format_integer_value(row.get("# books")),
+#         ]
+#         for column in coverage_columns:
+#             values.append(format_percentage_value(row.get(column)))
+#         lines.append(" & ".join(values) + " " + "\\\\")
+#
+#     lines.append("\\bottomrule")
+#     lines.append("\\end{tabular}")
+#     # if escaped_caption is not None:
+#     #     lines.append(f"\\caption{{{escaped_caption}}}")
+#     # lines.append(f"\\label{{{label}}}")
+#     # lines.append("\\end{table}")
+#
+#     output_file.write_text("\n".join(lines))
+#     LOGGER.info("Wrote %s", output_file)
+
+
 def write_triplet_gap_coverage_table(
     df: pd.DataFrame,
     output_file: Path,
     *,
-    # caption: str | None,
-    # label: str,
-    coverage_columns: Sequence[str],
+    percentile_columns: Sequence[str],
     overwrite: bool,
 ) -> None:
     if output_file.exists() and not overwrite:
@@ -733,34 +798,26 @@ def write_triplet_gap_coverage_table(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # escaped_caption = escape_latex(caption) if caption is not None else None
-    column_labels = [
-        escape_latex(column)
-        for column in coverage_columns
-    ]
+    column_labels = [escape_latex(column) for column in percentile_columns]
 
-    if coverage_columns:
-        tabular_spec = "cc|" + "c" * len(coverage_columns)
-    else:
-        tabular_spec = "cc"
+    tabular_spec = "cc|" + "c" * len(percentile_columns) if percentile_columns else "cc"
 
-    # lines: list[str] = ["\\begin{table}", "\\centering"]
     lines: list[str] = []
     lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
     lines.append("\\toprule")
 
     header_line = "\\makecell{\\#\\\\articles} & \\makecell{\\#\\\\books}"
-    if coverage_columns:
+    if percentile_columns:
         header_line += (
-            f" & \\multicolumn{{{len(coverage_columns)}}}{{c}}{{\\makecell{{Mean gap\\\\coverage}}}}"
+            f" & \\multicolumn{{{len(percentile_columns)}}}{{c}}{{\\makecell{{Mean proposal\\\\gap percentile}}}}"
         )
-    lines.append(header_line + " " + "\\\\")
+    lines.append(header_line + r" \\")
 
-    if coverage_columns:
-        second_header = " & "  # Empty cells under # articles and # books
+    if percentile_columns:
+        second_header = " & "
         for column_label in column_labels:
             second_header += f" & {column_label}"
-        lines.append(second_header + " " + "\\\\")
+        lines.append(second_header + r" \\")
     lines.append("\\midrule")
 
     for _, row in df.iterrows():
@@ -768,16 +825,12 @@ def write_triplet_gap_coverage_table(
             format_integer_value(row.get("# articles")),
             format_integer_value(row.get("# books")),
         ]
-        for column in coverage_columns:
+        for column in percentile_columns:
             values.append(format_percentage_value(row.get(column)))
-        lines.append(" & ".join(values) + " " + "\\\\")
+        lines.append(" & ".join(values) + r" \\")
 
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
-    # if escaped_caption is not None:
-    #     lines.append(f"\\caption{{{escaped_caption}}}")
-    # lines.append(f"\\label{{{label}}}")
-    # lines.append("\\end{table}")
 
     output_file.write_text("\n".join(lines))
     LOGGER.info("Wrote %s", output_file)
@@ -845,7 +898,11 @@ def select_best_summary_row(df: pd.DataFrame) -> pd.Series | None:
 
 
 def select_baseline_summary_row(df: pd.DataFrame, embedder_model: str) -> pd.Series:
-    required_columns = {"denoiser", "drop_k", "gap_coverage_fraction_mean"}
+    required_columns = {
+        "denoiser",
+        "drop_k",
+        "proposal_gap_size_percentile_mean",
+    }
     missing = [column for column in required_columns if column not in df.columns]
     if missing:
         raise KeyError(
@@ -857,14 +914,24 @@ def select_baseline_summary_row(df: pd.DataFrame, embedder_model: str) -> pd.Ser
 
     working = df.copy()
     denoiser_series = working["denoiser"].astype(str).str.strip()
-    drop_k_numeric = pd.to_numeric(working["drop_k"], errors="coerce")
     denoiser_target_stripped = denoiser_target.strip() if isinstance(denoiser_target, str) else denoiser_target
-    baseline = working.loc[(denoiser_series == denoiser_target_stripped) & (drop_k_numeric == drop_k_target)]
+    mask = denoiser_series == denoiser_target_stripped
+    if drop_k_target is not None:
+        drop_k_numeric = pd.to_numeric(working["drop_k"], errors="coerce")
+        mask &= drop_k_numeric == drop_k_target
+    baseline = working.loc[mask]
 
     if baseline.empty:
-        raise ValueError(f"No baseline row with denoiser={denoiser_target} and drop_k={drop_k_target} was found")
+        if drop_k_target is None:
+            raise ValueError(
+                f"No baseline row with denoiser={denoiser_target} was found"
+            )
+        raise ValueError(
+            f"No baseline row with denoiser={denoiser_target} and drop_k={drop_k_target} was found"
+        )
 
     sort_columns = [
+        "proposal_gap_size_percentile_mean",
         "gap_coverage_fraction_mean",
         "proposal_book_rank_fraction_mean",
         "proposal_article_rank_fraction_mean",
@@ -880,9 +947,9 @@ def select_baseline_summary_row(df: pd.DataFrame, embedder_model: str) -> pd.Ser
         na_position="last",
     )
     selected = ranked.iloc[0]
-    if pd.isna(selected.get("gap_coverage_fraction_mean")):
+    if pd.isna(selected.get("proposal_gap_size_percentile_mean")):
         raise ValueError(
-            "Baseline row has missing gap_coverage_fraction_mean value"
+            "Baseline row has missing proposal_gap_size_percentile_mean value"
         )
     return selected
 
@@ -928,11 +995,13 @@ def select_summary_row_by_criteria(df: pd.DataFrame, denoiser: str, drop_k: int)
     return selected_row
 
 
-def get_baseline_criteria(embedder_model: str) -> tuple[str, int]:
-    if "gemma" in embedder_model.lower():
-        return "CCLIP", 100
-    else:
-        return "NONE", 0
+def get_baseline_criteria(embedder_model: str) -> tuple[str, int | None]:
+    # embedder_lower = embedder_model.lower()
+    # if "gemma" in embedder_lower:
+    #     return "LIP", None
+    # if "gist" in embedder_lower:
+    #     return "CCLIP", None
+    return "NONE", 0
 
 
 def load_best_run_details(
@@ -1018,7 +1087,6 @@ def prepare_best_run_table(
         "gap_idx",
         "proposal_book_rank",
         "proposal_article_rank",
-        "gap_size",
         "num_articles",
         "num_books",
     ]
@@ -1031,8 +1099,7 @@ def prepare_best_run_table(
         "topic_display_name",
         "num_books",
         "num_articles",
-        "gap_size",
-        "gap_size_percentile",
+        "proposal_gap_size_percentile",
         "gap_coverage_fraction",
     ]
     available_columns = [
@@ -1058,15 +1125,11 @@ def build_summary_caption(
 
 
 def build_best_run_caption(
-    run_id: str,
-    gap_idx: int,
+    friendly_embedder: str,
     denoiser: Any,
     drop_k: Any,
 ) -> str:
-    return (
-        f"Top gaps for run {run_id} (gap={gap_idx}, denoiser={denoiser}, "
-        f"drop_k={drop_k})"
-    )
+    return f"Best {friendly_embedder} run (denoiser={denoiser}, drop_k={drop_k})"
 
 
 def ordered_embedder_columns(columns: Sequence[str]) -> Sequence[str]:
@@ -1271,6 +1334,7 @@ def main() -> None:
                 )
                 baseline_row = pd.Series({
                     "gap_coverage_fraction_mean": float("nan"),
+                    "proposal_gap_size_percentile_mean": float("nan"),
                     "denoiser": None,
                     "drop_k": None,
                 })
@@ -1282,6 +1346,9 @@ def main() -> None:
                     "llm_num_books": int(num_books),
                     "gap_coverage_fraction_mean": baseline_row.get(
                         "gap_coverage_fraction_mean"
+                    ),
+                    "proposal_gap_size_percentile_mean": baseline_row.get(
+                        "proposal_gap_size_percentile_mean"
                     ),
                     "denoiser": baseline_row.get("denoiser"),
                     "drop_k": baseline_row.get("drop_k"),
@@ -1344,13 +1411,17 @@ def main() -> None:
                 continue
 
             best_table = best_table.drop(
-                columns=["proposal_book_rank", "proposal_article_rank"],
+                columns=[
+                    "proposal_book_rank",
+                    "proposal_article_rank",
+                    "gap_size",
+                    "gap_size_percentile",
+                ],
                 errors="ignore",
             )
 
             caption = build_best_run_caption(
-                best_run_id,
-                gap_idx,
+                friendly_embedder,
                 best_row.get("denoiser"),
                 best_row.get("drop_k"),
             )
@@ -1372,7 +1443,7 @@ def main() -> None:
                 "proposal_book_rank_fraction",
                 "proposal_article_rank_fraction",
                 "gap_coverage_fraction",
-                "gap_size_percentile",
+                "proposal_gap_size_percentile",
             } & set(best_table_scaled.columns)
             best_table_display = best_table_scaled.rename(columns=friendly_column_name)
             formatter_columns_display = [
@@ -1402,7 +1473,7 @@ def main() -> None:
             best_summary_df = pd.DataFrame(baseline_rows)
             best_summary_df = scale_percentage_columns(
                 best_summary_df,
-                TRIPLET_PERCENTAGE_COLUMNS,
+                TRIPLET_PERCENTILE_COLUMNS,
                 decimals=2,
             )
 
@@ -1440,7 +1511,7 @@ def main() -> None:
                 best_summary_df.pivot_table(
                     index=["# articles", "# books"],
                     columns="embedder_model",
-                    values="gap_coverage_fraction_mean",
+                    values="proposal_gap_size_percentile_mean",
                     aggfunc="first",
                 )
                 .reset_index()
@@ -1476,13 +1547,13 @@ def main() -> None:
                         .astype("Int64")
                     )
 
-            coverage_columns = [
+            percentile_columns = [
                 column
                 for column in pivot_df.columns
                 if column not in {"# articles", "# books"}
             ]
 
-            friendly_embedder_list = [column for column in coverage_columns if column]
+            friendly_embedder_list = [column for column in percentile_columns if column]
             unique_embedder_names = list(dict.fromkeys(friendly_embedder_list))
             embedder_descriptions = []
             for embedder in unique_embedder_names:
@@ -1505,13 +1576,13 @@ def main() -> None:
             gap_root_dir = args.output_root / f"gap{gap_idx}"
             write_triplet_gap_coverage_table(
                 pivot_df,
-                gap_root_dir / "triplet_gap_coverage.tex",
+                gap_root_dir / "ablated_proposal_gap_percentile.tex",
                 # caption=(
-                #     "Gap coverage fraction averaged over all topics for various settings of the number of example articles and books given to the LLM, comparing "
+                #     "Proposal gap percentile averaged over all topics for various settings of the number of example articles and books given to the LLM, comparing "
                 #     f"{friendly_embedder_text}."
                 # ),
-                # label=f"tab:triplet_gap_coverage_gap{gap_idx}",
-                coverage_columns=coverage_columns,
+                # label=f"tab:ablated_proposal_gap_percentile_gap{gap_idx}",
+                percentile_columns=percentile_columns,
                 overwrite=args.overwrite,
             )
         else:
