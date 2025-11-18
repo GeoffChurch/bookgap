@@ -36,7 +36,7 @@ from bookgap.llm.data_structures import (
 )
 from bookgap.llm.generators.batch_generator import BatchProposalGenerator
 from bookgap.subcloud import SubCloud, get_subclouds_for_topic
-from bookgap.util import LOGGER
+from bookgap.util import LOGGER, create_unicode_safe_filename
 from ..protocols import (
     ProposalContext, BatchRequestData,
     Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
@@ -78,28 +78,6 @@ def _load_cached_gaps(cache_path: Path) -> Optional[list[GapWithContext]]:
 
 def _persist_gaps(cache_path: Path, gaps: list[GapWithContext]) -> None:
     joblib.dump(gaps, cache_path)
-
-
-def _stringify_config_value(value: Any, default: str = "unknown") -> str:
-    if value is None:
-        return default
-    if hasattr(value, "value"):
-        try:
-            return str(value.value)
-        except Exception:  # pragma: no cover - defensive fallback
-            pass
-    return str(value)
-
-
-def _cloud_params_from_config(config: ExperimentConfig) -> tuple[str, str, str]:
-    cloud_cfg = getattr(config, "cloud", None)
-    if cloud_cfg is None:
-        return ("unknown", "unknown", "unknown")
-
-    embedder = _stringify_config_value(getattr(cloud_cfg, "embedder_model", None))
-    denoiser = _stringify_config_value(getattr(cloud_cfg, "denoiser", None))
-    drop_k = _stringify_config_value(getattr(cloud_cfg, "drop_k", None), default="0")
-    return (embedder, denoiser, drop_k)
 
 
 def find_gaps_for_topic(
@@ -389,8 +367,7 @@ def find_gaps_for_config(
     topics: Any = subfield_obj["topics"]  # type: ignore # pyalex typing issue
     
     if not topics:
-        LOGGER.warning(f"No topics found for AI subfield")
-        return gaps
+        raise ValueError("No topics found for AI subfield")
     
     # Analyze all topics
     for i, topic in enumerate(topics):
@@ -892,10 +869,20 @@ def run_batch_workflow(
     requests = generate_batch_requests(contexts, config)
     LOGGER.info("Generated %s batch requests", len(requests))
 
-    batch_input_filename = output_dir / "batch_input.jsonl"
-    save_batch_input_jsonl(requests, batch_input_filename, config)
+    embedder_model = str(config.cloud.embedder_model)
+    denoiser_name = str(config.cloud.denoiser)
+    drop_k_value = str(config.cloud.drop_k)
+    num_articles_value = str(config.llm.num_articles)
+    num_books_value = str(config.llm.num_books)
 
-    embedder_model, denoiser_name, drop_k_value = _cloud_params_from_config(config)
+    raw_filename = (
+        f"{embedder_model}__{denoiser_name}__drop_{drop_k_value}__"
+        f"articles_{num_articles_value}__books_{num_books_value}.jsonl"
+    )
+    safe_filename = create_unicode_safe_filename(raw_filename).replace(" ", "_")
+    batch_input_filename = output_dir / safe_filename
+
+    save_batch_input_jsonl(requests, batch_input_filename, config)
 
     state_manager.mark_ready_to_submit(
         gap_count=len(gaps),
