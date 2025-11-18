@@ -178,37 +178,12 @@ class DenoiserContext(abc.ABC):
 
     @TIMER.time()
     def S_C(self) -> NDArray:
-        """The citation-error scatter matrix (V_c - C_c)^T (V_c - C_c)."""        
-        self._init_centering()
-        X_c = self.X_centered()
-        A = self.A() # Assumes A[i, j] > 0 means i cites j
-        N, d = X_c.shape
-        
-        # Ensure A is in CSR format for efficient row slicing
-        if not sp.isspmatrix_csr(A):
-            A = A.tocsr()
-            
-        D_error = np.zeros_like(X_c)
-        
-        for i in range(N):
-            # Find the indices of works cited by work i
-            cited_indices = A.indices[A.indptr[i] : A.indptr[i+1]]
-            
-            if len(cited_indices) > 0:
-                v_i_c = X_c[i] # Use centered embedding
-                
-                # Get the CENTERED embeddings of the cited works
-                V_cited_c = X_c[cited_indices]
-                
-                # Compute the centroid of the CENTERED cited works
-                c_i_c = V_cited_c.mean(axis=0)
-                
-                # Compute the error vector (difference of centered vectors)
-                D_error[i] = v_i_c - c_i_c
-            # else: D_error[i] remains zero, which is correct
-            
-        LOGGER.info(f"Computed citation error matrix D_error with shape {D_error.shape}")
-        
+        """The citation-error scatter matrix"""        
+        # Sparse matmul gives the mean of cited embeddings per work because rows of A are normalized.
+        X = self.X()
+        cited_means = self.A() @ X # A[i, j] > 0 means i cites j
+        D_error = X - cited_means
+
         # S_C should be the covariance of the error vectors
         return scatter(D_error, centered=False) # D_error may not be zero-mean
 
@@ -435,7 +410,7 @@ class WDenoiser:
 #         # Return the projector and the eigenvalues as extra info
 #         return P_basis, res.eigvals
     
-# class SymmetrizedLDADenoiser::
+# class SymmetrizedLDADenoiser(LDADenoiser):
 #     def projector(self, X: NDArray, A: sp.spmatrix, n_components: int):
 #         return super().projector(X, A + adj(A), n_components)
 
