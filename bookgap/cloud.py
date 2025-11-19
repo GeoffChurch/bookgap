@@ -109,7 +109,6 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 
 @lru_cache(maxsize=1)
 @TIMER.time()
-@MEMORY.cache
 def get_cloud_embeddings(cloud: Cloud):
     _, embeddings = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
     retained_idxs = get_cloud_retained_idxs(cloud)
