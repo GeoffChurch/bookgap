@@ -132,7 +132,7 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         if context.covering_books:
             prompt_parts.append(" and related books")
         prompt_parts.append(
-            " provided below, please propose a title, abstract, and table of contents"
+            " provided below, please propose a title and abstract"
             " for a textbook that would prepare students to understand research in this area.\n\n"
         )
         
