@@ -1563,7 +1563,7 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
         _book_article_results.add_row(**result_row)
         if (i+1) % 20 == 0 or i == len(topics) - 1:
             do_plots_for_all_embedders(ARTIFACTS_DIR)
-# python -c "from bookgap.analyze_book_article_gap import many_main; many_main()"
+# python -c "from artifacts_scripts.analyze_book_article_gap import many_main; many_main()"
 def many_main():
     explicit_args = get_explicit_args()
     setup_logging(log_name=__name__.split('.')[-1], explicit_args=explicit_args)
