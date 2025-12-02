@@ -15,7 +15,7 @@ class HNSWConfig:
     _target_: str = field(default="bookgap.index.HNSW", init=False)
     hnsw_m:   int # Number of bidirectional links for each node (default: 16, higher=better recall)
     hnsw_efc: int # Size of candidate list during construction (default: 512, higher=better quality)
-    hnsw_efs: int # Size of candidate list during search (default: 1024, higher=better recall)
+    hnsw_efs: int # Size of candidate list during search (default: 512, higher=better recall)
 
 
 __all__ = ["HNSWConfig"]

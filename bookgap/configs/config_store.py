@@ -32,7 +32,7 @@ def register_configs():
     # ===== GAP CONFIGURATIONS =====
     
     # Production gap config - matches existing codebase defaults from parse_args.py
-    hnsw_index = HNSWConfig(hnsw_m=16, hnsw_efc=512, hnsw_efs=1024)
+    hnsw_index = HNSWConfig(hnsw_m=16, hnsw_efc=512, hnsw_efs=512)
 
     standard_gap = GapConfig(
         cell_type=CellType.KBALL,           # K-ball algorithm (vs VORONOI) - from batch_workflow.py
