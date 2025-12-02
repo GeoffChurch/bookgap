@@ -139,7 +139,9 @@ def within_cloud_nn_ranks(
         query: SubCloud,
         return_dists: bool = False,
         return_ids: bool = False,
-        k: int = 1):
+        k: int = 1,
+        p: float = 1.0):
+    assert p > 0, f"p must be positive, got {p}"
     # Find nearest neighbor in query for each query point
     nns = knn(query, query, k=k+1) # +1 to exclude self-neighbor
     D = nns.sq_dists[:, -1]
@@ -150,13 +152,29 @@ def within_cloud_nn_ranks(
     num_query_points = query.index().ntotal
     if num_query_points > 0:
         sq_dists = np.sum((query_embeddings[I] - query_embeddings) ** 2, axis=1)
-        assert len(D) == len(I) == len(sq_dists) == num_query_points
-        assert np.allclose(D, sq_dists)
+        assert len(D) == len(I) == len(sq_dists) == num_query_points, f"Length mismatch: {len(D)=}, {len(I)=}, {len(sq_dists)=}, {num_query_points=}"
+        # assert np.allclose(D, sq_dists), f"Distance mismatch between FAISS and recomputed distances: max abs diff = {float(np.nanmax(np.abs(D - sq_dists)))}"
+        diff = D - sq_dists
+
+        # Allow tiny numeric drift between FAISS cached distances and recomputed values.
+        FAISS_DISTANCE_RTOL = 1e-6
+        FAISS_DISTANCE_ATOL = 1e-9
+        if not np.allclose(D, sq_dists, rtol=FAISS_DISTANCE_RTOL, atol=FAISS_DISTANCE_ATOL):
+            stats = get_stats(diff)
+            msg = (
+                "within_cloud_nn_ranks: Distance mismatch between FAISS and recomputed "
+                "distances: stats="
+                f"{stats} rtol={FAISS_DISTANCE_RTOL} atol={FAISS_DISTANCE_ATOL}"
+            )
+            LOGGER.error(msg)
+            raise AssertionError(msg)
     
+    radii = p * D
+
     balls = range_search_radii_(
         ambient.index(),
         query_embeddings,
-        D,
+        radii,
         return_lims=True,
         return_dists=return_dists,
         return_ids=return_ids

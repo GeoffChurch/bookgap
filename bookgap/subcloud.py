@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 
 from bookgap.cloud import Cloud
 from bookgap.index import build_index
-from bookgap.util import MEMORY, Filter, WorkType
+from bookgap.util import MEMORY, TIMER, Filter, WorkType
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,7 @@ def get_subcloud_work_references(subcloud: SubCloud) -> list[list[str]]:
     return [parent_work_references[i] for i in retained_idxs]
 
 @lru_cache(maxsize=2)
+@TIMER.time()
 def get_subcloud_index(subcloud: SubCloud) -> faiss.Index:
     return build_index(subcloud.parent.index_info, get_subcloud_embeddings(subcloud))
 

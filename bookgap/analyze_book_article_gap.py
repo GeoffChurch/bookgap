@@ -214,7 +214,7 @@ def analyze_book_article_gap(cloud: Cloud, topic_id: Optional[str], radius_fract
     return BookArticleAnalysis(
         num_books=num_books,
         num_articles=num_articles,
-        kball_size=kball_size(articles, books, k=1),
+        kball_size=kball_size(articles, books),
         # Books querying in books
         books_in_books_frac_with_avgref=books_in_books.num_queries_with_avgref / num_books if num_books > 0 else float('nan'),
         books_in_books_avgref_mean_rank=float(books_in_books.avgref_mean_rank),
@@ -240,7 +240,7 @@ def _df_from_file(csv_path: Path) -> pd.DataFrame:
     return df
 
 @TIMER.time()
-def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
+def kball_size(index: SubCloud, query: SubCloud) -> float:
     """
     Calculates the mean k-ball size.
 
@@ -261,7 +261,7 @@ def kball_size(index: SubCloud, query: SubCloud, k: int) -> float:
         The mean number of index points found inside the k-balls, or NaN if no
         ranks could be computed.
     """
-    ranks = within_cloud_nn_ranks(index, query, k=k).ranks    
+    ranks = within_cloud_nn_ranks(index, query, k=1, p=0.5).ranks
     LOGGER.info(f"Mean k-ball size stats: {get_stats(ranks)}")
     return float(np.mean(ranks))
 
@@ -915,12 +915,20 @@ def plot_col_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y:
     output_file = artifacts_dir / filename
     fig.write_html(output_file)
 
-def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y: bool = False, weights: Optional[str] = None):
+def plot_col_by_drop_k_pyplot(
+    df: pd.DataFrame,
+    artifacts_dir: Path,
+    y_col: str,
+    log_y: bool = False,
+    weights: Optional[str] = None,
+    log_x: bool = False,
+):
     """
     Pyplot version of plot_col_by_drop_k.
     Plot metric vs drop_k with each denoiser as a separate series using matplotlib.
     For each (denoiser, drop_k) pair, average the metric across all topics.
-    Treats "NONE" denoiser as drop_k = 0 baseline.
+    Treats "NONE" denoiser as drop_k = 0 baseline. Supports optional log-scale for
+    the x and y axes.
     """
     plot_df = df.copy()
     
@@ -972,7 +980,19 @@ def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str,
     baseline_value = baseline_data['metric_mean'].iloc[0] if not baseline_data.empty else None
 
     # LOGGER.info(f"Baseline value for {y_col} (NONE denoiser): {baseline_value:.3f}")
-    
+
+    if log_x:
+        negative_mask = grouped['drop_k'] < 0
+        if negative_mask.any():
+            problematic = grouped.loc[negative_mask, ['denoiser', 'drop_k']]
+            raise ValueError(
+                "Cannot apply log1p scale to drop_k because negative values are present: "
+                f"{problematic.to_dict(orient='records')}"
+            )
+        grouped['drop_k_plot'] = np.log1p(grouped['drop_k'].astype(float))
+    else:
+        grouped['drop_k_plot'] = grouped['drop_k'].astype(float)
+
     # Create the plot
     fig, ax1 = PlotManager.create_figure(figsize=(12, 8))
     
@@ -984,19 +1004,18 @@ def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str,
         denoiser_data = grouped[grouped['denoiser'] == denoiser].sort_values('drop_k')
         
         # Regular styling for other denoisers
-        ax1.plot(denoiser_data['drop_k'], denoiser_data['metric_mean'], 
+        ax1.plot(denoiser_data['drop_k_plot'], denoiser_data['metric_mean'], 
                 color=colors[i], linewidth=2, marker='o', markersize=6, label=get_denoiser_display_name(denoiser))
     
     # Add baseline horizontal line
     if baseline_value is not None:
-        x_range = grouped['drop_k']
-        ax1.axhline(y=baseline_value, xmin=x_range.min(), xmax=x_range.max(),
+        ax1.axhline(y=baseline_value,
                    color='black', linestyle='--', linewidth=3, 
                    label=get_denoiser_display_name('NONE'), zorder=10)
     
     # Formatting
     y_axis_title = y_col.replace('_', ' ').title()
-    ax1.set_xlabel('Drop K')
+    ax1.set_xlabel('Drop K (log1p scale)' if log_x else 'Drop K')
     ax1.set_ylabel(y_axis_title)
     ax1.set_title(f'{y_axis_title} by Drop K (Averaged Across Topics)')
     ax1.legend()
@@ -1014,6 +1033,11 @@ def plot_col_by_drop_k_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: str,
         ax1.set_yscale('log')
         if ax2 is not None:
             ax2.set_yscale('log')
+
+    if log_x:
+        unique_drop_k = sorted(grouped['drop_k'].unique())
+        ax1.set_xticks(np.log1p(unique_drop_k))
+        ax1.set_xticklabels([str(int(x)) for x in unique_drop_k])
     
     # plt.tight_layout()
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -1238,6 +1262,15 @@ def _load_embedder_denoiser_drop_k(summary_path: Path) -> dict[Embedder.ModelNam
     if not combos:
         raise ValueError(f"No embedder/denoiser/drop_k triples found in {summary_path}")
 
+    for embedder, combo_list in combos.items():
+        combo_list.sort(
+            key=lambda triple: (
+                triple[0] != WorkDenoisers.NONE.name,
+                -float(triple[2]),
+                int(triple[1]),
+            )
+        )
+
     return combos
 
 def do_plots_for_all_embedders(artifacts_dir: Path) -> None:
@@ -1304,12 +1337,12 @@ def do_plots(df: pd.DataFrame, artifacts_dir: Path):
     # plot_col_by_drop_k(df, artifacts_dir, 'avgref_mean_rank_log_lift', log_y=False, weights='num_books_with_avgref')
     
     # Generate pyplot versions as well
-    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_size', log_y=True, weights='total_works')
-    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_lift', log_y=True, weights='total_works')
-    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_log_lift', log_y=False, weights='total_works')
-    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank', log_y=True, weights='num_books_with_avgref')
-    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank_lift', log_y=True, weights='num_books_with_avgref')
-    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank_log_lift', log_y=False, weights='num_books_with_avgref')
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_size', log_y=True, weights='total_works', log_x=True)
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_lift', log_y=True, weights='total_works', log_x=True)
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'kball_log_lift', log_y=False, weights='total_works', log_x=True)
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank', log_y=True, weights='num_books_with_avgref', log_x=True)
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank_lift', log_y=True, weights='num_books_with_avgref', log_x=True)
+    plot_col_by_drop_k_pyplot(df, artifacts_dir, 'avgref_mean_rank_log_lift', log_y=False, weights='num_books_with_avgref', log_x=True)
     
     for color_col in ['denoiser', 'drop_k']:
         # plot_col_by_denoiser(df, artifacts_dir, y_col='kball_size', color_col=color_col, show_labels=False, log_y=True, weights='total_works', hover_data=['topic_name', 'num_books', 'num_articles'])
@@ -1544,8 +1577,27 @@ def many_main():
     
     summary_path = ARTIFACTS_DIR / "run_gap_summary_gap0.csv"
     embedder_denoiser_drop_k_map = _load_embedder_denoiser_drop_k(summary_path)
-    triple_count = sum(len(values) for values in embedder_denoiser_drop_k_map.values())
-    LOGGER.info(f"Loaded {triple_count} embedder/denoiser/drop_k triples from {summary_path}")
+    csv_triples = [
+        (embedder_model, denoiser_name, drop_k, percentile)
+        for embedder_model, combos in embedder_denoiser_drop_k_map.items()
+        for denoiser_name, drop_k, percentile in combos
+    ]
+    LOGGER.info(
+        "Loaded %d embedder/denoiser/drop_k triples from %s",
+        len(csv_triples),
+        summary_path,
+    )
+
+    additional_triples: list[tuple[Embedder.ModelName, str, int]] = [
+        (Embedder.ModelName.GEMMA_300M, WorkDenoisers.CITATION_ERROR_LDA.name, 758),
+        (Embedder.ModelName.GEMMA_300M, WorkDenoisers.REL_AMP.name, 758),
+    ]
+    if additional_triples:
+        LOGGER.info(
+            "Running %d additional embedder/denoiser/drop_k triples before CSV results: %s",
+            len(additional_triples),
+            additional_triples,
+        )
 
     args = vars(parse_args())
     del args['denoiser']
@@ -1560,11 +1612,39 @@ def many_main():
             f"All (denoiser, drop_k, percentile) values for {embedder_model.name}: {combos}"
         )
 
-        for denoiser_name, drop_k, percentile in combos:
-            LOGGER.info(
-                f"Running analysis with denoiser={denoiser_name}, drop_k={drop_k}, embedder={embedder_model.name} (percentile={percentile:.3f})"
+    combined_triples: list[tuple[Embedder.ModelName, str, int, Optional[float]]] = [
+        (embedder_model, denoiser_name, drop_k, None)
+        for embedder_model, denoiser_name, drop_k in additional_triples
+    ]
+    combined_triples.extend(csv_triples)
+
+    seen_triples: set[tuple[Embedder.ModelName, str, int]] = set()
+    ordered_triples: list[tuple[Embedder.ModelName, str, int, Optional[float]]] = []
+    for embedder_model, denoiser_name, drop_k, percentile in combined_triples:
+        triple_key = (embedder_model, denoiser_name, drop_k)
+        if triple_key in seen_triples:
+            LOGGER.debug(
+                "Skipping duplicate triple (embedder=%s, denoiser=%s, drop_k=%d)",
+                embedder_model.name,
+                denoiser_name,
+                drop_k,
             )
-            main(**args, denoiser=denoiser_name, drop_k=drop_k, embedder_model=embedder_model)
+            continue
+        seen_triples.add(triple_key)
+        ordered_triples.append((embedder_model, denoiser_name, drop_k, percentile))
+
+    for embedder_model, denoiser_name, drop_k, percentile in ordered_triples:
+        percentile_text = ""
+        if percentile is not None and not np.isnan(percentile):
+            percentile_text = f" (percentile={percentile:.3f})"
+        LOGGER.info(
+            "Running analysis with denoiser=%s, drop_k=%d, embedder=%s%s",
+            denoiser_name,
+            drop_k,
+            embedder_model.name,
+            percentile_text,
+        )
+        main(**args, denoiser=denoiser_name, drop_k=drop_k, embedder_model=embedder_model)
     
     LOGGER.info("Completed all analyses.")
 
