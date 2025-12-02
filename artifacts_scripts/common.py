@@ -27,6 +27,39 @@ def friendly_embedder_name(embedder_model: Optional[str]) -> str:
         return ""
     return EMBEDDER_DISPLAY_NAME_MAP.get(embedder_model, embedder_model)
 
+# Mapping from raw denoiser identifiers to friendly display names.
+# Each entry maps to a tuple of (latex_display, plain_display).
+_DENOISER_DISPLAY_NAME_MAP: dict[str, tuple[str, str]] = {
+    # Use \alpha for both versions (unicode doesn't render in LaTeX captions)
+    "CCLIP": (r"$\mathrm{CCLIP}(\alpha=0.5)$", r"CCLIP(\alpha=0.5)"),
+    "CCLIP_1": (r"$\mathrm{CCLIP}(\alpha=0.1)$", r"CCLIP(\alpha=0.1)"),
+    "CCLIP_01": (r"$\mathrm{CCLIP}(\alpha=0.01)$", r"CCLIP(\alpha=0.01)"),
+    "CITATION_ERROR_LDA": ("GRAPH_ERROR", "GRAPH_ERROR"),
+}
+
+
+def friendly_denoiser_name(denoiser: Optional[str], *, latex: bool = True) -> str:
+    """Return a friendly display name for a denoiser.
+
+    Args:
+        denoiser: Raw denoiser identifier (e.g. "CCLIP", "NONE", etc.).
+        latex: If True, return a LaTeX/mathtext enhanced version when available.
+
+    Returns:
+        A user-friendly name. Falls back to the raw identifier (or empty string
+        if None) when no mapping exists.
+    """
+    if denoiser is None:
+        return ""
+    # Preserve special NONE marker verbatim.
+    if denoiser == "NONE":
+        return "NONE"
+    mapped = _DENOISER_DISPLAY_NAME_MAP.get(str(denoiser))
+    if not mapped:
+        return str(denoiser)
+    latex_display, plain_display = mapped
+    return latex_display if latex else plain_display
+
 
 COLUMN_DISPLAY_NAME_MAP = {
     "denoiser": "Denoiser",
@@ -38,6 +71,7 @@ COLUMN_DISPLAY_NAME_MAP = {
     "gap_coverage_fraction_mean": r"\makecell{Gap\\coverage \%}",
     "gap_coverage_fraction_median": r"\makecell{Gap coverage \%\\(median)}",
     "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\gap \%ile}",
+    "target_gap_size_percentile_mean": r"\makecell{Target\\gap \%ile}",
     "proposal_gap_size_percentile": r"\makecell{Proposal\\gap \%ile}",
     "row_count": "Rows",
     "proposal_book_rank": r"\makecell{Book\\rank}",
@@ -51,6 +85,12 @@ COLUMN_DISPLAY_NAME_MAP = {
     "topic_display_name": "Topic",
     "num_articles": r"\makecell{\# articles}",
     "num_books": r"\makecell{\# books}",
+}
+
+# Plain text versions for plot titles (without LaTeX markup)
+COLUMN_DISPLAY_NAME_MAP_PLAIN = {
+    "gap_coverage_fraction_mean": "Target gap coverage percentage",
+    "proposal_gap_size_percentile_mean": "Proposal gap percentile",
 }
 
 

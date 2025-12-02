@@ -13,10 +13,12 @@ import pandas as pd
 
 from artifacts_scripts.common import (
     EMBEDDER_DISPLAY_NAME_MAP,
+    COLUMN_DISPLAY_NAME_MAP_PLAIN,
     add_per_topic_gap_idx,
     filter_to_gap_idx,
     friendly_column_name,
     friendly_embedder_name,
+    friendly_denoiser_name,
 )
 
 import pyalex
@@ -28,6 +30,10 @@ TOPIC_BATCH_SIZE = 25
 TOPIC_DISPLAY_NAME_CACHE: dict[str, str] = {}
 
 EXCLUDED_DENOISERS: set[str] = set()#{"AUG_LPP", "CCLIP_01", "CCLIP_1", "CCA", "CCP", "JAD_CCP", "JAD_HALF_L", "ORTHO_MANIFOLD"}
+
+DENOISER_DISPLAY_NAME_MAP: dict[str, str] = {
+    "LIP": r"LIP",
+}
 
 
 SUMMARY_COLUMNS: Iterable[str] = (
@@ -64,6 +70,7 @@ BEST_RUN_PERCENTAGE_COLUMNS: Iterable[str] = (
     "proposal_article_rank_fraction",
     "gap_coverage_fraction",
     "proposal_gap_size_percentile",
+    "target_gap_size_percentile_mean",
 )
 
 SUMMARY_RANK_FRACTION_COLUMNS: Iterable[str] = (
@@ -79,6 +86,7 @@ BEST_RUN_RANK_FRACTION_COLUMNS: Iterable[str] = (
 
 TRIPLET_PERCENTILE_COLUMNS: Iterable[str] = (
     "proposal_gap_size_percentile_mean",
+    "gap_coverage_fraction_mean",
 )
 
 BEST_RUN_REQUIRED_COLUMNS: Iterable[str] = (
@@ -333,14 +341,16 @@ def build_triplet_directory(embedder_model: str, num_articles: int, num_books: i
     return "_".join(parts)
 
 
-def formatters_from_columns(columns: Iterable[str]) -> dict[str, Callable[[object], str]]:
+def formatters_from_columns(
+    columns: Iterable[str], *, decimals: int = 2
+) -> dict[str, Callable[[object], str]]:
     def float_formatter(value: object) -> str:
         if pd.isna(value):  # type: ignore[arg-type]
             return ""
         if isinstance(value, str):
             return value
         if isinstance(value, numbers.Real):
-            return f"{float(value):.2f}"
+            return f"{float(value):.{decimals}f}"
         return str(value)
 
     return {column: float_formatter for column in columns}
@@ -375,6 +385,23 @@ def format_percentage_value(value: object) -> str:
         except (TypeError, ValueError):
             return str(value)
     return f"{numeric:.2f}"
+
+
+def display_denoiser_name(value: object) -> str:
+    try:
+        if pd.isna(value):  # type: ignore[arg-type]
+            return ""
+    except TypeError:
+        pass
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return text
+    mapped = DENOISER_DISPLAY_NAME_MAP.get(text.upper())
+    if mapped is not None:
+        return mapped
+    return text
 
 
 def _bolden_value(value: object) -> object:
@@ -624,6 +651,12 @@ def write_latex(
         raise ValueError(f"Unsupported table environment: {table_environment}")
 
     escaped_caption = escape_latex(caption) if caption is not None else None
+    # Unescape math expressions like $k$ or $\mathrm{...}$ (escape_latex adds backslashes).
+    if escaped_caption:
+        # Match $...$ with any content including backslashes, braces, etc.
+        escaped_caption = re.sub(r"\\\$([^$]+?)\\\$", r"$\1$", escaped_caption)
+        # Unescape curly braces within math mode
+        escaped_caption = re.sub(r"\$([^$]*)\\\{([^$]*)\\\}([^$]*)\$", r"$\1{\2}\3$", escaped_caption)
 
     safe_df = escape_column_labels(escape_dataframe(df))
 
@@ -785,11 +818,11 @@ def write_latex(
 #     LOGGER.info("Wrote %s", output_file)
 
 
-def write_triplet_gap_coverage_table(
+def write_ablated_triplet_table(
     df: pd.DataFrame,
     output_file: Path,
     *,
-    percentile_columns: Sequence[str],
+    column_groups: Sequence[tuple[str, Sequence[tuple[str, str]]]],
     overwrite: bool,
 ) -> None:
     if output_file.exists() and not overwrite:
@@ -798,35 +831,74 @@ def write_triplet_gap_coverage_table(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    column_labels = [escape_latex(column) for column in percentile_columns]
-
-    tabular_spec = "cc|" + "c" * len(percentile_columns) if percentile_columns else "cc"
+    # Calculate tabular spec
+    # cc | c... | c...
+    spec_parts = ["cc"]
+    
+    for _, cols in column_groups:
+        if cols:
+            spec_parts.append("|" + "c" * len(cols))
+            
+    tabular_spec = "".join(spec_parts)
 
     lines: list[str] = []
     lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
     lines.append("\\toprule")
 
-    header_line = "\\makecell{\\#\\\\articles} & \\makecell{\\#\\\\books}"
-    if percentile_columns:
-        header_line += (
-            f" & \\multicolumn{{{len(percentile_columns)}}}{{c}}{{\\makecell{{Mean proposal\\\\gap percentile}}}}"
-        )
-    lines.append(header_line + r" \\")
-
-    if percentile_columns:
-        second_header = " & "
-        for column_label in column_labels:
-            second_header += f" & {column_label}"
-        lines.append(second_header + r" \\")
+    # Header Row 1: # articles, # books, Group Headers
+    header_row_1 = ["\\makecell{\\#\\\\articles}", "\\makecell{\\#\\\\books}"]
+    
+    for i, (label, cols) in enumerate(column_groups):
+        if cols:
+            # Use | separator for all but the last group if desired, or match tabular spec.
+            # The tabular spec puts | before each group.
+            # \multicolumn replaces the column spec. We need to include | if we want the right border.
+            # However, standard booktabs style usually avoids vertical lines.
+            # But the user requested vertical lines separating groups.
+            # Our tabular spec has | before the group.
+            # If we use \multicolumn{N}{c}{...}, we lose the | on the right if it existed, 
+            # but we are defining the spec for these N columns.
+            # To keep the vertical line *between* groups (which is defined as | before the next group),
+            # we don't strictly need | in the multicolumn unless we want a line *after* this group.
+            # The tabular spec is `cc|cc|cc`.
+            # Between group 1 and 2, there is a |.
+            # That | is part of the column definition of the *next* column? No, it's a separator.
+            # Actually, in `cc|cc`, the | is between col 2 and 3.
+            # If we have `\multicolumn{2}{c}{Header}`, it spans col 3 and 4.
+            # The | before col 3 is preserved? No, it's part of the preamble.
+            # Wait, `\multicolumn` replaces the *columns* and the *vertical lines to their right*.
+            # It does NOT replace the vertical line to the left.
+            # So `cc|cc` -> `\multicolumn{2}{c}{H}` -> The | before col 3 is preserved.
+            # But we need to ensure the | *after* col 4 is preserved if we want it.
+            # In `cc|cc|cc`, there is a | after col 4.
+            # So for the first group, we need `\multicolumn{N}{c|}{...}`.
+            # For the last group, we probably don't want a right line.
+            
+            col_spec = "c|" if i < len(column_groups) - 1 else "c"
+            header_row_1.append(f"\\multicolumn{{{len(cols)}}}{{{col_spec}}}{{\\makecell{{{label}}}}}")
+            
+    lines.append(" & ".join(header_row_1) + r" \\")
+    
+    # Header Row 2: Empty, Empty, Subheaders
+    header_row_2 = ["", ""]
+    for _, cols in column_groups:
+        for _, display_label in cols:
+            header_row_2.append(escape_latex(display_label))
+            
+    lines.append(" & ".join(header_row_2) + r" \\")
     lines.append("\\midrule")
 
+    # Data Rows
     for _, row in df.iterrows():
         values: list[str] = [
             format_integer_value(row.get("# articles")),
             format_integer_value(row.get("# books")),
         ]
-        for column in percentile_columns:
-            values.append(format_percentage_value(row.get(column)))
+        
+        for _, cols in column_groups:
+            for col_key, _ in cols:
+                values.append(format_percentage_value(row.get(col_key)))
+                
         lines.append(" & ".join(values) + r" \\")
 
     lines.append("\\bottomrule")
@@ -874,12 +946,14 @@ def sort_summary_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def select_best_summary_row(df: pd.DataFrame) -> pd.Series | None:
-    if "gap_coverage_fraction_mean" not in df.columns:
+    # Primary selection metric changed to proposal_gap_size_percentile_mean
+    if "proposal_gap_size_percentile_mean" not in df.columns:
         return None
     sort_columns = [
-        "gap_coverage_fraction_mean",
-        "proposal_book_rank_fraction_mean",
-        "proposal_article_rank_fraction_mean",
+        "proposal_gap_size_percentile_mean",  # higher percentile (closer to 1) preferred
+        "gap_coverage_fraction_mean",         # tie-breaker 1
+        "proposal_book_rank_fraction_mean",   # tie-breaker 2 (already inverted earlier)
+        "proposal_article_rank_fraction_mean",# tie-breaker 3 (already inverted earlier)
     ]
     available_columns = [column for column in sort_columns if column in df.columns]
     if not available_columns:
@@ -1001,7 +1075,9 @@ def get_baseline_criteria(embedder_model: str) -> tuple[str, int | None]:
     #     return "LIP", None
     # if "gist" in embedder_lower:
     #     return "CCLIP", None
-    return "NONE", 0
+    return {"GIST_SMALL": ("CCLIP", 10),
+            "GEMMA_300M": ("LIP", 384)}[embedder_model]
+    # return "NONE", 0
 
 
 def load_best_run_details(
@@ -1095,20 +1171,26 @@ def prepare_best_run_table(
             numeric = pd.to_numeric(working[column], errors="coerce")
             working[column] = numeric.round().astype("Int64")
 
+    if (
+        "target_gap_size_percentile_mean" not in working.columns
+        and "gap_size_percentile" in working.columns
+    ):
+        working["target_gap_size_percentile_mean"] = working["gap_size_percentile"]
+
     desired_order = [
         "topic_display_name",
         "num_books",
         "num_articles",
         "proposal_gap_size_percentile",
+        "target_gap_size_percentile_mean",
         "gap_coverage_fraction",
     ]
-    available_columns = [
-        column for column in desired_order if column in working.columns
-    ]
-    if not available_columns:
-        raise ValueError("No columns available for best run table output")
 
-    return working[available_columns]
+    for column in desired_order:
+        if column not in working.columns:
+            working[column] = pd.NA
+
+    return working[desired_order].copy()
 
 
 def build_summary_caption(
@@ -1129,7 +1211,10 @@ def build_best_run_caption(
     denoiser: Any,
     drop_k: Any,
 ) -> str:
-    return f"Best {friendly_embedder} run (denoiser={denoiser}, drop_k={drop_k})"
+    # Use denoiser mapping with parameters (e.g., CCLIP(alpha=0.5))
+    denoiser_display = friendly_denoiser_name(str(denoiser), latex=True)
+    # Explicitly use plain $k$ without makecell wrapper in caption.
+    return f"Best {friendly_embedder} run (Denoiser={denoiser_display}, $k$={drop_k})"
 
 
 def ordered_embedder_columns(columns: Sequence[str]) -> Sequence[str]:
@@ -1273,6 +1358,11 @@ def main() -> None:
                 decimals=2,
             )
             summary_display = summary_scaled.rename(columns=friendly_column_name)
+            denoiser_column_name = friendly_column_name("denoiser")
+            if denoiser_column_name in summary_display.columns:
+                summary_display[denoiser_column_name] = summary_display[
+                    denoiser_column_name
+                ].map(display_denoiser_name)
             summary_percentage_columns = [
                 friendly_column_name(column)
                 for column in SUMMARY_PERCENTAGE_COLUMNS
@@ -1350,7 +1440,7 @@ def main() -> None:
                     "proposal_gap_size_percentile_mean": baseline_row.get(
                         "proposal_gap_size_percentile_mean"
                     ),
-                    "denoiser": baseline_row.get("denoiser"),
+                    "denoiser": display_denoiser_name(baseline_row.get("denoiser")),
                     "drop_k": baseline_row.get("drop_k"),
                 }
             )
@@ -1425,32 +1515,38 @@ def main() -> None:
                 best_row.get("denoiser"),
                 best_row.get("drop_k"),
             )
+            # Use stable label based on embedder/articles/books instead of run timestamp
             label = (
-                f"tab:best_run_gap{gap_idx}_{sanitize_component(best_run_id).lower()}"
+                f"tab:best_run_gap{gap_idx}_{sanitize_component(embedder_model_str).lower()}"
+                f"_articles_{num_articles}_books_{num_books}"
             )
 
             best_table_scaled = scale_percentage_columns(
                 best_table,
                 BEST_RUN_PERCENTAGE_COLUMNS,
-                decimals=2,
+                decimals=1,
             )
             best_table_scaled = round_numeric_columns(
                 best_table_scaled,
                 BEST_RUN_PERCENTAGE_COLUMNS,
-                decimals=2,
+                decimals=1,
             )
             formatter_columns = {
                 "proposal_book_rank_fraction",
                 "proposal_article_rank_fraction",
                 "gap_coverage_fraction",
                 "proposal_gap_size_percentile",
+                "target_gap_size_percentile_mean",
             } & set(best_table_scaled.columns)
             best_table_display = best_table_scaled.rename(columns=friendly_column_name)
             formatter_columns_display = [
                 friendly_column_name(column)
                 for column in formatter_columns
             ]
-            formatters = formatters_from_columns(formatter_columns_display)
+            formatters = formatters_from_columns(
+                formatter_columns_display,
+                decimals=1,
+            )
             topic_column_label = friendly_column_name("topic_display_name")
             if (
                 isinstance(topic_column_label, str)
@@ -1507,84 +1603,62 @@ def main() -> None:
                 }
             )
 
-            pivot_df = (
-                best_summary_df.pivot_table(
-                    index=["# articles", "# books"],
-                    columns="embedder_model",
-                    values="proposal_gap_size_percentile_mean",
-                    aggfunc="first",
-                )
-                .reset_index()
-                .sort_values(["# articles", "# books"])
-                .reset_index(drop=True)
+            # Pivot for both values
+            pivot_df = best_summary_df.pivot_table(
+                index=["# articles", "# books"],
+                columns="embedder_model",
+                values=["proposal_gap_size_percentile_mean", "gap_coverage_fraction_mean"],
+                aggfunc="first"
             )
-
-            pivot_df.columns.name = None
-
-            embedder_columns = [
-                column
-                for column in pivot_df.columns
-                if column not in {"# articles", "# books"}
-            ]
-
-            rename_map = {
-                column: friendly_embedder_name(column)
-                for column in embedder_columns
-            }
-            pivot_df = pivot_df.rename(columns=rename_map)
-
-            ordered_columns = ordered_embedder_columns(list(pivot_df.columns))
-            column_order = ["# articles", "# books"] + [
-                column for column in ordered_columns if column not in {"# articles", "# books"}
-            ]
-            pivot_df = pivot_df[column_order]
-
-            for column in ["# articles", "# books"]:
-                if column in pivot_df.columns:
-                    pivot_df[column] = (
-                        pd.to_numeric(pivot_df[column], errors="coerce")
-                        .round()
-                        .astype("Int64")
-                    )
-
-            percentile_columns = [
-                column
-                for column in pivot_df.columns
-                if column not in {"# articles", "# books"}
-            ]
-
-            friendly_embedder_list = [column for column in percentile_columns if column]
-            unique_embedder_names = list(dict.fromkeys(friendly_embedder_list))
-            embedder_descriptions = []
-            for embedder in unique_embedder_names:
-                denoiser, drop_k = embedder_settings.get(embedder, (None, None))
-                if denoiser is not None and drop_k is not None:
-                    desc = f"{embedder} (denoiser={denoiser}, drop_k={drop_k})"
-                else:
-                    desc = embedder
-                embedder_descriptions.append(desc)
-            if not embedder_descriptions:
-                friendly_embedder_text = "the available embedder models"
-            elif len(embedder_descriptions) == 2:
-                friendly_embedder_text = " and ".join(embedder_descriptions)
-            else:
-                friendly_embedder_text = (
-                    ", ".join(embedder_descriptions[:-1])
-                    + f", and {embedder_descriptions[-1]}"
-                )
+            # pivot_df is indexed by (# articles, # books). Columns are MultiIndex (metric, embedder).
+            
+            # Sort index
+            pivot_df = pivot_df.sort_index()
+            
+            # Determine embedder order
+            raw_embedders = pivot_df.columns.get_level_values(1).unique().tolist()
+            embedder_map = {e: friendly_embedder_name(e) for e in raw_embedders}
+            friendly_embedders = list(embedder_map.values())
+            ordered_friendly = ordered_embedder_columns(friendly_embedders)
+            friendly_to_raw = {v: k for k, v in embedder_map.items()}
+            ordered_raw_embedders = [friendly_to_raw[f] for f in ordered_friendly if f in friendly_to_raw]
+            
+            # Flatten DF
+            flat_df = pivot_df.index.to_frame().reset_index(drop=True)
+            
+            column_groups = []
+            
+            for metric_col, metric_label in [
+                ("gap_coverage_fraction_mean", COLUMN_DISPLAY_NAME_MAP_PLAIN.get("gap_coverage_fraction_mean", "Target gap\\\\coverage percentage")),
+                ("proposal_gap_size_percentile_mean", COLUMN_DISPLAY_NAME_MAP_PLAIN.get("proposal_gap_size_percentile_mean", "Proposal gap\\\\percentile")),
+            ]:
+                group_cols = []
+                for embedder in ordered_raw_embedders:
+                    if (metric_col, embedder) in pivot_df.columns:
+                        col_name = f"{metric_col}_{embedder}"
+                        flat_df[col_name] = pivot_df[(metric_col, embedder)].values
+                        display_name = friendly_embedder_name(embedder)
+                        group_cols.append((col_name, display_name))
+                
+                if group_cols:
+                    column_groups.append((metric_label, group_cols))
+            
+            for col in ["# articles", "# books"]:
+                flat_df[col] = pd.to_numeric(flat_df[col], errors="coerce").round().astype("Int64")
 
             gap_root_dir = args.output_root / f"gap{gap_idx}"
-            write_triplet_gap_coverage_table(
-                pivot_df,
-                gap_root_dir / "ablated_proposal_gap_percentile.tex",
-                # caption=(
-                #     "Proposal gap percentile averaged over all topics for various settings of the number of example articles and books given to the LLM, comparing "
-                #     f"{friendly_embedder_text}."
-                # ),
-                # label=f"tab:ablated_proposal_gap_percentile_gap{gap_idx}",
-                percentile_columns=percentile_columns,
+            write_ablated_triplet_table(
+                flat_df,
+                gap_root_dir / "ablated_triplet_comparison.tex",
+                column_groups=column_groups,
                 overwrite=args.overwrite,
             )
+
+            # We only need to calculate embedder descriptions once for logging/info if needed,
+            # but the original code used it for the caption which is now commented out.
+            # So we can skip the description generation block or keep it if we want to use it later.
+            # For now, I'll omit the description generation since it was only used for the caption.
+
         else:
             LOGGER.warning(
                 "No baseline rows collected for gap %s; skipping aggregate best triplet table",

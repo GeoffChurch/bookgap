@@ -38,6 +38,11 @@ class RunSummary:
     gap_coverage_fraction_mean: float
     gap_coverage_fraction_median: float
     proposal_gap_size_percentile_mean: float
+    target_gap_size_percentile_mean: float
+    proposal_gap_zscore_mean: float
+    proposal_gap_zscore_median: float
+    target_gap_zscore_mean: float
+    target_gap_zscore_median: float
 
 def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
     metadata = load_run_metadata(run_dir)
@@ -81,6 +86,11 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
         coverage_mean = float("nan")
         coverage_median = float("nan")
         gap_size_percentile_mean = float("nan")
+        target_gap_size_percentile_mean = float("nan")
+        proposal_gap_zscore_mean = float("nan")
+        proposal_gap_zscore_median = float("nan")
+        target_gap_zscore_mean = float("nan")
+        target_gap_zscore_median = float("nan")
 
         if PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN in gap_df.columns:
             article_column = gap_df[PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN]
@@ -106,6 +116,34 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
                     gap_size_percentile_mask
                 ]
                 gap_size_percentile_mean = float(gap_size_percentile_values.mean())
+        if "gap_size_percentile" in gap_df.columns:
+            target_gap_size_percentile_column = gap_df["gap_size_percentile"]
+            target_gap_size_percentile_mask = target_gap_size_percentile_column.notna()
+            if target_gap_size_percentile_mask.any():
+                target_gap_size_percentile_values = target_gap_size_percentile_column.loc[
+                    target_gap_size_percentile_mask
+                ]
+                target_gap_size_percentile_mean = float(target_gap_size_percentile_values.mean())
+
+        if "proposal_gap_zscore" in gap_df.columns:
+            proposal_gap_zscore_column = gap_df["proposal_gap_zscore"]
+            proposal_gap_zscore_mask = proposal_gap_zscore_column.notna()
+            if proposal_gap_zscore_mask.any():
+                proposal_gap_zscore_values = proposal_gap_zscore_column.loc[
+                    proposal_gap_zscore_mask
+                ]
+                proposal_gap_zscore_mean = float(proposal_gap_zscore_values.mean())
+                proposal_gap_zscore_median = float(proposal_gap_zscore_values.median())
+
+        if "gap_zscore" in gap_df.columns:
+            target_gap_zscore_column = gap_df["gap_zscore"]
+            target_gap_zscore_mask = target_gap_zscore_column.notna()
+            if target_gap_zscore_mask.any():
+                target_gap_zscore_values = target_gap_zscore_column.loc[
+                    target_gap_zscore_mask
+                ]
+                target_gap_zscore_mean = float(target_gap_zscore_values.mean())
+                target_gap_zscore_median = float(target_gap_zscore_values.median())
 
         summaries[gap_idx_int] = RunSummary(
             run_path=run_dir,
@@ -119,6 +157,11 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
             gap_coverage_fraction_mean=coverage_mean,
             gap_coverage_fraction_median=coverage_median,
             proposal_gap_size_percentile_mean=gap_size_percentile_mean,
+            target_gap_size_percentile_mean=target_gap_size_percentile_mean,
+            proposal_gap_zscore_mean=proposal_gap_zscore_mean,
+            proposal_gap_zscore_median=proposal_gap_zscore_median,
+            target_gap_zscore_mean=target_gap_zscore_mean,
+            target_gap_zscore_median=target_gap_zscore_median,
         )
 
     return summaries
@@ -172,6 +215,11 @@ def write_csvs(
                     "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
                     "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
                     "proposal_gap_size_percentile_mean": summary.proposal_gap_size_percentile_mean,
+                    "target_gap_size_percentile_mean": summary.target_gap_size_percentile_mean,
+                    "proposal_gap_zscore_mean": summary.proposal_gap_zscore_mean,
+                    "proposal_gap_zscore_median": summary.proposal_gap_zscore_median,
+                    "target_gap_zscore_mean": summary.target_gap_zscore_mean,
+                    "target_gap_zscore_median": summary.target_gap_zscore_median,
                 }
             )
 

@@ -36,6 +36,8 @@ from .common import (
     RunMetadata,
     friendly_column_name,
     friendly_embedder_name,
+    friendly_denoiser_name,
+    COLUMN_DISPLAY_NAME_MAP_PLAIN,
     find_run_directories,
     load_run_metadata,
     load_results_dataframe,
@@ -220,7 +222,8 @@ def _format_metadata_label(metadata: Optional[RunMetadata], fallback_label: str)
     if metadata is None:
         return fallback_label
 
-    denoiser = metadata.denoiser or "UNKNOWN"
+    raw_denoiser = metadata.denoiser or "UNKNOWN"
+    denoiser = friendly_denoiser_name(raw_denoiser, latex=True) if raw_denoiser != "UNKNOWN" else raw_denoiser
     drop_k = metadata.drop_k if metadata.drop_k is not None else "N/A"
     embedder = metadata.embedder_model or "UNKNOWN"
     embedder_str = str(embedder)
@@ -498,8 +501,9 @@ def plot_llm_counts_scatter(
 
         if config_key not in legend_handles:
             denoiser, drop_k, embedder = config_key
+            denoiser_disp = friendly_denoiser_name(denoiser, latex=True)
             label_text = (
-                f"denoiser={denoiser}, drop_k={drop_k if drop_k is not None else 'N/A'}, "
+                f"denoiser={denoiser_disp}, drop_k={drop_k if drop_k is not None else 'N/A'}, "
                 f"embedder={embedder}"
             )
             legend_handles[config_key] = Line2D(
@@ -731,7 +735,11 @@ def _load_summary_dataframe(outputs_dir: Path, artifacts_dir: Path, gap_idx: int
     summary_path = artifacts_dir / f"run_gap_summary_gap{gap_idx}.csv"
     if summary_path.exists():
         try:
-            return pd.read_csv(summary_path)
+            df = pd.read_csv(summary_path)
+            # Filter to only include runs with llm_num_articles=10 and llm_num_books=5
+            if "llm_num_articles" in df.columns and "llm_num_books" in df.columns:
+                df = df[(df["llm_num_articles"] == 10) & (df["llm_num_books"] == 5)]
+            return df
         except Exception as exc:  # pragma: no cover - unexpected IO errors
             LOGGER.warning("Failed to read summary CSV %s: %s", summary_path, exc)
 
@@ -751,6 +759,9 @@ def _load_summary_dataframe(outputs_dir: Path, artifacts_dir: Path, gap_idx: int
     records = []
     for summary in gap_summaries:
         metadata = summary.metadata
+        # Filter to only include runs with llm_num_articles=10 and llm_num_books=5
+        if metadata.num_articles != 10 or metadata.num_books != 5:
+            continue
         records.append(
             {
                 "run": str(relative_run_path(summary.run_path, outputs_dir)),
@@ -783,7 +794,8 @@ def _plot_metric_by_drop_k(
     highlight_denoisers: Optional[Set[str]] = None,
 ) -> Dict[str, Line2D]:
     if column not in df.columns:
-        ax.set_title(friendly_column_name(column, latex=False))
+        title = COLUMN_DISPLAY_NAME_MAP_PLAIN.get(column, friendly_column_name(column, latex=False))
+        ax.set_title(title)
         ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=8)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -793,7 +805,8 @@ def _plot_metric_by_drop_k(
     column_df["drop_k_plot"] = np.log1p(column_df["drop_k"].astype(float))
     column_df["denoiser"] = column_df["denoiser"].astype(str)
     if column_df.empty:
-        ax.set_title(friendly_column_name(column, latex=False))
+        title = COLUMN_DISPLAY_NAME_MAP_PLAIN.get(column, friendly_column_name(column, latex=False))
+        ax.set_title(title)
         ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", fontsize=8)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -839,12 +852,12 @@ def _plot_metric_by_drop_k(
                 linewidth=1.0,
                 color="black",
                 alpha=0.8,
-                label=label,
+                label=friendly_denoiser_name(label, latex=True) if label else None,
                 zorder=2.5,
             )
         elif is_highlighted:
             color = color_lookup.get(denoiser, "black")
-            label = denoiser if include_labels else None
+            label = friendly_denoiser_name(denoiser, latex=True) if include_labels else None
             line = ax.plot(
                 grouped["drop_k_plot"],
                 transformed_values,
@@ -872,7 +885,8 @@ def _plot_metric_by_drop_k(
         if is_highlighted or is_none_denoiser:
             lines.setdefault(str(denoiser), line)
 
-    ax.set_title(friendly_column_name(column, latex=False))
+    title = COLUMN_DISPLAY_NAME_MAP_PLAIN.get(column, friendly_column_name(column, latex=False))
+    ax.set_title(title)
     if show_ylabel:
         ax.set_ylabel(friendly_column_name(column, latex=False))
     else:
@@ -927,6 +941,9 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
 
     cmap = plt.get_cmap("hsv")
 
+    # We only want the last 2 columns (gap metrics)
+    plot_columns = EMBEDDER_METRIC_COLUMNS[2:]
+
     for embedder_model, embedder_df in summary_df.groupby("embedder_model"):
         if embedder_df.empty:
             continue
@@ -936,14 +953,14 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
         per_metric_selected: dict[str, Set[str]] = {}
         all_selected: Set[str] = set()
         has_none_denoiser = "NONE" in set(embedder_df["denoiser"].astype(str))
-        for column in EMBEDDER_METRIC_COLUMNS:
+        for column in plot_columns:
             metric_df = embedder_df.dropna(subset=["denoiser", "drop_k", column])
             if metric_df.empty:
                 continue
             best_by_denoiser = metric_df.groupby("denoiser")[column].max().dropna()
             if best_by_denoiser.empty:
                 continue
-            top_denoisers = best_by_denoiser.sort_values(ascending=False).head(4).index
+            top_denoisers = best_by_denoiser.sort_values(ascending=False).head(3).index
             selected_set = {str(den) for den in top_denoisers}
             if has_none_denoiser:
                 selected_set.add("NONE")
@@ -976,16 +993,18 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
         if has_none_denoiser:
             legend_order.append("NONE")
 
-        fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharex=True)
         axes_flat = axes.flatten()
         legend_lines_map: Dict[str, Line2D] = {}
         plotted_any = False
 
-        for idx, column in enumerate(EMBEDDER_METRIC_COLUMNS):
+        for idx, column in enumerate(plot_columns):
             ax = axes_flat[idx]
             include_labels = idx == 0
             show_ylabel = idx % 2 == 0
-            allowed = per_metric_selected.get(column, set())
+            # allowed = per_metric_selected.get(column, set())
+            # Use all_selected (union across metrics) instead of per-metric selection
+            # so all denoisers that got colors appear in both subplots
             lines = _plot_metric_by_drop_k(
                 ax,
                 embedder_df,
@@ -993,7 +1012,7 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
                 color_lookup,
                 include_labels,
                 show_ylabel,
-                highlight_denoisers=allowed,
+                highlight_denoisers=all_selected,#allowed,
             )
             if lines:
                 plotted_any = True
@@ -1009,7 +1028,7 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
             continue
 
         # Clean up extra axes if the metric list is shorter than grid size
-        for idx in range(len(EMBEDDER_METRIC_COLUMNS), len(axes_flat)):
+        for idx in range(len(plot_columns), len(axes_flat)):
             axes_flat[idx].set_visible(False)
 
         xtick_source = embedder_df[embedder_df["denoiser"] != "NONE"]["drop_k"].dropna()
@@ -1032,7 +1051,7 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
             ax.set_xticks(tick_positions)
             ax.set_xticklabels(xtick_labels)
             ax.set_xlim(left=left_bound, right=right_bound)
-        for ax in axes[1, :]:
+            # Since we have a single row, every plot gets an x-label
             ax.set_xlabel(friendly_column_name("drop_k", latex=False))
 
         embedder_key = str(embedder_model)
@@ -1068,7 +1087,7 @@ def generate_embedder_metric_grids(outputs_dir: Path, artifacts_dir: Path, dpi: 
                         color=color,
                     )
             legend_lines.append(line)
-            legend_labels.append(denoiser)
+            legend_labels.append(friendly_denoiser_name(denoiser, latex=True))
 
         if legend_lines:
             fig.legend(
