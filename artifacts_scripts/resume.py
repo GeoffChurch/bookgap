@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """List incomplete runs and prompt for a resumable target."""
-
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import shlex
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from omegaconf import OmegaConf
 
 from bookgap.llm.generators.run_state import RunState, RunStep
 
 OUTPUT_ROOT = Path("outputs")
-RESUME_MARKER_FILENAME = "resumed.txt"
 
 
 def discover_runs(root: Path) -> list[Path]:
@@ -33,32 +31,6 @@ def read_state(output_dir: Path) -> Optional[RunState]:
     with open(state_path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
     return RunState.from_dict(data)
-
-
-def read_resume_marker(output_dir: Path) -> Optional[str]:
-    marker_path = output_dir / RESUME_MARKER_FILENAME
-    if not marker_path.exists():
-        return None
-    return marker_path.read_text(encoding="utf-8")
-
-
-def write_resume_marker(
-    output_dir: Path,
-    *,
-    direct_cmd: str,
-    nohup_cmd: str,
-    log_filename: Path,
-) -> None:
-    marker_path = output_dir / RESUME_MARKER_FILENAME
-    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    content = (
-        f"Resumed at {timestamp} UTC\n"
-        f"Command: {direct_cmd}\n"
-        f"nohup: {nohup_cmd}\n"
-        f"Log file: {log_filename}\n"
-        "Remove this file if you need to resume this run again.\n"
-    )
-    marker_path.write_text(content, encoding="utf-8")
 
 
 def extract_cloud_params_from_state(state: Optional[RunState]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -101,7 +73,7 @@ def extract_cloud_params_from_config(output_dir: Path) -> tuple[Optional[str], O
     return (None, None, None)
 
 
-def resolve_cloud_params(output_dir: Path, state: Optional[RunState]) -> Tuple[str, str, str]:
+def resolve_cloud_params(output_dir: Path, state: Optional[RunState]) -> tuple[str, str, str]:
     embedder, denoiser, drop_k = extract_cloud_params_from_state(state)
     if embedder is None or denoiser is None or drop_k is None:
         cfg_embedder, cfg_denoiser, cfg_drop_k = extract_cloud_params_from_config(output_dir)
@@ -148,7 +120,6 @@ def main() -> int:
     run_dirs = discover_runs(OUTPUT_ROOT)
     candidates: list[tuple[int, Path, RunState]] = []
     missing: list[Path] = []
-    already_resumed: list[tuple[Path, RunState, str]] = []
 
     for output_dir in run_dirs:
         state = read_state(output_dir)
@@ -157,13 +128,9 @@ def main() -> int:
             continue
         if state.step == RunStep.COMPLETED:
             continue
-        marker = read_resume_marker(output_dir)
-        if marker:
-            already_resumed.append((output_dir, state, marker))
-            continue
         candidates.append((len(candidates) + 1, output_dir, state))
 
-    if not candidates and not missing and not already_resumed:
+    if not candidates and not missing:
         print("All runs under outputs/ are completed.")
         return 0
 
@@ -173,14 +140,6 @@ def main() -> int:
             print(f"  [{idx}] {output_dir} -> {describe_state(output_dir, state)}")
     else:
         print("No runs have resumable state.")
-
-    if already_resumed:
-        print("\nAlready resumed (marker present - remove marker to resume again):")
-        for output_dir, state, marker in already_resumed:
-            marker_line = marker.splitlines()[0] if marker else "(empty marker)"
-            print(
-                f"  [R] {output_dir} -> {describe_state(output_dir, state)} | {marker_line}"
-            )
 
     if missing:
         print("\nRuns missing run_state.json (backfill required before resume):")
@@ -208,12 +167,11 @@ def main() -> int:
 
     _, chosen_dir, state = match
     embedder, denoiser, drop_k = resolve_cloud_params(chosen_dir, state)
-    direct_cmd = (
-        f"python -m bookgap.batch_generator --resume-output-dir {chosen_dir}"
-    )
+    direct_cmd_parts = ["python", "-m", "bookgap.inplace_resume", str(chosen_dir)]
+    direct_cmd = " ".join(shlex.quote(part) for part in direct_cmd_parts)
     run_slug = build_run_slug(chosen_dir)
-    log_filename =  f"nohup_resume_{run_slug}_{slugify(embedder)}_{slugify(denoiser)}_drop{slugify(drop_k)}.log"
-    nohup_cmd = f"nohup {direct_cmd} > {log_filename} 2>&1 &"
+    log_filename = f"nohup_resume_{run_slug}_{slugify(embedder)}_{slugify(denoiser)}_drop{slugify(drop_k)}.log"
+    nohup_cmd = f"nohup {direct_cmd} > {shlex.quote(log_filename)} 2>&1 &"
 
     print("\nResume command:\n" + direct_cmd)
     print("\nnohup command:\n" + nohup_cmd)
@@ -226,13 +184,6 @@ def main() -> int:
         f"  denoiser: {denoiser}\n"
         f"  drop_k: {drop_k}\n"
         f"  nohup log: {log_filename}\n"
-    )
-
-    write_resume_marker(
-        chosen_dir,
-        direct_cmd=direct_cmd,
-        nohup_cmd=nohup_cmd,
-        log_filename=log_filename,
     )
 
     return 0
