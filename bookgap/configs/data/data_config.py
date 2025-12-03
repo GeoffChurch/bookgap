@@ -12,7 +12,7 @@ class SqDistDeduplicatorConfig:
     """
 
     _target_: str = field(default="bookgap.deduplicators.SqDistDeduplicator", init=False)
-    min_sqdist: float  # Minimum squared distance threshold (e.g., 0.01 = 1% distance)
+    min_sqdist: float = 0.01  # Minimum squared distance threshold (e.g., 0.01 = 1% distance)
 
     def __post_init__(self):
         """Validate SqDistDeduplicator configuration parameters."""

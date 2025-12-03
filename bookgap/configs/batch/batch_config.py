@@ -16,15 +16,11 @@ class BatchConfig:
     """
     
     # Processing scope - control how many research gaps to analyze in this batch
-    num_gaps: int  # Maximum number of gaps to process per topic (e.g., 2 = two gaps per topic)
-    
-    # OpenAI batch API settings - control job execution timing and priority
-    completion_window: str  # Time window for batch completion ("24h" only supported option)
-    
-    # Output generation - control what auxiliary files to generate during processing
-    generate_plots: bool     # Whether to create visualization plots for gaps (default: True)
-    save_prompts: bool       # Whether to save individual prompt files for inspection (default: True)
-    save_batch_file: bool    # Whether to save the JSONL batch request file (default: True)
+    num_gaps: int = 1  # Maximum number of gaps to process per topic (e.g., 2 = two gaps per topic)
+    completion_window: str = "24h"  # Time window for batch completion ("24h" only supported option)
+    generate_plots: bool = False     # Whether to create visualization plots for gaps (default: False)
+    save_prompts: bool = True        # Whether to save individual prompt files for inspection (default: True)
+    save_batch_file: bool = True     # Whether to save the JSONL batch request file (default: True)
     
     def __post_init__(self):
         """Validate batch configuration parameters."""

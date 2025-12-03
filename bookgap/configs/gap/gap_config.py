@@ -12,7 +12,8 @@ class GapConfig:
     """
 
     # Gap detection algorithm - determines which spatial algorithm to use
-    cell_type: CellType  # KBALL or VORONOI cell algorithm for finding research gaps
+    cell_type: CellType = CellType.KBALL  # KBALL or VORONOI cell algorithm for finding research gaps
 
     # Spatial parameters - control gap detection sensitivity and coverage
-    radius_fraction: float  # Fraction of k-NN distance for gap radius (0.0-1.0, default: 0.75)
+    radius_fraction: float = 0.75  # Fraction of k-NN distance for gap radius (0.0-1.0, default: 0.75)
+

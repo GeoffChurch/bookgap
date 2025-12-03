@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from bookgap.cloud import Embedder
+from bookgap.cloud_denoiser import WorkDenoisers
 from bookgap.configs.data.data_config import SqDistDeduplicatorConfig
 from bookgap.configs.index.index_config import HNSWConfig
 from bookgap.configs.util.filter_config import FilterPairConfig
@@ -19,13 +20,13 @@ class CloudConfig:
     """
 
     _target_: str = field(default="bookgap.cloud.Cloud", init=False)
-    filter_pair: FilterPairConfig
-    index_info: HNSWConfig
-    denoiser: str
-    drop_k: int
-    embedder_model: Embedder.ModelName
+    filter_pair: FilterPairConfig = field(default_factory=FilterPairConfig)
+    index_info: HNSWConfig = field(default_factory=HNSWConfig)
+    denoiser: str = WorkDenoisers.NONE.name
+    drop_k: int = 0
+    embedder_model: Embedder.ModelName = Embedder.ModelName.GIST_SMALL
     max_works: Optional[int] = None
-    deduplicator: Optional[SqDistDeduplicatorConfig] = None
+    deduplicator: Optional[SqDistDeduplicatorConfig] = field(default_factory=SqDistDeduplicatorConfig)
     normalize_embeddings: bool = True
 
 
