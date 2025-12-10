@@ -125,6 +125,9 @@ class Filter:
     
     def __repr__(self) -> str:
         return str(self)
+    
+    def __bool__(self) -> bool:
+        return self.subfield is not None or self.topic is not None or self.work_types is not None
 
 @dataclass(frozen=True)
 class FilterPair:

@@ -125,22 +125,39 @@ class OpenAIBatchGenerator(BatchProposalGenerator):
         """
         prompt_parts = []
         
-        # Introduction
-        prompt_parts.append(
-            "Based on the research articles"
-        )
+        # Build a human-friendly intro that adapts to whether we have
+        # sampled articles and/or covering books. If neither is present,
+        # fall back to a generic instruction that doesn't reference
+        # non-existent content.
+        intro_parts: list[str] = []
+        if context.sampled_articles:
+            intro_parts.append("research articles")
         if context.covering_books:
-            prompt_parts.append(" and related books")
-        prompt_parts.append(
-            " provided below, please propose a title and abstract"
-            " for a textbook that would prepare students to understand research in this area.\n\n"
-        )
+            # If we already referenced articles, join with ' and '.
+            # Otherwise just mention books.
+            intro_parts.append("related books")
+
+        CORE_INSTRUCTION = "propose a title and abstract for a textbook that would prepare students to understand research"
+
+        if intro_parts:
+            # "Based on the research articles and related books provided below..."
+            prompt_parts.append("Based on the ")
+            prompt_parts.append(" and ".join(intro_parts))
+            prompt_parts.append(
+                " provided below, please " + CORE_INSTRUCTION + " in this area.\n\n"
+            )
+        else:
+            # No samples or books available — keep the instruction general.
+            prompt_parts.append(
+                "Please " + CORE_INSTRUCTION + ".\n\n"
+            )
         
-        # Sample articles section
-        prompt_parts.append("## Sample Articles\n\n")
-        for i, article in enumerate(context.sampled_articles, 1):
-            prompt_parts.append(f"**Article {i}**: {article.display_name}\n")
-            prompt_parts.append(f"\t*Abstract*: {article.abstract}\n\n")
+        # Sample articles section (if any)
+        if context.sampled_articles:
+            prompt_parts.append("## Sample Articles\n\n")
+            for i, article in enumerate(context.sampled_articles, 1):
+                prompt_parts.append(f"**Article {i}**: {article.display_name}\n")
+                prompt_parts.append(f"\t*Abstract*: {article.abstract}\n\n")
         
         # Related books section (if any)
         if context.covering_books:

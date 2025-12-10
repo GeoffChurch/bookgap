@@ -69,6 +69,7 @@ class VoronoiAlgorithm:
         radius_fraction: float | None,
         k: int | None,
         is_intra_cloud: bool | None,
+        show_progress: bool = False,
     ) -> NDArray[np.int32]:
         """Return Voronoi coverage counts for arbitrary query embeddings."""
 
@@ -86,7 +87,7 @@ class VoronoiAlgorithm:
             landmark=landmark.index(),
             query=query_embeddings,
             ambient_is_landmark=ambient == landmark,
-            show_progress=False,
+            show_progress=show_progress
         )
 
         return counts.astype(np.int32, copy=False)

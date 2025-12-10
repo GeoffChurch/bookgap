@@ -89,6 +89,11 @@ class TestOpenAIBatchGenerator:
         assert "Quantum Algorithms" in prompts.user_prompt
         assert "Quantum Physics Textbook" in prompts.user_prompt
         assert "Based on the research articles" in prompts.user_prompt
+        # The core instruction should be present and composed as expected
+        assert (
+            "provided below, please propose a title and abstract for a textbook"
+            " that would prepare students to understand research in this area"
+        ) in prompts.user_prompt
     
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
     def test_create_request_from_prompt(self, generator_kwargs, sample_context):
@@ -198,3 +203,44 @@ class TestOpenAIBatchGenerator:
         # Should still have articles section
         assert "## Sample Articles" in prompts.user_prompt
         assert "Test Article" in prompts.user_prompt
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_prompt_formatting_no_articles(self, generator_kwargs):
+        """Test prompt formatting when no articles are provided."""
+        generator = OpenAIBatchGenerator(**generator_kwargs)
+
+        books = [Book(display_name="Covering Book", abstract="Book abstract")]
+        counts = ProposalCounts(num_articles_for_llm=0, num_books_for_llm=1)
+        context = ProposalContext(
+            topic_name="Test Topic", topic_id="test_002", gap_idx=2,
+            requested_num_prompt_articles=0, requested_num_prompt_books=1,
+            sampled_articles=[], covering_books=books, counts=counts
+        )
+
+        prompts = generator._build_prompt(context)
+
+        # Should not include an articles section
+        assert "## Sample Articles" not in prompts.user_prompt
+        # Should include books section and mention related books in intro
+        assert "## Related Existing Books" in prompts.user_prompt
+        assert "Based on the related books" in prompts.user_prompt
+        assert "Covering Book" in prompts.user_prompt
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_prompt_formatting_no_articles_or_books(self, generator_kwargs):
+        """Test prompt formatting when neither articles nor books are provided."""
+        generator = OpenAIBatchGenerator(**generator_kwargs)
+
+        counts = ProposalCounts(num_articles_for_llm=0, num_books_for_llm=0)
+        context = ProposalContext(
+            topic_name="Test Topic", topic_id="test_003", gap_idx=3,
+            requested_num_prompt_articles=0, requested_num_prompt_books=0,
+            sampled_articles=[], covering_books=[], counts=counts
+        )
+
+        prompts = generator._build_prompt(context)
+
+        # Should have a generic instruction and not reference sample sections
+        assert "Please propose a title and abstract for a textbook" in prompts.user_prompt
+        assert "## Sample Articles" not in prompts.user_prompt
+        assert "## Related Existing Books" not in prompts.user_prompt

@@ -81,6 +81,7 @@ class KballAlgorithm:
         radius_fraction: float,
         k: int,
         is_intra_cloud: bool,
+        show_progress: bool = False,
     ) -> list[int]:
         """Return k-ball coverage counts for arbitrary query embeddings."""
         query = np.ascontiguousarray(embeddings)
@@ -102,7 +103,7 @@ class KballAlgorithm:
             radius_fraction=radius_fraction,
             k=effective_k,
             kernel_fn=kernel_fn,
-            show_progress=False,
+            show_progress=show_progress,
         )
 
         if (num_negative := sum(1 for count in counts if count < 0)) > 0:

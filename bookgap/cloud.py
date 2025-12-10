@@ -507,7 +507,7 @@ def get_query(work_filter: Filter) -> pyalex.Works:
 
     return q.select(
         ", ".join([
-            "display_name", "type", "publication_date", "ids", "language", "abstract_inverted_index", "referenced_works", "primary_topic"
+            "display_name", "type", "publication_date", "ids", "language", "abstract_inverted_index", "referenced_works", "primary_topic", "primary_location",
         ])
     )
 
