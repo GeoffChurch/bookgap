@@ -25,6 +25,9 @@ import pyalex
 
 LOGGER = logging.getLogger(__name__)
 
+# Set to True to use longtable environment, False to use table* environment
+USE_LONGTABLE = False
+
 DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
 TOPIC_DISPLAY_NAME_CACHE: dict[str, str] = {}
@@ -650,6 +653,10 @@ def write_latex(
     if table_environment not in {"table", "longtable"}:
         raise ValueError(f"Unsupported table environment: {table_environment}")
 
+    # Override table_environment based on USE_LONGTABLE constant
+    if table_environment == "longtable" and not USE_LONGTABLE:
+        table_environment = "table"
+
     escaped_caption = escape_latex(caption) if caption is not None else None
     # Unescape math expressions like $k$ or $\mathrm{...}$ (escape_latex adds backslashes).
     if escaped_caption:
@@ -737,7 +744,10 @@ def write_latex(
     latex = _apply_group_hlines(latex, group_breaks)
 
     lines = latex.splitlines()
-    result_lines = ["\\begin{table}", "\\centering"]
+    
+    # Use table* instead of table when USE_LONGTABLE is False
+    table_env = "table*" if not USE_LONGTABLE else "table"
+    result_lines = [f"\\begin{{{table_env}}}", "\\centering"]
     result_lines.extend(lines)
 
     if escaped_caption:
@@ -745,7 +755,7 @@ def write_latex(
     if label:
         result_lines.append(f"\\label{{{label}}}")
 
-    result_lines.append("\\end{table}")
+    result_lines.append(f"\\end{{{table_env}}}")
     latex = "\n".join(result_lines)
 
     output_file.parent.mkdir(parents=True, exist_ok=True)

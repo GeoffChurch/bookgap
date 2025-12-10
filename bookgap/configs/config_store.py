@@ -30,4 +30,15 @@ def register_configs():
     cs = ConfigStore.instance()
     cs.store(name="gap", node=GapConfig())
     cs.store(name="cloud", node=CloudConfig())
-    cs.store(name="experiment", node=ExperimentConfig())
+    # Provide a fully-instantiated default experiment configuration to avoid
+    # missing-required-args errors when importing/using configs.
+    cs.store(
+        name="standard",
+        node=ExperimentConfig(
+            gap=GapConfig(),
+            llm=LLMConfig(),
+            batch=BatchConfig(),
+            output=OutputConfig(),
+            cloud=CloudConfig(),
+        ),
+    )

@@ -21,19 +21,27 @@ EMBEDDER_DISPLAY_NAME_MAP = {
     "GEMMA_300M": "Gemma",
 }
 
+# Reverse mapping from embedder model path to enum name
+EMBEDDER_PATH_TO_NAME_MAP = {
+    "avsolatorio/GIST-small-Embedding-v0": "GIST_SMALL",
+    "google/embeddinggemma-300m": "GEMMA_300M",
+}
+
 
 def friendly_embedder_name(embedder_model: Optional[str]) -> str:
     if embedder_model is None:
         return ""
-    return EMBEDDER_DISPLAY_NAME_MAP.get(embedder_model, embedder_model)
+    # First check if it's a path that needs to be converted to enum name
+    enum_name = EMBEDDER_PATH_TO_NAME_MAP.get(embedder_model, embedder_model)
+    return EMBEDDER_DISPLAY_NAME_MAP.get(enum_name, enum_name)
 
 # Mapping from raw denoiser identifiers to friendly display names.
 # Each entry maps to a tuple of (latex_display, plain_display).
 _DENOISER_DISPLAY_NAME_MAP: dict[str, tuple[str, str]] = {
-    # Use \alpha for both versions (unicode doesn't render in LaTeX captions)
-    "CCLIP": (r"$\mathrm{CCLIP}(\alpha=0.5)$", r"CCLIP(\alpha=0.5)"),
-    "CCLIP_1": (r"$\mathrm{CCLIP}(\alpha=0.1)$", r"CCLIP(\alpha=0.1)"),
-    "CCLIP_01": (r"$\mathrm{CCLIP}(\alpha=0.01)$", r"CCLIP(\alpha=0.01)"),
+    # Use \alpha for LaTeX, Unicode α for plain text
+    "CCLIP": (r"$\mathrm{CCLIP}(\alpha=0.5)$", "CCLIP(α=0.5)"),
+    "CCLIP_1": (r"$\mathrm{CCLIP}(\alpha=0.1)$", "CCLIP(α=0.1)"),
+    "CCLIP_01": (r"$\mathrm{CCLIP}(\alpha=0.01)$", "CCLIP(α=0.01)"),
     "CITATION_ERROR_LDA": ("GRAPH_ERROR", "GRAPH_ERROR"),
 }
 

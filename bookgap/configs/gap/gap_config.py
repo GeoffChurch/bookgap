@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 
 from bookgap.types import CellType
-@dataclass(frozen=True)
+
+@dataclass
 class GapConfig:
     """Configuration for gap detection parameters.
 

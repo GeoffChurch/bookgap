@@ -1,13 +1,12 @@
 /.venv
 /.conda
-/misc
 /bookgap.egg-info
 /cache
 /logs
 __pycache__/
-.env
+/.env
 
-/artifacts
+/artifacts/
 
 # Keep all but plots
 # /artifacts/*/plots
@@ -15,6 +14,8 @@ __pycache__/
 # Keep artifacts, but drop per-run invalid listings
 # /artifacts/**/invalid_works.txt
 
-/outputs
+/outputs/
+/multirun/
 
-artifacts_scripts/sweeps/*.jsonl
+/artifacts_scripts/sweeps/*.jsonl
+/artifacts_scripts/historical_gap_analysis/results/

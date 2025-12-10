@@ -19,6 +19,7 @@ dependencies = [
     "plotly",
     "pyalex",
     "pylatexenc",
+    "seaborn",
     "sentence-transformers",
     "transformers",
     # For rnojd
