@@ -11,6 +11,9 @@ import time
 import joblib
 import numpy as np
 from numpy.typing import NDArray
+import scipy.sparse as sp
+from typing import List, Tuple, Dict, Any
+from sklearn.preprocessing import normalize as sk_normalize
 
 class Timer:
     def __init__(self, print=print):
@@ -201,7 +204,13 @@ class Filters(enum.Enum):
 def create_unicode_safe_filename(s):
     return re.sub(r'[^a-zA-Z0-9 _\.\-=\(\),"\']', ' ', str(s)).rstrip()
 
-def setup_logging(log_name: str = "", log_level: str = "INFO", include_time: bool = True, explicit_args: Optional[list[tuple[str, Any]]] = None):
+def setup_logging(
+    log_name: str = "",
+    log_level: str = "INFO",
+    include_time: bool = True,
+    explicit_args: Optional[list[tuple[str, Any]]] = None,
+    log_path: Optional[Path] = None,
+):
     LOGGER.setLevel(log_level)
     
     found_handlers = LOGGER.hasHandlers()
@@ -210,17 +219,21 @@ def setup_logging(log_name: str = "", log_level: str = "INFO", include_time: boo
         LOGGER.warning("Clearing existing handlers from LOGGER")
         LOGGER.handlers.clear()
 
-    parts = []
-    if include_time:
-        parts.append(time.strftime('%Y-%m-%d_%H-%M-%S'))
-    if log_name:
-        parts.append(log_name)
-    if explicit_args:
-        parts.append(create_unicode_safe_filename("_".join(f"{k}={v}" for k, v in sorted(explicit_args))))
-    if not parts:
-        raise ValueError("At least one part must be provided for the log name")
-    log_file = Path("logs") / create_unicode_safe_filename("__".join(parts) + ".log")
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    if log_path is None:
+        parts = []
+        if include_time:
+            parts.append(time.strftime('%Y-%m-%d_%H-%M-%S'))
+        if log_name:
+            parts.append(log_name)
+        if explicit_args:
+            parts.append(create_unicode_safe_filename("_".join(f"{k}={v}" for k, v in sorted(explicit_args))))
+        if not parts:
+            raise ValueError("At least one part must be provided for the log name")
+        log_file = Path("logs") / create_unicode_safe_filename("__".join(parts) + ".log")
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        log_file = log_path
+        log_file.parent.mkdir(parents=True, exist_ok=True)
     
     # File handler
     file_handler = logging.FileHandler(log_file)
@@ -257,3 +270,55 @@ def get_stats(a: NDArray) -> dict[str, float|int]:
         'std': float(np.std(a)),
         'count': int(len(a))
     }
+
+
+def normalize_rows(matrix: sp.csr_matrix) -> sp.csr_matrix:
+    """Row-normalize a sparse CSR matrix (make rows sum to 1). Zero rows remain zero."""
+    return sk_normalize(matrix, norm="l1", axis=1, copy=False)
+
+@TIMER.time(formatters=dict(work_ids=lambda w: f"<{len(w)} works>",
+                            work_references=lambda r: f"<{len(r)} reference lists>"))
+def build_citation_adjacency_from_ids(
+    work_ids: List[str],
+    work_references: List[List[str]],
+    add_self_loops: bool = True,
+    normalize: bool = False,
+) -> Tuple[sp.csr_matrix, Dict[str, int]]:
+    """Build a sparse citation adjacency matrix from work IDs and references.
+
+    Args:
+        work_ids: List of work IDs.
+        work_references: List of reference lists (parallel to `work_ids`).
+        add_self_loops: If True, add self-loops for numerical stability.
+        normalize: If True, row-normalize the returned matrix so each row sums to 1.
+
+    Returns:
+        Tuple of (adjacency_matrix, id_to_idx mapping).
+    """
+    id_to_idx: Dict[str, int] = {wid: i for i, wid in enumerate(work_ids)}
+    n = len(work_ids)
+
+    row: List[int] = []
+    col: List[int] = []
+
+    for i, refs in enumerate(work_references):
+        if add_self_loops:
+            row.append(i)
+            col.append(i)
+        for ref_id in refs:
+            if ref_id in id_to_idx:
+                row.append(i)
+                col.append(id_to_idx[ref_id])
+
+    data = np.ones(len(row), dtype=np.float32)
+    adj = sp.csr_matrix((data, (row, col)), shape=(n, n))
+
+    if normalize:
+        adj = sk_normalize(adj, norm="l1", axis=1, copy=False)
+
+    LOGGER.info(
+        f"Built citation adjacency: {n} works, {adj.nnz} edges "
+        f"(density: {adj.nnz / (n * n):.2e})"
+    )
+
+    return adj, id_to_idx
