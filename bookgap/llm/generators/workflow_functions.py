@@ -7,6 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from itertools import islice
 import json
+import logging
 import random
 import time
 import hashlib
@@ -738,6 +739,9 @@ def monitor_and_download_results(
     Raises:
         Exception: If monitoring or download fails
     """
+    # Suppress verbose httpx logging during batch polling
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     client = OpenAI()
     results_path = output_dir / "batch_results.jsonl"
 
