@@ -22,6 +22,7 @@ dependencies = [
     "seaborn",
     "sentence-transformers",
     "transformers",
+    "umap-learn",
     # For rnojd
     "cdopt",
     "coroica",
