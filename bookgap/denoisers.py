@@ -615,7 +615,69 @@ class PLSModeBDenoiser(_PLSDenoiser):
         Y_normalized = Y_centered / Y_std
         return X_normalized.T @ Y_normalized / (N - 1)
 
-class CCLIPDenoiser:
+class _CCLIPBaseDenoiser(ABC):
+    """
+    Base class for CCLIP-style denoisers that minimize a penalty matrix relative to 
+    a constraint matrix.
+    
+    Objective: min (w^T A w) / (w^T B w)
+    where:
+        A = (1-alpha)*S_B + alpha*S_L  (penalty: class separation + graph inconsistency)
+        B = constraint matrix (subclass-specific: S_T or S_W)
+    
+    Subclasses must implement get_constraint_matrix() to specify the denominator.
+    """
+    def __init__(self, alpha: float = 0.5, class_weights: Optional[tuple[float, ...]] = None):
+        """
+        Args:
+            alpha (float): Balance between class-conflation (0) and locality (1).
+                           alpha = 0 -> Purely class-conflating projection.
+                           alpha = 1 -> Purely locality-inducing projection.
+            class_weights (Optional[tuple[float, ...]]): Weights for each class when 
+                           computing within-class scatter. None means equal weights.
+                           Weights are normalized to sum to 1.
+        """
+        assert 0 <= alpha <= 1, "alpha must be in the range [0, 1]"
+        self.alpha = alpha
+        self.class_weights = class_weights
+
+    @abstractmethod
+    def get_constraint_matrix(self, context: DenoiserContext) -> NDArray:
+        """Return the constraint matrix B for the generalized eigenvalue problem."""
+        ...
+    
+    def _get_normalized_class_weights(self, context: DenoiserContext) -> NDArray:
+        """Get normalized class weights, defaulting to equal weights if not specified."""
+        num_subsets = context.num_subsets()
+        if self.class_weights is None:
+            return np.ones(num_subsets) / num_subsets
+        if len(self.class_weights) != num_subsets:
+            raise ValueError(f"class_weights length {len(self.class_weights)} != num_subsets {num_subsets}")
+        weights = np.array(self.class_weights, dtype=np.float64)
+        return weights / weights.sum()
+
+    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
+        """Computes the projection matrix."""
+        d = context.X().shape[1]
+        
+        # Get precomputed scatter matrices from context
+        S_B = context.S_B_multi(list(range(context.num_subsets()))) 
+        S_L = context.S_L()
+
+        # Construct the numerator matrix (penalty) using the alpha mixing parameter
+        A_matrix = (1 - self.alpha) * S_B + self.alpha * S_L
+        
+        # Get the constraint matrix from subclass
+        B_matrix = self.get_constraint_matrix(context)
+        
+        # Find smallest eigenvalues and corresponding eigenvectors
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        res = _solve_eigh_robustly(a_matrix=A_matrix, b_matrix=B_matrix, subset=subset)
+
+        return res.P_or_U, res.eigvals
+
+
+class CCLIPDenoiser(_CCLIPBaseDenoiser):
     """
     Class-Conflating Locality-Inducing Projections (CCLIP) Denoiser.
 
@@ -629,42 +691,55 @@ class CCLIPDenoiser:
     
     The optimal projection directions are the eigenvectors corresponding to the
     smallest eigenvalues.
+    
+    Constraint matrix: S_T (Total Scatter)
     """
     def __init__(self, alpha: float = 0.5):
-        """
-        Initializes the CCLIPDenoiser.
+        super().__init__(alpha=alpha, class_weights=None)
 
+    def get_constraint_matrix(self, context: DenoiserContext) -> NDArray:
+        return context.S_T()
+
+
+class WithinClassCCLIPDenoiser(_CCLIPBaseDenoiser):
+    """
+    A variant of CCLIP that regularizes by Within-Class Scatter (S_W) instead of 
+    Total Scatter (S_T).
+    
+    This avoids the objective conflict where S_T implicitly rewards the very 
+    class separation (S_B) that the numerator tries to minimize.
+    
+    Objective:
+        min (w^T [ (1-alpha)S_B + alpha*S_L ] w) / (w^T S_W w)
+        
+    This is effectively "Laplacian-Regularized Anti-LDA".
+    
+    Constraint matrix: S_W (Within-Class Scatter)
+    
+    Note on class weighting: Since scatter() normalizes by sample size, each class's
+    scatter matrix represents its variance structure independent of sample count.
+    Equal weights (default) treat each class's structure as equally important.
+    To weight by sample count, pass class_weights proportional to (n_1, n_2, ...).
+    """
+    def __init__(self, alpha: float = 0.5, class_weights: Optional[tuple[float, ...]] = None):
+        """
         Args:
-            alpha (float): A tuning parameter in [0, 1] to balance the objectives.
-                           alpha = 0 -> Purely class-conflating projection.
-                           alpha = 1 -> Purely locality-inducing projection.
+            alpha (float): 0.0 = Pure Anti-LDA (Class Conflation).
+                           1.0 = Pure LPP (Locality Preserving) relative to within-class variance.
+            class_weights (Optional[tuple[float, ...]]): Weights for each class scatter.
+                           None = equal weights (recommended for imbalanced classes).
+                           e.g., (1.0, 1.0) for equal emphasis on books and articles.
         """
-        assert 0 <= alpha <= 1, "alpha must be in the range [0, 1]"
-        self.alpha = alpha
+        super().__init__(alpha=alpha, class_weights=class_weights)
 
-    def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
-        """
-        Computes the projection matrix for CCLIP.
-        """
-        X = context.X() # Not needed, context will handle it
-        N, d = context.X().shape
-        
-        # Get precomputed scatter matrices from context
-        # All these methods will now return centered matrices
-        S_T = context.S_T()
-        S_B = context.S_B_multi(list(range(context.num_subsets()))) 
-        S_L = context.S_L()
-
-        # Construct the numerator matrix using the alpha mixing parameter
-        A_matrix = (1 - self.alpha) * S_B + self.alpha * S_L
-        
-        # Find smallest eigenvalues and corresponding eigenvectors
-        subset = subset_range(n=d, subset_size=n_components, smallest=True)
-        res = _solve_eigh_robustly(a_matrix=A_matrix, b_matrix=S_T, subset=subset)
-
-        P = res.P_or_U
-        eigvals = res.eigvals
-        return P, eigvals
+    def get_constraint_matrix(self, context: DenoiserContext) -> NDArray:
+        """Compute weighted within-class scatter S_W = sum(w_i * S_subset_i)."""
+        weights = self._get_normalized_class_weights(context)
+        d = context.X().shape[1]
+        S_W = np.zeros((d, d), dtype=np.float64)
+        for i in range(context.num_subsets()):
+            S_W += weights[i] * context.S_subset(i)
+        return S_W
 
 class AntiCSPDenoiser:
     """

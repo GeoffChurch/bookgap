@@ -4,10 +4,9 @@ from typing import Any, Dict, List, Optional, Protocol, TypeVar, runtime_checkab
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse as sp
-from sklearn.preprocessing import normalize
 
 import bookgap.denoisers as denoisers
-from bookgap.util import Filter, WorkType, TIMER, LOGGER
+from bookgap.util import Filter, WorkType, TIMER, LOGGER, build_citation_adjacency_from_ids
 
 T = TypeVar('T', bound=np.generic)
 
@@ -106,25 +105,9 @@ class NoneDenoiser:
 
 @TIMER.time(formatters=dict(works=lambda works: f"<{len(works)} works>"))
 def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
-    id_to_idx = {work["id"]: i for i, work in enumerate(works)}
-    n = len(works)
-    row = []
-    col = []
-    for i, work in enumerate(works):
-        # Add self-reference for safe normalization and stability. Don't use append on the original list!
-        refs: list[str] = work.get("referenced_works", []) + [work["id"]]  
-        for ref_id in refs:
-            if ref_id in id_to_idx:
-                row.append(i)
-                col.append(id_to_idx[ref_id])
-    data = np.ones(len(row), dtype=np.float32)
-    citation_graph = sp.csr_matrix((data, (row, col)), shape=(n, n))
-    row_sums = np.asarray(citation_graph.sum(axis=1)).squeeze(1)
-    assert row_sums.min() >= 1 # This is guaranteed by the self-references
-
-    # Normalize rows so each citing work distributes equal total weight.
-    citation_graph = normalize(citation_graph, norm="l1", axis=1, copy=False)
-    
+    work_ids = [work["id"] for work in works]
+    work_references = [work.get("referenced_works", []) for work in works]
+    citation_graph, _id_to_idx = build_citation_adjacency_from_ids(work_ids, work_references, add_self_loops=True, normalize=True)
     assert type(citation_graph) is sp.csr_matrix, f"Expected csr_matrix, got {type(citation_graph)}"
     LOGGER.info(f"Built citation graph with shape {citation_graph.shape} and {citation_graph.nnz} non-zero entries")
     return citation_graph
@@ -227,6 +210,13 @@ class WorkDenoisers(enum.Enum):
     CCLIP_01 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
     CCP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
     LIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    
+    # Within-Class CCLIP variants (regularize by S_W instead of S_T)
+    WC_CCLIP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP_1 = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP_01 = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pure Anti-LDA with S_W
+    WC_LIP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pure LPP with S_W
     
     # Joint Approximate Diagonalization denoisers
     # JAD_1_4 = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.25, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Optimal 1:4 book:article ratio
