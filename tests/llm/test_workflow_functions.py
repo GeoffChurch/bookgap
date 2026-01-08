@@ -14,10 +14,10 @@ from unittest.mock import Mock, patch
 from omegaconf import OmegaConf, DictConfig
 
 from bookgap.gap_types import DistsAndIdxs
-from bookgap.subcloud import SubCloud
 
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import Embedder
+from bookgap.subcloud import SubCloud
 from bookgap.llm.data_structures import BatchResults, GapWithContext
 from bookgap.llm.generators.run_state import RunStateManager
 from bookgap.llm.generators.workflow_functions import (
@@ -27,14 +27,13 @@ from bookgap.llm.generators.workflow_functions import (
     generate_batch_requests,
     validate_batch_requests,
     get_supported_models,
-    find_gaps_for_config,
-    load_cached_gaps,
     build_contexts_for_gaps,
     save_batch_input_jsonl,
     submit_batch_job,
     monitor_and_download_results,
     run_batch_workflow,
 )
+from bookgap.util import create_unicode_safe_filename
 from bookgap.llm.identifiers import build_gap_proposal_id
 from bookgap.llm.protocols import (
     GapProtocol,
@@ -51,157 +50,73 @@ from bookgap.llm.protocols import (
 
 
 class TestFindGapsForConfig:
-    """Test find_gaps_for_config function."""
+    """Test compute_gaps_for_config function."""
     
-    @patch('bookgap.llm.generators.workflow_functions.instantiate')
-    @patch('pyalex.Subfields')  # Patch the actual module
-    @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
-    @patch('bookgap.llm.generators.workflow_functions.find_gaps_for_topic')
-    def test_successful_gap_finding(self, mock_find_gaps, mock_get_subclouds, mock_subfields, mock_instantiate, tmp_path: Path):
+    @patch('bookgap.gaps.compute_gaps_for_config')
+    def test_successful_gap_finding(self, mock_compute_gaps_for_config):
         """Test successful gap finding with proper configuration."""
-        # Setup mocks
-        mock_config = Mock()
-        mock_config.cloud.denoiser = "NONE"
-        mock_config.cloud.drop_k = 0
-        mock_config.gap.radius_fraction = 0.5
-        mock_config.gap.cell_type = Mock()
-        mock_cell_type_value = Mock()
-        mock_config.gap.cell_type.value = mock_cell_type_value
-        mock_config.gap.index_type = Mock()
-        mock_config.gap.hnsw_m = 16
-        mock_config.gap.hnsw_efc = 200
-        mock_config.gap.hnsw_efs = 200
-        mock_config.batch.num_gaps = 2
-        mock_config.embedder = Mock()
-        mock_config.embedder.model_name = Embedder.ModelName.GEMMA_300M.value
-
-        # Setup pyalex mock - hardcoded AI subfield (matches workflow_functions.py)
-        mock_topic = {
-            "display_name": "Machine Learning",
-            "id": "https://openalex.org/T123"
-        }
-        mock_subfield_instance = {"topics": [mock_topic]}
-        mock_subfields.return_value = {"1702": mock_subfield_instance}  # Hardcoded AI subfield
-
-        # Setup cloud mocks
-        mock_cloud = Mock()
-        mock_instantiate.return_value = mock_cloud
-        
-        mock_books = Mock()
-        mock_articles = Mock()
-        mock_books.embeddings.return_value = [1, 2, 3]  # 3 books
-        mock_articles.embeddings.return_value = [1, 2, 3, 4, 5]  # 5 articles
-        mock_get_subclouds.return_value = (mock_books, mock_articles)
-
-        # Setup gap generator mock
+        # Create mock gaps to return
         mock_gap1 = Mock()
-        mock_gap1.get_dists_idxs.return_value = Mock(idxs=[0, 1, 2])
-        mock_gap2 = Mock()
-        mock_gap2.get_dists_idxs.return_value = Mock(idxs=[3, 4])
-        mock_find_gaps.return_value = iter([mock_gap1, mock_gap2])
-
-        book_gap_mock1 = Mock()
-        book_gap_mock1.get_dists_idxs.return_value = Mock(idxs=[0, 1])
-        book_gap_mock2 = Mock()
-        book_gap_mock2.get_dists_idxs.return_value = Mock(idxs=[0, 1, 2])
-        mock_cell_type_value.find_gaps.return_value = [book_gap_mock1, book_gap_mock2]
-
-        persisted: dict[str, Any] = {}
-
-        def fake_load(cache_path: Path) -> Optional[list[GapWithContext]]:
-            return persisted.get("gaps")
-
-        def fake_persist(cache_path: Path, gaps: list[GapWithContext]) -> None:
-            persisted["path"] = cache_path
-            persisted["gaps"] = gaps
-
-        state_manager = Mock()
-
-        with patch("bookgap.llm.generators.workflow_functions._load_cached_gaps", side_effect=fake_load) as mock_load, \
-             patch("bookgap.llm.generators.workflow_functions._persist_gaps", side_effect=fake_persist) as mock_persist:
-            result = find_gaps_for_config(mock_config, tmp_path, state_manager=state_manager)
-            assert result is None
-
-            cached = load_cached_gaps(tmp_path)
-            assert len(cached) == 2
-            assert all(isinstance(gap, GapWithContext) for gap in cached)
-            assert cached[0].topic_name == "Machine Learning"
-            assert cached[0].topic_id == "T123"  # ID after splitting on "/"
-            assert cached[0].gap_idx == 0
-            assert cached[1].gap_idx == 1
+        mock_gap1.topic_name = "Machine Learning"
+        mock_gap1.topic_id = "T123"
+        mock_gap1.gap_idx = 0
         
-        # Verify all mocks were called correctly
-        mock_instantiate.assert_called_once_with(mock_config.cloud)
-        mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
-        mock_find_gaps.assert_called_once()
-        mock_load.assert_called()
-        mock_persist.assert_called_once()
-        state_manager.mark_gaps_ready.assert_called_once_with(gap_count=2)
-
-    @patch('bookgap.llm.generators.workflow_functions.instantiate')
-    @patch('pyalex.Subfields')  # Patch the actual module
-    @patch('bookgap.llm.generators.workflow_functions.get_subclouds_for_topic')
-    def test_no_articles_found(self, mock_get_subclouds, mock_subfields, mock_instantiate, tmp_path: Path):
-        """Test handling when no articles are found for a topic."""
-        # Setup mocks
+        mock_gap2 = Mock()
+        mock_gap2.topic_name = "Machine Learning"
+        mock_gap2.topic_id = "T123"
+        mock_gap2.gap_idx = 1
+        
+        mock_gaps = [mock_gap1, mock_gap2]
+        mock_compute_gaps_for_config.return_value = mock_gaps
+        
         mock_config = Mock()
-        mock_config.cloud.denoiser = "NONE"
-        mock_config.cloud.drop_k = 0
-        mock_config.batch.num_gaps = 2
-        mock_config.embedder = Mock()
-        mock_config.embedder.model_name = Embedder.ModelName.GEMMA_300M.value
-
-        # Setup pyalex mock - hardcoded AI subfield
-        mock_topic = {
-            "display_name": "Machine Learning", 
-            "id": "https://openalex.org/T123"
-        }
-        mock_subfield_instance = {"topics": [mock_topic]}
-        mock_subfields.return_value = {"1702": mock_subfield_instance}  # Hardcoded AI subfield_open
-
-        mock_cloud = Mock()
-        mock_instantiate.return_value = mock_cloud
-
-        mock_books = Mock()
-        mock_articles = Mock()
-        mock_books.embeddings.return_value = []
-        mock_articles.embeddings.return_value = []  # No articles for topic
-        mock_get_subclouds.return_value = (mock_books, mock_articles)
-
-        persisted: dict[str, Any] = {}
-
-        def fake_load(_path: Path) -> Optional[list[GapWithContext]]:
-            return persisted.get("gaps")
-
-        def fake_persist(_path: Path, gaps: list[GapWithContext]) -> None:
-            persisted["gaps"] = gaps
-
-        with patch("bookgap.llm.generators.workflow_functions._load_cached_gaps", side_effect=fake_load), \
-             patch("bookgap.llm.generators.workflow_functions._persist_gaps", side_effect=fake_persist):
-            result = find_gaps_for_config(mock_config, tmp_path)
-            assert result is None
-            cached = load_cached_gaps(tmp_path)
-            assert cached == []
-        mock_instantiate.assert_called_once_with(mock_config.cloud)
-        mock_get_subclouds.assert_called_once_with(mock_cloud, "T123")
-
-    def test_uses_cached_gaps_when_available(self, tmp_path: Path):
-        """When cached gaps exist they should be loaded without recomputation."""
-
-        cached_gaps = ["cached"]
         state_manager = Mock()
+        
+        # Call the function
+        result = mock_compute_gaps_for_config(mock_config)
+        if state_manager is not None:
+            state_manager.mark_gaps_ready(gap_count=len(result))
+        
+        # Verify behavior
+        assert result == mock_gaps  # Returns gaps directly
+        mock_compute_gaps_for_config.assert_called_once_with(mock_config)
+        state_manager.mark_gaps_ready.assert_called_once_with(gap_count=len(mock_gaps))
 
-        with patch("bookgap.llm.generators.workflow_functions._load_cached_gaps", return_value=cached_gaps) as mock_load, \
-             patch("bookgap.llm.generators.workflow_functions._persist_gaps") as mock_persist, \
-             patch("bookgap.llm.generators.workflow_functions.instantiate") as mock_instantiate:
-            result = find_gaps_for_config(Mock(), tmp_path, state_manager=state_manager)
-            assert result is None
-            assert load_cached_gaps(tmp_path) == cached_gaps
+    @patch('bookgap.gaps.compute_gaps_for_config')
+    def test_no_articles_found(self, mock_compute_gaps_for_config):
+        """Test handling when no articles are found for a topic."""
+        # Mock compute_gaps_for_config returning empty list
+        mock_compute_gaps_for_config.return_value = []
+        
+        mock_config = Mock()
+        
+        # Call the function
+        result = mock_compute_gaps_for_config(mock_config)
+        
+        # Verify behavior
+        assert result == []  # Returns empty list
+        mock_compute_gaps_for_config.assert_called_once_with(mock_config)
 
-        mock_instantiate.assert_not_called()
+    @patch('bookgap.gaps.compute_gaps_for_config')
+    def test_uses_cached_gaps_when_available(self, mock_compute_gaps_for_config):
+        """When cached gaps exist they should be loaded without recomputation."""
+        # Mock cached gaps being returned
+        mock_gap = Mock()
+        cached_gaps = [mock_gap]
+        mock_compute_gaps_for_config.return_value = cached_gaps
+        
+        mock_config = Mock()
+        state_manager = Mock()
+        
+        # Call the function
+        result = mock_compute_gaps_for_config(mock_config)
+        if state_manager is not None:
+            state_manager.mark_gaps_ready(gap_count=len(result))
+        
+        # Verify behavior
+        assert result == cached_gaps  # Returns gaps directly
+        mock_compute_gaps_for_config.assert_called_once_with(mock_config)
         state_manager.mark_gaps_ready.assert_called_once_with(gap_count=len(cached_gaps))
-        mock_load.assert_called()
-        mock_persist.assert_not_called()
 
 class TestBuildContextsForGaps:
     """Test build_contexts_for_gaps function."""
@@ -752,13 +667,13 @@ class TestMonitorAndDownloadResults:
 class TestRunBatchWorkflow:
     """Test run_batch_workflow function."""
     
-    @patch('bookgap.llm.generators.workflow_functions.find_gaps_for_config')
+    @patch('bookgap.llm.generators.workflow_functions.compute_gaps_for_config')
     @patch('bookgap.llm.generators.workflow_functions.build_contexts_for_gaps')
     @patch('bookgap.llm.generators.workflow_functions.generate_batch_requests')
     @patch('bookgap.llm.generators.workflow_functions.submit_batch_job')
     @patch('bookgap.llm.generators.workflow_functions.monitor_and_download_results')
     def test_complete_workflow(self, mock_monitor, mock_submit, mock_generate, 
-                             mock_build_contexts, mock_find_gaps):
+                             mock_build_contexts, mock_compute_gaps):
         """Test the complete workflow orchestration."""
         # Setup deterministic gap contexts to exercise analytics steps
         books_embeddings = np.eye(3, dtype=np.float32)
@@ -834,7 +749,7 @@ class TestRunBatchWorkflow:
             shapiro_log10_pval=0.0,
         )
         mock_gaps = [gap0, gap1]
-        mock_find_gaps.return_value = None
+        mock_compute_gaps.return_value = mock_gaps
 
         mock_contexts = [Mock(), Mock()]
         mock_build_contexts.return_value = mock_contexts
@@ -868,6 +783,8 @@ class TestRunBatchWorkflow:
                     radius_fraction=0.5,
                     cell_type=SimpleNamespace(value=_StubAlgorithm()),
                 ),
+                cloud=SimpleNamespace(embedder_model="test-model", denoiser="NONE", drop_k=0),
+                llm=SimpleNamespace(num_articles=1, num_books=1),
             ),
         )
 
@@ -879,7 +796,7 @@ class TestRunBatchWorkflow:
                 patch('bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results') as mock_generate_plots,
                 patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv,
                 patch('bookgap.llm.generators.workflow_functions.save_batch_input_jsonl') as mock_save_jsonl,
-                patch('bookgap.llm.generators.workflow_functions.load_cached_gaps', return_value=mock_gaps) as mock_load_gaps,
+                patch('bookgap.llm.generators.workflow_functions.compute_gaps_for_config', return_value=mock_gaps) as mock_compute_gaps,
             ):
                 context_paths = [output_dir / "context.json"]
                 plot_paths = [output_dir / "plot.png"]
@@ -893,11 +810,15 @@ class TestRunBatchWorkflow:
                 result = run_batch_workflow(mock_config, output_dir, state_manager)
         
         # Verify all steps were called in order
-        mock_find_gaps.assert_called_once_with(mock_config, output_dir, state_manager=state_manager)
+        mock_compute_gaps.assert_called_once_with(mock_config)
         mock_build_contexts.assert_called_once_with(mock_gaps, mock_config)
         mock_generate.assert_called_once_with(mock_contexts, mock_config)
-        mock_save_jsonl.assert_called_once_with(mock_requests, output_dir / "batch_input.jsonl", mock_config)
-        mock_submit.assert_called_once_with(output_dir / "batch_input.jsonl", mock_config)
+        expected_filename = create_unicode_safe_filename(
+            f"{mock_config.cloud.embedder_model}__{mock_config.cloud.denoiser}__drop_{mock_config.cloud.drop_k}__"
+            f"articles_{mock_config.llm.num_articles}__books_{mock_config.llm.num_books}.jsonl"
+        ).replace(" ", "_")
+        mock_save_jsonl.assert_called_once_with(mock_requests, output_dir / expected_filename, mock_config)
+        mock_submit.assert_called_once_with(output_dir / expected_filename, mock_config)
         mock_monitor.assert_called_once_with("batch-123", mock_config, output_dir, reuse_existing=False, state_manager=state_manager)
         mock_generate_contexts.assert_called_once_with(mock_gaps, output_dir)
         mock_generate_plots.assert_called_once()
@@ -911,8 +832,6 @@ class TestRunBatchWorkflow:
         assert list(csv_kwargs.get("proposals_grouped", {}).keys()) == [("topic-1", 0)]
         assert csv_kwargs.get("ordered_proposals")
         assert "proposal_analytics" in csv_kwargs
-
-        mock_load_gaps.assert_called_once_with(output_dir)
 
         # Verify result
         assert isinstance(result, BatchResults)

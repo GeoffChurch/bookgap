@@ -20,6 +20,7 @@ class DenoiserContextForTests(DenoiserContext):
             A: Affinity matrix (N x N)
             subset_indices: List of lists, where each inner list contains row indices for a subset
         """
+        super().__init__()
         self._X = X
         self._A = A
         self._subset_indices = subset_indices

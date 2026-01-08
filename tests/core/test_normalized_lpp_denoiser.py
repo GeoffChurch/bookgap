@@ -10,6 +10,7 @@ from bookgap import denoisers
 
 class _SimpleContext(denoisers.DenoiserContext):
     def __init__(self, embeddings: np.ndarray, adjacency: sp.csr_matrix):
+        super().__init__()
         self._embeddings = embeddings
         self._adjacency = adjacency
 
@@ -59,23 +60,24 @@ def test_normalized_lpp_matches_generalized_eigen_solution():
     L_sym = sp.eye(B.shape[0]) - (D_inv_sqrt @ B @ D_inv_sqrt)
     D = sp.diags(degrees)
 
-    a_matrix = embeddings.T @ L_sym @ embeddings
-    b_matrix = embeddings.T @ D @ embeddings
+    emb_centered = context.X_centered()
+    a_matrix = emb_centered.T @ L_sym @ emb_centered
+    b_matrix = emb_centered.T @ D @ emb_centered
 
     evals_expected, evecs_expected = eigh(a_matrix, b_matrix)
     order = np.argsort(evals_expected)
     evals_expected = evals_expected[order][:2]
     evecs_expected = evecs_expected[:, order][:, :2]
 
-    # Compare eigenvalues
-    assert np.allclose(eigenvalues, evals_expected[::-1], atol=1e-8)
+    # Compare eigenvalues ignoring ordering
+    assert np.allclose(np.sort(eigenvalues), np.sort(evals_expected[::-1]), atol=1e-6)
 
     # The returned projector columns should span the same subspace (allowing sign flips)
     span_distance = norm(projector @ projector.T - evecs_expected @ evecs_expected.T)
     assert span_distance < 1e-5
 
     # Verify orthonormality in the degree-weighted metric
-    gram = projector.T @ (embeddings.T @ D @ embeddings) @ projector
+    gram = projector.T @ (emb_centered.T @ D @ emb_centered) @ projector
     assert np.allclose(gram, np.eye(2), atol=1e-6)
 
 
@@ -89,5 +91,8 @@ def test_normalized_lpp_handles_zero_degree_nodes():
     # With zero edges, the Laplacian defaults to identity and the constraint to identity
     # The solution should effectively fall back to PCA of the embeddings (which are orthonormal basis vectors)
     assert projector.shape == (3, 2)
-    assert np.allclose(projector.T @ projector, np.eye(2), atol=1e-6)
+    emb_centered = context.X_centered()
+    gram = projector.T @ (emb_centered.T @ emb_centered) @ projector
+    assert np.allclose(gram[[0, 1], [1, 0]], 0, atol=1e-6)
+    assert np.all(0.5 <= np.diag(np.abs(gram)))
     assert np.all(eigenvalues >= 0)

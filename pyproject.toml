@@ -8,17 +8,22 @@ version = "0.1"
 description = "Finding the next textbook to write"
 dependencies = [
     "accelerate",
+    "adalflow",
     "bitsandbytes",
     "faiss-cpu",
+    "graphviz", # for adalflow
     "hydra-core",
     "omegaconf",
     "matplotlib",
+    "mlflow", # for adalflow
     "numpy",
     "openai",
     "pandas",
+    "pyarrow",
     "plotly",
     "pyalex",
     "pylatexenc",
+    "pyvis", # for adalflow
     "seaborn",
     "sentence-transformers",
     "transformers",

@@ -7,6 +7,10 @@ and provides the primary interface for Hydra-managed experiments.
 
 from dataclasses import dataclass
 
+from hydra.utils import instantiate
+
+from bookgap.cloud import Cloud
+
 from .gap.gap_config import GapConfig
 from .llm.llm_config import LLMConfig
 from .batch.batch_config import BatchConfig
@@ -28,3 +32,24 @@ class ExperimentConfig:
     batch: BatchConfig  # Batch processing control, OpenAI API settings, and job execution options
     output: OutputConfig # Output formatting, export options, and file organization preferences
     cloud: CloudConfig  # Cloud construction parameters for gap analysis workflows
+    
+    def __post_init__(self):
+        """Validate that gap work types are compatible with cloud filter."""
+        
+        # Instantiate cloud to get the actual FilterPair
+        cloud_inst: Cloud = instantiate(self.cloud)
+        merged_filter = cloud_inst.filter_pair.merged()
+        
+        if merged_filter.work_types is None:
+            raise ValueError(
+                "cloud.filter_pair merged filter must specify work_types"
+            )
+        
+        work_types_set = set(merged_filter.work_types)
+        
+        if (missing := {self.gap.ambient_work_type, self.gap.landmark_work_type} - work_types_set):
+            raise ValueError(
+                f"gap work types {missing} not in "
+                f"cloud.filter_pair.merged().work_types ({work_types_set})"
+            )
+        

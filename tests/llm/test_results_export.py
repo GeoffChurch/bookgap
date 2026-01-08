@@ -56,7 +56,6 @@ class _DummyGap:
     def get_dists_idxs(self) -> DistsAndIdxs:
         return self._dists_idxs
 
-    # The following methods satisfy the GapProtocol interface but aren't used in tests
     def get_ambient(self):  # pragma: no cover - not needed for ranking tests
         raise NotImplementedError
 
@@ -134,18 +133,10 @@ def test_generate_gaps_analysis_csv_adds_rank_columns(tmp_path, monkeypatch):
         ExperimentConfig,
         SimpleNamespace(
             gap=SimpleNamespace(
-                denoiser=SimpleNamespace(name="NONE"),
+                denoiser="NONE",
                 drop_k=1,
                 radius_fraction=0.5,
                 cell_type=SimpleNamespace(name="KBALL"),
-            ),
-            llm=SimpleNamespace(
-                num_articles=10,
-                num_books=5,
-            ),
-            cloud=SimpleNamespace(
-                denoiser="NONE",
-                drop_k=1,
             ),
         ),
     )
@@ -271,18 +262,10 @@ def test_generate_gaps_analysis_csv_real_rankings(tmp_path):
         ExperimentConfig,
         SimpleNamespace(
             gap=SimpleNamespace(
-                denoiser=SimpleNamespace(name="NONE"),
+                denoiser="NONE",
                 drop_k=1,
                 radius_fraction=0.5,
                 cell_type=SimpleNamespace(name="KBALL"),
-            ),
-            llm=SimpleNamespace(
-                num_articles=10,
-                num_books=5,
-            ),
-            cloud=SimpleNamespace(
-                denoiser="NONE",
-                drop_k=1,
             ),
         ),
     )

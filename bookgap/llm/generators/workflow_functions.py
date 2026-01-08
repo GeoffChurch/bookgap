@@ -5,7 +5,6 @@ Pure functions for the batch processing pipeline using Hydra's instantiation sys
 
 from collections import defaultdict
 from dataclasses import dataclass
-from itertools import islice
 import json
 import logging
 import random
@@ -14,11 +13,9 @@ import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
-import joblib
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from openai import OpenAI
-import pyalex
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,7 +23,7 @@ from numpy.typing import NDArray
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import Cloud, Embedder
 from bookgap.configs.gap.gap_config import CellType
-from bookgap.gap_statistics import compute_gap_statistics
+from bookgap.gap_metrics import compute_gap_metrics_for_embeddings
 from bookgap.llm.artifacts.common import group_gap_articles_by_covering_books
 from bookgap.llm.data_structures import (
     BatchResults,
@@ -36,7 +33,7 @@ from bookgap.llm.data_structures import (
     ProposalOutrankCounts,
 )
 from bookgap.llm.generators.batch_generator import BatchProposalGenerator
-from bookgap.subcloud import SubCloud, get_subclouds_for_topic
+from bookgap.subcloud import SubCloud
 from bookgap.util import LOGGER, create_unicode_safe_filename
 from ..protocols import (
     ProposalContext, BatchRequestData,
@@ -48,6 +45,8 @@ from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
 from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
 from .run_state import RunStateManager, RunStep
+from bookgap.gaps import compute_gaps_for_config
+
 
 @dataclass(frozen=True)
 class PendingProposal:
@@ -62,23 +61,6 @@ class ProposalGrouping:
     by_gap_idx: dict[int, list[ParsedProposal]]
     by_topic_gap: dict[tuple[str, int], list[ParsedProposal]]
     ordered: list[tuple[ParsedProposal, GapProposalId]]
-
-
-GAPS_CACHE_FILENAME = "gaps.joblib"
-
-
-def _gaps_cache_path(output_dir: Path) -> Path:
-    return output_dir / GAPS_CACHE_FILENAME
-
-
-def _load_cached_gaps(cache_path: Path) -> Optional[list[GapWithContext]]:
-    if not cache_path.exists():
-        return None
-    return joblib.load(cache_path)
-
-
-def _persist_gaps(cache_path: Path, gaps: list[GapWithContext]) -> None:
-    joblib.dump(gaps, cache_path)
 
 
 def find_gaps_for_topic(
@@ -235,7 +217,6 @@ def _compute_proposal_outrank_counts(
                 ProposalOutrankCounts(counts=counts),
             )
 
-
 def _compute_proposal_gap_stats(
     gaps: list[GapWithContext],
     proposals_by_topic_gap: dict[tuple[str, int], list[ParsedProposal]],
@@ -261,18 +242,13 @@ def _compute_proposal_gap_stats(
             axis=0,
         )
 
-        gap_sizes = algorithm.compute_gap_sizes_for_embeddings(
-            ambient=gap.articles,
-            landmark=gap.books,
+        gap_stats = compute_gap_metrics_for_embeddings(
+            gap=gap,
             embeddings=embeddings,
-            radius_fraction=config.gap.radius_fraction,
-            k=1,
-            is_intra_cloud=False,
+            config=config,
         )
 
-        book_gap_sizes = gap.book_gap_sizes
-
-        for proposal, gap_size in zip(proposals, gap_sizes, strict=True):
+        for proposal, stats in zip(proposals, gap_stats, strict=True):
             proposal_id = proposal_id_lookup.get(proposal.custom_id)
             if proposal_id is None:
                 LOGGER.warning(
@@ -281,14 +257,12 @@ def _compute_proposal_gap_stats(
                 )
                 continue
 
-            percentile, zscore, _ = compute_gap_statistics(gap_size, book_gap_sizes)
-
             analytics_store.add_gap_stats(
                 proposal.custom_id,
                 ProposalGapStats(
-                    gap_size=gap_size,
-                    gap_size_percentile=percentile,
-                    gap_zscore=zscore,
+                    gap_size=stats.gap_size,
+                    gap_size_percentile=stats.gap_size_percentile,
+                    gap_zscore=stats.gap_zscore,
                 ),
             )
 
@@ -321,135 +295,6 @@ class MetadataUtils:
         return metadata
 
 
-def load_cached_gaps(output_dir: Path) -> list[GapWithContext]:
-    """Load cached gaps from the specified output directory."""
-
-    cache_path = _gaps_cache_path(output_dir)
-    cached_gaps = _load_cached_gaps(cache_path)
-    if cached_gaps is None:
-        raise FileNotFoundError(f"Cached gaps not found at {cache_path}")
-    return cached_gaps
-
-
-def find_gaps_for_config(
-    config: ExperimentConfig,
-    output_dir: Path,
-    *,
-    state_manager: Optional[RunStateManager] = None,
-) -> None:
-    """Ensure gaps for the configuration are cached under ``output_dir``.
-
-    This function writes ``gaps.joblib`` if it does not already exist. Subsequent stages
-    should call :func:`load_cached_gaps` to retrieve the serialized ``GapWithContext``
-    instances. The function returns ``None`` to emphasize the side-effect driven
-    contract.
-    """
-
-    cache_path = _gaps_cache_path(output_dir)
-    cached_gaps = _load_cached_gaps(cache_path)
-    if cached_gaps is not None:
-        LOGGER.info(
-            "Loaded %s cached gaps from %s",
-            len(cached_gaps),
-            cache_path,
-        )
-        if state_manager is not None:
-            state_manager.mark_gaps_ready(gap_count=len(cached_gaps))
-        return None
-
-    cloud = instantiate(config.cloud)
-    
-    gaps: list[GapWithContext] = []
-    
-    # Analyze all topics from the AI subfield
-    
-    subfields = pyalex.Subfields()
-    subfield_obj = subfields["1702"]  # Hardcoded AI subfield (matches build_cloud)
-    topics: Any = subfield_obj["topics"]  # type: ignore # pyalex typing issue
-    
-    if not topics:
-        raise ValueError("No topics found for AI subfield")
-    
-    # Analyze all topics
-    for i, topic in enumerate(topics):
-        topic_name = topic["display_name"]
-        topic_id = topic["id"].split("/")[-1]
-        
-        LOGGER.info(f"Analyzing topic {i + 1}/{len(topics)}: {topic_name} ({topic['id']})")
-        
-        # Get subclouds for this topic
-        books, articles = get_subclouds_for_topic(cloud, topic_id)
-        num_books = len(books.embeddings())
-        num_articles = len(articles.embeddings())
-        
-        LOGGER.info(f"Topic {topic_name}: {num_books} books, {num_articles} articles")
-        
-        if num_articles == 0:
-            LOGGER.warning(f"No articles found for topic {topic_id}")
-            continue  # Skip to next topic instead of returning
-        
-        # Compute book gap sizes for statistics
-        # Note: For book gaps, we call the algorithm directly with query=books
-        book_gap_sizes = [
-            len(g.get_dists_idxs().idxs)
-            for g in config.gap.cell_type.value.find_gaps(
-                ambient=articles,
-                landmark=books,
-                query=books,  # Key difference: query=books for book gaps
-                radius_fraction=config.gap.radius_fraction,
-                k=1,
-                is_intra_cloud=True,  # Key difference: intra_cloud=True for book gaps
-            )
-        ]
-        
-        # Find gaps using configured parameters
-        gap_generator = find_gaps_for_topic(
-            books=books,
-            articles=articles,
-            radius_fraction=config.gap.radius_fraction,
-            cell_type=config.gap.cell_type,
-            k=1,
-            is_intra_cloud=False
-        )
-        
-        # Take the requested number of gaps for this topic using itertools.islice
-        topic_gaps: list[GapWithContext] = []
-        for gap in islice(gap_generator, config.batch.num_gaps):
-            gap_size = len(gap.get_dists_idxs().idxs)
-            LOGGER.info(f"Found gap of size {gap_size} articles")
-            gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(gap_size, book_gap_sizes)
-
-            topic_gaps.append(
-                GapWithContext(
-                    gap=gap,
-                    topic_name=topic_name,
-                    topic_id=topic_id,
-                    gap_idx=len(gaps) + len(topic_gaps),  # Use global gap index across all topics
-                    books=books,
-                    articles=articles,
-                    book_gap_sizes=book_gap_sizes,
-                    gap_size=gap_size,
-                    gap_size_percentile=gap_size_percentile,
-                    gap_zscore=gap_zscore,
-                    shapiro_log10_pval=shapiro_log10_pval,
-                )
-            )
-
-        if len(topic_gaps) == 0:
-            LOGGER.warning(f"No gaps found for topic {topic_name}")
-        
-        gaps.extend(topic_gaps)
- 
-    LOGGER.info(f"Found {len(gaps)} gaps total")
-
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _persist_gaps(cache_path, gaps)
-    LOGGER.info("Persisted %s gaps to %s", len(gaps), cache_path)
-
-    if state_manager is not None:
-        state_manager.mark_gaps_ready(gap_count=len(gaps))
-
-    return None
 
 
 def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig) -> list[ProposalContext]:
@@ -857,9 +702,10 @@ def run_batch_workflow(
     """
     LOGGER.info("Starting batch workflow with %s gaps per topic", config.batch.num_gaps)
 
-    # Step 1: Find gaps (writes cache) and load them for downstream steps
-    find_gaps_for_config(config, output_dir, state_manager=state_manager)
-    gaps = load_cached_gaps(output_dir)
+    # Step 1: Find gaps
+    gaps = compute_gaps_for_config(config)
+    if state_manager is not None:
+        state_manager.mark_gaps_ready(gap_count=len(gaps))
     LOGGER.info("Found %s gaps", len(gaps))
 
     # ARTIFACTS: Generate context files

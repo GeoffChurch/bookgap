@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
-from bookgap.cloud import _truncate_bisecting_kmeans_dendrogram
+from bookgap.dendrogram import _truncate_bisecting_kmeans_dendrogram
 
 
 def _canonical_clusters(labels: np.ndarray) -> list[tuple[int, ...]]:
