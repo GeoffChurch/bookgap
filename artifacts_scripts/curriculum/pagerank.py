@@ -6,15 +6,12 @@ both single and batched personalization vectors.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Dict
-
 import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
 from tqdm import tqdm
 
 from bookgap.util import LOGGER, TIMER
-from bookgap.util import build_citation_adjacency_from_ids
 from sklearn.preprocessing import normalize as sk_normalize
 
 

@@ -8,20 +8,24 @@ This is the one-stop-shop script for building curricula. It orchestrates:
 
 All steps can be toggled via Hydra configuration.
 
+Attention is All You Need: W2626778328
+LSTM: W2064675550
+LoRA for Audio: W4391021820
+
 Usage:
     python -m artifacts_scripts.curriculum.main \
-        "target_work_ids=['https://openalex.org/W2064675550']" \
+        "target_work_ids=['https://openalex.org/W4391021820']" \
         desired_n_topics=5 \
         output_dir=results/lstm
         
     # Skip plotting
     python -m artifacts_scripts.curriculum.main \
-        "target_work_ids=['https://openalex.org/W2064675550']" \
+        "target_work_ids=['https://openalex.org/W4391021820']" \
         plot.enabled=false
         
     # Use different keyword extraction method
     python -m artifacts_scripts.curriculum.main \
-        "target_work_ids=['https://openalex.org/W2064675550']" \
+        "target_work_ids=['https://openalex.org/W4391021820']" \
         keywords.method=log_odds \
         keywords.top_k=15
 """
@@ -30,7 +34,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import hydra
 from hydra.core.config_store import ConfigStore
@@ -41,10 +45,17 @@ from bookgap.cloud import Cloud
 from bookgap.configs.config_store import register_configs
 from bookgap.util import LOGGER, setup_logging
 
-from .config import CurriculumConfig, KeywordConfig, PlotConfig, get_curriculum_output_dir
+from .config import (
+    CurriculumConfig,
+    KeywordConfig,
+    PlotConfig,
+    get_curriculum_output_dir,
+    derive_output_dir_name,
+)
 from .build_curriculum import run_curriculum_building
 from .summarize_topics import summarize_topics, load_curriculum_outputs
 from .plot_curriculum import plot_curriculum
+from .output_summary import generate_curriculum_summary
 
 
 # Register configs
@@ -203,12 +214,18 @@ def main(cfg: CurriculumConfig) -> None:
     LOGGER.info("=" * 60)
     LOGGER.info(f"Target work IDs: {cfg.target_work_ids}")
     LOGGER.info(f"Desired topics: {cfg.desired_n_topics}")
-    LOGGER.info(f"PPR first: {cfg.ppr_first} (top_k={cfg.ppr_top_k})")
+    LOGGER.info(f"Rank before clustering: {cfg.rank_before_clustering} (top_k={cfg.ranking_top_k})")
     LOGGER.info(f"Linkage method: {cfg.linkage_method}")
     LOGGER.info(f"Keywords enabled: {cfg.keywords.enabled}")
     LOGGER.info(f"Plotting enabled: {cfg.plot.enabled}")
     
-    output_dir = get_curriculum_output_dir(cfg.output_dir)
+    # Resolve output_dir: if left as default/empty, derive from overrides
+    auto_name = cfg.output_dir in (None, "")
+    if auto_name:
+        output_dir_name = derive_output_dir_name(cfg)
+    else:
+        output_dir_name = str(cfg.output_dir)
+    output_dir = get_curriculum_output_dir(output_dir_name, auto_derived=auto_name)
     
     LOGGER.info(f"Output directory: {output_dir}")
 
@@ -221,10 +238,10 @@ def main(cfg: CurriculumConfig) -> None:
         explicit_args=None,
     )
     
-    # Step 1: Build curriculum
-    cloud, embeddings_for_clustering, filtered_indices = run_curriculum_building(cfg)
+    # Build curriculum (pass resolved output_dir to avoid re-creation)
+    cloud, embeddings_for_clustering, filtered_indices = run_curriculum_building(cfg, output_dir=output_dir)
     
-    # Step 2: Keyword extraction (if enabled)
+    # Keyword extraction (if enabled)
     topic_keywords = None
     if cfg.keywords.enabled:
         topic_keywords = run_keyword_extraction(
@@ -234,7 +251,15 @@ def main(cfg: CurriculumConfig) -> None:
             filtered_indices,
         )
     
-    # Step 3: Visualization (if enabled)
+    # Generate summary markdown
+    generate_curriculum_summary(
+        output_dir,
+        cloud,
+        filtered_indices,
+        topic_keywords,
+    )
+    
+    # Visualization (if enabled)
     if cfg.plot.enabled:
         run_plotting(
             cfg.plot,

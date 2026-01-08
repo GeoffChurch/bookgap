@@ -48,6 +48,7 @@ class KeywordMethod(str, Enum):
 class DocWeighting(str, Enum):
     TOKEN = "token"
     EQUAL = "equal"
+    RELEVANCE = "relevance"  # Weight each doc by its CircuitRank/PageRank mass
 
 
 class TopicWeighting(str, Enum):
@@ -57,15 +58,33 @@ class TopicWeighting(str, Enum):
 def _topic_docs_to_fractional_counts(
     topic_docs: List[List[str]],
     doc_weighting: DocWeighting,
+    doc_weights: Optional[List[float]] = None,
 ) -> Tuple[Dict[str, float], float]:
     """Convert a topic's documents into (counts, total) for downstream scoring.
 
     - doc_weighting="token": standard bag-of-tokens counts (longer docs weigh more)
     - doc_weighting="equal": each document contributes unit mass via normalized term
       frequencies, so document length does not affect weight
+    - doc_weighting="relevance": each document contributes mass proportional to its
+      relevance weight (normalized term frequencies scaled by doc_weights)
+      
+    Args:
+        topic_docs: List of token lists, one per document
+        doc_weighting: How to weight documents
+        doc_weights: Per-document weights (required for RELEVANCE, ignored otherwise).
+            Will be normalized to sum to len(topic_docs) to match EQUAL scale.
     """
-    if doc_weighting not in {DocWeighting.TOKEN, DocWeighting.EQUAL}:
+    if doc_weighting not in {DocWeighting.TOKEN, DocWeighting.EQUAL, DocWeighting.RELEVANCE}:
         raise ValueError(f"Invalid doc_weighting: {doc_weighting}")
+
+    if doc_weighting == DocWeighting.RELEVANCE:
+        if doc_weights is None:
+            raise ValueError("doc_weights required for RELEVANCE weighting")
+        if len(doc_weights) != len(topic_docs):
+            raise ValueError(
+                f"doc_weights length ({len(doc_weights)}) must match "
+                f"topic_docs length ({len(topic_docs)})"
+            )
 
     if doc_weighting == DocWeighting.TOKEN:
         c = Counter()
@@ -74,20 +93,57 @@ def _topic_docs_to_fractional_counts(
         total = float(sum(c.values()))
         return {k: float(v) for k, v in c.items()}, total
 
-    # equal document weighting
-    counts: Dict[str, float] = {}
-    total_docs = 0.0
-    for tokens in topic_docs:
+    if doc_weighting == DocWeighting.EQUAL:
+        # Each document contributes unit mass via normalized term frequencies
+        counts: Dict[str, float] = {}
+        total_docs = 0.0
+        for tokens in topic_docs:
+            if not tokens:
+                continue
+            per_doc = Counter(tokens)
+            doc_len = float(sum(per_doc.values()))
+            if doc_len <= 0:
+                continue
+            total_docs += 1.0
+            for word, cnt in per_doc.items():
+                counts[word] = counts.get(word, 0.0) + (float(cnt) / doc_len)
+        return counts, total_docs
+
+    # RELEVANCE weighting: normalize weights then scale each document's contribution
+    # Normalize weights to sum to number of non-empty docs (matching EQUAL's scale)
+    n_nonempty = sum(1 for tokens in topic_docs if tokens)
+    if n_nonempty == 0:
+        return {}, 0.0
+    
+    # doc_weights is guaranteed non-None here due to validation above
+    weights = doc_weights  # type narrowing for type checker
+    assert weights is not None  # for type checker
+    
+    # Normalize weights to sum to n_nonempty (same scale as EQUAL)
+    weight_sum = sum(w for w, tokens in zip(weights, topic_docs) if tokens)
+    if weight_sum <= 0:
+        # Fallback to equal weighting if all weights are zero
+        scale = 1.0
+    else:
+        scale = float(n_nonempty) / weight_sum
+    
+    counts = {}
+    total_mass = 0.0
+    for tokens, weight in zip(topic_docs, weights):
         if not tokens:
             continue
         per_doc = Counter(tokens)
         doc_len = float(sum(per_doc.values()))
         if doc_len <= 0:
             continue
-        total_docs += 1.0
+        # Normalized weight for this document
+        w = float(weight) * scale
+        total_mass += w
         for word, cnt in per_doc.items():
-            counts[word] = counts.get(word, 0.0) + (float(cnt) / doc_len)
-    return counts, total_docs
+            # Normalized term frequency scaled by document weight
+            counts[word] = counts.get(word, 0.0) + (float(cnt) / doc_len) * w
+    
+    return counts, total_mass
 
 def tokenize(text: str) -> List[str]:
     """Simple tokenization: lowercase, split on non-alphanumeric, filter short tokens.
@@ -413,24 +469,66 @@ def compute_log_odds_ratio_docs(
     prior_weight: float = 0.01,
     doc_weighting: DocWeighting = DocWeighting.EQUAL,
     topic_weighting: TopicWeighting = TopicWeighting.EQUAL,
+    topic_doc_weights: Optional[List[List[float]]] = None,
 ) -> List[List[Tuple[str, float]]]:
     """Compute Fightin' Words z-scores using per-document tokens.
 
     With doc_weighting="equal", each document contributes unit mass via normalized
     within-document frequencies, so longer documents do not dominate.
+    
+    With doc_weighting="relevance", each document contributes mass proportional to
+    its relevance weight. The background is always computed with EQUAL weighting
+    (unweighted) to provide a neutral baseline.
+    
+    Args:
+        topic_doc_tokens: Topics -> documents -> tokens.
+        top_k: Number of top keywords to return per topic.
+        prior_weight: Symmetric Dirichlet prior (alpha).
+        doc_weighting: How to weight documents within a topic.
+        topic_weighting: How to weight topics in background construction.
+        topic_doc_weights: Per-document weights for each topic. Required if
+            doc_weighting=RELEVANCE. Shape: topics -> documents -> weight.
     """
     n_topics = len(topic_doc_tokens)
 
     if topic_weighting not in {TopicWeighting.POOLED, TopicWeighting.EQUAL}:
         raise ValueError(f"Invalid topic_weighting: {topic_weighting}")
 
-    topic_counts: List[Dict[str, float]] = []
-    topic_totals: List[float] = []
+    if doc_weighting == DocWeighting.RELEVANCE and topic_doc_weights is None:
+        raise ValueError("topic_doc_weights required for RELEVANCE doc_weighting")
+
+    # For RELEVANCE mode: foreground uses weights, background uses EQUAL (unweighted)
+    # This provides a neutral baseline distribution for comparison
+    foreground_weighting = doc_weighting
+    background_weighting = DocWeighting.EQUAL if doc_weighting == DocWeighting.RELEVANCE else doc_weighting
+
+    # Build foreground counts (used for topic-specific scores)
+    foreground_counts: List[Dict[str, float]] = []
+    foreground_totals: List[float] = []
+    
+    for topic_idx, docs in enumerate(topic_doc_tokens):
+        if foreground_weighting == DocWeighting.RELEVANCE:
+            weights = topic_doc_weights[topic_idx] if topic_doc_weights else None
+            counts, total = _topic_docs_to_fractional_counts(
+                docs, doc_weighting=foreground_weighting, doc_weights=weights
+            )
+        else:
+            counts, total = _topic_docs_to_fractional_counts(
+                docs, doc_weighting=foreground_weighting
+            )
+        foreground_counts.append(counts)
+        foreground_totals.append(float(total))
+
+    # Build background counts (always EQUAL for RELEVANCE mode)
+    background_counts: List[Dict[str, float]] = []
+    background_totals: List[float] = []
     global_counts: Dict[str, float] = {}
     vocabulary: Set[str] = set()
 
     for docs in topic_doc_tokens:
-        counts, total = _topic_docs_to_fractional_counts(docs, doc_weighting=doc_weighting)
+        counts, total = _topic_docs_to_fractional_counts(
+            docs, doc_weighting=background_weighting
+        )
 
         # Optional topic-level normalization: make each topic contribute equal total mass.
         # This affects ONLY the background construction (ambient distribution).
@@ -439,8 +537,8 @@ def compute_log_odds_ratio_docs(
             counts = {w: float(c) * scale for w, c in counts.items()}
             total = 1.0
 
-        topic_counts.append(counts)
-        topic_totals.append(float(total))
+        background_counts.append(counts)
+        background_totals.append(float(total))
         for w, c in counts.items():
             global_counts[w] = global_counts.get(w, 0.0) + float(c)
         vocabulary.update(counts.keys())
@@ -454,14 +552,21 @@ def compute_log_odds_ratio_docs(
 
     results: List[List[Tuple[str, float]]] = []
     for topic_idx in range(n_topics):
-        counts_in = topic_counts[topic_idx]
-        total_in = float(topic_totals[topic_idx])
-        total_out = global_total - total_in
+        # Foreground: use (possibly weighted) counts from this topic
+        counts_in = foreground_counts[topic_idx]
+        total_in = float(foreground_totals[topic_idx])
+        
+        # Background: use unweighted counts from all OTHER topics
+        # Subtract this topic's background (unweighted) contribution
+        counts_out_topic = background_counts[topic_idx]
+        total_out_topic = background_totals[topic_idx]
+        total_out = global_total - total_out_topic
 
         scores: Dict[str, float] = {}
         for word in vocabulary:
             y_in = float(counts_in.get(word, 0.0))
-            y_out = float(global_counts.get(word, 0.0)) - y_in
+            # Background: global (unweighted) minus this topic's unweighted contribution
+            y_out = float(global_counts.get(word, 0.0)) - float(counts_out_topic.get(word, 0.0))
 
             y_in_smooth = y_in + prior_weight
             y_out_smooth = y_out + prior_weight
@@ -495,6 +600,7 @@ def extract_topic_keywords(
     idf_scope: str = "auto",
     prior_weight: float = 0.01,
     topic_weighting: TopicWeighting = TopicWeighting.POOLED,
+    topic_doc_weights: Optional[List[List[float]]] = None,
 ) -> List[List[Tuple[str, float]]]:
     """Extract distinctive keywords for each topic.
     
@@ -506,11 +612,16 @@ def extract_topic_keywords(
         idf_scope: For TF-IDF, compute IDF across "documents", "topics", or "auto" (recommended).
         prior_weight: For log-odds, symmetric Dirichlet prior (alpha).
         topic_weighting: For log-odds, how to weight topics in background construction.
+        topic_doc_weights: Per-document relevance weights for each topic. Required if
+            doc_weighting=RELEVANCE. Shape: topics -> documents -> weight.
         
     Returns:
         List of lists of (word, score) tuples for each topic.
     """
     if method == KeywordMethod.TFIDF:
+        # TF-IDF doesn't support relevance weighting currently
+        if doc_weighting == DocWeighting.RELEVANCE:
+            raise ValueError("TF-IDF does not support RELEVANCE doc_weighting yet")
         return compute_tfidf_scores_docs(
             topic_doc_tokens,
             top_k=top_k,
@@ -524,5 +635,6 @@ def extract_topic_keywords(
             prior_weight=float(prior_weight),
             doc_weighting=doc_weighting,
             topic_weighting=topic_weighting,
+            topic_doc_weights=topic_doc_weights,
         )
     raise ValueError(f"Unknown keyword extraction method: {method}")

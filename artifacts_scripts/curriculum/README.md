@@ -32,12 +32,12 @@ python -m artifacts_scripts.curriculum.main \
     desired_n_topics=5 \
     keywords.enabled=false
 
-# Full run with PPR-first optimization (default, clusters only top-k relevant works)
+# Full run with rank-before-clustering optimization (clusters only top-k relevant works)
 python -m artifacts_scripts.curriculum.main \
     "target_work_ids=['https://openalex.org/W2064675550']" \
     desired_n_topics=10 \
-    ppr_first=true \
-    ppr_top_k=20000
+    rank_before_clustering=true \
+    ranking_top_k=100000
 
 # Search the cache for papers by keyword (useful for finding OpenAlex IDs)
 python -m artifacts_scripts.curriculum.search_cache "chain of thought" --limit 10
@@ -179,8 +179,8 @@ curriculum:
   pagerank_tol: 1e-6         # Convergence tolerance
   pagerank_max_iter: 100     # Maximum iterations
   linkage_method: "ward"     # Clustering method (see below)
-  ppr_first: true            # Run PPR first, cluster only top-k works
-  ppr_top_k: 20000           # Number of top works to cluster (when ppr_first=true)
+  rank_before_clustering: true  # Rank first, cluster only top-k works
+  ranking_top_k: 100000      # Number of top works to cluster (when rank_before_clustering=true)
   output_dir: null           # Output directory (default: results/)
   
   # Keyword extraction options
@@ -213,11 +213,11 @@ curriculum:
 - **`ward`**: Scipy agglomerative clustering. High-quality balanced trees but requires ~8 bytes × n² memory for pairwise distances.
 - **`bisecting_kmeans`**: Recursive top-down K-Means splitting. Scales to millions of points with O(n) memory.
 
-### PPR-First Optimization
+### Rank-Before-Clustering Optimization
 
-When `ppr_first=true` (default), the pipeline:
-1. Runs PageRank on the full citation graph
-2. Selects top `ppr_top_k` works by PPR mass
+When `rank_before_clustering=true`, the pipeline:
+1. Runs ranking (PageRank or CircuitRank) on the full citation graph
+2. Selects top `ranking_top_k` works by relevance mass
 3. Clusters only these relevant works
 
 This is much faster than clustering the full dataset and produces more coherent topics since only prerequisite-relevant works are included.
@@ -300,6 +300,9 @@ Here's a full example workflow for building a curriculum for the LSTM paper:
 
 ```bash
 # Using the unified main.py (recommended)
+# https://openalex.org/W2064675550 — "Long Short-Term Memory" (LSTM) paper
+# https://openalex.org/W4391021820 — "Low-Rank Adaptation of Large Language Model Rescoring for Parameter-Efficient Speech Recognition"
+python -m artifacts_scripts.curriculum.main "source_work_ids=['https://openalex.org/W2064675550']" "target_work_ids=['https://openalex.org/W4391021820']" output_dir=lstm_to_lora_audio
 python -m artifacts_scripts.curriculum.main "target_work_ids=['https://openalex.org/W2064675550', 'https://openalex.org/W4391021820']" output_dir=lstm_lora_audio
 ```
 

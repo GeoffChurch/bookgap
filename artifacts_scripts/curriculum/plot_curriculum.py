@@ -81,7 +81,7 @@ def load_curriculum_data(
     
     if outputs.metadata is None:
         raise ValueError("metadata not found in curriculum outputs")
-    linearization_order = np.array(outputs.metadata["linearization_order"])
+    linearization_order = np.arange(len(outputs.frontier_nodes))
     
     return outputs.frontier_nodes, outputs.point_to_cluster, centroids, linearization_order
 

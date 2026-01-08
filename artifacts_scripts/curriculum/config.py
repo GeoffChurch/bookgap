@@ -1,8 +1,11 @@
 """Configuration for curriculum building."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass, asdict
+from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Mapping
+
+from omegaconf import OmegaConf, DictConfig
 
 from bookgap.configs.config import ExperimentConfig
 from bookgap.configs.gap.gap_config import GapConfig
@@ -10,25 +13,10 @@ from bookgap.configs.llm.llm_config import LLMConfig
 from bookgap.configs.batch.batch_config import BatchConfig
 from bookgap.configs.output.output_config import OutputConfig
 from bookgap.configs.cloud.cloud_config import CloudConfig
-from bookgap.util import ARTIFACTS_DIR
+from bookgap.util import ARTIFACTS_DIR, create_unicode_safe_filename
 
 from .dimensionality_reduction import DimensionalityReductionMethod
 from .keyword_extraction import DocWeighting, KeywordMethod, TopicWeighting
-
-
-def get_curriculum_output_dir(output_dir: str) -> Path:
-    """Get the output directory for curriculum artifacts.
-    
-    Args:
-        output_dir: Subdirectory name under artifacts/curriculum.
-        
-    Returns:
-        Path to the output directory (created if it doesn't exist).
-    """
-    path = Path(ARTIFACTS_DIR) / "curriculum" / output_dir
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
 
 @dataclass
 class KeywordConfig:
@@ -40,15 +28,18 @@ class KeywordConfig:
     method: KeywordMethod = KeywordMethod.LOG_ODDS
     """Keyword extraction method."""
     
-    top_k: int = 100
+    top_k: int = 20
     """Number of top keywords per topic."""
     
     samples_per_topic: int = 5000
     """Number of works to sample per topic for keyword extraction."""
 
-    doc_weighting: DocWeighting = DocWeighting.EQUAL
+    doc_weighting: DocWeighting = DocWeighting.RELEVANCE
     """How to weight documents within each topic when building keyword statistics.
 
+    - DocWeighting.RELEVANCE: each sampled work contributes mass proportional to its
+      CircuitRank/PageRank relevance score. High-relevance papers dominate keywords.
+      Background distribution is unweighted (EQUAL) for neutral comparison.
     - DocWeighting.EQUAL: each sampled work contributes equal mass (document-length invariant)
     - DocWeighting.TOKEN: longer texts contribute proportionally more (bag-of-tokens)
     """
@@ -126,7 +117,7 @@ class PlotConfig:
     max_points_per_topic: int = 300
     """Max points to plot per topic (for background mode)."""
     
-    method: DimensionalityReductionMethod = DimensionalityReductionMethod.UMAP
+    method: DimensionalityReductionMethod = DimensionalityReductionMethod.LPP
     """Dimensionality reduction method for 2D projection.
     
     Options: DimensionalityReductionMethod.PCA, LDA, or UMAP
@@ -150,28 +141,120 @@ class PlotConfig:
     """LPP-specific configuration."""
 
 
+class RankMethod(str, Enum):
+    PAGE_RANK = "page_rank"
+    CIRCUIT_RANK = "circuit_rank"
+
+@dataclass
+class PageRankConfig:
+    """Configuration for PageRank."""
+    
+    alpha: float = 0.85
+    """Damping factor for PageRank (probability of following a citation vs teleporting)."""
+    
+    tol: float = 1e-10
+    """Convergence tolerance for PageRank iteration."""
+    
+    max_iter: int = 500
+    """Maximum number of PageRank iterations."""
+
+@dataclass
+class CircuitRankConfig:
+    """Configuration for CircuitRank (Currenticulum).
+    
+    Uses current injection at target works and optional suction at known works.
+    All nodes are connected to ground via a conductance leakage, providing
+    natural exponential decay without the Dirac-delta concentration issues
+    of voltage clamping.
+    
+    Circuit equation: (D_out + G_leak * I - A) @ φ = I_sources
+    Where:
+    - I_sources[target] = +1/n_target (injection)
+    - I_sources[known] = -1/n_known (suction, if source_work_ids provided)
+    - All other nodes have I_sources = 0
+    """
+    
+    leakage: float = 0.176
+    """Global ground conductance (G_leak).
+    
+    Controls how quickly potential decays with graph distance.
+    Lower values → more global reach (superconductor-like).
+    Higher values → more local concentration (resistor network).
+    """
+    
+    beta: Optional[float] = None
+    """Alternative parameterization: leakage = exp(-beta).
+    
+    beta=6 → leakage≈0.002 (long-range)
+    beta=10 → leakage≈0.00005 (very long-range)
+    """
+    
+    gmres_tol: float = 1e-6
+    """Convergence tolerance for GMRES solver."""
+    
+    gmres_maxiter: Optional[int] = None
+    """Maximum GMRES iterations (None = auto)."""
+
+    gmres_preconditioner: Optional[str] = "jacobi"
+    """Optional preconditioner for GMRES. Supported: """ "'jacobi'" """."""
+
+    gmres_log_every: Optional[int] = 25
+    """If set, log GMRES progress every N inner iterations."""
+    
+    normalize: bool = True
+    """If True, use column-normalized adjacency (PageRank mode).
+    
+    This makes CircuitRank equivalent to PageRank:
+    - Set leakage = (1 - alpha) / alpha for damping factor alpha
+    - For alpha=0.85: leakage ≈ 0.176
+    - current_sources becomes the teleport/seed vector
+    """
+    
+    use_voltage_clamping: bool = False
+    """If True, use voltage clamping (Dirichlet BC) instead of current injection.
+    
+    Voltage clamping: Fix target nodes at φ=1, solve for free nodes.
+    Current injection: Inject current at targets, all nodes free.
+    
+    With normalized adjacency, both approaches give similar distributions,
+    but current injection includes the target nodes in the distribution.
+    """
+
 @dataclass
 class CurriculumConfig:
     """Configuration for curriculum building.
     
     Builds a curriculum for a target topic by mining prerequisite relationships
-    using personalized PageRank on the citation graph.
+    using personalized PageRank or CircuitRank on the citation graph.
     """
     
     target_work_ids: List[str] = field(default_factory=list)
-    """List of OpenAlex work IDs defining the target topic (seed set for PageRank)."""
+    """List of OpenAlex work IDs defining the target topic (seed set for PageRank).
+    
+    For CircuitRank: These nodes receive current injection (+I_target).
+    """
+    
+    source_work_ids: List[str] = field(default_factory=list)
+    """List of OpenAlex work IDs that the user already knows (optional).
+    
+    For CircuitRank: These nodes receive current suction (-I_source).
+    The curriculum will prefer paths that connect targets to these known works,
+    building on what the user already understands.
+    
+    If empty, only target injection is used with leakage to ground.
+    """
     
     desired_n_topics: int = 10
     """Desired number of frontier topics in the curriculum."""
     
-    pagerank_alpha: float = 0.90
-    """Damping factor for PageRank (probability of following a citation vs teleporting)."""
+    method: RankMethod = RankMethod.CIRCUIT_RANK
+    """Method to use for ranking works (PageRank or CircuitRank)."""
     
-    pagerank_tol: float = 1e-10
-    """Convergence tolerance for PageRank iteration."""
+    pagerank: PageRankConfig = field(default_factory=PageRankConfig)
+    """Configuration for PageRank."""
     
-    pagerank_max_iter: int = 500
-    """Maximum number of PageRank iterations."""
+    circuitrank: CircuitRankConfig = field(default_factory=CircuitRankConfig)
+    """Configuration for CircuitRank."""
     
     linkage_method: str = "bisecting_kmeans"
     """Linkage method for hierarchical clustering.
@@ -201,17 +284,26 @@ class CurriculumConfig:
     - 15: At most 2^15 = 32k leaf clusters
     """
     
-    ppr_first: bool = False
-    """If True, run PPR first and cluster only the top-k relevant works.
+    rank_before_clustering: bool = False
+    """If True, run ranking (PageRank/CircuitRank) first and cluster only the top-k relevant works.
     
     This is more efficient for large datasets and produces more coherent topics
     since only prerequisite-relevant works are clustered.
     """
     
-    ppr_top_k: int = 500000
-    """Number of top works by PPR mass to include in clustering when ppr_first=True.
+    ranking_top_k: int = 100000
+    """Number of top works by relevance mass to include in clustering when rank_before_clustering=True.
     
     With 100k works, Ward's linkage is tractable (~8GB memory).
+    """
+    
+    topic_work_ids_mass_threshold: float = 0.99
+    """Fraction of topic mass to retain when saving topic_work_ids.json."""
+    
+    topic_work_ids_max_count: Optional[int] = 50
+    """Maximum number of works to retain per topic in topic_work_ids.json.
+    
+    If set, selection stops when EITHER the mass threshold is reached OR this count is reached.
     """
     
     # Sub-configs for keyword extraction and plotting
@@ -233,4 +325,134 @@ class CurriculumConfig:
     )
     """Experiment configuration (cloud settings, etc.)."""
     
-    output_dir: str = "default"
+    output_dir: Optional[str] = None
+
+
+def get_curriculum_output_dir(output_dir: str, *, auto_derived: bool = False) -> Path:
+    """Get the output directory for curriculum artifacts.
+    
+    Args:
+        output_dir: Subdirectory name under artifacts/curriculum.
+        auto_derived: If True, avoid collisions by appending an integer suffix
+            (starting at 2) until a free directory name is found.
+    
+    Returns:
+        Path to the output directory (created if it doesn't exist).
+    """
+    base = Path(ARTIFACTS_DIR) / "curriculum"
+    target = base / output_dir
+    if auto_derived:
+        i = 2
+        while target.exists():
+            target = base / f"{output_dir}__{i}"
+            i += 1
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _is_mapping(obj: Any) -> bool:
+    if isinstance(obj, DictConfig):
+        return True
+    return isinstance(obj, Mapping)
+
+
+def _to_mapping(obj: Any) -> Mapping[str, Any]:
+    if isinstance(obj, DictConfig):
+        return OmegaConf.to_container(obj, resolve=True)  # type: ignore
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return asdict(obj)
+    if isinstance(obj, Mapping):
+        return obj
+    # Fallback: empty mapping
+    return {}
+
+
+def _norm_scalar(val: Any) -> Optional[str]:
+    # Convert simple values to a string form; return None to skip
+    if val is None:
+        return None
+    # Unwrap Enums
+    if isinstance(val, Enum):
+        # Prefer .value if it's scalar, else use name
+        sval = getattr(val, "value", val)
+        return str(sval)
+    if isinstance(val, (bool, int, float, str)):
+        return str(val)
+    return None
+
+
+def _collect_overrides(curr: Any, base: Any, prefix: str = "") -> dict[str, str]:
+    """Recursively collect overrides vs defaults across dataclasses or DictConfig.
+
+    - Only include scalar fields (bool/int/float/str or Enum) to keep names short.
+    - Skip lists and large nested structures.
+    - Skip the 'experiment' subtree and the 'output_dir' field entirely.
+    """
+    diffs: dict[str, str] = {}
+
+    if _is_mapping(curr) and _is_mapping(base):
+        curr_map = _to_mapping(curr)
+        base_map = _to_mapping(base)
+        keys = set(base_map.keys()) | set(curr_map.keys())
+        for name in keys:
+            if name in {"experiment", "output_dir"}:
+                continue
+            sub_curr = curr_map.get(name)
+            sub_base = base_map.get(name)
+            key = f"{prefix}{name}" if prefix else name
+            if _is_mapping(sub_curr) and _is_mapping(sub_base):
+                diffs.update(_collect_overrides(sub_curr, sub_base, prefix=f"{key}."))
+            else:
+                sval = _norm_scalar(sub_curr)
+                bval = _norm_scalar(sub_base)
+                if sval is not None and bval is not None and sval != bval:
+                    diffs[key] = sval
+        return diffs
+
+    # Dataclass path based on default structure (base acts as schema)
+    if is_dataclass(base):
+        for f in fields(base):
+            name = f.name
+            if name in {"experiment", "output_dir"}:
+                continue
+            key = f"{prefix}{name}" if prefix else name
+            curr_val = getattr(curr, name, None) if not _is_mapping(curr) else _to_mapping(curr).get(name)
+            base_val = getattr(base, name, None)
+            if is_dataclass(base_val):
+                diffs.update(_collect_overrides(curr_val, base_val, prefix=f"{key}."))
+            else:
+                sval = _norm_scalar(curr_val)
+                bval = _norm_scalar(base_val)
+                if sval is not None and bval is not None and sval != bval:
+                    diffs[key] = sval
+        return diffs
+
+    return diffs
+
+
+def derive_output_dir_name(cfg: CurriculumConfig) -> str:
+    """Derive a default output directory name based on config overrides.
+
+    Compares the provided config to its dataclass defaults and summarizes the
+    differing scalar fields as comma-separated key=value pairs, using dotted
+    paths for nested fields (e.g., "keywords.top_k=200").
+
+    Falls back to "default" if no differences are detected.
+    """
+    base = CurriculumConfig()  # default instance for comparison
+    diffs = _collect_overrides(cfg, base)
+    if not diffs:
+        return "default"
+    # Prefer concise last-segment keys when unambiguous
+    keys = list(diffs.keys())
+    last_segments = [k.split(".")[-1] for k in keys]
+    counts: dict[str, int] = {}
+    for seg in last_segments:
+        counts[seg] = counts.get(seg, 0) + 1
+    display_keys: list[str] = []
+    for k in keys:
+        seg = k.split(".")[-1]
+        display_keys.append(seg if counts.get(seg, 0) == 1 else k)
+    parts = [f"{create_unicode_safe_filename(k)}={create_unicode_safe_filename(diffs[orig_k])}" for k, orig_k in sorted(zip(display_keys, keys), key=lambda kv: kv[0])]
+    name = ",".join(parts)
+    return name or "default"

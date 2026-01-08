@@ -231,14 +231,48 @@ def project_to_2d(
         M = Xc.T.dot(LX)
         B = Xc.T.dot(d[:, None] * Xc)
 
+        # Numerical hygiene: enforce symmetry (should be symmetric in exact arithmetic)
+        M = 0.5 * (M + M.T)
+        B = 0.5 * (B + B.T)
+
+        def _make_spd(mat: NDArray[np.floating], eps: float) -> NDArray[np.floating]:
+            """Return a symmetric positive-definite matrix close to `mat`.
+
+            Uses eigenvalue clipping: Q diag(max(w, eps)) Q^T.
+            Works well for small dense matrices (here: embedding_dim x embedding_dim).
+            """
+            w, Q = np.linalg.eigh(mat)
+            w = np.maximum(w, eps)
+            return (Q * w) @ Q.T
+
         try:
             eigvals, eigvecs = eigh(M, B)
-        except Exception as e:
-            # Fall back to tiny ridge on B if it's not positive definite
-            LOGGER.warning("Generalized eigenproblem failed (B not positive-definite). Applying tiny ridge and retrying.")
-            eps = 1e-8 * np.trace(B) / max(1, B.shape[0])
-            B_reg = B + eps * np.eye(B.shape[0])
-            eigvals, eigvecs = eigh(M, B_reg)
+        except np.linalg.LinAlgError:
+            # B is not positive definite (or is near-singular); stabilize.
+            LOGGER.warning(
+                "Generalized eigenproblem failed (B not positive-definite). "
+                "Applying SPD regularization to B."
+            )
+            eigvals = eigvecs = None
+            for eps in (1e-12, 1e-10, 1e-8, 1e-6, 1e-4, 1e-3, 1e-2):
+                try:
+                    B_spd = _make_spd(B, eps=eps)
+                    eigvals, eigvecs = eigh(M, B_spd)
+                    LOGGER.info(f"LPP: stabilized B with eps={eps:.1e}")
+                    break
+                except np.linalg.LinAlgError:
+                    continue
+
+            if eigvals is None or eigvecs is None:
+                LOGGER.exception(
+                    "LPP generalized eigenproblem still failed after regularization; "
+                    "falling back to PCA for plotting."
+                )
+                reducer = PCA(n_components=2)
+                embeddings_2d = reducer.fit_transform(Xc)
+                explained_var = reducer.explained_variance_ratio_.sum()
+                LOGGER.info(f"PCA explained variance: {explained_var:.2%}")
+                return embeddings_2d, reducer
         idx = np.argsort(eigvals)
         k = min(2, eigvecs.shape[1])
         A = eigvecs[:, idx[:k]]

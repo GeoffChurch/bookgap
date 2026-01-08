@@ -138,7 +138,7 @@ def search_cache(
     """Search all cached JSON files for works matching keywords.
     
     Args:
-        cache_dir: Directory containing page_*.json files
+        cache_dir: Directory containing page_*.json files (searched recursively)
         keywords: List of keywords to search for (all must match)
         field: Which field to search ('title', 'abstract', 'both')
         case_sensitive: Whether search is case-sensitive
@@ -148,11 +148,11 @@ def search_cache(
     Returns:
         List of SearchResult objects, sorted by match score
     """
-    # Find all page files
-    page_files = sorted(cache_dir.glob("page_*.json"))
+    # Find all page files (recursively)
+    page_files = sorted(cache_dir.rglob("page_*.json"))
     
     if not page_files:
-        print(f"No page_*.json files found in {cache_dir}", file=sys.stderr)
+        print(f"No page_*.json files found in {cache_dir} (recursive)", file=sys.stderr)
         return []
     
     print(f"Searching {len(page_files)} files for keywords: {keywords}", file=sys.stderr)
@@ -193,22 +193,8 @@ def get_default_cache_dir() -> Path:
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent.parent
     
-    cache_dir = repo_root / "cache" / "api_data" / "subfield=1702, work_types= book,article"
-    
-    if cache_dir.exists():
-        return cache_dir
-    
-    # Try alternative paths
-    alternatives = [
-        Path("cache/api_data/subfield=1702, work_types= book,article"),
-        Path.cwd() / "cache" / "api_data" / "subfield=1702, work_types= book,article",
-    ]
-    
-    for alt in alternatives:
-        if alt.exists():
-            return alt
-    
-    return cache_dir  # Return default even if not found
+    # New structure: cache/api_data/17/1702/T*/work_type/page_*.json
+    return repo_root / "cache" / "api_data" / "17" / "1702"
 
 
 def main():

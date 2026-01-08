@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -33,7 +34,7 @@ from bookgap.cloud import Cloud, DendrogramResult
 from bookgap.configs.config_store import register_configs
 from bookgap.util import LOGGER, TIMER
 
-from .config import CurriculumConfig, get_curriculum_output_dir
+from .config import CurriculumConfig, get_curriculum_output_dir, derive_output_dir_name, RankMethod
 from .dendrogram_ops import (
     compute_dendrogram_masses,
     find_mass_threshold_for_n_topics,
@@ -43,6 +44,15 @@ from .dendrogram_ops import (
 from .pagerank import (
     compute_frontier_adjacency,
     compute_pagerank,
+)
+from .circuitrank import (
+    compute_graph_potential,
+    compute_frontier_adjacency_potential,
+)
+from .mass_statistics import (
+    compute_mass_distribution_stats,
+    compute_cluster_size_stats,
+    compute_adjacency_stats,
 )
 
 # Logging is initialized by the pipeline entry point (main.py)
@@ -146,8 +156,12 @@ def _build_dendrogram(
                         f"Options: {SCIPY_LINKAGE_METHODS | {'bisecting_kmeans'}}")
 
 
-def _compute_linearization_order(adj_matrix: NDArray[np.floating]) -> NDArray[np.int64]:
+def _compute_linearization_order_from_adjacency(adj_matrix: NDArray[np.floating]) -> NDArray[np.int64]:
     """Compute linearization order based on citation in-degree minus out-degree.
+    
+    DEPRECATED: This heuristic doesn't distinguish source from target topics.
+    Use _compute_linearization_order_from_potentials instead when potentials
+    are available.
     
     Topics with high in-degree (cited by many other topics) and low out-degree
     (cite few other topics) are prerequisites and should come first.
@@ -174,33 +188,79 @@ def _compute_linearization_order(adj_matrix: NDArray[np.floating]) -> NDArray[np
     return np.array(sorted_indices, dtype=np.int64)
 
 
+def _compute_linearization_order_from_potentials(
+    point_potentials: NDArray[np.floating],
+    point_to_cluster: NDArray[np.intp],
+    n_topics: int,
+) -> NDArray[np.int64]:
+    """Compute linearization order from work-level potentials.
+    
+    Uses voltage clamping potentials where source=1V, target=0V.
+    Topics are sorted by average potential of their works:
+    - High potential = close to source = learn early
+    - Low potential = close to target = learn late
+    
+    Args:
+        point_potentials: Potential (voltage) for each work from voltage clamping solve.
+        point_to_cluster: Mapping from work index to topic index.
+        n_topics: Number of topics.
+        
+    Returns:
+        Array of topic indices sorted by average potential (descending = source first).
+    """
+    # Compute average potential per topic
+    topic_potentials = np.zeros(n_topics, dtype=np.float64)
+    topic_counts = np.zeros(n_topics, dtype=np.int64)
+    
+    for work_idx, topic_idx in enumerate(point_to_cluster):
+        if topic_idx >= 0:  # Skip unassigned works
+            topic_potentials[topic_idx] += point_potentials[work_idx]
+            topic_counts[topic_idx] += 1
+    
+    # Avoid division by zero for empty topics
+    topic_counts = np.maximum(topic_counts, 1)
+    topic_avg_potentials = topic_potentials / topic_counts
+    
+    # Sort by descending average potential (high = source = first)
+    sorted_indices = np.argsort(-topic_avg_potentials)
+    return sorted_indices.astype(np.int64)
+
+
 def run_curriculum_building(
-    cfg: CurriculumConfig
+    cfg: CurriculumConfig,
+    output_dir: Optional[Path] = None,
 ) -> Tuple[Cloud, NDArray[np.floating], Optional[NDArray[np.intp]]]:
     """Execute the curriculum building pipeline.
     
-    When cfg.ppr_first is True (default), the pipeline is:
+    When cfg.rank_before_clustering is True, the pipeline is:
     1. Build citation graph on all works
-    2. Run PPR from target works on full graph
-    3. Select top-k works by PPR mass
+    2. Run ranking (PageRank/CircuitRank) from target works on full graph
+    3. Select top-k works by relevance mass
     4. Build dendrogram only on filtered works (Ward's is now tractable!)
-    5. Lift PPR masses to dendrogram → find frontier → linearize
+    5. Lift masses to dendrogram → find frontier → linearize
     
-    When cfg.ppr_first is False (legacy), the pipeline is:
+    When cfg.rank_before_clustering is False (default), the pipeline is:
     1. Build citation graph and dendrogram on all works
-    2. Run PPR → lift to dendrogram → find frontier
+    2. Run ranking → lift to dendrogram → find frontier
     
     Args:
         cfg: CurriculumConfig object.
+        output_dir: Pre-resolved output directory Path. If None, will be derived and created.
         
     Returns:
         Tuple of:
         - cloud: The Cloud object
         - embeddings_for_clustering: The embeddings used for clustering
-        - filtered_indices: Array of original indices if ppr_first=True, else None
+        - filtered_indices: Array of original indices if rank_before_clustering=True, else None
     """
-    # Setup output directory
-    output_dir = get_curriculum_output_dir(cfg.output_dir)
+    # Use provided output_dir or derive/create it
+    if output_dir is None:
+        auto_name = cfg.output_dir in (None, "")
+        if auto_name:
+            output_dir_name = derive_output_dir_name(cfg)
+        else:
+            output_dir_name = str(cfg.output_dir)
+        output_dir = get_curriculum_output_dir(output_dir_name, auto_derived=auto_name)
     
     # Log startup
     LOGGER.info("=" * 60)
@@ -208,10 +268,22 @@ def run_curriculum_building(
     LOGGER.info("=" * 60)
     LOGGER.info(f"Target work IDs: {len(cfg.target_work_ids)} works")
     LOGGER.info(f"Desired topics: {cfg.desired_n_topics}")
-    LOGGER.info(f"PageRank alpha: {cfg.pagerank_alpha}")
-    LOGGER.info(f"PPR-first mode: {cfg.ppr_first}")
-    if cfg.ppr_first:
-        LOGGER.info(f"PPR top-k: {cfg.ppr_top_k}")
+    LOGGER.info(f"Ranking method: {cfg.method.value}")
+    if cfg.method == RankMethod.PAGE_RANK:
+        LOGGER.info(f"PageRank alpha: {cfg.pagerank.alpha}")
+    elif cfg.method == RankMethod.CIRCUIT_RANK:
+        LOGGER.info(f"CircuitRank leakage: {cfg.circuitrank.leakage}")
+        if cfg.circuitrank.beta is not None:
+            LOGGER.info(f"CircuitRank beta: {cfg.circuitrank.beta}")
+        if cfg.circuitrank.normalize:
+            LOGGER.info(f"CircuitRank normalize: True (PageRank mode)")
+            # Log equivalent alpha for reference
+            equiv_alpha = 1.0 / (1.0 + cfg.circuitrank.leakage)
+            LOGGER.info(f"CircuitRank equivalent alpha: {equiv_alpha:.4f}")
+    
+    LOGGER.info(f"Rank-before-clustering: {cfg.rank_before_clustering}")
+    if cfg.rank_before_clustering:
+        LOGGER.info(f"Ranking top-k: {cfg.ranking_top_k}")
     LOGGER.info(f"Output directory: {output_dir}")
     LOGGER.info("")
     
@@ -240,29 +312,166 @@ def run_curriculum_building(
     LOGGER.info("Building citation adjacency matrix...")
     adj = cloud.citation_graph(normalize=False)
     
-    # Create seed vector for personalized PageRank
-    seeds = np.zeros(n_total, dtype=np.float64)
-    seeds[seed_indices] = 1.0 / len(seed_indices)
+    # Run Ranking (PageRank or CircuitRank) on FULL graph
+    full_point_potentials: Optional[NDArray[np.floating]] = None  # For potential-based linearization
+    if cfg.method == RankMethod.PAGE_RANK:
+        LOGGER.info("Running Personalized PageRank from target topic...")
+        # Create seed vector for personalized PageRank
+        seeds = np.zeros(n_total, dtype=np.float64)
+        seeds[seed_indices] = 1.0 / len(seed_indices)
+        
+        full_point_masses = compute_pagerank(
+            adj,
+            seeds,
+            alpha=cfg.pagerank.alpha,
+            tol=cfg.pagerank.tol,
+            max_iter=cfg.pagerank.max_iter,
+        )
+    elif cfg.method == RankMethod.CIRCUIT_RANK:
+        if cfg.circuitrank.use_voltage_clamping:
+            LOGGER.info("Running CircuitRank (Voltage Clamping)...")
+            # Fix target nodes at φ=0 (ground - things to learn)
+            # Fix known works at φ=1 (source - things already known)
+            # Current flows from known (1V) toward targets (0V)
+            # Curriculum order: start from known, end at targets
+            fixed_potentials = {idx: 0.0 for idx in seed_indices}
+            
+            # If known works are specified, clamp them to 1V (source)
+            if cfg.source_work_ids:
+                source_indices = _find_work_indices(work_ids, cfg.source_work_ids)
+                if source_indices:
+                    for idx in source_indices:
+                        fixed_potentials[idx] = 1.0
+                    LOGGER.info(
+                        f"Voltage clamping: {len(source_indices)} known works at 1V (source), "
+                        f"{len(seed_indices)} targets at 0V (ground)"
+                    )
+                else:
+                    LOGGER.warning(
+                        f"No source works found in cloud - using targets only. "
+                        f"Requested: {cfg.source_work_ids}"
+                    )
+                    LOGGER.info(f"Voltage clamping: {len(seed_indices)} targets at 0V (leakage from 1V)")
+            else:
+                LOGGER.info(f"Voltage clamping: {len(seed_indices)} targets at 0V (leakage from 1V)")
+            
+            full_point_masses = compute_graph_potential(
+                adj,
+                fixed_potentials=fixed_potentials,
+                leakage=cfg.circuitrank.leakage,
+                beta=cfg.circuitrank.beta,
+                normalize=cfg.circuitrank.normalize,
+                gmres_tol=cfg.circuitrank.gmres_tol,
+                gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+                gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+                gmres_log_every=cfg.circuitrank.gmres_log_every,
+            )
+        else:
+            LOGGER.info("Running CircuitRank (Current Injection) from target topic...")
+            
+            # Build current sources vector
+            # Targets: inject current (+1 total, distributed among targets)
+            # Sources (known works): suction current (-1 total, distributed among sources)
+            current_sources = np.zeros(n_total, dtype=np.float64)
+            current_sources[seed_indices] = 1.0 / len(seed_indices)
+            
+            # Find source (known) work indices if provided
+            source_indices: list[int] = []
+            if cfg.source_work_ids:
+                source_indices = _find_work_indices(work_ids, cfg.source_work_ids)
+                if source_indices:
+                    current_sources[source_indices] = -1.0 / len(source_indices)
+                    LOGGER.info(
+                        f"Current injection: +1.0 into {len(seed_indices)} targets, "
+                        f"-1.0 from {len(source_indices)} known works"
+                    )
+                else:
+                    LOGGER.warning(
+                        f"No source works found in cloud - using targets only. "
+                        f"Requested: {cfg.source_work_ids}"
+                    )
+                    LOGGER.info(f"Current injection: +1.0 into {len(seed_indices)} targets only")
+            else:
+                LOGGER.info(f"Current injection: +1.0 into {len(seed_indices)} targets (no known works)")
+            
+            # Solve for potentials with no fixed nodes (all nodes free, leakage to ground)
+            potentials = compute_graph_potential(
+                adj,
+                current_sources=current_sources,
+                leakage=cfg.circuitrank.leakage,
+                beta=cfg.circuitrank.beta,
+                normalize=cfg.circuitrank.normalize,
+                gmres_tol=cfg.circuitrank.gmres_tol,
+                gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+                gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+                gmres_log_every=cfg.circuitrank.gmres_log_every,
+            )
+            
+            # Compute current flow through each node - this is symmetric wrt source/target
+            # Nodes with high current flow are "on the path" between source and target
+            from artifacts_scripts.curriculum.circuitrank import compute_current_flow
+            full_point_masses = compute_current_flow(
+                adj, potentials, normalize=cfg.circuitrank.normalize
+            )
+            LOGGER.info(
+                f"Current flow: min={full_point_masses.min():.4e}, "
+                f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
+            )
+            
+            # Also compute potentials via voltage clamping for linearization
+            # This gives us directional information: source=1V (if specified), target=0V
+            # Even without source works, target-only clamping gives useful "distance to target" ordering
+            LOGGER.info("Computing potentials via voltage clamping for topic ordering...")
+            voltage_clamp_potentials = {idx: 0.0 for idx in seed_indices}  # targets at 0V
+            
+            if cfg.source_work_ids and source_indices:
+                for idx in source_indices:
+                    voltage_clamp_potentials[idx] = 1.0  # sources at 1V
+                LOGGER.info(
+                    f"Voltage clamping: {len(source_indices)} sources at 1V, "
+                    f"{len(seed_indices)} targets at 0V"
+                )
+            else:
+                LOGGER.info(
+                    f"Voltage clamping: {len(seed_indices)} targets at 0V only "
+                    "(no source works, ordering by distance from target)"
+                )
+            
+            full_point_potentials = compute_graph_potential(
+                adj,
+                fixed_potentials=voltage_clamp_potentials,
+                leakage=cfg.circuitrank.leakage,
+                beta=cfg.circuitrank.beta,
+                normalize=cfg.circuitrank.normalize,
+                gmres_tol=cfg.circuitrank.gmres_tol,
+                gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+                gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+                gmres_log_every=cfg.circuitrank.gmres_log_every,
+            )
+            LOGGER.info(
+                f"Voltage clamping potentials: min={full_point_potentials.min():.4f}, "
+                f"max={full_point_potentials.max():.4f}, mean={full_point_potentials.mean():.4f}"
+            )
+    else:
+        raise ValueError(f"Unknown ranking method: {cfg.method}")
     
-    # Run Personalized PageRank on FULL graph
-    LOGGER.info("Running Personalized PageRank from target topic...")
-    full_point_masses = compute_pagerank(
-        adj,
-        seeds,
-        alpha=cfg.pagerank_alpha,
-        tol=cfg.pagerank_tol,
-        max_iter=cfg.pagerank_max_iter,
-    )
-    
-    # Log mass distribution
+    # Log mass distribution with detailed statistics
     LOGGER.info(
-        f"PageRank mass distribution: min={full_point_masses.min():.4e}, "
+        f"Mass distribution: min={full_point_masses.min():.4e}, "
         f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
     )
     
-    if cfg.ppr_first:
-        # PPR-FIRST PIPELINE: Filter to top-k works, then cluster
-        top_k = min(cfg.ppr_top_k, n_total)
+    # Compute detailed mass statistics
+    full_mass_stats = compute_mass_distribution_stats(full_point_masses)
+    LOGGER.info(
+        f"Mass entropy: {full_mass_stats.entropy:.4f} "
+        f"({100*full_mass_stats.entropy_ratio:.1f}% of max), "
+        f"effective_n={full_mass_stats.effective_n:.0f}"
+    )
+    
+    if cfg.rank_before_clustering:
+        # RANK-FIRST PIPELINE: Filter to top-k works, then cluster
+        top_k = min(cfg.ranking_top_k, n_total)
         LOGGER.info(f"Selecting top {top_k} works by PPR mass...")
         
         # Get indices of top-k works by mass
@@ -272,6 +481,7 @@ def run_curriculum_building(
         filtered_work_ids = [work_ids[i] for i in top_k_indices]
         filtered_embeddings = embeddings[top_k_indices]
         filtered_point_masses = full_point_masses[top_k_indices]
+        filtered_point_potentials = full_point_potentials[top_k_indices] if full_point_potentials is not None else None
         
         # Map from original index to filtered index
         original_to_filtered = {orig: filt for filt, orig in enumerate(top_k_indices)}
@@ -286,6 +496,7 @@ def run_curriculum_building(
         
         n_samples = len(filtered_work_ids)
         point_masses = filtered_point_masses
+        point_potentials = filtered_point_potentials
         work_ids_for_clustering = filtered_work_ids
         embeddings_for_clustering = filtered_embeddings
         
@@ -295,19 +506,20 @@ def run_curriculum_building(
         # cluster assignments (the rest will be -1, meaning unassigned).
         # This is set up after clustering below.
         
-        LOGGER.info(f"Filtered to {n_samples} works (top {100*n_samples/n_total:.1f}% by PPR mass)")
+        LOGGER.info(f"Filtered to {n_samples} works (top {100*n_samples/n_total:.1f}% by relevance)")
         LOGGER.info(f"Mass retained: {point_masses.sum():.4f} ({100*point_masses.sum()/full_point_masses.sum():.1f}%)")
     else:
-        # LEGACY PIPELINE: Cluster all works
+        # FULL PIPELINE: Cluster all works
         n_samples = n_total
         point_masses = full_point_masses
+        point_potentials = full_point_potentials
         work_ids_for_clustering = work_ids
         embeddings_for_clustering = embeddings
         top_k_indices = np.arange(n_total)  # Identity mapping
     
     # Build dendrogram on (possibly filtered) embeddings
     LOGGER.info("Building dendrogram...")
-    if (not cfg.ppr_first) and cfg.linkage_method == "bisecting_kmeans":
+    if (not cfg.rank_before_clustering) and cfg.linkage_method == "bisecting_kmeans":
         # Full-cloud + bisecting_kmeans is expensive: leverage Cloud-level caching/subsumption.
         dendrogram_result = cloud.dendrogram(
             "bisecting_kmeans",
@@ -359,28 +571,87 @@ def run_curriculum_building(
     # This captures indirect dependencies through papers outside the clustered set
     LOGGER.info("Computing inter-topic dependency matrix (using full citation graph)...")
     
-    if cfg.ppr_first:
+    if cfg.rank_before_clustering:
         # Create cluster assignment for full graph: only top-k works have assignments
-        # Rest are -1 (unassigned) but can still serve as intermediaries in PageRank
+        # Rest are -1 (unassigned) but can still serve as intermediaries in ranking
         point_to_cluster_full = np.full(n_total, -1, dtype=np.int64)
         point_to_cluster_full[top_k_indices] = point_to_cluster
         cluster_mapping_for_frontier = point_to_cluster_full
     else:
         cluster_mapping_for_frontier = point_to_cluster
     
-    adj_frontier = compute_frontier_adjacency(
-        adj,  # Always use full citation graph
-        frontier_nodes,
-        cluster_mapping_for_frontier,
-        alpha=cfg.pagerank_alpha,
-        tol=cfg.pagerank_tol,
-        max_iter=cfg.pagerank_max_iter,
-    )
+    if cfg.method == RankMethod.PAGE_RANK:
+        adj_frontier = compute_frontier_adjacency(
+            adj,  # Always use full citation graph
+            frontier_nodes,
+            cluster_mapping_for_frontier,
+            alpha=cfg.pagerank.alpha,
+            tol=cfg.pagerank.tol,
+            max_iter=cfg.pagerank.max_iter,
+        )
+    elif cfg.method == RankMethod.CIRCUIT_RANK:
+        adj_frontier = compute_frontier_adjacency_potential(
+            adj,
+            frontier_nodes,
+            cluster_mapping_for_frontier,
+            leakage=cfg.circuitrank.leakage,
+            beta=cfg.circuitrank.beta,
+            normalize=cfg.circuitrank.normalize,
+            gmres_tol=cfg.circuitrank.gmres_tol,
+            gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+            gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+            gmres_log_every=cfg.circuitrank.gmres_log_every,
+        )
+    else:
+        raise ValueError(f"Unknown ranking method: {cfg.method}")
     
-    # Compute linearization order
+    # Log inter-topic adjacency statistics
+    adj_stats = compute_adjacency_stats(adj_frontier)
+    LOGGER.info(
+        f"Inter-topic adjacency: off_diag_sum={adj_stats['off_diag_sum']:.4f}, "
+        f"n_nonzero={adj_stats['n_nonzero_off_diag']}"
+    )
+    if adj_stats['is_all_zeros']:
+        LOGGER.warning(
+            "Inter-topic adjacency matrix is all zeros! "
+            "This may indicate a bug or extreme parameter settings."
+        )
+    
+    # Compute linearization order and make it canonical (topic 0 = first to cover)
     LOGGER.info("Computing linearization order...")
-    linearization_order = _compute_linearization_order(adj_frontier)
-    LOGGER.info(f"Linearization order: {linearization_order.tolist()}")
+    n_topics = len(frontier_nodes)
+    
+    if point_potentials is not None:
+        # Use potential-based ordering: high potential = close to source = learn first
+        LOGGER.info("Using potential-based linearization (source→target ordering)")
+        linearization_order = _compute_linearization_order_from_potentials(
+            point_potentials, point_to_cluster, n_topics
+        )
+    else:
+        # Fall back to adjacency-based heuristic (less accurate)
+        LOGGER.info("Using adjacency-based linearization (no source works available)")
+        linearization_order = _compute_linearization_order_from_adjacency(adj_frontier)
+
+    # Relabel topics so that new topic 0 is the first in the linearization order.
+    perm = linearization_order  # old_idx -> new position order
+    inverse_perm = np.empty_like(perm)
+    inverse_perm[perm] = np.arange(n_topics)
+
+    # Reorder frontier nodes and derived structures
+    frontier_nodes = frontier_nodes[perm]
+    adj_frontier = adj_frontier[np.ix_(perm, perm)]
+    cluster_sizes = [cluster_sizes[i] for i in perm]
+    point_to_cluster = inverse_perm[point_to_cluster]
+
+    # The canonical linearization is now 0..n_topics-1
+    linearization_order = np.arange(n_topics, dtype=np.int64)
+    
+    # Compute cluster size statistics
+    cluster_stats = compute_cluster_size_stats(point_to_cluster, n_topics)
+    LOGGER.info(
+        f"Cluster stats: n_singletons={cluster_stats.n_singletons}, "
+        f"size_std={cluster_stats.std_size:.1f}"
+    )
     
     # Prepare metadata
     metadata = {
@@ -389,18 +660,23 @@ def run_curriculum_building(
         "denoiser": str(cloud.denoiser),
         "n_works_total": n_total,
         "n_works_clustered": n_samples,
-        "ppr_first": cfg.ppr_first,
-        "ppr_top_k": cfg.ppr_top_k if cfg.ppr_first else None,
+        "rank_before_clustering": cfg.rank_before_clustering,
+        "ranking_top_k": cfg.ranking_top_k if cfg.rank_before_clustering else None,
         "n_target_works": len(seed_indices),
         "target_work_ids": list(cfg.target_work_ids),  # Convert from Hydra ListConfig
         "desired_n_topics": cfg.desired_n_topics,
         "actual_n_topics": len(frontier_nodes),
-        "pagerank_alpha": cfg.pagerank_alpha,
+        "ranking_method": cfg.method.value,
+        "pagerank_alpha": cfg.pagerank.alpha if cfg.method == RankMethod.PAGE_RANK else None,
+        "circuitrank_leakage": cfg.circuitrank.leakage if cfg.method == RankMethod.CIRCUIT_RANK else None,
         "linkage_method": cfg.linkage_method,
         "mass_threshold": float(threshold),
         "frontier_topic_ids": frontier_nodes.tolist(),
-        "linearization_order": linearization_order.tolist(),
         "cluster_sizes": cluster_sizes,
+        # Add statistics
+        "mass_distribution_stats": full_mass_stats.to_dict(),
+        "cluster_size_stats": cluster_stats.to_dict(),
+        "adjacency_stats": adj_stats,
     }
     
     # Save outputs
@@ -448,19 +724,49 @@ def run_curriculum_building(
     LOGGER.info(f"  metadata.json")
     
     # Also save work IDs for each frontier topic
-    # For each topic, find all original points that belong to it
+    # For each topic, find all original points that belong to it, sorted by mass
     topic_work_ids_output: Dict[int, List[str]] = {}
     for topic_idx in range(len(frontier_nodes)):
         # Get original point indices for this topic
         point_indices = np.where(point_to_cluster == topic_idx)[0]
-        topic_work_ids_output[topic_idx] = [work_ids_for_clustering[int(i)] for i in point_indices]
+        
+        # Get masses for these points
+        topic_masses = point_masses[point_indices]
+        
+        # Sort by mass descending
+        sorted_local_indices = np.argsort(topic_masses)[::-1]
+        sorted_point_indices = point_indices[sorted_local_indices]
+        sorted_masses = topic_masses[sorted_local_indices]
+        
+        # Filter to top works accounting for threshold fraction of mass
+        total_mass = sorted_masses.sum()
+        if total_mass > 0:
+            cumulative_mass = np.cumsum(sorted_masses)
+            cutoff_mass = total_mass * cfg.topic_work_ids_mass_threshold
+            # Find first index where cumulative mass >= cutoff_mass
+            cutoff_idx = np.searchsorted(cumulative_mass, cutoff_mass)
+            
+            # Apply max count constraint if set
+            if cfg.topic_work_ids_max_count is not None:
+                # We want at most max_count items, so index should be at most max_count - 1
+                max_idx = cfg.topic_work_ids_max_count - 1
+                cutoff_idx = min(cutoff_idx, max_idx)
+                
+            # Include the item at cutoff_idx
+            selected_indices = sorted_point_indices[:cutoff_idx + 1]
+        else:
+            selected_indices = sorted_point_indices
+            if cfg.topic_work_ids_max_count is not None:
+                selected_indices = selected_indices[:cfg.topic_work_ids_max_count]
+            
+        topic_work_ids_output[topic_idx] = [work_ids_for_clustering[int(i)] for i in selected_indices]
     
     with open(output_dir / "topic_work_ids.json", "w") as f:
         json.dump(topic_work_ids_output, f, indent=2)
     LOGGER.info(f"  topic_work_ids.json")
     
-    # Save mapping from filtered indices to original work IDs (for ppr_first mode)
-    if cfg.ppr_first:
+    # Save mapping from filtered indices to original work IDs (for rank_before_clustering mode)
+    if cfg.rank_before_clustering:
         with open(output_dir / "filtered_work_ids.json", "w") as f:
             json.dump(work_ids_for_clustering, f, indent=2)
         LOGGER.info(f"  filtered_work_ids.json")
@@ -471,12 +777,11 @@ def run_curriculum_building(
     LOGGER.info("=" * 60)
     LOGGER.info(f"Output directory: {output_dir}")
     LOGGER.info(f"Frontier topics: {len(frontier_nodes)}")
-    LOGGER.info(f"Linearization order (topic indices): {linearization_order.tolist()}")
     
     # Load titles for nice output (cached separately from full works)
     LOGGER.info("Loading titles for summary...")
     all_titles = cloud.work_titles()
-    if cfg.ppr_first:
+    if cfg.rank_before_clustering:
         titles_for_clustering = [all_titles[i] for i in top_k_indices]
     else:
         titles_for_clustering = all_titles
@@ -497,5 +802,5 @@ def run_curriculum_building(
         )
     
     # Return cloud, embeddings, and filtered indices for downstream use
-    filtered_indices_out = top_k_indices if cfg.ppr_first else None
+    filtered_indices_out = top_k_indices if cfg.rank_before_clustering else None
     return cloud, embeddings_for_clustering, filtered_indices_out

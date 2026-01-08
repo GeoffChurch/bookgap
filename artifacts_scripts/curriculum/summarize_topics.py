@@ -153,6 +153,8 @@ def summarize_topics(
         samples_per_topic: Number of works to sample from each topic.
         top_k_keywords: Number of top keywords to extract per topic.
         method: Keyword extraction method ('tfidf' or 'log_odds').
+        doc_weighting: How to weight documents. If RELEVANCE, uses point_masses.
+        topic_weighting: How to weight topics in background construction.
         
     Returns:
         Dictionary mapping topic index to list of (keyword, score) tuples.
@@ -174,6 +176,10 @@ def summarize_topics(
     # Keep per-document tokens so keyword extraction can choose weighting.
     # Shape: topics -> docs -> tokens
     topic_doc_tokens: List[List[List[str]]] = []
+    # Shape: topics -> docs -> weight (for RELEVANCE mode)
+    topic_doc_weights: Optional[List[List[float]]] = (
+        [] if doc_weighting == DocWeighting.RELEVANCE else None
+    )
     
     for topic_idx in tqdm(range(n_topics), desc="Sampling topics"):
         # Get all works in this topic using point_to_cluster mapping
@@ -190,6 +196,7 @@ def summarize_topics(
         # Extract and tokenize text from sampled works (texts list already contains
         # combined title+abstract strings at the same ordering as the cloud lists)
         doc_tokens: List[List[str]] = []
+        doc_weights: List[float] = []
         for work_idx in sampled_indices:
             if work_idx < n_works:
                 text = texts[work_idx]
@@ -197,12 +204,17 @@ def summarize_topics(
                 tokens = filter_stopwords(tokens)
                 if tokens:
                     doc_tokens.append(tokens)
+                    # Collect relevance weight for this document
+                    if topic_doc_weights is not None:
+                        doc_weights.append(float(outputs.point_masses[work_idx]))
         
         topic_doc_tokens.append(doc_tokens)
-        LOGGER.debug(
-            f"Topic {topic_idx}: sampled {len(sampled_indices)} works, "
-            f"{sum(len(t) for t in doc_tokens)} tokens"
-        )
+        if topic_doc_weights is not None:
+            topic_doc_weights.append(doc_weights)
+        # LOGGER.debug(
+        #     f"Topic {topic_idx}: sampled {len(sampled_indices)} works, "
+        #     f"{sum(len(t) for t in doc_tokens)} tokens"
+        # )
     
     # Extract keywords
     LOGGER.info(f"Extracting keywords using {method} method...")
@@ -212,6 +224,7 @@ def summarize_topics(
         top_k=top_k_keywords,
         doc_weighting=doc_weighting,
         topic_weighting=topic_weighting,
+        topic_doc_weights=topic_doc_weights,
     )
     
     # Convert to dictionary
