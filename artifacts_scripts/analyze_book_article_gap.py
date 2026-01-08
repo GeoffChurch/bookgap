@@ -20,7 +20,7 @@ from bookgap.cloud_index import avgref_ranks, within_cloud_nn_ranks, knn
 from bookgap.embedder import Embedder
 from bookgap.parse_args import get_explicit_args, parse_args
 from bookgap.subcloud import SubCloud, get_subclouds_for_topic
-from bookgap.util import Filter, WorkType, LOGGER, MEMORY, TIMER, FilterPair, SubField, setup_logging, get_stats
+from bookgap.util import Field, Filter, WorkType, LOGGER, MEMORY, TIMER, FilterPair, SubField, setup_logging, get_stats
 from bookgap.deduplicators import Deduplicator
 from bookgap.index import HNSW, IndexType
 
@@ -1393,7 +1393,10 @@ def variance_retention_main():
     embedder_model = Embedder.ModelName.GIST_SMALL
 
     plot_variance_retention(
-        filter_pair=FilterPair(Filter(subfield=SubField.AI.value), Filter(work_types=(WorkType.ARTICLE.value,))),
+        filter_pair=FilterPair(
+            Filter(field=Field.COMP_SCI.value, subfield=SubField.AI.value),
+            Filter(field=Field.COMP_SCI.value, work_types=(WorkType.ARTICLE.value,)),
+        ),
         embedder_model=embedder_model,
         **args)
 
@@ -1516,8 +1519,11 @@ def main(drop_k: int, max_works: Optional[int], deduplicator: Optional[Deduplica
     else:
         index_info = index_type.value()
     # Use passed-in values for max_works, deduplicator, normalize_embeddings, denoiser, drop_k
-    # Create the AI cloud (subfield=AI, topic=None)
-    ai_filter_pair = FilterPair(Filter(subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)), Filter())
+    # Create the AI cloud (field=COMP_SCI, subfield=AI, topic=None)
+    ai_filter_pair = FilterPair(
+        Filter(field=Field.COMP_SCI.value, subfield=SubField.AI.value, work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value)),
+        Filter(field=Field.COMP_SCI.value),
+    )
     ai_cloud = Cloud(
         filter_pair=ai_filter_pair,
         index_info=index_info,

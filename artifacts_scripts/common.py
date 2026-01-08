@@ -43,6 +43,7 @@ _DENOISER_DISPLAY_NAME_MAP: dict[str, tuple[str, str]] = {
     "CCLIP_1": (r"$\mathrm{CCLIP}(\alpha=0.1)$", "CCLIP(α=0.1)"),
     "CCLIP_01": (r"$\mathrm{CCLIP}(\alpha=0.01)$", "CCLIP(α=0.01)"),
     "CITATION_ERROR_LDA": ("GRAPH_ERROR", "GRAPH_ERROR"),
+    "LIP": (r"$\mathrm{CCLIP}(\alpha=1)$", "CCLIP(α=1)"),
 }
 
 
@@ -76,8 +77,8 @@ COLUMN_DISPLAY_NAME_MAP = {
     "proposal_article_rank_fraction_mean": r"\makecell{Article\\rank \%}",
     "proposal_article_rank_fraction_median": r"\makecell{Article rank \%\\(median)}",
     "proposal_book_rank_fraction_std": r"\makecell{Book rank \%\\(std)}",
-    "gap_coverage_fraction_mean": r"\makecell{Gap\\coverage \%}",
-    "gap_coverage_fraction_median": r"\makecell{Gap coverage \%\\(median)}",
+    "gap_coverage_fraction_mean": r"\makecell{Target gap\\coverage \%age}",
+    "gap_coverage_fraction_median": r"\makecell{Target gap\\coverage \%age\\(median)}",
     "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\gap \%ile}",
     "target_gap_size_percentile_mean": r"\makecell{Target\\gap \%ile}",
     "proposal_gap_size_percentile": r"\makecell{Proposal\\gap \%ile}",
@@ -86,19 +87,19 @@ COLUMN_DISPLAY_NAME_MAP = {
     "proposal_book_rank_fraction": r"\makecell{Book\\rank \%}",
     "proposal_article_rank": r"\makecell{Article\\rank}",
     "proposal_article_rank_fraction": r"\makecell{Article\\rank \%}",
-    "gap_coverage_fraction": r"\makecell{Gap\\coverage \%}",
+    "gap_coverage_fraction": r"\makecell{Target gap\\coverage \%age}",
     "gap_idx": "Gap",
     "gap_size": r"\makecell{Gap\\size}",
     "gap_size_percentile": r"\makecell{Gap size\\percentile}",
     "topic_display_name": "Topic",
-    "num_articles": r"\makecell{\# articles}",
-    "num_books": r"\makecell{\# books}",
+    "num_articles": r"articles",
+    "num_books": r"books",
 }
 
 # Plain text versions for plot titles (without LaTeX markup)
 COLUMN_DISPLAY_NAME_MAP_PLAIN = {
-    "gap_coverage_fraction_mean": "Target gap coverage percentage",
-    "proposal_gap_size_percentile_mean": "Proposal gap percentile",
+    "gap_coverage_fraction_mean": r"\makecell{Target gap\\coverage \%age}",
+    "proposal_gap_size_percentile_mean": r"\makecell{Proposal\\gap \%ile}",
 }
 
 

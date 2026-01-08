@@ -26,13 +26,21 @@ import pyalex
 LOGGER = logging.getLogger(__name__)
 
 # Set to True to use longtable environment, False to use table* environment
-USE_LONGTABLE = False
+USE_LONGTABLE = True
+
+# Set to True to write only the inner tabular/longtable environment.
+# When True, non-longtable outputs omit the outer table/table* wrapper (and caption/label).
+TABULAR_ONLY = True
 
 DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
 TOPIC_DISPLAY_NAME_CACHE: dict[str, str] = {}
 
-EXCLUDED_DENOISERS: set[str] = set()#{"AUG_LPP", "CCLIP_01", "CCLIP_1", "CCA", "CCP", "JAD_CCP", "JAD_HALF_L", "ORTHO_MANIFOLD"}
+EXCLUDED_DENOISERS: set[str] = {"W", "WC_CCLIP_1"}#{"AUG_LPP", "CCLIP_01", "CCLIP_1", "CCA", "CCP", "JAD_CCP", "JAD_HALF_L", "ORTHO_MANIFOLD"}
+
+# Whitelist for (num_articles, num_books) combinations to generate tables for
+# Set to None to generate all combinations
+TRIPLET_WHITELIST: set[tuple[int, int]] | None = {(10, 5)}
 
 DENOISER_DISPLAY_NAME_MAP: dict[str, str] = {
     "LIP": r"LIP",
@@ -239,6 +247,47 @@ def escape_latex(text: object | None) -> str:
     value = LATEX_SIMPLE_ESCAPE_PATTERN.sub(r"\\\1", value)
     for char, replacement in LATEX_SPECIAL_ESCAPE_MAP.items():
         value = re.sub(rf"(?<!\\){re.escape(char)}", replacement, value)
+    return value
+
+
+def escape_latex_preserve_math(text: object | None) -> str:
+    """Escape LaTeX special characters while preserving math mode ($...$).
+    
+    This function escapes text like escape_latex(), but protects content within
+    $...$ delimiters from escaping, allowing for inline math expressions.
+    
+    Args:
+        text: Text to escape, which may contain math mode expressions.
+        
+    Returns:
+        Text with LaTeX special characters escaped except those in $...$ blocks.
+    """
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return ""
+    
+    value = str(text)
+    
+    # Extract math mode blocks and replace them temporarily with unique markers
+    # that won't be affected by LaTeX escaping (using non-alphanumeric safe markers)
+    math_blocks: list[str] = []
+    math_pattern = re.compile(r"\$([^$]*)\$")
+    
+    def replace_math(match: re.Match[str]) -> str:
+        math_blocks.append(match.group(0))
+        # Use hex encoding to create a marker that won't be escaped
+        return f"\x00MATHBLOCK{len(math_blocks) - 1}\x00"
+    
+    value = math_pattern.sub(replace_math, value)
+    
+    # Escape LaTeX special characters in non-math text
+    value = LATEX_SIMPLE_ESCAPE_PATTERN.sub(r"\\\1", value)
+    for char, replacement in LATEX_SPECIAL_ESCAPE_MAP.items():
+        value = re.sub(rf"(?<!\\){re.escape(char)}", replacement, value)
+    
+    # Restore math blocks
+    for i, math_block in enumerate(math_blocks):
+        value = value.replace(f"\x00MATHBLOCK{i}\x00", math_block)
+    
     return value
 
 
@@ -557,6 +606,87 @@ def get_topic_display_name_map(topic_ids: Iterable[object]) -> dict[str, str]:
     return {topic_id: TOPIC_DISPLAY_NAME_CACHE.get(topic_id, "") for topic_id in normalized}
 
 
+def _fix_longtable_caption_structure(latex: str) -> str:
+    """Fix longtable caption placement.
+    
+    Pandas places caption+label before \\endfirsthead and caption[] after \\endfirsthead,
+    but the correct structure should have caption+label as the first line inside \\endfirsthead
+    (after \\begin{longtable}) and caption[] should be in \\endhead.
+    
+    Correct structure:
+        \\begin{longtable}{...}
+        \\caption{Full text} \\label{...} \\\\
+        \\toprule
+        Headers \\\\
+        \\midrule
+        \\endfirsthead
+        \\caption[]{Continuation text} \\\\
+        \\toprule
+        Headers \\\\
+        \\midrule
+        \\endhead
+    """
+    lines = latex.splitlines()
+    
+    # Check if this is a longtable
+    longtable_start = None
+    for i, line in enumerate(lines):
+        if "\\begin{longtable" in line:
+            longtable_start = i
+            break
+    
+    if longtable_start is None:
+        return latex
+    
+    # Find the first caption with label (should be right after \\begin{longtable})
+    first_caption_idx = None
+    first_caption_lines = []
+    
+    for i in range(longtable_start + 1, len(lines)):
+        if lines[i].strip().startswith("\\caption{"):
+            # Check if this has a label (first caption)
+            if "\\label{" in lines[i]:
+                first_caption_idx = i
+                first_caption_lines.append(lines[i])
+                break
+            elif i + 1 < len(lines) and "\\label{" in lines[i + 1]:
+                first_caption_idx = i
+                first_caption_lines.append(lines[i])
+                first_caption_lines.append(lines[i + 1])
+                break
+        # Stop searching at endfirsthead
+        if lines[i].strip() == "\\endfirsthead":
+            break
+    
+    if not first_caption_lines:
+        return latex  # No caption with label found
+    
+    # Ensure first_caption_idx is not None
+    if first_caption_idx is None:
+        return latex
+    
+    # Caption is already in the right place if it's immediately after \\begin{longtable}
+    if first_caption_idx == longtable_start + 1:
+        return latex
+    
+    # Move the caption+label to be first line after \\begin{longtable}
+    result_lines = []
+    skip_until = first_caption_idx + len(first_caption_lines)
+    
+    for i, line in enumerate(lines):
+        if i == longtable_start:
+            result_lines.append(line)
+            # Insert caption lines right after \\begin{longtable}
+            result_lines.extend(first_caption_lines)
+        elif first_caption_idx <= i < skip_until:
+            # Skip the original caption lines
+            continue
+        else:
+            result_lines.append(line)
+    
+    return "\n".join(result_lines)
+
+
 def _apply_group_hlines(latex: str, group_breaks: Sequence[object] | None) -> str:
     if not group_breaks:
         return latex
@@ -645,6 +775,8 @@ def write_latex(
     bold_columns: Sequence[Hashable] | None = None,
     bold_cell_map: Mapping[str, Sequence[Hashable]] | None = None,
     table_environment: Literal["table", "longtable"] = "table",
+    tabular_only: bool = TABULAR_ONLY,
+    comment: str | None = None,
 ) -> None:
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
@@ -722,8 +854,11 @@ def write_latex(
             multicolumn_format="c",
             longtable=True,
         )
+        latex = _fix_longtable_caption_structure(latex)
         latex = _apply_group_hlines(latex, group_breaks)
         latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", latex)
+        if comment:
+            latex = f"% {comment}\n" + latex
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(latex)
         LOGGER.info("Wrote %s", output_file)
@@ -744,20 +879,26 @@ def write_latex(
     latex = _apply_group_hlines(latex, group_breaks)
 
     lines = latex.splitlines()
-    
-    # Use table* instead of table when USE_LONGTABLE is False
-    table_env = "table*" if not USE_LONGTABLE else "table"
-    result_lines = [f"\\begin{{{table_env}}}", "\\centering"]
-    result_lines.extend(lines)
 
-    if escaped_caption:
-        result_lines.append(f"\\caption{{{escaped_caption}}}")
-    if label:
-        result_lines.append(f"\\label{{{label}}}")
+    if not tabular_only:
+        # Use table* instead of table when USE_LONGTABLE is False
+        table_env = "table*" if not USE_LONGTABLE else "table"
+        result_lines = [f"\\begin{{{table_env}}}", "\\centering"]
+        result_lines.extend(lines)
 
-    result_lines.append(f"\\end{{{table_env}}}")
-    latex = "\n".join(result_lines)
+        if escaped_caption:
+            result_lines.append(f"\\caption{{{escaped_caption}}}")
+        if label:
+            result_lines.append(f"\\label{{{label}}}")
 
+        result_lines.append(f"\\end{{{table_env}}}")
+        latex = "\n".join(result_lines)
+    else:
+        # Only the inner tabular environment.
+        latex = "\n".join(lines)
+
+    if comment:
+        latex = f"% {comment}\n" + latex
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(latex)
     LOGGER.info("Wrote %s", output_file)
@@ -843,11 +984,15 @@ def write_ablated_triplet_table(
 
     # Calculate tabular spec
     # cc | c... | c...
-    spec_parts = ["cc"]
+    spec_parts = ["cc|"]
     
-    for _, cols in column_groups:
+    for i, (_, cols) in enumerate(column_groups):
         if cols:
-            spec_parts.append("|" + "c" * len(cols))
+            # Add divider after each group except the last
+            if i < len(column_groups) - 1:
+                spec_parts.append("c" * len(cols) + "|")
+            else:
+                spec_parts.append("c" * len(cols))
             
     tabular_spec = "".join(spec_parts)
 
@@ -855,42 +1000,23 @@ def write_ablated_triplet_table(
     lines.append(f"\\begin{{tabular}}{{{tabular_spec}}}")
     lines.append("\\toprule")
 
-    # Header Row 1: # articles, # books, Group Headers
-    header_row_1 = ["\\makecell{\\#\\\\articles}", "\\makecell{\\#\\\\books}"]
+    # Header Row 1: References used label spanning first 2 cols, then Group Headers (metrics)
+    header_row_1 = [r"\multicolumn{2}{c|}{\makecell{References\\used}}"]
     
     for i, (label, cols) in enumerate(column_groups):
         if cols:
-            # Use | separator for all but the last group if desired, or match tabular spec.
-            # The tabular spec puts | before each group.
-            # \multicolumn replaces the column spec. We need to include | if we want the right border.
-            # However, standard booktabs style usually avoids vertical lines.
-            # But the user requested vertical lines separating groups.
-            # Our tabular spec has | before the group.
-            # If we use \multicolumn{N}{c}{...}, we lose the | on the right if it existed, 
-            # but we are defining the spec for these N columns.
-            # To keep the vertical line *between* groups (which is defined as | before the next group),
-            # we don't strictly need | in the multicolumn unless we want a line *after* this group.
-            # The tabular spec is `cc|cc|cc`.
-            # Between group 1 and 2, there is a |.
-            # That | is part of the column definition of the *next* column? No, it's a separator.
-            # Actually, in `cc|cc`, the | is between col 2 and 3.
-            # If we have `\multicolumn{2}{c}{Header}`, it spans col 3 and 4.
-            # The | before col 3 is preserved? No, it's part of the preamble.
-            # Wait, `\multicolumn` replaces the *columns* and the *vertical lines to their right*.
-            # It does NOT replace the vertical line to the left.
-            # So `cc|cc` -> `\multicolumn{2}{c}{H}` -> The | before col 3 is preserved.
-            # But we need to ensure the | *after* col 4 is preserved if we want it.
-            # In `cc|cc|cc`, there is a | after col 4.
-            # So for the first group, we need `\multicolumn{N}{c|}{...}`.
-            # For the last group, we probably don't want a right line.
-            
+            # Add divider after each group except the last
             col_spec = "c|" if i < len(column_groups) - 1 else "c"
-            header_row_1.append(f"\\multicolumn{{{len(cols)}}}{{{col_spec}}}{{\\makecell{{{label}}}}}")
+            # Don't wrap label in \makecell if it already contains LaTeX commands
+            if label.startswith("\\makecell"):
+                header_row_1.append(f"\\multicolumn{{{len(cols)}}}{{{col_spec}}}{{{label}}}")
+            else:
+                header_row_1.append(f"\\multicolumn{{{len(cols)}}}{{{col_spec}}}{{\\makecell{{{label}}}}}")
             
     lines.append(" & ".join(header_row_1) + r" \\")
     
-    # Header Row 2: Empty, Empty, Subheaders
-    header_row_2 = ["", ""]
+    # Header Row 2: art, bks, Embedder names
+    header_row_2 = ["art", "bks"]
     for _, cols in column_groups:
         for _, display_label in cols:
             header_row_2.append(escape_latex(display_label))
@@ -898,8 +1024,36 @@ def write_ablated_triplet_table(
     lines.append(" & ".join(header_row_2) + r" \\")
     lines.append("\\midrule")
 
+    # Apply whitelist and ordering for (# articles, # books)
+    allowed_pairs: list[tuple[int, int]] = [
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (0, 5),
+        (5, 0),
+        (5, 5),
+        (10, 5),
+    ]
+    allowed_set = set(allowed_pairs)
+    order_map = {pair: idx for idx, pair in enumerate(allowed_pairs)}
+
+    working = df.copy()
+    # Ensure numeric for filtering and ordering
+    a_all = pd.to_numeric(working["# articles"], errors="coerce")
+    b_all = pd.to_numeric(working["# books"], errors="coerce")
+    pairs_all = list(zip(a_all.fillna(-1).astype(int), b_all.fillna(-1).astype(int)))
+    mask = [pair in allowed_set for pair in pairs_all]
+    working = working.loc[mask].copy()
+
+    # Determine display order according to whitelist sequence
+    a_work = pd.to_numeric(working["# articles"], errors="coerce")
+    b_work = pd.to_numeric(working["# books"], errors="coerce")
+    pairs_work = list(zip(a_work.fillna(-1).astype(int), b_work.fillna(-1).astype(int)))
+    working["__order"] = [order_map[pair] for pair in pairs_work]
+    working = working.sort_values("__order").drop(columns="__order")
+
     # Data Rows
-    for _, row in df.iterrows():
+    for _, row in working.iterrows():
         values: list[str] = [
             format_integer_value(row.get("# articles")),
             format_integer_value(row.get("# books")),
@@ -1191,9 +1345,9 @@ def prepare_best_run_table(
         "topic_display_name",
         "num_books",
         "num_articles",
+        "gap_coverage_fraction",
         "proposal_gap_size_percentile",
         "target_gap_size_percentile_mean",
-        "gap_coverage_fraction",
     ]
 
     for column in desired_order:
@@ -1240,6 +1394,415 @@ def ordered_embedder_columns(columns: Sequence[str]) -> Sequence[str]:
             ordered.append(column)
             seen.add(column)
     return ordered
+
+
+def generate_best_denoiser_summary_table(
+    df: pd.DataFrame,
+    output_file: Path,
+    *,
+    caption: str | None = None,
+    label: str | None = None,
+    overwrite: bool = False,
+    tabular_only: bool = TABULAR_ONLY,
+) -> None:
+    """Generate a summary table with one row per denoiser showing best metrics.
+    
+    Columns: Denoiser, Best Gap Coverage %, k for coverage, Best Proposal Gap %ile, k for %ile
+    """
+    if output_file.exists() and not overwrite:
+        LOGGER.info("Skipping existing file %s", output_file)
+        return
+
+    if df.empty:
+        LOGGER.warning("Input dataframe is empty; skipping best denoiser summary")
+        return
+
+    required_columns = {"denoiser", "drop_k", "gap_coverage_fraction_mean", "proposal_gap_size_percentile_mean"}
+    missing = [col for col in required_columns if col not in df.columns]
+    if missing:
+        LOGGER.warning("Missing required columns for best denoiser summary: %s", missing)
+        return
+
+    # Group by denoiser and find best rows for each metric
+    summary_rows = []
+    
+    for denoiser_name, group in df.groupby("denoiser", dropna=False):
+        denoiser_str = friendly_denoiser_name(str(denoiser_name) if denoiser_name is not None else None, latex=True)
+        
+        # Find row with best gap coverage
+        coverage_numeric = pd.to_numeric(group["gap_coverage_fraction_mean"], errors="coerce")
+        if coverage_numeric.notna().any():
+            best_coverage_idx = coverage_numeric.idxmax()
+            best_coverage_row = group.loc[best_coverage_idx]
+            best_coverage = best_coverage_row["gap_coverage_fraction_mean"]
+            best_coverage_k = best_coverage_row["drop_k"]
+        else:
+            # All values are NaN, use first row
+            best_coverage = float("nan")
+            best_coverage_k = float("nan")
+        
+        # Find row with best proposal gap percentile
+        percentile_numeric = pd.to_numeric(group["proposal_gap_size_percentile_mean"], errors="coerce")
+        if percentile_numeric.notna().any():
+            best_percentile_idx = percentile_numeric.idxmax()
+            best_percentile_row = group.loc[best_percentile_idx]
+            best_percentile = best_percentile_row["proposal_gap_size_percentile_mean"]
+            best_percentile_k = best_percentile_row["drop_k"]
+        else:
+            # All values are NaN, use first row
+            best_percentile = float("nan")
+            best_percentile_k = float("nan")
+        
+        summary_rows.append({
+            "Denoiser": denoiser_str,
+            "Best Gap Coverage %": best_coverage,
+            "k (coverage)": best_coverage_k,
+            "Best Proposal Gap %ile": best_percentile,
+            "k (%ile)": best_percentile_k,
+        })
+    
+    if not summary_rows:
+        LOGGER.warning("No summary rows generated; skipping output")
+        return
+    
+    summary_df = pd.DataFrame(summary_rows)
+
+    # Sort with NONE denoiser at the top
+    priority_order = ["NONE"]
+    priority_map = {name: index for index, name in enumerate(priority_order)}
+    default_priority = len(priority_order)
+    summary_df["__denoiser_priority"] = (
+        summary_df["Denoiser"]
+        .astype(str)
+        .map(lambda value: priority_map.get(value, default_priority))
+    )
+    summary_df = summary_df.sort_values(
+        ["__denoiser_priority", "Denoiser"],
+        ascending=True
+    ).drop(columns="__denoiser_priority")
+
+    # Scale percentage columns
+    percentage_columns = ["Best Gap Coverage %", "Best Proposal Gap %ile"]
+    summary_df = scale_percentage_columns(
+        summary_df,
+        percentage_columns,
+        decimals=2,
+    )
+
+    # Find the best (maximum) value in each Best* column to bold
+    best_coverage_values = pd.to_numeric(summary_df["Best Gap Coverage %"], errors="coerce")
+    best_percentile_values = pd.to_numeric(summary_df["Best Proposal Gap %ile"], errors="coerce")
+
+    if best_coverage_values.notna().any():
+        max_coverage = best_coverage_values.max()
+        coverage_best_indices = set(summary_df.index[best_coverage_values == max_coverage].tolist())
+    else:
+        coverage_best_indices = set()
+
+    if best_percentile_values.notna().any():
+        max_percentile = best_percentile_values.max()
+        percentile_best_indices = set(summary_df.index[best_percentile_values == max_percentile].tolist())
+    else:
+        percentile_best_indices = set()
+
+    # Write custom LaTeX with vertical groupings
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    gap_coverage_label = COLUMN_DISPLAY_NAME_MAP_PLAIN["gap_coverage_fraction_mean"]
+    proposal_gap_label = COLUMN_DISPLAY_NAME_MAP_PLAIN[
+        "proposal_gap_size_percentile_mean"
+    ]
+
+    # Tabular spec: l | rr | rr (Denoiser | cvg% k | %ile k)
+    lines_tex: list[str] = []
+    if not tabular_only:
+        lines_tex.extend([
+            r"\begin{table*}",
+            r"\centering",
+        ])
+    lines_tex.extend([
+        r"\begin{tabular}{l|rr|rr}",
+        r"\toprule",
+        f" & \\multicolumn{{2}}{{c|}}{{{gap_coverage_label}}} & \\multicolumn{{2}}{{c}}{{{proposal_gap_label}}} \\\\",
+        r"Denoiser & $k$ & \% & $k$ & \% \\",
+        r"\midrule",
+    ])
+
+    for idx, row in summary_df.iterrows():
+        denoiser_escaped = escape_latex_preserve_math(row["Denoiser"])
+        
+        coverage_val = format_percentage_value(row["Best Gap Coverage %"])
+        if idx in coverage_best_indices and coverage_val:
+            coverage_val = f"\\textbf{{{coverage_val}}}"
+        
+        coverage_k = format_integer_value(row["k (coverage)"])
+        
+        percentile_val = format_percentage_value(row["Best Proposal Gap %ile"])
+        if idx in percentile_best_indices and percentile_val:
+            percentile_val = f"\\textbf{{{percentile_val}}}"
+        
+        percentile_k = format_integer_value(row["k (%ile)"])
+        
+        lines_tex.append(f"{denoiser_escaped} & {coverage_k} & {coverage_val} & {percentile_k} & {percentile_val} " + r"\\")
+
+    lines_tex.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+    ])
+
+    if not tabular_only:
+        if caption:
+            escaped_caption = escape_latex(caption)
+            lines_tex.append(f"\\caption{{{escaped_caption}}}")
+        if label:
+            lines_tex.append(f"\\label{{{label}}}")
+        lines_tex.append(r"\end{table*}")
+
+    output_file.write_text("\n".join(lines_tex))
+    LOGGER.info("Wrote %s", output_file)
+
+
+def generate_combined_best_denoiser_table(
+    embedder_dfs: dict[str, pd.DataFrame],
+    output_file: Path,
+    *,
+    caption: str | None = None,
+    label: str | None = None,
+    overwrite: bool = False,
+    tabular_only: bool = TABULAR_ONLY,
+) -> None:
+    """Generate a combined table pairing embedders with nested column group labels.
+    
+    Args:
+        embedder_dfs: Dict mapping embedder names to their summary dataframes
+        output_file: Path to write the LaTeX table
+        caption: Optional table caption
+        label: Optional LaTeX label
+        overwrite: Whether to overwrite existing files
+        tabular_only: Whether to output only the tabular environment
+    """
+    if output_file.exists() and not overwrite:
+        LOGGER.info("Skipping existing file %s", output_file)
+        return
+
+    if not embedder_dfs:
+        LOGGER.warning("No embedder dataframes provided; skipping combined table")
+        return
+
+    # Process each embedder's data
+    embedder_summaries: dict[str, pd.DataFrame] = {}
+    
+    for embedder_name, df in embedder_dfs.items():
+        if df.empty:
+            continue
+            
+        required_columns = {"denoiser", "drop_k", "gap_coverage_fraction_mean", "proposal_gap_size_percentile_mean"}
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            LOGGER.warning("Missing required columns for %s: %s", embedder_name, missing)
+            continue
+
+        # Group by denoiser and find best rows for each metric
+        summary_rows = []
+        
+        for denoiser_name, group in df.groupby("denoiser", dropna=False):
+            denoiser_str = friendly_denoiser_name(str(denoiser_name) if denoiser_name is not None else None, latex=True)
+            
+            # Find row with best gap coverage
+            coverage_numeric = pd.to_numeric(group["gap_coverage_fraction_mean"], errors="coerce")
+            if coverage_numeric.notna().any():
+                best_coverage_idx = coverage_numeric.idxmax()
+                best_coverage_row = group.loc[best_coverage_idx]
+                best_coverage = best_coverage_row["gap_coverage_fraction_mean"]
+                best_coverage_k = best_coverage_row["drop_k"]
+            else:
+                best_coverage = float("nan")
+                best_coverage_k = float("nan")
+            
+            # Find row with best proposal gap percentile
+            percentile_numeric = pd.to_numeric(group["proposal_gap_size_percentile_mean"], errors="coerce")
+            if percentile_numeric.notna().any():
+                best_percentile_idx = percentile_numeric.idxmax()
+                best_percentile_row = group.loc[best_percentile_idx]
+                best_percentile = best_percentile_row["proposal_gap_size_percentile_mean"]
+                best_percentile_k = best_percentile_row["drop_k"]
+            else:
+                best_percentile = float("nan")
+                best_percentile_k = float("nan")
+            
+            summary_rows.append({
+                "Denoiser": denoiser_str,
+                f"{embedder_name}_coverage_%": best_coverage,
+                f"{embedder_name}_coverage_k": best_coverage_k,
+                f"{embedder_name}_percentile_%": best_percentile,
+                f"{embedder_name}_percentile_k": best_percentile_k,
+            })
+        
+        if summary_rows:
+            embedder_summaries[embedder_name] = pd.DataFrame(summary_rows)
+
+    if not embedder_summaries:
+        LOGGER.warning("No valid summaries generated; skipping output")
+        return
+
+    # Merge all embedder summaries on Denoiser
+    combined_df = None
+    for embedder_name, summary_df in embedder_summaries.items():
+        if combined_df is None:
+            combined_df = summary_df
+        else:
+            combined_df = combined_df.merge(summary_df, on="Denoiser", how="outer")
+
+    if combined_df is None or combined_df.empty:
+        LOGGER.warning("Combined dataframe is empty; skipping output")
+        return
+
+    # Sort with priority for denoiser names
+    priority_order = ["NONE"]
+    priority_map = {name: index for index, name in enumerate(priority_order)}
+    default_priority = len(priority_order)
+    combined_df["__denoiser_priority"] = (
+        combined_df["Denoiser"]
+        .astype(str)
+        .map(lambda value: priority_map.get(value, default_priority))
+    )
+    combined_df = combined_df.sort_values(
+        ["__denoiser_priority", "Denoiser"],
+        ascending=True
+    ).drop(columns="__denoiser_priority")
+
+    # Scale percentage columns
+    percentage_columns = [col for col in combined_df.columns if col.endswith("_%")]
+    for col in percentage_columns:
+        combined_df[col] = pd.to_numeric(combined_df[col], errors="coerce") * 100.0
+        combined_df[col] = combined_df[col].round(2)
+
+    # Find best values for each metric across all embedders
+    coverage_cols = [col for col in combined_df.columns if "_coverage_%" in col]
+    percentile_cols = [col for col in combined_df.columns if "_percentile_%" in col]
+    
+    coverage_best_cells: set[tuple[int, str]] = set()
+    percentile_best_cells: set[tuple[int, str]] = set()
+    
+    if coverage_cols:
+        for col in coverage_cols:
+            values = pd.to_numeric(combined_df[col], errors="coerce")
+            if values.notna().any():
+                max_val = values.max()
+                for idx in combined_df.index[values == max_val]:
+                    coverage_best_cells.add((idx, col))
+    
+    if percentile_cols:
+        for col in percentile_cols:
+            values = pd.to_numeric(combined_df[col], errors="coerce")
+            if values.notna().any():
+                max_val = values.max()
+                for idx in combined_df.index[values == max_val]:
+                    percentile_best_cells.add((idx, col))
+
+    # Build LaTeX table with nested headers
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    gap_coverage_label = COLUMN_DISPLAY_NAME_MAP_PLAIN["gap_coverage_fraction_mean"]
+    proposal_gap_label = COLUMN_DISPLAY_NAME_MAP_PLAIN["proposal_gap_size_percentile_mean"]
+    
+    embedder_names = list(embedder_summaries.keys())
+    ordered_embedders = ordered_embedder_columns(embedder_names)
+    
+    # Tabular spec: l | (rr)* | (rr)* for each embedder in each metric group
+    spec_parts = ["l"]
+    for _ in range(len(ordered_embedders)):
+        spec_parts.append("|rr")
+    for _ in range(len(ordered_embedders)):
+        spec_parts.append("|rr")
+    tabular_spec = "".join(spec_parts)
+    
+    lines_tex: list[str] = []
+    if not tabular_only:
+        lines_tex.extend([
+            r"\begin{table*}",
+            r"\centering",
+        ])
+    
+    lines_tex.extend([
+        f"\\begin{{tabular}}{{{tabular_spec}}}",
+        r"\toprule",
+    ])
+    
+    # Header Row 1: Metric group labels
+    header1_parts = [""]
+    # Gap coverage group
+    header1_parts.append(f"\\multicolumn{{{len(ordered_embedders) * 2}}}{{c|}}{{{gap_coverage_label}}}")
+    # Proposal gap percentile group
+    header1_parts.append(f"\\multicolumn{{{len(ordered_embedders) * 2}}}{{c}}{{{proposal_gap_label}}}")
+    lines_tex.append(" & ".join(header1_parts) + r" \\")
+    
+    # Header Row 2: Embedder labels within each metric group
+    header2_parts = [""]
+    # Coverage embedders - always add divider to maintain separation from percentile group
+    for i, embedder in enumerate(ordered_embedders):
+        header2_parts.append(f"\\multicolumn{{2}}{{c|}}{{{escape_latex(embedder)}}}")
+    # Percentile embedders
+    for i, embedder in enumerate(ordered_embedders):
+        divider = "|" if i < len(ordered_embedders) - 1 else ""
+        header2_parts.append(f"\\multicolumn{{2}}{{c{divider}}}{{{escape_latex(embedder)}}}")
+    lines_tex.append(" & ".join(header2_parts) + r" \\")
+    
+    # Header Row 3: k and % labels
+    header3_parts = ["Denoiser"]
+    for _ in range(len(ordered_embedders) * 2):  # Coverage and percentile
+        header3_parts.extend([r"$k$", r"\%"])
+    header3_line = " & ".join(header3_parts) + r" \\"
+    lines_tex.append(header3_line)
+    lines_tex.append(r"\midrule")
+    
+    # Data rows
+    for idx, row in combined_df.iterrows():
+        denoiser_escaped = escape_latex_preserve_math(row["Denoiser"])
+        row_parts = [denoiser_escaped]
+        
+        # Coverage values
+        for embedder in ordered_embedders:
+            coverage_col = f"{embedder}_coverage_%"
+            k_col = f"{embedder}_coverage_k"
+            
+            coverage_val = format_percentage_value(row.get(coverage_col))
+            if (idx, coverage_col) in coverage_best_cells and coverage_val:
+                coverage_val = f"\\textbf{{{coverage_val}}}"
+            
+            k_val = format_integer_value(row.get(k_col))
+            row_parts.extend([k_val, coverage_val])
+        
+        # Percentile values
+        for embedder in ordered_embedders:
+            percentile_col = f"{embedder}_percentile_%"
+            k_col = f"{embedder}_percentile_k"
+            
+            percentile_val = format_percentage_value(row.get(percentile_col))
+            if (idx, percentile_col) in percentile_best_cells and percentile_val:
+                percentile_val = f"\\textbf{{{percentile_val}}}"
+            
+            k_val = format_integer_value(row.get(k_col))
+            row_parts.extend([k_val, percentile_val])
+        
+        lines_tex.append(" & ".join(row_parts) + r" \\")
+    
+    lines_tex.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+    ])
+    
+    if not tabular_only:
+        if caption:
+            escaped_caption = escape_latex(caption)
+            lines_tex.append(f"\\caption{{{escaped_caption}}}")
+        if label:
+            lines_tex.append(f"\\label{{{label}}}")
+        lines_tex.append(r"\end{table*}")
+    
+    output_file.write_text("\n".join(lines_tex))
+    LOGGER.info("Wrote %s", output_file)
+
 
 
 def main() -> None:
@@ -1295,6 +1858,9 @@ def main() -> None:
         )
 
         baseline_rows: list[dict[str, Any]] = []
+        
+        # Track embedder data for combined tables by (num_articles, num_books)
+        triplet_embedder_data: dict[tuple[int, int], dict[str, pd.DataFrame]] = {}
 
         for (embedder_model, num_articles, num_books), group in grouped:
             if pd.isna(embedder_model) or pd.isna(num_articles) or pd.isna(num_books):
@@ -1306,28 +1872,37 @@ def main() -> None:
                     num_books,
                 )
                 continue
-
-            try:
-                triplet_dir_name = build_triplet_directory(
-                    str(embedder_model), int(num_articles), int(num_books)
-                )
-            except Exception as exc:
-                LOGGER.warning(
-                    "Unable to build triplet directory name for %s/%s/%s (gap %s): %s",
-                    embedder_model,
-                    num_articles,
-                    num_books,
-                    gap_idx,
-                    exc,
-                )
-                continue
-
-            gap_output_dir = args.output_root / triplet_dir_name / f"gap{gap_idx}"
+            
+            # Check if this triplet passes the whitelist for individual table generation
+            triplet_key = (int(num_articles), int(num_books))
+            should_generate_individual_tables = (
+                TRIPLET_WHITELIST is None or triplet_key in TRIPLET_WHITELIST
+            )
 
             embedder_model_str = str(embedder_model)
             friendly_embedder = (
                 friendly_embedder_name(embedder_model_str) or embedder_model_str
             )
+            
+            # Only create output directory if we're generating individual tables
+            gap_output_dir: Path | None = None
+            if should_generate_individual_tables:
+                try:
+                    triplet_dir_name = build_triplet_directory(
+                        str(embedder_model), int(num_articles), int(num_books)
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Unable to build triplet directory name for %s/%s/%s (gap %s): %s",
+                        embedder_model,
+                        num_articles,
+                        num_books,
+                        gap_idx,
+                        exc,
+                    )
+                    should_generate_individual_tables = False
+                else:
+                    gap_output_dir = args.output_root / triplet_dir_name / f"gap{gap_idx}"
 
             summary_subset = group.loc[
                 :, [column for column in SUMMARY_COLUMNS if column in group.columns]
@@ -1455,33 +2030,64 @@ def main() -> None:
                 }
             )
 
-            caption = build_summary_caption(
-                friendly_embedder,
-                gap_idx,
-                int(num_articles),
-                int(num_books),
-            )
-            label_embedder_component = sanitize_component(friendly_embedder).lower()
-            label = (
-                f"tab:summary_gap{gap_idx}_{label_embedder_component}_"
-                f"a{int(num_articles)}_b{int(num_books)}"
-            )
+            # Only generate individual tables if this triplet passes the whitelist
+            if should_generate_individual_tables and gap_output_dir is not None:
+                caption = build_summary_caption(
+                    friendly_embedder,
+                    gap_idx,
+                    int(num_articles),
+                    int(num_books),
+                )
+                label_embedder_component = sanitize_component(friendly_embedder).lower()
+                label = (
+                    f"tab:summary_gap{gap_idx}_{label_embedder_component}_"
+                    f"a{int(num_articles)}_b{int(num_books)}"
+                )
 
-            # Create formatters for all numeric columns in the display
-            summary_formatters = formatters_from_columns(summary_percentage_columns)
+                # Create formatters for all numeric columns in the display
+                summary_formatters = formatters_from_columns(summary_percentage_columns)
 
-            write_latex(
-                summary_display,
-                gap_output_dir / "run_gap_summary.tex",
-                caption=caption,
-                label=label,
-                formatters=summary_formatters,
-                overwrite=args.overwrite,
-                table_environment="longtable",
-                group_breaks=group_breaks,
-                bold_cell_map=bold_cell_map or None,
-            )
+                write_latex(
+                    summary_display,
+                    gap_output_dir / "run_gap_summary.tex",
+                    caption=caption,
+                    label=label,
+                    formatters=summary_formatters,
+                    overwrite=args.overwrite,
+                    table_environment="longtable",
+                    group_breaks=group_breaks,
+                    bold_cell_map=bold_cell_map or None,
+                    tabular_only=TABULAR_ONLY,
+                )
 
+                # Generate best denoiser summary table
+                best_denoiser_caption = (
+                    f"Best denoiser configurations for {friendly_embedder} "
+                    f"(articles={int(num_articles)}, books={int(num_books)})"
+                )
+                best_denoiser_label = (
+                    f"tab:best_denoisers_gap{gap_idx}_{label_embedder_component}_"
+                    f"a{int(num_articles)}_b{int(num_books)}"
+                )
+                generate_best_denoiser_summary_table(
+                    summary_sorted,
+                    gap_output_dir / "best_denoisers_summary.tex",
+                    caption=best_denoiser_caption,
+                    label=best_denoiser_label,
+                    overwrite=args.overwrite,
+                    tabular_only=TABULAR_ONLY,
+                )
+            
+            # Store data for combined table generation (regardless of whitelist)
+            triplet_key = (int(num_articles), int(num_books))
+            if triplet_key not in triplet_embedder_data:
+                triplet_embedder_data[triplet_key] = {}
+            triplet_embedder_data[triplet_key][friendly_embedder] = summary_sorted.copy()
+
+            # Only process best run details if generating individual tables
+            if not should_generate_individual_tables or gap_output_dir is None:
+                continue
+                
             best_row = select_best_summary_row(summary_subset)
             if best_row is None:
                 LOGGER.warning(
@@ -1573,6 +2179,44 @@ def main() -> None:
                 formatters=formatters,
                 overwrite=args.overwrite,
                 table_environment="longtable",
+                tabular_only=TABULAR_ONLY,
+                comment=best_run_id,
+            )
+
+        # Generate combined best denoiser tables for each (num_articles, num_books) pair
+        for triplet_key, embedder_data in triplet_embedder_data.items():
+            num_articles, num_books = triplet_key
+            
+            # Check if this triplet passes the whitelist for combined table generation
+            should_generate_combined_table = (
+                TRIPLET_WHITELIST is None or triplet_key in TRIPLET_WHITELIST
+            )
+            if not should_generate_combined_table:
+                continue
+            
+            # Only generate if we have data for multiple embedders
+            if len(embedder_data) < 2:
+                continue
+            
+            combined_caption = (
+                f"Best denoiser configurations across embedders "
+                f"(articles={num_articles}, books={num_books})"
+            )
+            combined_label = (
+                f"tab:combined_denoisers_gap{gap_idx}_"
+                f"a{num_articles}_b{num_books}"
+            )
+            
+            combined_output_dir = args.output_root / f"gap{gap_idx}" / f"articles_{num_articles}_books_{num_books}"
+            combined_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            generate_combined_best_denoiser_table(
+                embedder_data,
+                combined_output_dir / "combined_best_denoisers.tex",
+                caption=combined_caption,
+                label=combined_label,
+                overwrite=args.overwrite,
+                tabular_only=TABULAR_ONLY,
             )
 
         if baseline_rows:

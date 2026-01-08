@@ -14,7 +14,6 @@ For a given year Y:
 from __future__ import annotations
 
 import csv
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -22,15 +21,11 @@ from typing import Any, Optional
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from numpy.typing import NDArray
-from omegaconf import OmegaConf
 
 from bookgap.cloud import Cloud
 from bookgap.configs.config_store import register_configs
-from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.subcloud import SubCloud
 from bookgap.types import CellType
 from bookgap.util import LOGGER, MEMORY, TIMER, WorkType, Filter, get_stats, create_unicode_safe_filename, setup_logging

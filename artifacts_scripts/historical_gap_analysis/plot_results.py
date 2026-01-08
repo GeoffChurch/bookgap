@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from typing import cast
 
 from bookgap.util import setup_logging, LOGGER, create_unicode_safe_filename, ARTIFACTS_DIR
 from artifacts_scripts.common import friendly_embedder_name, friendly_denoiser_name
@@ -32,10 +33,13 @@ BAND_PERCENTILE_LOW = 50
 BAND_PERCENTILE_HIGH = 80
 
 # Year range filter
-MIN_YEAR = 2000
+MIN_YEAR = 1999
 MAX_YEAR = None
 
-def _format_config_desc(group_cols: list[str], values: tuple | str) -> str:
+# Whether to show the title in LaTeX output
+SHOW_LATEX_TITLE = False
+
+def _format_config_desc(group_cols: list[str], values: tuple | str, latex: bool = False) -> str:
     """Format configuration description with friendly names."""
     if not isinstance(values, tuple):
         values = (values,)
@@ -45,12 +49,95 @@ def _format_config_desc(group_cols: list[str], values: tuple | str) -> str:
         if k == 'embedder_model':
             parts.append(f"embedder={friendly_embedder_name(v)}")
         elif k == 'denoiser':
-            parts.append(f"denoiser={friendly_denoiser_name(v, latex=False)}")
+            parts.append(f"denoiser={friendly_denoiser_name(v, latex=latex)}")
         elif k == 'drop_k':
             parts.append(f"drop {v}")
         else:
             parts.append(f"{k}={v}")
     return " ".join(parts)
+
+
+def generate_latex_plot(
+    group_df: pd.DataFrame,
+    series_config: list[tuple[str, str, str, str, str]],
+    config_desc: str,
+) -> str:
+    """Generate TikZ/PGFPlots code for the gap evolution plot."""
+    # Escape underscores in config_desc for LaTeX if they aren't already in math mode
+    # Simple heuristic: if it doesn't have $, escape underscores
+    if "$" not in config_desc:
+        safe_config_desc = config_desc.replace("_", r"\_")
+    else:
+        # More careful escaping for mixed content
+        safe_config_desc = config_desc.replace("_", r"\_") # Still probably safe
+    
+    latex_lines = [
+        r"\begin{tikzpicture}",
+        r"\begin{axis}[",
+        r"    width=\linewidth, height=0.7\linewidth,",
+        r"    font=\footnotesize,",
+        r"    xlabel={Year},",
+        r"    ylabel={Mean Gap Size},",
+        r"    legend pos=north west,",
+        r"    grid=major,",
+        r"    grid style={dashed,gray!30},",
+        r"    xtick distance=5,",
+        r"    xticklabel={\pgfmathprintnumber[fixed, precision=0, 1000 sep={}]{\tick}},",
+    ]
+    
+    if SHOW_LATEX_TITLE:
+        latex_lines.append(r"    title={" + safe_config_desc + "},")
+        
+    latex_lines.extend([
+        r"    legend style={nodes={scale=0.8, transform shape}},",
+        r"]"
+    ])
+
+    for prefix, label, color, mean_style, _ in series_config:
+        mean_col = f"{prefix}_mean"
+        if mean_col not in group_df.columns:
+            continue
+            
+        # Map matplotlib styles to pgfplots styles
+        pgf_color = color
+        pgf_style = f"color={pgf_color}"
+        
+        if 'o' in mean_style:
+            pgf_style += ", mark=*"
+        elif 's' in mean_style:
+            pgf_style += ", mark=square*"
+        elif '^' in mean_style:
+            pgf_style += ", mark=triangle*"
+        elif 'x' in mean_style:
+            pgf_style += ", mark=x"
+        elif 'd' in mean_style:
+            pgf_style += ", mark=diamond*"
+        elif 'v' in mean_style:
+            pgf_style += ", mark=triangle*, mark options={rotate=180}"
+        else:
+            pgf_style += ", mark=*"
+
+        if '--' in mean_style:
+            pgf_style += ", dashed"
+        elif ':' in mean_style:
+            pgf_style += ", dotted"
+        elif '-.' in mean_style:
+            pgf_style += ", dashdotted"
+        else:
+            pgf_style += ", solid"
+
+        latex_lines.append(rf"    \addplot[{pgf_style}, line width=0.6pt, mark size=1.5pt] coordinates {{")
+        for _, row in group_df.iterrows():
+            val = row[mean_col]
+            if not pd.isna(val):
+                latex_lines.append(f"        ({int(row['plot_year'])}, {val:.4f})")
+        latex_lines.append(r"    };")
+        latex_lines.append(rf"    \addlegendentry{{{label}}}")
+
+    latex_lines.append(r"\end{axis}")
+    latex_lines.append(r"\end{tikzpicture}")
+    
+    return "\n".join(latex_lines)
 
 
 def plot_results(
@@ -90,6 +177,10 @@ def plot_results(
         LOGGER.warning(f"No data found in year range {MIN_YEAR}-{MAX_YEAR}")
         return
 
+    # Shift display years forward so plots align with publication year of test sets
+    df = df.copy()
+    df['plot_year'] = df['year'] + 1
+
     # Group by configuration parameters
     group_cols = ['p', 'embedder_model', 'denoiser', 'drop_k']
     # Filter to columns that actually exist in the dataframe
@@ -107,14 +198,16 @@ def plot_results(
         if isinstance(name, tuple):
             name_str = "_".join(str(x) for x in name)
             config_desc = _format_config_desc(group_cols, name)
+            config_desc_latex = _format_config_desc(group_cols, name, latex=True)
         else:
             name_str = str(name)
             config_desc = _format_config_desc(group_cols, name)
+            config_desc_latex = _format_config_desc(group_cols, name, latex=True)
             
         safe_name = create_unicode_safe_filename(name_str)
         
         # Sort by year to ensure correct line plotting
-        group = group.sort_values('year')
+        group_df = cast(pd.DataFrame, group).sort_values(by='plot_year')
         
         # Create the plot
         plt.figure(figsize=(12, 8))
@@ -122,7 +215,7 @@ def plot_results(
         # Plot series - filter based on global show flags
         series_config = []
         if SHOW_PRIOR_BOOKS:
-            series_config.append(('landmark_gap_size', 'Prior Books (Landmarks)', 'gray', 'o--', 'x--'))
+            series_config.append(('landmark_gap_size', 'Prior Books', 'gray', 'o-', 'x-'))
         if SHOW_NEW_BOOKS:
             series_config.append(('book_gap_size', 'New Books', 'red', 's-', 'd-'))
         if SHOW_NEW_ARTICLES:
@@ -135,32 +228,31 @@ def plot_results(
             band_high_col = f"{prefix}_p{BAND_PERCENTILE_HIGH}"
             
             # Plot mean line
-            if mean_col in group.columns:
-                plt.plot(group['year'], group[mean_col], mean_style, label=label, 
+            if mean_col in group_df.columns:
+                plt.plot(group_df['plot_year'], group_df[mean_col], mean_style, label=label, 
                         color=color, linewidth=2, markersize=8)
             
             # Fill uncertainty band - prefer percentile band if available, else use std
             if SHOW_SHADING:
-                if band_low_col in group.columns and band_high_col in group.columns:
+                if band_low_col in group_df.columns and band_high_col in group_df.columns:
                     plt.fill_between(
-                        group['year'], 
-                        group[band_low_col], 
-                        group[band_high_col], 
+                        group_df['plot_year'], 
+                        group_df[band_low_col], 
+                        group_df[band_high_col], 
                         color=color, 
                         alpha=0.15,
                         label=f"{label} (p{BAND_PERCENTILE_LOW}-p{BAND_PERCENTILE_HIGH})"
                     )
-                elif std_col in group.columns and mean_col in group.columns:
-                    lower = group[mean_col] - group[std_col]
-                    upper = group[mean_col] + group[std_col]
+                elif std_col in group_df.columns and mean_col in group_df.columns:
+                    lower = group_df[mean_col] - group_df[std_col]
+                    upper = group_df[mean_col] + group_df[std_col]
                     plt.fill_between(
-                        group['year'], 
+                        group_df['plot_year'], 
                         lower, 
                         upper, 
                         color=color, 
                         alpha=0.15
                     )
-
         plt.xlabel('Year', fontsize=12)
         plt.ylabel('Mean Gap Size', fontsize=12)
         plt.title(f'Evolution of Gap Sizes Over Time\n{config_desc}', fontsize=14)
@@ -168,7 +260,7 @@ def plot_results(
         plt.grid(True, alpha=0.3)
         
         # Use integer ticks for years, formatted as last two digits
-        unique_years = sorted(group['year'].unique())
+        unique_years = sorted(group_df['plot_year'].unique())
         plt.xticks(unique_years, [str(y)[-2:] for y in unique_years], rotation=45)
         
         output_path = output_dir / f"gap_evolution_{safe_name}.png"
@@ -176,6 +268,13 @@ def plot_results(
         plt.close()
         
         LOGGER.info(f"Saved plot to {output_path}")
+
+        # Generate and save LaTeX version
+        latex_code = generate_latex_plot(group_df, series_config, config_desc_latex)
+        latex_path = output_dir / f"gap_evolution_{safe_name}.tex"
+        with open(latex_path, "w") as f:
+            f.write(latex_code)
+        LOGGER.info(f"Saved LaTeX plot to {latex_path}")
 
     # --- New Plotting Logic: Compare configurations for each metric ---
     
@@ -216,25 +315,25 @@ def plot_results(
                 label = _format_config_desc(group_cols, name)
                 
                 # Sort by year
-                group = group.sort_values('year')
+                group_df = cast(pd.DataFrame, group).sort_values(by='plot_year')
                 
-                plt.plot(group['year'], group[stat_col], 'o-', label=label, color=color, linewidth=2, markersize=6)
+                plt.plot(group_df['plot_year'], group_df[stat_col], 'o-', label=label, color=color, linewidth=2, markersize=6)
                 
                 # Fill uncertainty band - prefer percentile band if available, else use std
                 if SHOW_SHADING:
                     if band_low_col in group.columns and band_high_col in group.columns:
                         plt.fill_between(
-                            group['year'], 
-                            group[band_low_col], 
-                            group[band_high_col], 
+                            group_df['plot_year'], 
+                            group_df[band_low_col], 
+                            group_df[band_high_col], 
                             color=color, 
                             alpha=0.1
                         )
                     elif std_col in group.columns and mean_col in group.columns:
-                        lower = group[mean_col] - group[std_col]
-                        upper = group[mean_col] + group[std_col]
+                        lower = group_df[mean_col] - group_df[std_col]
+                        upper = group_df[mean_col] + group_df[std_col]
                         plt.fill_between(
-                            group['year'], 
+                            group_df['plot_year'], 
                             lower, 
                             upper, 
                             color=color, 
@@ -249,7 +348,7 @@ def plot_results(
             plt.yscale('log')
             
             # Use integer ticks for years, formatted as last two digits
-            unique_years = sorted(df['year'].unique())
+            unique_years = sorted(df['plot_year'].unique())
             plt.xticks(unique_years, [str(y)[-2:] for y in unique_years], rotation=45)
             
             safe_metric_name = create_unicode_safe_filename(metric_label)

@@ -21,35 +21,54 @@ plt.rcParams.update(
         "font.size": 9,
         "axes.titlesize": 11,
         "axes.labelsize": 10,
-        "xtick.labelsize": 5,
+        "xtick.labelsize": 8,
         "ytick.labelsize": 8,
         "legend.fontsize": 8,
         "figure.titlesize": 11,
     }
 )
 
-from .common import (
-    GAP_COVERAGE_FRACTION_COLUMN,
-    GAP_ZSCORE_COLUMN,
-    PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
-    PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
-    RunMetadata,
-    friendly_column_name,
-    friendly_embedder_name,
-    friendly_denoiser_name,
-    COLUMN_DISPLAY_NAME_MAP_PLAIN,
-    find_run_directories,
-    load_run_metadata,
-    load_results_dataframe,
-    relative_run_path,
-    valid_rank_fraction_mask,
-)
+try:
+    from .common import (
+        GAP_COVERAGE_FRACTION_COLUMN,
+        GAP_ZSCORE_COLUMN,
+        PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
+        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
+        RunMetadata,
+        friendly_column_name,
+        friendly_embedder_name,
+        friendly_denoiser_name,
+        COLUMN_DISPLAY_NAME_MAP_PLAIN,
+        find_run_directories,
+        load_run_metadata,
+        load_results_dataframe,
+        relative_run_path,
+        valid_rank_fraction_mask,
+    )
+except ImportError:
+    from common import (
+        GAP_COVERAGE_FRACTION_COLUMN,
+        GAP_ZSCORE_COLUMN,
+        PROPOSAL_ARTICLE_RANK_FRACTION_COLUMN,
+        PROPOSAL_BOOK_RANK_FRACTION_COLUMN,
+        RunMetadata,
+        friendly_column_name,
+        friendly_embedder_name,
+        friendly_denoiser_name,
+        COLUMN_DISPLAY_NAME_MAP_PLAIN,
+        find_run_directories,
+        load_run_metadata,
+        load_results_dataframe,
+        relative_run_path,
+        valid_rank_fraction_mask,
+    )
 
 LOGGER = logging.getLogger(__name__)
 
 ENABLED_PLOT_TASKS: set[str] = {
     # "metric_variants",
     "embedder_metric_grids",
+    "best_run_per_topic_breakdown",
 }
 
 
@@ -1230,6 +1249,265 @@ def generate_metric_variant_plots(
     )
 
 
+def plot_best_run_per_topic_breakdown(
+    outputs_dir: Path,
+    artifacts_dir: Path,
+    dpi: int,
+    gap_idx: int = 0,
+    max_rotation_degrees: float = 40.0,
+) -> None:
+    """
+    Generate a scatter plot with one point per topic.
+    X-axis: Target Gap Coverage %age
+    Y-axis: Proposal Gap %ile
+    
+    Dynamically looks up the run for GIST with CCLIP(alpha=0.5) and 10 books, 5 articles.
+    
+    Args:
+        max_rotation_degrees: Maximum rotation angle in degrees (default 90).
+                             Lower values (e.g., 45, 30) will keep labels closer to horizontal.
+    """
+    summary_df = _load_summary_dataframe(outputs_dir, artifacts_dir, gap_idx)
+    
+    if summary_df.empty:
+        LOGGER.warning("Summary dataframe is empty; cannot generate per-topic breakdown.")
+        return
+    
+    # Filter for GIST embedder model with CCLIP denoiser
+    gist_cclip_df = summary_df[
+        (summary_df["embedder_model"] == "GIST_SMALL") &
+        (summary_df["denoiser"] == "CCLIP") &
+        (summary_df["llm_num_books"] == 5) &
+        (summary_df["llm_num_articles"] == 10) &
+        (summary_df["drop_k"] == 10)
+    ]
+    
+    if gist_cclip_df.empty:
+        LOGGER.warning("No GIST+CCLIP run found with 5 books and 10 articles.")
+        return
+    
+    if len(gist_cclip_df) > 1:
+        LOGGER.warning(
+            "Found %d matching runs; using the first one. Consider being more specific.",
+            len(gist_cclip_df),
+        )
+        LOGGER.info("Matching runs:\n%s", gist_cclip_df[["run", "drop_k"]].to_string(index=False))
+    
+    run_path_str = gist_cclip_df.iloc[0]["run"]
+    run_path = outputs_dir / run_path_str
+    
+    if not run_path.exists():
+        LOGGER.error("Run directory does not exist: %s", run_path)
+        return
+    
+    # Load the results dataframe for this run
+    results_df = load_results_dataframe(run_path)
+    
+    if results_df is None or results_df.empty:
+        LOGGER.warning("No results found for run %s", run_path)
+        return
+    
+    # Check for required columns
+    required_columns = ["topic_id", "gap_coverage_fraction", "proposal_gap_size_percentile", "num_books", "num_articles"]
+    missing_columns = [col for col in required_columns if col not in results_df.columns]
+    if missing_columns:
+        LOGGER.error("Missing required columns: %s", missing_columns)
+        return
+    
+    # Filter out rows with NaN in required columns
+    plot_df = results_df.dropna(subset=required_columns).copy()
+    
+    if plot_df.empty:
+        LOGGER.warning("No valid data points after filtering for NaN values.")
+        return
+    
+    # Fetch topic display names (try cache first, then API if needed)
+    plot_df["topic_name"] = plot_df["topic_id"].astype(str)
+    
+    try:
+        try:
+            from .generate_latex_tables import (
+                get_topic_display_name_map,
+                lookup_topic_display_name,
+                normalize_topic_id,
+            )
+        except ImportError:
+            from generate_latex_tables import (
+                get_topic_display_name_map,
+                lookup_topic_display_name,
+                normalize_topic_id,
+            )
+        
+        # Normalize topic IDs first (matching generate_latex_tables pattern)
+        topic_ids = [
+            normalize_topic_id(topic_id)
+            for topic_id in plot_df["topic_id"].dropna().unique().tolist()
+        ]
+        topic_ids = [topic_id for topic_id in topic_ids if topic_id]
+        
+        if topic_ids:
+            topic_name_map = get_topic_display_name_map(topic_ids)
+            plot_df["topic_name"] = plot_df["topic_id"].map(
+                lambda tid: lookup_topic_display_name(topic_name_map, tid)
+                or normalize_topic_id(tid)
+                or ""
+            )
+            
+    except Exception as exc:
+        LOGGER.warning("Failed to fetch topic names: %s. Using topic IDs instead.", exc)
+    
+    # Debug: print sample rows
+    # LOGGER.info("Sample data rows:")
+    # LOGGER.info(
+    #     plot_df[["topic_id", "topic_name", "gap_coverage_fraction", "proposal_gap_size_percentile", "num_books"]]
+    #     .head(10)
+    #     .to_string()
+    # )
+    # LOGGER.info("Data summary:")
+    # LOGGER.info("Gap coverage fraction - min: %.4f, max: %.4f, mean: %.4f",
+    #            plot_df["gap_coverage_fraction"].min(),
+    #            plot_df["gap_coverage_fraction"].max(),
+    #            plot_df["gap_coverage_fraction"].mean())
+    # LOGGER.info("Proposal gap size percentile - min: %.4f, max: %.4f, mean: %.4f",
+    #            plot_df["proposal_gap_size_percentile"].min(),
+    #            plot_df["proposal_gap_size_percentile"].max(),
+    #            plot_df["proposal_gap_size_percentile"].mean())
+    # LOGGER.info("Number of books - min: %d, max: %d, mean: %.1f",
+    #            plot_df["num_books"].min(),
+    #            plot_df["num_books"].max(),
+    #            plot_df["num_books"].mean())
+    
+    # Create the scatter plot with topic names only
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Configuration flag for color metric
+    USE_BOOK_ARTICLE_RATIO = True  # Set to False to use log-scaled num_books
+    
+    # Prepare color mapping
+    if USE_BOOK_ARTICLE_RATIO:
+        # Color by ratio of books to articles (log scale)
+        color_values = plot_df["num_books"] / plot_df["num_articles"]
+        min_color = float(color_values.min())
+        max_color = float(color_values.max())
+        from matplotlib.colors import LogNorm
+        norm = LogNorm(vmin=max(min_color, 1e-6), vmax=max_color)
+        colorbar_label = "Book/Article Ratio (log scale)"
+    else:
+        # Color by number of books (log scale)
+        color_values = plot_df["num_books"] + 1  # Avoid log(0)
+        min_color = float(color_values.min())
+        max_color = float(plot_df["num_books"].max())
+        from matplotlib.colors import LogNorm
+        norm = LogNorm(vmin=min_color, vmax=max_color)
+        colorbar_label = "Number of Books in Topic (log scale)"
+    
+    cmap = plt.get_cmap("viridis")
+    
+    # First, plot the points colored by the chosen metric
+    scatter = ax.scatter(
+        plot_df["gap_coverage_fraction"] * 100,
+        plot_df["proposal_gap_size_percentile"] * 100,
+        c=color_values,
+        s=100,
+        alpha=0.6,
+        cmap=cmap,
+        norm=norm,
+        edgecolors="black",
+        linewidths=0.5,
+        zorder=2,
+    )
+    
+    # Add colorbar
+    colorbar = fig.colorbar(scatter, ax=ax)
+    colorbar.set_label(colorbar_label)
+    
+    # Then plot topic names at their positions with rotation pointing toward center
+    # plotted_count = 0
+    for idx, row in plot_df.iterrows():
+        x = row["gap_coverage_fraction"]
+        y = row["proposal_gap_size_percentile"]
+        
+        # Calculate angle from point to center (0.5, 0.5)
+        dx = 0.5 - x
+        dy = 0.5 - y
+        angle_to_center = np.degrees(np.arctan2(dy, dx))
+        
+        # Normalize rotation to avoid upside-down text
+        rotation = angle_to_center
+        flip_text = False
+        if rotation > 90:
+            rotation -= 180
+            flip_text = True
+        elif rotation < -90:
+            rotation += 180
+            flip_text = True
+        
+        # Clamp rotation to max_rotation_degrees range
+        rotation = np.clip(rotation, -max_rotation_degrees, max_rotation_degrees)
+        
+        # Set alignment so text extends from the point toward the center
+        # With rotation_mode='anchor', we need to think about where the text baseline is
+        # relative to the anchor point after rotation
+        
+        # For horizontal alignment: we want text to extend toward center
+        # rotation > 0 means text tilts counterclockwise
+        # rotation < 0 means text tilts clockwise
+        
+        # Use the actual angle to center (before flipping) to determine direction
+        if -90 <= angle_to_center <= 90:
+            # Text naturally points toward center (pointing left/west)
+            ha = "left"  # Anchor on left, text extends right toward center
+        else:
+            # Text was flipped, now points away (we flipped it to avoid upside-down)
+            ha = "right"  # Anchor on right, text extends left toward center
+        
+        # Vertical alignment: text should extend from point toward center
+        if dy > 0:  # Point is below center (center is above)
+            va = "top"  # Anchor at top, text extends down from point
+        else:  # Point is above center (center is below)
+            va = "bottom"  # Anchor at bottom, text extends up from point
+        
+        x *= 100
+        y *= 100
+        INCLUDE_LABELS = True
+        if INCLUDE_LABELS:
+            ax.text(
+                x,
+                y,
+                row["topic_name"],
+                fontsize=7,
+                alpha=0.8,
+                ha=ha,
+                va=va,
+                rotation=rotation,
+                rotation_mode='anchor',
+                zorder=3,
+            )
+        # plotted_count += 1
+        # if plotted_count <= 5 or plotted_count % 10 == 0:
+        #     LOGGER.info("Plotted: %s at (%.1f, %.1f)", row["topic_name"], x, y)
+    
+    ax.set_xlabel("Target gap coverage %age")
+    ax.set_ylabel("Proposal gap %ile")
+    # ax.set_title("Per-Topic Gap Coverage vs Proposal Gap Percentile")
+    ax.grid(True, linewidth=0.3, linestyle="--", alpha=0.5)
+    
+    # Set explicit axis limits
+    ax.set_xlim(-5, 105)
+    ax.set_ylim(-5, 105)
+    
+    output_file = artifacts_dir / "best_run_per_topic_breakdown.png"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    
+    LOGGER.info(
+        "Wrote per-topic breakdown plot to %s (%d topics)",
+        output_file,
+        len(plot_df),
+    )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
@@ -1256,6 +1534,10 @@ def main() -> None:
     if "embedder_metric_grids" in ENABLED_PLOT_TASKS:
         LOGGER.info("Generating embedder metric grids")
         generate_embedder_metric_grids(args.outputs_dir, args.artifacts_dir, args.dpi)
+
+    if "best_run_per_topic_breakdown" in ENABLED_PLOT_TASKS:
+        LOGGER.info("Generating best run per-topic breakdown plot")
+        plot_best_run_per_topic_breakdown(args.outputs_dir, args.artifacts_dir, args.dpi)
 
 
 if __name__ == "__main__":

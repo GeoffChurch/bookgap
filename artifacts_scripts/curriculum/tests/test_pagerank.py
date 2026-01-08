@@ -6,11 +6,10 @@ import scipy.sparse as sp
 
 from artifacts_scripts.curriculum.pagerank import (
     build_batched_pagerank_seeds,
-    build_citation_adjacency_from_ids,
     compute_frontier_adjacency,
     compute_pagerank,
-    normalize_rows,
 )
+from bookgap.util import build_citation_adjacency_from_ids
 
 
 @pytest.fixture
@@ -113,26 +112,6 @@ class TestBuildCitationAdjacencyFromIds:
         assert adj.nnz == 1
         assert adj[0, 1] == 1.0
 
-
-class TestNormalizeRows:
-    """Tests for normalize_rows."""
-    
-    def test_basic_normalization(self):
-        """Test rows sum to 1 after normalization."""
-        mat = sp.csr_matrix([
-            [1.0, 2.0, 0.0],
-            [3.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0],  # Zero row
-        ])
-        
-        normalized = normalize_rows(mat)
-        
-        # Non-zero rows should sum to 1
-        row_sums = np.asarray(normalized.sum(axis=1)).flatten()
-        assert row_sums[0] == pytest.approx(1.0)
-        assert row_sums[1] == pytest.approx(1.0)
-        # Zero row stays zero
-        assert row_sums[2] == pytest.approx(0.0)
 
 
 class TestComputePagerank:

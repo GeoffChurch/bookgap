@@ -2,6 +2,7 @@ import numpy as np
 from scipy.spatial import Voronoi, voronoi_plot_2d, KDTree
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection # Added this import
+from matplotlib.patches import Circle
 import sys
 from pathlib import Path
 
@@ -34,22 +35,22 @@ ARTICLE_COVS += BOOK_COVS
 # --- Style Configuration ---
 # Matplotlib Colors
 ARTICLE_COLOR_MPL = 'black'
-BOOK_COLOR_MPL = 'blue'
+BOOK_COLOR_MPL = 'blue'  # Lighter blue for books
 QUERY_COLOR_MPL = 'green'
 
 # LaTeX/TikZ Colors
 ARTICLE_COLOR_TEX = 'black'
-BOOK_COLOR_TEX = 'blue'
+BOOK_COLOR_TEX = 'blue' # Lighter blue for books
 QUERY_COLOR_TEX = 'green!60!black' # A darker green for LaTeX
 
 ARTICLE_SIZE_MPL = 5 # Matplotlib size (area) for articles
-BOOK_SIZE_MPL = 25   # Matplotlib size (area) for books (will be hollow)
+BOOK_SIZE_MPL = 36   # Matplotlib size (area) for books (x markers)
 QUERY_SIZE_MPL = 30  # Matplotlib size (area) for query
 
-BOOK_LINEWIDTH_MPL = 1.2 # Linewidth for hollow book markers
+BOOK_LINEWIDTH_MPL = 1.2 # Linewidth for book markers
 
 ARTICLE_SIZE_TEX = 1.0 # LaTeX radius for articles (in pt)
-BOOK_SIZE_TEX = 3.0    # LaTeX radius for books (in pt)
+BOOK_SIZE_TEX = 3.5    # LaTeX radius for books (in pt)
 QUERY_SIZE_TEX = 3.5   # LaTeX radius for query (in pt)
 
 BOOK_LINEWIDTH_TEX = 'thick' # Linewidth for hollow book markers ('thin', 'thick', 'very thick')
@@ -220,11 +221,10 @@ def generate_latex_figure(articles, books, query, radius, vor, standalone=True):
     for x, y in articles:
         latex_lines.append(rf"\fill[{ARTICLE_COLOR_TEX}] ({x},{y}) circle ({ARTICLE_SIZE_TEX}pt);")
 
-    # --- Draw Blue Dots ---
-    latex_lines.append(r"% --- Blue Dots (Voronoi points) ---")
+    # --- Draw Blue X Marks ---
+    latex_lines.append(r"% --- Blue X Marks (Voronoi points) ---")
     for x, y in books:
-        # Changed from \fill to \draw to make it a hollow circle
-        latex_lines.append(rf"\draw[{BOOK_COLOR_TEX}, {BOOK_LINEWIDTH_TEX}] ({x},{y}) circle ({BOOK_SIZE_TEX}pt);")
+        latex_lines.append(rf"\draw[{BOOK_COLOR_TEX}, line width=0.6pt] ({x},{y}) node[scale=1] {{$\times$}};")
 
     # --- Draw Green Dot and Circle ---
     latex_lines.append(r"% --- Green Dot (Voronoi point) and Nearest-Neighbor Circle ---")
@@ -244,17 +244,17 @@ def generate_latex_figure(articles, books, query, radius, vor, standalone=True):
     # Removed fill-opacity=0.7 to avoid dependency on 'transparency' library
     latex_lines.append(r"\node[anchor=north east, fill=white, draw=gray, thin, inner sep=3pt] (legend) at (0,0) {")
     # Use a tabular environment for easy alignment
-    latex_lines.append(r"  \begin{tabular}{ll}")
+    latex_lines.append(r"  \begin{tabular}{cl}")
     # Query
-    latex_lines.append(rf"  \tikz\fill[{QUERY_COLOR_TEX}] (0,0) circle ({QUERY_SIZE_TEX}pt); & Query \\")
+    latex_lines.append(rf"  \tikz[baseline=-0.5ex] \fill[{QUERY_COLOR_TEX}] (0,0) circle ({QUERY_SIZE_TEX}pt); & Query \\")
     # Book
-    latex_lines.append(rf"  \tikz\draw[{BOOK_COLOR_TEX}, {BOOK_LINEWIDTH_TEX}] (0,0) circle ({BOOK_SIZE_TEX}pt); & Book \\")
+    latex_lines.append(rf"  \tikz[baseline=-0.5ex] \node[{BOOK_COLOR_TEX}, inner sep=0pt, scale=1] {{×}}; & Book \\")
     # Article
-    latex_lines.append(rf"  \tikz\fill[{ARTICLE_COLOR_TEX}] (0,0) circle ({ARTICLE_SIZE_TEX}pt); & Article \\")
+    latex_lines.append(rf"  \tikz[baseline=-0.5ex] \fill[{ARTICLE_COLOR_TEX}] (0,0) circle ({ARTICLE_SIZE_TEX}pt); & Article \\")
     # Voronoi Line
-    latex_lines.append(r"  \tikz\draw[gray, thin, opacity=0.8] (0,0) -- (0.4,0); & Voronoi Cell \\")
+    latex_lines.append(r"  \tikz[baseline=-0.5ex] \draw[gray, thin, opacity=0.8] (0,0) -- (0.5,0); & Voronoi Cell \\")
     # 1-ball
-    latex_lines.append(rf"  \tikz\draw[{QUERY_COLOR_TEX}, thick, dashed] (0,0) circle ({QUERY_SIZE_TEX}pt); & Query 1-ball \\")
+    latex_lines.append(rf"  \tikz[baseline=-0.5ex] \draw[{QUERY_COLOR_TEX}, thick, dashed] (0,0) circle ({QUERY_SIZE_TEX}pt); & Query 1-ball \\")
     
     latex_lines.append(r"  \end{tabular}")
     latex_lines.append(r"};")
@@ -283,13 +283,12 @@ def save_matplotlib_figure(article_dots, book_dots, query_dot, radius, vor, outp
     # 2. Draw Orange Dots
     ax.scatter(article_dots[:, 0], article_dots[:, 1], c=ARTICLE_COLOR_MPL, s=ARTICLE_SIZE_MPL, label='Articles')
 
-    # 3. Draw Blue Dots
-    # Changed to hollow circles (facecolors='none') with an edge
-    ax.scatter(book_dots[:, 0], book_dots[:, 1], 
-               facecolors='none', 
-               edgecolors=BOOK_COLOR_MPL, 
-               s=BOOK_SIZE_MPL, 
-               linewidths=BOOK_LINEWIDTH_MPL, 
+    # 3. Draw Blue Xs
+    ax.scatter(book_dots[:, 0], book_dots[:, 1],
+               c=BOOK_COLOR_MPL,
+               s=BOOK_SIZE_MPL,
+               marker='x',
+               linewidths=BOOK_LINEWIDTH_MPL,
                label='Books')
     
     # 4. Draw Green Dot and Circle
@@ -298,8 +297,8 @@ def save_matplotlib_figure(article_dots, book_dots, query_dot, radius, vor, outp
     
     # Add the circle patch
     # Updated label to 'Query 1-ball'
-    circle = plt.Circle((g_x, g_y), radius, color=QUERY_COLOR_MPL, fill=False, 
-                        linestyle='--', linewidth=1.5, label='Query 1-ball')
+    circle = Circle((g_x, g_y), radius, color=QUERY_COLOR_MPL, fill=False, 
+                    linestyle='--', linewidth=1.5, label='Query 1-ball')
     ax.add_patch(circle)
 
     # 5. Set bounds and style

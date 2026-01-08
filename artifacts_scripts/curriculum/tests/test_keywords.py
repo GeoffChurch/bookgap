@@ -254,6 +254,67 @@ class TestComputeLogOddsRatioDocs:
         assert "apple" in base_scores and "apple" in dup_scores
         assert base_scores["apple"] == pytest.approx(dup_scores["apple"], rel=1e-6, abs=1e-6)
 
+    def test_relevance_weighting_upweights_high_mass_docs(self):
+        """With doc_weighting='relevance', high-weight docs contribute more to keywords."""
+        from artifacts_scripts.curriculum.keyword_extraction import compute_log_odds_ratio_docs
+
+        # Topic 0: two docs, one with "alpha" (high weight), one with "beta" (low weight)
+        # Topic 1: control topic
+        topic_docs = [
+            [["alpha", "alpha", "shared"], ["beta", "beta", "shared"]],
+            [["gamma", "gamma", "shared"]],
+        ]
+        
+        # High weight on "alpha" doc, low weight on "beta" doc
+        topic_weights = [
+            [10.0, 1.0],  # alpha doc has 10x weight
+            [1.0],
+        ]
+        
+        # With RELEVANCE weighting, "alpha" should dominate
+        results_relevance = compute_log_odds_ratio_docs(
+            topic_docs,
+            top_k=5,
+            prior_weight=0.01,
+            doc_weighting=DocWeighting.RELEVANCE,
+            topic_weighting=TopicWeighting.EQUAL,
+            topic_doc_weights=topic_weights,
+        )
+        
+        # With EQUAL weighting, both should contribute equally
+        results_equal = compute_log_odds_ratio_docs(
+            topic_docs,
+            top_k=5,
+            prior_weight=0.01,
+            doc_weighting=DocWeighting.EQUAL,
+            topic_weighting=TopicWeighting.EQUAL,
+        )
+        
+        rel_scores = dict(results_relevance[0])
+        eq_scores = dict(results_equal[0])
+        
+        # With RELEVANCE, "alpha" should score higher than "beta"
+        assert "alpha" in rel_scores and "beta" in rel_scores
+        assert rel_scores["alpha"] > rel_scores["beta"]
+        
+        # With EQUAL, they should be roughly equal (same doc structure)
+        assert "alpha" in eq_scores and "beta" in eq_scores
+        # Should be close since each doc contributes equally
+        assert eq_scores["alpha"] == pytest.approx(eq_scores["beta"], rel=0.1)
+
+    def test_relevance_weighting_requires_weights(self):
+        """RELEVANCE doc_weighting without weights should raise."""
+        from artifacts_scripts.curriculum.keyword_extraction import compute_log_odds_ratio_docs
+
+        topic_docs = [[["word"]]]
+        
+        with pytest.raises(ValueError, match="topic_doc_weights required"):
+            compute_log_odds_ratio_docs(
+                topic_docs,
+                doc_weighting=DocWeighting.RELEVANCE,
+                topic_doc_weights=None,
+            )
+
 
 class TestExtractTopicKeywords:
     """Tests for extract_topic_keywords function."""
@@ -361,6 +422,9 @@ class TestSummarizeTopics:
 
         # point_to_cluster: assign first 3 docs to topic 0, next 3 to topic 1
         np.save(curr_dir / "point_to_cluster.npy", np.array([0, 0, 0, 1, 1, 1]))
+        
+        # PageRank scores for points (required for sampling)
+        np.save(curr_dir / "point_masses.npy", np.array([1.0, 0.8, 0.6, 0.9, 0.7, 0.5]))
 
         # Minimal metadata
         with open(curr_dir / "metadata.json", "w") as f:
@@ -376,7 +440,7 @@ class TestSummarizeTopics:
             "Hypothesis testing and confidence intervals",
         ]
 
-        keywords = summarize_topics(curr_dir, texts, samples_per_topic=2, top_k_keywords=3, method=KeywordMethod.TFIDF, seed=0)
+        keywords = summarize_topics(curr_dir, texts, samples_per_topic=2, top_k_keywords=3, method=KeywordMethod.TFIDF)
 
         # Expect two topics
         assert set(keywords.keys()) == {0, 1}
