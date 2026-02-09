@@ -31,6 +31,7 @@ import pytest
 from artifacts_scripts.curriculum.pagerank import compute_pagerank
 from artifacts_scripts.curriculum.circuitrank import (
     compute_frontier_adjacency_potential,
+    compute_current_flow,
     compute_graph_potential,
 )
 
@@ -82,7 +83,9 @@ class TestPageRankVsCircuitEquivalence:
     def test_single_seed_simple_cycle(self):
         """Test single seed equivalence on a simple cyclic graph."""
         adj = create_simple_citation_graph()
-        n = adj.shape[0]
+        shape = adj.shape
+        assert shape is not None
+        n = shape[0]
         
         # PageRank: seed node 0
         seeds_pr = np.zeros(n)
@@ -138,7 +141,9 @@ class TestPageRankVsCircuitEquivalence:
     def test_multiple_seeds_diamond(self):
         """Test circuit solver with current injection on a diamond graph."""
         adj = create_diamond_graph()
-        n = adj.shape[0]
+        shape = adj.shape
+        assert shape is not None
+        n = shape[0]
         
         # Inject current uniformly
         leakage = 0.15
@@ -169,7 +174,9 @@ class TestPageRankVsCircuitEquivalence:
     def test_alpha_leakage_parameter_correspondence(self):
         """Test that alpha=0.85 with seed gives similar shape to circuit with boundary."""
         adj = create_simple_citation_graph()  # Cyclic graph
-        n = adj.shape[0]
+        shape = adj.shape
+        assert shape is not None
+        n = shape[0]
         
         # PageRank from node 0 with alpha=0.85
         seeds_pr = np.zeros(n)
@@ -231,7 +238,9 @@ class TestPageRankVsCircuitEquivalence:
     def test_leakage_interpretation(self):
         """Test that different leakage values give different potentials with current injection."""
         adj = create_chain_graph()
-        n = adj.shape[0]
+        shape = adj.shape
+        assert shape is not None
+        n = shape[0]
         
         # Inject current uniformly
         current_sources = np.ones(n) * 0.1
@@ -357,6 +366,111 @@ def test_frontier_adjacency_batched_matches_loop():
         frontier_nodes=frontier_nodes,
         leaf_to_cluster=leaf_to_cluster,
         leakage=0.15,
+        gmres_tol=1e-10,
+        gmres_maxiter=50,
+    )
+
+    np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+
+
+def _normalize_like_solver(adj: sp.csr_matrix, *, normalize: bool) -> sp.csr_matrix:
+    """Replicate the effective adjacency used by compute_graph_potential.
+
+    The solver internally transposes adj, then (if normalize=True) column-normalizes.
+    """
+    adj_used = adj.T.tocsr()
+    if not normalize:
+        return adj_used
+    col_sums = np.asarray(adj_used.sum(axis=0)).flatten()
+    col_sums_safe = np.where(col_sums > 0, col_sums, 1.0)
+    inv_col_sums = 1.0 / col_sums_safe
+    D_inv = sp.diags(inv_col_sums, format="csr")
+    return (adj_used @ D_inv).tocsr()
+
+
+def test_compute_current_flow_matches_manual_on_normalization_sensitive_graph():
+    """compute_current_flow should match a manual edge-current computation.
+
+    Use a graph where normalization changes weights (a node with 2 outgoing citations).
+    """
+    adj = create_diamond_graph()  # node 0 cites two nodes -> normalization matters
+    shape = adj.shape
+    assert shape is not None
+    n = shape[0]
+
+    # Any non-constant potentials are fine for current calculations.
+    phi = np.linspace(0.0, 1.0, n, dtype=np.float64)
+
+    got = compute_current_flow(adj, phi, normalize=True)
+
+    adj_used = _normalize_like_solver(adj, normalize=True).tocoo()
+    phi_diff = phi[adj_used.col] - phi[adj_used.row]
+    edge_currents = adj_used.data * phi_diff
+
+    expected = np.zeros(n, dtype=np.float64)
+    np.add.at(expected, adj_used.row, np.abs(edge_currents))
+    np.add.at(expected, adj_used.col, np.abs(edge_currents))
+    expected *= 0.5
+
+    np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+
+
+def test_frontier_adjacency_batched_matches_loop_with_solver_normalization():
+    """Batched frontier adjacency should match a loop reference using solver normalization.
+
+    This is a regression test for normalization consistency between the solver and
+    downstream current measurements.
+    """
+    adj = create_diamond_graph()  # normalization-sensitive
+    shape = adj.shape
+    assert shape is not None
+    n = shape[0]
+
+    # Two topics: topic0 is the branching citer; topic1 is the sink.
+    # Intermediates are unassigned so they can mediate current.
+    leaf_to_cluster = np.array([0, -1, -1, 1], dtype=np.int64)
+    frontier_nodes = np.array([0, 3], dtype=np.int64)
+    leakage = 0.15
+
+    def reference_loop() -> np.ndarray:
+        num_topics = int(frontier_nodes.shape[0])
+        out = np.zeros((num_topics, num_topics), dtype=np.float64)
+        adj_used = _normalize_like_solver(adj, normalize=True)
+        row_sums = np.asarray(adj_used.sum(axis=1)).flatten()
+
+        for source_idx in range(num_topics):
+            fixed: dict[int, float] = {}
+            for node_idx in range(n):
+                cluster_id = int(leaf_to_cluster[node_idx])
+                if cluster_id == -1:
+                    continue
+                fixed[node_idx] = 1.0 if cluster_id == source_idx else 0.0
+
+            phi = compute_graph_potential(
+                adj,
+                fixed_potentials=fixed,
+                leakage=leakage,
+                normalize=True,
+                gmres_tol=1e-10,
+                gmres_maxiter=50,
+            )
+
+            current_in = np.asarray(adj_used @ phi).flatten() - row_sums * phi
+
+            for target_idx in range(num_topics):
+                if target_idx == source_idx:
+                    continue
+                target_nodes = np.where(leaf_to_cluster == target_idx)[0]
+                out[source_idx, target_idx] = float(current_in[target_nodes].sum())
+        return out
+
+    expected = reference_loop()
+    got = compute_frontier_adjacency_potential(
+        adj,
+        frontier_nodes=frontier_nodes,
+        leaf_to_cluster=leaf_to_cluster,
+        leakage=leakage,
+        normalize=True,
         gmres_tol=1e-10,
         gmres_maxiter=50,
     )

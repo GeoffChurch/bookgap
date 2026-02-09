@@ -11,6 +11,8 @@ from .summarize_topics import load_curriculum_outputs
 # Constants for summary generation
 NUM_KEYWORDS_IN_SUMMARY = 10
 NUM_WORKS_IN_SUMMARY = 3
+TOP_K_SHARES_PER_TOPIC = [1, 10, 100]
+TOP_K_CENTER_FOR_SIM = 1000
 
 
 def _compute_topic_mass_stats(
@@ -64,11 +66,22 @@ def _compute_topic_mass_stats(
             entropy_ratio = 0.0
             gini = 0.0
         
+        # Hubness shares within topic
+        sorted_desc = np.sort(masses)[::-1]
+        top_k_shares = {}
+        for k in TOP_K_SHARES_PER_TOPIC:
+            k_eff = min(int(k), len(sorted_desc))
+            if k_eff <= 0 or total_mass <= 0:
+                top_k_shares[f"top_{k}"] = 0.0
+            else:
+                top_k_shares[f"top_{k}"] = float(sorted_desc[:k_eff].sum() / total_mass)
+
         topic_stats[topic_idx] = {
             "total_mass": total_mass,
             "entropy": float(entropy),
             "entropy_ratio": float(entropy_ratio),
             "gini": float(gini),
+            "top_k_shares": top_k_shares,
         }
     
     return topic_stats
@@ -101,6 +114,14 @@ def _format_mass_stats_section(metadata: Dict[str, Any]) -> str:
         if percentiles:
             lines.append(f"| 99th Percentile | {percentiles.get('p99', 0):.2e} |")
             lines.append(f"| 99.9th Percentile | {percentiles.get('p99.9', 0):.2e} |")
+        top_k = mass_stats.get("top_k_shares", {})
+        top_pct = mass_stats.get("top_pct_shares", {})
+        if top_k:
+            top_k_str = ", ".join([f"{k}: {v:.2%}" for k, v in top_k.items()])
+            lines.append(f"| Top-k Mass Share | {top_k_str} |")
+        if top_pct:
+            top_pct_str = ", ".join([f"{k}: {v:.2%}" for k, v in top_pct.items()])
+            lines.append(f"| Top-pct Mass Share | {top_pct_str} |")
     
     lines.append("")
     
@@ -143,16 +164,24 @@ def _format_topic_overview_section(
     titles: List[str],
     filtered_indices: Optional[np.ndarray],
     topic_stats: Dict[int, Dict[str, float]],
+    topic_similarities: Optional[Dict[int, Dict[str, float]]] = None,
+    linearization_order: Optional[List[int]] = None,
 ) -> str:
     """Format a brief topic overview table showing size, relevance stats, keywords, and top work."""
     n_topics = len(frontier_nodes)
     
+    # Use provided order or default to ID order
+    if linearization_order is None:
+        loop_iter = enumerate(range(n_topics))
+    else:
+        loop_iter = enumerate(linearization_order)
+
     lines = []
     lines.append("### Topic Overview\n")
-    lines.append("| Topic | Size | Relevance | Entropy | Gini | Top Keywords | Top Work |")
-    lines.append("| :---: | ---: | ---: | ---: | ---: | :--- | :--- |")
+    lines.append("| Rank | Size | Relevance | Entropy | Gini | Sim→Target | Sim→Source | Top Keywords | Top Work |")
+    lines.append("| :---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- | :--- |")
     
-    for topic_idx in range(n_topics):
+    for rank, topic_idx in loop_iter:
         # Get topic size
         local_indices = np.where(point_to_cluster == topic_idx)[0]
         size = len(local_indices)
@@ -186,8 +215,20 @@ def _format_topic_overview_section(
                 top_title = top_title[:47] + "..."
         else:
             top_title = "_none_"
+
+        sim_target = "-"
+        sim_source = "-"
+        if topic_similarities:
+            sim_info = topic_similarities.get(topic_idx, {})
+            if "sim_target" in sim_info:
+                sim_target = f"{sim_info['sim_target']:.3f}"
+            if "sim_source" in sim_info:
+                sim_source = f"{sim_info['sim_source']:.3f}"
         
-        lines.append(f"| {topic_idx} | {size:,} | {total_mass:.4f} | {100*entropy_ratio:.1f}% | {gini:.4f} | {keywords_str} | {top_title} |")
+        lines.append(
+            f"| {rank + 1} | {size:,} | {total_mass:.4f} | {100*entropy_ratio:.1f}% | {gini:.4f} | "
+            f"{sim_target} | {sim_source} | {keywords_str} | {top_title} |"
+        )
     
     lines.append("")
     lines.append("---\n")
@@ -248,6 +289,57 @@ def generate_curriculum_summary(
         n_topics = len(frontier_nodes)
         topic_stats = _compute_topic_mass_stats(point_masses, point_to_cluster, n_topics)
         
+        # Compute per-topic centroid similarities to source/target embeddings
+        topic_similarities: Optional[Dict[int, Dict[str, float]]] = None
+        if outputs.metadata:
+            target_ids = outputs.metadata.get("target_work_ids", []) or []
+            source_ids = outputs.metadata.get("source_work_ids", []) or []
+            id_to_idx = {wid: i for i, wid in enumerate(work_ids)}
+
+            target_indices = [id_to_idx.get(wid) for wid in target_ids]
+            target_indices = [i for i in target_indices if i is not None]
+            source_indices = [id_to_idx.get(wid) for wid in source_ids]
+            source_indices = [i for i in source_indices if i is not None]
+
+            if target_indices or source_indices:
+                embeddings = cloud.embeddings()
+            else:
+                embeddings = None
+
+            target_vecs = embeddings[target_indices] if (embeddings is not None and target_indices) else None
+            source_vecs = embeddings[source_indices] if (embeddings is not None and source_indices) else None
+
+            if target_vecs is not None or source_vecs is not None:
+                topic_similarities = {}
+                for topic_idx in range(n_topics):
+                    local_indices = np.where(point_to_cluster == topic_idx)[0]
+                    if local_indices.size == 0:
+                        continue
+
+                    # Use top-N by mass to estimate centroid
+                    local_masses = point_masses[local_indices]
+                    order = np.argsort(local_masses)[::-1]
+                    top_local = local_indices[order[:TOP_K_CENTER_FOR_SIM]]
+
+                    if filtered_indices is not None:
+                        cloud_indices = filtered_indices[top_local]
+                    else:
+                        cloud_indices = top_local
+
+                    topic_vecs = embeddings[cloud_indices]
+                    centroid = topic_vecs.mean(axis=0)
+                    denom = np.linalg.norm(centroid) + 1e-12
+                    centroid = centroid / denom
+
+                    sim_info: Dict[str, float] = {}
+                    if target_vecs is not None:
+                        t_norm = target_vecs / (np.linalg.norm(target_vecs, axis=1, keepdims=True) + 1e-12)
+                        sim_info["sim_target"] = float(np.max(t_norm @ centroid))
+                    if source_vecs is not None:
+                        s_norm = source_vecs / (np.linalg.norm(source_vecs, axis=1, keepdims=True) + 1e-12)
+                        sim_info["sim_source"] = float(np.max(s_norm @ centroid))
+                    topic_similarities[topic_idx] = sim_info
+
         # Write topic overview table
         f.write(_format_topic_overview_section(
             point_to_cluster=point_to_cluster,
@@ -258,6 +350,8 @@ def generate_curriculum_summary(
             titles=titles,
             filtered_indices=filtered_indices,
             topic_stats=topic_stats,
+            topic_similarities=topic_similarities,
+            linearization_order=linearization_order,
         ))
         
         for rank, topic_idx in enumerate(linearization_order):
@@ -269,7 +363,7 @@ def generate_curriculum_summary(
             local_indices = np.where(point_to_cluster == topic_idx)[0]
             work_count = len(local_indices)
             
-            f.write(f"## Topic {topic_idx}\n\n")
+            f.write(f"## Topic {rank + 1}\n\n")
             f.write(f"**Total Relevance (Mass):** {topic_mass:.4f}\n\n")
             f.write(f"**Number of Works:** {work_count}\n\n")
 
@@ -285,7 +379,22 @@ def generate_curriculum_summary(
             f.write("| :--- | :--- |\n")
             f.write(f"| Entropy | {stats.get('entropy', 0):.4f} ({100*stats.get('entropy_ratio', 0):.1f}% of max) |\n")
             f.write(f"| Gini Coefficient | {stats.get('gini', 0):.4f} |\n")
+            top_k_shares = stats.get("top_k_shares", {})
+            if top_k_shares:
+                top_k_str = ", ".join([f"{k}: {v:.2%}" for k, v in top_k_shares.items()])
+                f.write(f"| Top-k Mass Share | {top_k_str} |\n")
             f.write("\n")
+
+            if topic_similarities and topic_idx in topic_similarities:
+                sim_info = topic_similarities[topic_idx]
+                f.write("### Seed Similarity\n\n")
+                f.write("| Metric | Value |\n")
+                f.write("| :--- | :--- |\n")
+                if "sim_target" in sim_info:
+                    f.write(f"| Centroid → Target (max cos) | {sim_info['sim_target']:.3f} |\n")
+                if "sim_source" in sim_info:
+                    f.write(f"| Centroid → Source (max cos) | {sim_info['sim_source']:.3f} |\n")
+                f.write("\n")
             
             # Keywords
             if topic_keywords and topic_idx in topic_keywords:

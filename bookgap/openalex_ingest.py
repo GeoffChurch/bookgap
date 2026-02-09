@@ -1,5 +1,7 @@
+import enum
 import itertools
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,10 +153,9 @@ def _resolve_filter_scopes(work_filter: Filter) -> list[ResolvedScope]:
             for topic_id in topics
             for wt in work_filter.work_types
         ]
-    else:
+    elif resolved_filter.field is not None:
         # Field-only: enumerate all subfields, then all topics
         field_id = resolved_filter.field
-        assert field_id is not None
         
         field_data: Any = pyalex.Fields()[field_id]  # type: ignore
         subfield_ids: list[str] = [_suffix(sf["id"]) for sf in field_data.get("subfields", [])]
@@ -173,6 +174,34 @@ def _resolve_filter_scopes(work_filter: Filter) -> list[ResolvedScope]:
                         topic=topic_id,
                         work_type=wt,
                     ))
+    else:
+        # Domain-only: enumerate all fields, subfields, then topics
+        domain_id = resolved_filter.domain
+        assert domain_id is not None
+
+        domain_data: Any = pyalex.Domains()[domain_id]  # type: ignore
+        field_ids: list[str] = [_suffix(f["id"]) for f in domain_data.get("fields", [])]
+        field_ids = sorted(set(field_ids))
+        if not field_ids:
+            raise ValueError(f"No fields found for domain {domain_id}")
+
+        scopes = []
+        for field_id in field_ids:
+            field_data: Any = pyalex.Fields()[field_id]  # type: ignore
+            subfield_ids: list[str] = [_suffix(sf["id"]) for sf in field_data.get("subfields", [])]
+            subfield_ids = sorted(set(subfield_ids))
+            if not subfield_ids:
+                continue
+            for subfield_id in subfield_ids:
+                topics = get_subfield_topics(subfield_id)
+                for topic_id in topics:
+                    for wt in work_filter.work_types:
+                        scopes.append(ResolvedScope(
+                            field=field_id,
+                            subfield=subfield_id,
+                            topic=topic_id,
+                            work_type=wt,
+                        ))
     
     return scopes
 
@@ -205,10 +234,27 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
     time.sleep(1.0) # Initial 1 second wait in case of earlier requests
 
     # Then yield new works
+    MIN_TIME_DIFF = 1.0 # Minimum time between requests
     last_time = time.time() # For rate limiting
-    for i, page in enumerate(
-        get_query(scope.filter()).paginate(cursor=state["next_cursor"], per_page=200, n_max=None) # type: ignore
-    ):
+    cursor = state["next_cursor"]
+    empty_page_retries = 0
+    max_empty_page_retries = 10
+    while cursor is not None:
+        page_iter = get_query(scope.filter()).paginate(cursor=cursor, per_page=200, n_max=1) # type: ignore
+        page = next(iter(page_iter), None)
+        if page is None:
+            empty_page_retries += 1
+            LOGGER.warning(
+                f"No page returned for {scope.filter()} at cursor={cursor}; retry {empty_page_retries}/{max_empty_page_retries}"
+            )
+            if empty_page_retries > max_empty_page_retries:
+                raise RuntimeError(
+                    f"No page returned for {scope.filter()} after {max_empty_page_retries} retries"
+                )
+            time.sleep(max(0, MIN_TIME_DIFF - (time.time() - last_time)))
+            last_time = time.time()
+            continue
+
         works: list[dict[str, Any]] = list(map(dict, page))
         filtered_works: list[dict[str, Any]] = []
         dropped_no_abstract = 0
@@ -236,13 +282,24 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
         next_cursor = page.meta["next_cursor"]
         if not filtered_works:
             if next_cursor is not None:
-                raise RuntimeError(
-                    f"Received empty page for {scope.filter()} before pagination finished"
+                empty_page_retries += 1
+                if empty_page_retries > max_empty_page_retries:
+                    raise RuntimeError(
+                        f"Received empty page for {scope.filter()} before pagination finished after {max_empty_page_retries} retries"
+                    )
+                LOGGER.warning(
+                    f"Empty page for {scope.filter()} at cursor={cursor} (next_cursor={next_cursor}); retry {empty_page_retries}/{max_empty_page_retries}"
                 )
+                cursor = next_cursor
+                time.sleep(max(0, MIN_TIME_DIFF - (time.time() - last_time)))
+                last_time = time.time()
+                continue
             state["next_cursor"] = next_cursor
             with state_file.open("w") as f:
                 json.dump(state, f)
             return
+
+        empty_page_retries = 0
 
         # Save works, sharded by topic
         page_file = state_dir / f"page_{state['next_page']}.json"
@@ -256,12 +313,10 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
 
         yield from filtered_works
 
-        min_time_diff = 1.0 # Minimum time between requests
-        time.sleep(max(0, min_time_diff - (time.time() - last_time)))
+        time.sleep(max(0, MIN_TIME_DIFF - (time.time() - last_time)))
         last_time = time.time()
 
-        if next_cursor is None:
-            return
+        cursor = next_cursor
 
 
 class RegexFilter:
@@ -293,7 +348,7 @@ class ShortFieldFilter:
         return f"len({self.field}) < {self.min_length}"
 
 
-class WorkFilter:
+class WorkFilter(enum.Enum):
     BINDER_NAME_CANCEL_CREATE_EXPORT      = RegexFilter(r"BinderNameCancelCreateExport")
     NO_ABSTRACT_AVAILABLE                 = RegexFilter(r"No abstract available")
     ABSTRACT_NOT_AVAILABLE                = RegexFilter(r"An abstract is not available")
@@ -314,6 +369,8 @@ class WorkFilter:
 
 def _filter_works(scope: ResolvedScope):
     """Filter works for a single concrete scope (field/subfield/topic/work_type)."""
+    filters = list(WorkFilter)
+
     class PerTypeCounter:
         def __init__(self) -> None:
             self.total: int = 0
@@ -323,7 +380,7 @@ def _filter_works(scope: ResolvedScope):
             work_type = work.get('type', 'UNKNOWN')
             self.per_type[work_type] = self.per_type.get(work_type, 0) + 1
 
-    filter_stats = {f"{filter}": PerTypeCounter() for filter in WorkFilter.__dict__.values() if callable(getattr(filter, '__call__', None))}
+    filter_stats = {f"{filter}": PerTypeCounter() for filter in filters}
     total = PerTypeCounter()
     num_removed = PerTypeCounter()
     artifacts_dir = ARTIFACTS_DIR / str(scope)
@@ -334,8 +391,8 @@ def _filter_works(scope: ResolvedScope):
                 desc=f"Filtering works in {scope}", mininterval=3, delay=3, smoothing=1):
             invalidators = []
             total.insert(work)
-            for filter in WorkFilter.__dict__.values():
-                if callable(getattr(filter, '__call__', None)) and filter(work):
+            for filter in filters:
+                if filter(work):
                     filter_stats[f"{filter}"].insert(work)
                     invalidators.append(f"{filter}")
             if len(invalidators) == 0:

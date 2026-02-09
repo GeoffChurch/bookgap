@@ -15,6 +15,7 @@ def resolve_filter_upward(work_filter) -> Any:
     Returns a new Filter with field/subfield/topic filled in consistently.
     Raises ValueError if provided values conflict with derived hierarchy.
     """
+    domain_id: Optional[str] = work_filter.domain
     field_id: Optional[str] = work_filter.field
     subfield_id: Optional[str] = work_filter.subfield
     topic_id: Optional[str] = work_filter.topic
@@ -25,14 +26,19 @@ def resolve_filter_upward(work_filter) -> Any:
         resolved_subfield = _suffix(topic_data["subfield"]["id"])
         subfield_data: Any = pyalex.Subfields()[resolved_subfield]  # type: ignore
         resolved_field = _suffix(subfield_data["field"]["id"])
+        field_data: Any = pyalex.Fields()[resolved_field]  # type: ignore
+        resolved_domain = _suffix(field_data["domain"]["id"])
 
         # Validate consistency
         if subfield_id is not None and subfield_id != resolved_subfield:
             raise ValueError(f"Provided subfield {subfield_id} does not match topic's subfield {resolved_subfield}")
         if field_id is not None and field_id != resolved_field:
             raise ValueError(f"Provided field {field_id} does not match topic's field {resolved_field}")
+        if domain_id is not None and domain_id != resolved_domain:
+            raise ValueError(f"Provided domain {domain_id} does not match topic's domain {resolved_domain}")
         
         return Filter(
+            domain=resolved_domain,
             field=resolved_field,
             subfield=resolved_subfield,
             topic=topic_id,
@@ -43,23 +49,47 @@ def resolve_filter_upward(work_filter) -> Any:
         # Derive field from subfield
         subfield_data: Any = pyalex.Subfields()[subfield_id]  # type: ignore
         resolved_field = _suffix(subfield_data["field"]["id"])
+        field_data: Any = pyalex.Fields()[resolved_field]  # type: ignore
+        resolved_domain = _suffix(field_data["domain"]["id"])
         
         # Validate consistency
         if field_id is not None and field_id != resolved_field:
             raise ValueError(f"Provided field {field_id} does not match subfield's field {resolved_field}")
+        if domain_id is not None and domain_id != resolved_domain:
+            raise ValueError(f"Provided domain {domain_id} does not match subfield's domain {resolved_domain}")
         
         return Filter(
+            domain=resolved_domain,
             field=resolved_field,
             subfield=subfield_id,
             topic=None,
             work_types=work_filter.work_types,
         )
 
-    if field_id is None:
-        raise ValueError("At least one of field, subfield, or topic must be provided")
+    if field_id is not None:
+        field_data: Any = pyalex.Fields()[field_id]  # type: ignore
+        resolved_domain = _suffix(field_data["domain"]["id"])
+        if domain_id is not None and domain_id != resolved_domain:
+            raise ValueError(f"Provided domain {domain_id} does not match field's domain {resolved_domain}")
 
-    # Field-only: nothing to resolve upward
-    return work_filter
+        return Filter(
+            domain=resolved_domain,
+            field=field_id,
+            subfield=None,
+            topic=None,
+            work_types=work_filter.work_types,
+        )
+
+    if domain_id is not None:
+        return Filter(
+            domain=domain_id,
+            field=None,
+            subfield=None,
+            topic=None,
+            work_types=work_filter.work_types,
+        )
+
+    raise ValueError("At least one of domain, field, subfield, or topic must be provided")
 
 
 def get_subfield_topics(subfield_id: str) -> list[str]:

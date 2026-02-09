@@ -43,6 +43,252 @@ from tqdm import tqdm
 from bookgap.util import LOGGER, TIMER
 
 
+_EDGE_WEIGHTING_MODES = {
+    "pagerank",
+    "symmetric",
+    "symmetric_renorm",
+    "indegree_discount_renorm",
+}
+
+# Memoize the effective conductance adjacency for a given raw CSR adjacency and parameters.
+# This can save substantial time/memory in a single pipeline run, since we often need
+# the same weighted adjacency for potentials, currents, and frontier adjacency.
+_CONDUCTANCE_CACHE: dict[tuple[int, tuple[int, int], int, bool, str, float, float], sp.csr_matrix] = {}
+_CONDUCTANCE_CACHE_MAX_ENTRIES = 8
+
+
+def build_conductance_adjacency(
+    adj: sp.csr_matrix,
+    *,
+    normalize: bool = True,
+    edge_weighting: str = "pagerank",
+    indegree_discount_gamma: float = 0.5,
+    degree_epsilon: float = 1e-12,
+    edge_series_resistance: float = 0.0,
+) -> sp.csr_matrix:
+    """Build the effective conductance adjacency used by the solver/current flow.
+
+    Input convention:
+        adj[v, u] = 1 means v cites u (directed edge v→u).
+
+    Output convention matches the internal solver convention:
+        adj_eff[u, v] corresponds to conductance on edge v→u.
+
+    Args:
+        adj: Raw citation adjacency in citer→cited direction.
+        normalize: PageRank mode toggle (only used when edge_weighting="pagerank").
+        edge_weighting: One of:
+            - "pagerank": use adj.T, and if normalize=True apply column-normalization
+              (equivalently, each citer splits unit weight across its references).
+            - "symmetric": w(v→u)=1/sqrt(outdeg(v)*indeg(u)), no renorm.
+            - "symmetric_renorm": symmetric weights, then renormalize per citer so
+              Σ_u w(v→u)=1.
+            - "indegree_discount_renorm": w̃(v→u)=1/(indeg(u)+eps)^gamma, then
+              renormalize per citer.
+        indegree_discount_gamma: Exponent for "indegree_discount_renorm".
+        degree_epsilon: Small epsilon added to degrees to avoid divide-by-zero.
+        edge_series_resistance: Optional per-edge series resistance r (>= 0) applied
+            to conductances: G' = 1/(1/G + r) = G/(1 + r*G).
+
+    Returns:
+        CSR matrix adj_eff in solver orientation (already transposed vs input).
+    """
+    if edge_weighting not in _EDGE_WEIGHTING_MODES:
+        raise ValueError(
+            f"edge_weighting must be one of {sorted(_EDGE_WEIGHTING_MODES)}, got {edge_weighting!r}"
+        )
+
+    if edge_series_resistance < 0:
+        raise ValueError("edge_series_resistance must be >= 0")
+
+    cache_key = (
+        id(adj),
+        tuple(adj.shape),
+        int(adj.nnz),
+        bool(normalize),
+        str(edge_weighting),
+        float(indegree_discount_gamma),
+        float(degree_epsilon),
+        float(edge_series_resistance),
+    )
+    cached = _CONDUCTANCE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Default PageRank-style conductances: transpose, then (optionally) column-normalize.
+    def apply_series_resistance(adj_eff: sp.csr_matrix) -> sp.csr_matrix:
+        if edge_series_resistance <= 0:
+            return adj_eff
+        out_eff = adj_eff.copy()
+        out_eff.data = out_eff.data / (1.0 + edge_series_resistance * out_eff.data)
+        return out_eff
+
+    if edge_weighting == "pagerank":
+        adj_eff = sp.csr_matrix(adj.T)
+        if not normalize:
+            adj_eff = apply_series_resistance(adj_eff)
+            _CONDUCTANCE_CACHE[cache_key] = adj_eff
+            return adj_eff
+
+        col_sums = np.asarray(adj_eff.sum(axis=0)).flatten()
+        col_sums_safe = np.where(col_sums > 0, col_sums, 1.0)
+        inv_col_sums = 1.0 / col_sums_safe
+        D_inv = sp.diags(inv_col_sums, format="csr")
+        out = sp.csr_matrix(adj_eff @ D_inv)
+        out = apply_series_resistance(out)
+        _CONDUCTANCE_CACHE[cache_key] = out
+        return out
+
+    # Degree-aware weighting modes.
+    # Compute degrees on the *original* citer→cited adjacency.
+    outdeg = np.asarray(adj.sum(axis=1)).flatten().astype(np.float64, copy=False)
+    indeg = np.asarray(adj.sum(axis=0)).flatten().astype(np.float64, copy=False)
+
+    # Work in COO to reweight edges.
+    coo = adj.tocoo()
+    v = coo.row.astype(np.int64, copy=False)  # citer
+    u = coo.col.astype(np.int64, copy=False)  # cited
+
+    eps = float(degree_epsilon)
+    out_v = outdeg[v] + eps
+    in_u = indeg[u] + eps
+
+    if edge_weighting.startswith("symmetric"):
+        data = 1.0 / np.sqrt(out_v * in_u)
+    else:
+        gamma = float(indegree_discount_gamma)
+        if gamma < 0:
+            raise ValueError("indegree_discount_gamma must be >= 0")
+        data = 1.0 / np.power(in_u, gamma)
+
+    if edge_weighting.endswith("_renorm"):
+        # Renormalize per citer (row in original adjacency): Σ_u w(v→u)=1.
+        row_sums = np.bincount(v, weights=data, minlength=adj.shape[0]).astype(np.float64, copy=False)
+        denom = row_sums[v]
+        nz = denom > 0
+        data = np.where(nz, data / denom, 0.0)
+
+    # Return in solver orientation: adj_eff[u, v] = w(v→u)
+    out = sp.csr_matrix((data, (u, v)), shape=adj.shape)
+    out = apply_series_resistance(out)
+
+    # Keep cache bounded.
+    if len(_CONDUCTANCE_CACHE) >= _CONDUCTANCE_CACHE_MAX_ENTRIES:
+        # Simple eviction: drop an arbitrary key (insertion order isn't guaranteed).
+        _CONDUCTANCE_CACHE.pop(next(iter(_CONDUCTANCE_CACHE)))
+    _CONDUCTANCE_CACHE[cache_key] = out
+    return out
+
+
+def transform_node_masses(
+    masses: NDArray[np.floating],
+    *,
+    transform: str = "none",
+    power: float = 0.5,
+    renormalize: bool = True,
+) -> NDArray[np.floating]:
+    """Apply a post-solver mass transform (hubness mitigation).
+
+    This is intended for nonnegative masses (e.g., through-current). The transform
+    is monotone for the supported options and can be optionally renormalized to
+    preserve the original total mass.
+    """
+    transform = str(transform)
+    if transform == "none":
+        return masses
+
+    masses = np.asarray(masses, dtype=np.float64)
+    if np.any(masses < 0):
+        raise ValueError("transform_node_masses expects nonnegative masses")
+
+    total = float(masses.sum())
+
+    if transform == "sqrt":
+        out = np.sqrt(masses)
+    elif transform == "log1p":
+        out = np.log1p(masses)
+    elif transform == "power":
+        p = float(power)
+        if p <= 0:
+            raise ValueError("mass_power must be > 0 for transform='power'")
+        out = np.power(masses, p)
+    else:
+        raise ValueError("mass_transform must be one of: none, sqrt, log1p, power")
+
+    if not renormalize:
+        return out
+
+    out_total = float(out.sum())
+    if out_total <= 0 or total <= 0:
+        return out
+
+    return out * (total / out_total)
+
+
+def compute_curriculum_ordering_potentials(
+    adj: sp.csr_matrix,
+    *,
+    target_indices: list[int],
+    source_indices: Optional[list[int]] = None,
+    leakage: float = 1e-6,
+    beta: Optional[float] = None,
+    normalize: bool = True,
+    edge_weighting: str = "pagerank",
+    indegree_discount_gamma: float = 0.5,
+    degree_epsilon: float = 1e-12,
+    edge_series_resistance: float = 0.0,
+    gmres_tol: float = 1e-6,
+    gmres_maxiter: Optional[int] = None,
+    gmres_preconditioner: Optional[str] = None,
+    gmres_log_every: Optional[int] = None,
+) -> Tuple[NDArray[np.floating], Dict[int, float], bool]:
+    """Compute work-level potentials suitable for curriculum linearization.
+
+    Semantics: higher potential means "earlier".
+
+    - If sources are provided (and non-empty), we clamp sources=1V and targets=0V.
+    - If sources are missing/empty, we clamp targets=1V and then invert (1 - φ)
+      so targets become ~0V and earlier works are high potential.
+
+    Returns:
+        (potentials, fixed_potentials_used, sources_found)
+    """
+    if not target_indices:
+        raise ValueError("target_indices must be non-empty")
+
+    fixed_potentials: Dict[int, float] = {}
+    sources_found = bool(source_indices)
+
+    if sources_found:
+        for idx in source_indices or []:
+            fixed_potentials[int(idx)] = 1.0
+        for idx in target_indices:
+            fixed_potentials[int(idx)] = 0.0
+    else:
+        for idx in target_indices:
+            fixed_potentials[int(idx)] = 1.0
+
+    raw = compute_graph_potential(
+        adj,
+        fixed_potentials=fixed_potentials,
+        current_sources=None,
+        leakage=leakage,
+        beta=beta,
+        normalize=normalize,
+        edge_weighting=edge_weighting,
+        indegree_discount_gamma=indegree_discount_gamma,
+        degree_epsilon=degree_epsilon,
+        edge_series_resistance=edge_series_resistance,
+        gmres_tol=gmres_tol,
+        gmres_maxiter=gmres_maxiter,
+        gmres_preconditioner=gmres_preconditioner,
+        gmres_log_every=gmres_log_every,
+    )
+
+    potentials = (1.0 - raw) if not sources_found else raw
+    return potentials, fixed_potentials, sources_found
+
+
 class _JacobiInversePreconditioner(LinearOperator):
     def __init__(self, inv_diag: NDArray[np.floating]):
         super().__init__(dtype=np.float64, shape=(inv_diag.shape[0], inv_diag.shape[0]))
@@ -67,6 +313,10 @@ def compute_graph_potential(
     leakage: float = 1e-6,
     beta: Optional[float] = None,
     normalize: bool = True,
+    edge_weighting: str = "pagerank",
+    indegree_discount_gamma: float = 0.5,
+    degree_epsilon: float = 1e-12,
+    edge_series_resistance: float = 0.0,
     gmres_tol: float = 1e-6,
     gmres_maxiter: Optional[int] = None,
     gmres_preconditioner: Optional[str] = None,
@@ -122,10 +372,17 @@ def compute_graph_potential(
     Returns:
         Potential values at all nodes, shape (n,) or (n, n_batches) matching current_sources.
     """
-    # Transpose adjacency to ensure flow goes Citer -> Cited (downstream)
-    # Original circuit physics (hitting probability) flows Cited -> Citer.
-    # By transposing, we make potential flow downstream like PageRank mass.
-    adj = sp.csr_matrix(adj.T)
+    # Build effective conductance adjacency in solver orientation.
+    # For edge_weighting="pagerank", this matches the historical behavior:
+    # adj_eff = adj.T, and if normalize=True, column-normalize adj_eff.
+    adj = build_conductance_adjacency(
+        adj,
+        normalize=normalize,
+        edge_weighting=edge_weighting,
+        indegree_discount_gamma=indegree_discount_gamma,
+        degree_epsilon=degree_epsilon,
+        edge_series_resistance=edge_series_resistance,
+    )
     n = adj.shape[0]
     
     # Handle beta parameterization
@@ -173,26 +430,15 @@ def compute_graph_potential(
     # D_out[i,i] = sum of outgoing edges from i
     # This represents: outflow - inflow + leakage
     out_degrees = np.asarray(adj.sum(axis=1)).flatten()
-    
-    if normalize:
-        # Column-normalize adjacency matrix (PageRank mode)
-        # Each column is divided by its sum, making matrix column-stochastic.
-        # This is equivalent to row-normalizing the transposed matrix.
-        # For nodes with no outgoing edges (dangling nodes), we leave them as-is
-        # (they contribute 0 to the column sums).
-        col_sums = np.asarray(adj.sum(axis=0)).flatten()
-        # Avoid division by zero for dangling nodes
-        col_sums_safe = np.where(col_sums > 0, col_sums, 1.0)
-        inv_col_sums = 1.0 / col_sums_safe
-        # Create diagonal scaling matrix
-        D_inv = sp.diags(inv_col_sums, format='csr')
-        adj = sp.csr_matrix(adj @ D_inv)
-        # In normalized mode, each node effectively has out-degree 1 (or 0 for dangling)
-        # The Laplacian becomes: (I + G_leak * I - A_normalized) = ((1 + G_leak) * I - A_norm)
-        L = (sp.diags(np.ones(n) * (1.0 + leakage), format='csr') - adj).tocsr()
-        LOGGER.debug(f"Using column-normalized adjacency (PageRank mode)")
+
+    if edge_weighting == "pagerank" and normalize:
+        # PageRank-form linear system: ((1 + leakage)I - P) phi = current_sources
+        # where P is column-stochastic.
+        L = (sp.diags(np.ones(n) * (1.0 + leakage), format="csr") - adj).tocsr()
+        LOGGER.debug("Using column-normalized adjacency (PageRank mode)")
     else:
-        D_out = sp.diags(out_degrees + leakage, format='csr')
+        # General circuit Laplacian: (D_out + leakage*I - A_eff) phi = current_sources
+        D_out = sp.diags(out_degrees + leakage, format="csr")
         L = (D_out - adj).tocsr()
     
     # Handle fixed potentials via boundary conditions
@@ -346,10 +592,106 @@ def compute_graph_potential(
     return phi
 
 
+def compute_graph_potential_galerkin(
+    adj: sp.csr_matrix,
+    embeddings: NDArray[np.floating],
+    *,
+    current_sources: NDArray[np.floating],
+    leakage: float = 1e-6,
+    beta: Optional[float] = None,
+    normalize: bool = True,
+    edge_weighting: str = "pagerank",
+    indegree_discount_gamma: float = 0.5,
+    degree_epsilon: float = 1e-12,
+    edge_series_resistance: float = 0.0,
+) -> NDArray[np.floating]:
+    """Solve for potentials using a Galerkin projection in embedding space.
+
+    This supports current injection/suction (Neumann-style forcing) only.
+    Fixed potentials (Dirichlet constraints) are not supported.
+
+    Args:
+        adj: Sparse adjacency matrix (citer→cited).
+        embeddings: Node embeddings (n, d), assumed to be normalized if desired.
+        current_sources: Current injection vector(s), shape (n,) or (n, n_batches).
+        leakage: Global ground conductance.
+        beta: Alternative parameterization: leakage = exp(-beta).
+        normalize: Whether to column-normalize adjacency (PageRank mode).
+    """
+    if current_sources is None:
+        raise ValueError("current_sources is required for Galerkin solve")
+
+    adj_eff = build_conductance_adjacency(
+        adj,
+        normalize=normalize,
+        edge_weighting=edge_weighting,
+        indegree_discount_gamma=indegree_discount_gamma,
+        degree_epsilon=degree_epsilon,
+        edge_series_resistance=edge_series_resistance,
+    )
+
+    n = adj_eff.shape[0]
+    if int(embeddings.shape[0]) != n:
+        raise ValueError(
+            f"embeddings has shape {embeddings.shape}, expected first dimension n={n}"
+        )
+
+    if beta is not None:
+        leakage = np.exp(-beta)
+
+    # Build Laplacian L in solver orientation.
+    out_degrees = np.asarray(adj_eff.sum(axis=1)).flatten()
+    if edge_weighting == "pagerank" and normalize:
+        L = (sp.diags(np.ones(n) * (1.0 + leakage), format="csr") - adj_eff).tocsr()
+    else:
+        D_out = sp.diags(out_degrees + leakage, format="csr")
+        L = (D_out - adj_eff).tocsr()
+
+    # Ensure current_sources is 2D
+    sources = np.asarray(current_sources, dtype=np.float64)
+    squeeze_output = False
+    if sources.ndim == 1:
+        sources = sources.reshape(-1, 1)
+        squeeze_output = True
+    elif sources.ndim != 2:
+        raise ValueError("current_sources must be 1D or 2D array")
+
+    if int(sources.shape[0]) != n:
+        raise ValueError(
+            f"current_sources has shape {sources.shape}, expected first dimension n={n}"
+        )
+
+    B = np.asarray(embeddings, dtype=np.float64)
+
+    # Compute reduced system: (B^T L B) u = B^T b
+    LB = L @ B
+    BtLB = B.T @ LB
+    BtB = B.T @ sources
+
+    n_batches = int(BtB.shape[1])
+    u = np.zeros((BtLB.shape[0], n_batches), dtype=np.float64)
+
+    for b in range(n_batches):
+        rhs = BtB[:, b]
+        try:
+            u[:, b] = np.linalg.solve(BtLB, rhs)
+        except np.linalg.LinAlgError:
+            u[:, b] = np.linalg.lstsq(BtLB, rhs, rcond=None)[0]
+
+    potentials = B @ u
+    if squeeze_output:
+        return potentials.squeeze(axis=1)
+    return potentials
+
+
 def compute_current_flow(
     adj: sp.csr_matrix,
     potentials: NDArray[np.floating],
     normalize: bool = True,
+    edge_weighting: str = "pagerank",
+    indegree_discount_gamma: float = 0.5,
+    degree_epsilon: float = 1e-12,
+    edge_series_resistance: float = 0.0,
 ) -> NDArray[np.floating]:
     """Compute the current flow magnitude through each node from potentials.
     
@@ -372,34 +714,51 @@ def compute_current_flow(
         Array of current flow magnitudes, one per node. Higher values indicate
         nodes that are more "central" to the source→target path.
     """
-    n = adj.shape[0]
+    # IMPORTANT: Use the same effective adjacency as compute_graph_potential.
+    adj_used = build_conductance_adjacency(
+        adj,
+        normalize=normalize,
+        edge_weighting=edge_weighting,
+        indegree_discount_gamma=indegree_discount_gamma,
+        degree_epsilon=degree_epsilon,
+        edge_series_resistance=edge_series_resistance,
+    )
+    n = adj_used.shape[0]
     
-    # Normalize adjacency if requested (should match solver setting)
-    if normalize:
-        out_degree = np.array(adj.sum(axis=0)).flatten()
-        out_degree = np.where(out_degree > 0, out_degree, 1.0)
-        D_inv = sp.diags(1.0 / out_degree)
-        adj_norm = adj @ D_inv
+    # Ensure (n, n_batches) shape for batched potentials
+    squeeze_output = False
+    if potentials.ndim == 1:
+        potentials_2d = potentials.reshape(-1, 1)
+        squeeze_output = True
+    elif potentials.ndim == 2:
+        potentials_2d = potentials
     else:
-        adj_norm = adj
-    
+        raise ValueError("potentials must be 1D or 2D array")
+
+    if int(potentials_2d.shape[0]) != n:
+        raise ValueError(
+            f"potentials has shape {potentials_2d.shape}, expected first dimension n={n}"
+        )
+
     # Convert to COO for efficient edge iteration
-    adj_coo = adj_norm.tocoo()
-    
+    adj_coo = adj_used.tocoo()
+
     # Compute edge currents: I_{i←j} = A[i,j] * (φ_j - φ_i)
     # (current flows from high to low potential)
-    phi_diff = potentials[adj_coo.col] - potentials[adj_coo.row]
-    edge_currents = adj_coo.data * phi_diff
-    
+    phi_diff = potentials_2d[adj_coo.col, :] - potentials_2d[adj_coo.row, :]
+    edge_currents = adj_coo.data[:, np.newaxis] * phi_diff
+
     # Sum absolute edge currents at each node
     # Each edge contributes to both endpoints
-    node_currents = np.zeros(n, dtype=np.float64)
+    node_currents = np.zeros((n, int(potentials_2d.shape[1])), dtype=np.float64)
     np.add.at(node_currents, adj_coo.row, np.abs(edge_currents))
     np.add.at(node_currents, adj_coo.col, np.abs(edge_currents))
-    
+
     # Divide by 2 since each edge is counted twice
     node_currents *= 0.5
-    
+
+    if squeeze_output:
+        return node_currents.squeeze(axis=1)
     return node_currents
 
 
@@ -493,6 +852,10 @@ def compute_frontier_adjacency_potential(
     leakage: float = 1e-6,
     beta: Optional[float] = None,
     normalize: bool = True,
+    edge_weighting: str = "pagerank",
+    indegree_discount_gamma: float = 0.5,
+    degree_epsilon: float = 1e-12,
+    edge_series_resistance: float = 0.0,
     gmres_tol: float = 1e-6,
     gmres_maxiter: Optional[int] = None,
     gmres_preconditioner: Optional[str] = None,
@@ -553,6 +916,10 @@ def compute_frontier_adjacency_potential(
         leakage=leakage,
         beta=beta,
         normalize=normalize,
+        edge_weighting=edge_weighting,
+        indegree_discount_gamma=indegree_discount_gamma,
+        degree_epsilon=degree_epsilon,
+        edge_series_resistance=edge_series_resistance,
         gmres_tol=gmres_tol,
         gmres_maxiter=gmres_maxiter,
         gmres_preconditioner=gmres_preconditioner,
@@ -571,21 +938,20 @@ def compute_frontier_adjacency_potential(
     # Using adj.T: (adj.T)[i,j] = A[j,i] = 1 means j cites i
     # So: I_in = adj.T @ phi (for each batch column)
     
-    # Note: The solver transposes internally for PageRank-style flow direction.
-    # We need to match that here. Since we're measuring "how much influence 
-    # from source reaches target", we compute current INTO target nodes.
-    adj_T = sp.csr_matrix(adj.T)  # adj_T[i,j] = 1 means j cites i
-    
-    # For each batch, compute current into each node
-    # current_in[i, b] = sum_j adj_T[i,j] * phi[j, b] - in_degree[i] * phi[i, b]
-    # For clamped nodes at 0V, phi[i,b] = 0 so: current_in[i,b] = sum_j adj_T[i,j] * phi[j,b]
-    
-    # Compute in-degree for non-clamped contribution (we'll use it for all nodes)
-    in_degree = np.asarray(adj_T.sum(axis=1)).flatten()
-    
-    # current_in = adj_T @ phi - diag(in_degree) @ phi
-    # For clamped 0V nodes, second term is 0; for source 1V nodes, we don't care
-    current_in = np.asarray(adj_T @ phi) - in_degree[:, np.newaxis] * phi
+    # IMPORTANT: Use the same effective adjacency as compute_graph_potential.
+    adj_used = build_conductance_adjacency(
+        adj,
+        normalize=normalize,
+        edge_weighting=edge_weighting,
+        indegree_discount_gamma=indegree_discount_gamma,
+        degree_epsilon=degree_epsilon,
+        edge_series_resistance=edge_series_resistance,
+    )
+
+    # Current into node i from incident edges (signed):
+    # I_in[i] = Σ_j A[i,j] * (φ_j - φ_i)
+    row_sums = np.asarray(adj_used.sum(axis=1)).flatten()
+    current_in = np.asarray(adj_used @ phi) - row_sums[:, np.newaxis] * phi
     
     # Compute frontier adjacency: for each (source, target) pair,
     # sum the current flowing into target nodes in the source's batch.

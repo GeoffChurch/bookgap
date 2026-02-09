@@ -19,7 +19,6 @@ Use via the main.py unified entry point or import functions directly.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -30,11 +29,18 @@ from numpy.typing import NDArray
 import scipy.sparse as sp
 from scipy.cluster.hierarchy import linkage
 
+from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
 from bookgap.cloud import Cloud, DendrogramResult
 from bookgap.configs.config_store import register_configs
 from bookgap.util import LOGGER, TIMER
 
-from .config import CurriculumConfig, get_curriculum_output_dir, derive_output_dir_name, RankMethod
+from .config import (
+    CircuitRankSolveMode,
+    CurriculumConfig,
+    get_curriculum_output_dir,
+    derive_output_dir_name,
+    RankMethod,
+)
 from .dendrogram_ops import (
     compute_dendrogram_masses,
     find_mass_threshold_for_n_topics,
@@ -42,20 +48,29 @@ from .dendrogram_ops import (
     map_leaves_to_frontier_clusters,
 )
 from .pagerank import (
+    compute_bidirectional_pagerank,
     compute_frontier_adjacency,
     compute_pagerank,
 )
 from .circuitrank import (
+    build_conductance_adjacency,
+    compute_current_flow,
+    compute_curriculum_ordering_potentials,
     compute_graph_potential,
+    compute_graph_potential_galerkin,
     compute_frontier_adjacency_potential,
+    transform_node_masses,
 )
+from .similarity_graph import (
+    build_similarity_adjacency_from_cloud,
+    mix_adjacency_matrices,
+)
+
 from .mass_statistics import (
     compute_mass_distribution_stats,
     compute_cluster_size_stats,
     compute_adjacency_stats,
 )
-
-# Logging is initialized by the pipeline entry point (main.py)
 
 # Register configs
 register_configs()
@@ -98,7 +113,6 @@ def _find_work_indices(
     LOGGER.info(f"Found {len(found_indices)}/{len(target_ids)} target works in cloud")
     return found_indices
 
-
 # Scipy agglomerative methods
 SCIPY_LINKAGE_METHODS = {"ward", "average", "complete", "single"}
 
@@ -137,7 +151,6 @@ def _build_dendrogram(
             n_leaf_clusters=n_samples,
         )
     elif method == "bisecting_kmeans":
-        from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
         LOGGER.info(f"Building dendrogram with bisecting K-Means on {len(embeddings)} embeddings...")
         result = bisecting_kmeans_linkage(
             embeddings,
@@ -275,11 +288,35 @@ def run_curriculum_building(
         LOGGER.info(f"CircuitRank leakage: {cfg.circuitrank.leakage}")
         if cfg.circuitrank.beta is not None:
             LOGGER.info(f"CircuitRank beta: {cfg.circuitrank.beta}")
+        LOGGER.info(f"CircuitRank solve mode: {cfg.circuitrank.solve_mode.value}")
         if cfg.circuitrank.normalize:
-            LOGGER.info(f"CircuitRank normalize: True (PageRank mode)")
-            # Log equivalent alpha for reference
-            equiv_alpha = 1.0 / (1.0 + cfg.circuitrank.leakage)
-            LOGGER.info(f"CircuitRank equivalent alpha: {equiv_alpha:.4f}")
+            if cfg.circuitrank.edge_weighting == "pagerank":
+                LOGGER.info("CircuitRank normalize: True (PageRank mode)")
+                # Log equivalent alpha for reference
+                equiv_alpha = 1.0 / (1.0 + cfg.circuitrank.leakage)
+                LOGGER.info(f"CircuitRank equivalent alpha: {equiv_alpha:.4f}")
+            else:
+                LOGGER.info(
+                    "CircuitRank normalize: True (note: edge_weighting is non-PageRank; "
+                    "solver uses general circuit Laplacian, not PageRank-equivalent form)"
+                )
+        LOGGER.info(
+            "CircuitRank edge weighting: "
+            f"{cfg.circuitrank.edge_weighting} (gamma={cfg.circuitrank.indegree_discount_gamma}, "
+            f"eps={cfg.circuitrank.degree_epsilon}, r={cfg.circuitrank.edge_series_resistance})"
+        )
+        if cfg.circuitrank.mass_transform != "none":
+            LOGGER.info(
+                "CircuitRank mass transform: "
+                f"{cfg.circuitrank.mass_transform} (power={cfg.circuitrank.mass_power}, renorm={cfg.circuitrank.mass_transform_renormalize})"
+            )
+        if cfg.circuitrank.solve_mode != CircuitRankSolveMode.NODE_UNSMOOTHED:
+            sim_cfg = cfg.similarity
+            LOGGER.info(
+                "Similarity graph: "
+                f"k={sim_cfg.knn_k}, sharpness={sim_cfg.sharpness}, row_normalize={sim_cfg.row_normalize}, "
+                f"mix_weight={sim_cfg.mix_weight}, mix_mode={sim_cfg.mix_mode}, include_self={sim_cfg.include_self}"
+            )
     
     LOGGER.info(f"Rank-before-clustering: {cfg.rank_before_clustering}")
     if cfg.rank_before_clustering:
@@ -310,10 +347,60 @@ def run_curriculum_building(
     
     # Build citation graph on ALL works
     LOGGER.info("Building citation adjacency matrix...")
-    adj = cloud.citation_graph(normalize=False)
+    adj_citation = cloud.citation_graph(normalize=False)
+
+    adj_for_solver = adj_citation
+    adj_for_frontier = adj_citation
+    adj_for_solver = adj_citation
+
+    # Determine if similarity smoothing is requested.
+    # We enable it if explicitly configured OR if legacy CircuitRank modes expect it.
+    use_similarity = cfg.similarity.enabled
+    if cfg.method == RankMethod.CIRCUIT_RANK and cfg.circuitrank.solve_mode != CircuitRankSolveMode.NODE_UNSMOOTHED:
+        use_similarity = True
+
+    if use_similarity:
+        sim_cfg = cfg.similarity
+        LOGGER.info(
+            "Building similarity adjacency (kNN): "
+            f"k={sim_cfg.knn_k}, sharpness={sim_cfg.sharpness}, row_normalize={sim_cfg.row_normalize}, "
+            f"density_alpha={sim_cfg.density_correction_alpha}"
+        )
+        adj_sim = build_similarity_adjacency_from_cloud(
+            cloud,
+            k=sim_cfg.knn_k,
+            sharpness=sim_cfg.sharpness,
+            row_normalize=sim_cfg.row_normalize,
+            density_correction_alpha=sim_cfg.density_correction_alpha,
+            include_self=sim_cfg.include_self,
+        )
+
+        LOGGER.info(
+            "Mixing citation + similarity graphs: "
+            f"mode={sim_cfg.mix_mode}, mix_weight={sim_cfg.mix_weight}"
+        )
+        adj_for_solver = mix_adjacency_matrices(
+            adj_citation,
+            adj_sim,
+            mix_weight=sim_cfg.mix_weight,
+            mix_mode=sim_cfg.mix_mode,
+        )
+        adj_for_frontier = adj_for_solver
+
+        LOGGER.info(
+            "Adjacency stats: citation nnz=%d, similarity nnz=%d, mixed nnz=%d",
+            int(adj_citation.nnz),
+            int(adj_sim.nnz),
+            int(adj_for_solver.nnz),
+        )
     
     # Run Ranking (PageRank or CircuitRank) on FULL graph
     full_point_potentials: Optional[NDArray[np.floating]] = None  # For potential-based linearization
+    
+    # Store intermediate relevance vectors for frontier adjacency calculation
+    fwd_relevance: Optional[NDArray[np.floating]] = None
+    rev_relevance: Optional[NDArray[np.floating]] = None
+    
     if cfg.method == RankMethod.PAGE_RANK:
         LOGGER.info("Running Personalized PageRank from target topic...")
         # Create seed vector for personalized PageRank
@@ -321,51 +408,119 @@ def run_curriculum_building(
         seeds[seed_indices] = 1.0 / len(seed_indices)
         
         full_point_masses = compute_pagerank(
-            adj,
+            adj_for_solver,
             seeds,
             alpha=cfg.pagerank.alpha,
             tol=cfg.pagerank.tol,
             max_iter=cfg.pagerank.max_iter,
         )
+        fwd_relevance = full_point_masses
+        
+    elif cfg.method == RankMethod.BIDIRECTIONAL_PAGE_RANK:
+        LOGGER.info("Running Bidirectional Personalized PageRank...")
+        # Target seeds for forward pass (prerequisites)
+        target_seeds = np.zeros(n_total, dtype=np.float64)
+        target_seeds[seed_indices] = 1.0 / len(seed_indices)
+        
+        # Source seeds for reverse pass (descendants)
+        source_indices = _find_work_indices(work_ids, cfg.source_work_ids)
+        if not source_indices:
+            raise ValueError(
+                "No source works found in cloud - bidirectional PageRank requires source_work_ids."
+            )
+        source_seeds = np.zeros(n_total, dtype=np.float64)
+        source_seeds[source_indices] = 1.0 / len(source_indices)
+        
+        bidirectional_result = compute_bidirectional_pagerank(
+            adj_for_solver,
+            source_seeds,
+            target_seeds,
+            alpha=cfg.pagerank.alpha,
+            tol=cfg.pagerank.tol,
+            max_iter=cfg.pagerank.max_iter,
+            return_components=True,
+        )
+        full_point_masses = bidirectional_result.relevance
+        fwd_relevance = bidirectional_result.forward_mass
+        rev_relevance = bidirectional_result.reverse_mass
+        
     elif cfg.method == RankMethod.CIRCUIT_RANK:
         if cfg.circuitrank.use_voltage_clamping:
             LOGGER.info("Running CircuitRank (Voltage Clamping)...")
-            # Fix target nodes at φ=0 (ground - things to learn)
-            # Fix known works at φ=1 (source - things already known)
-            # Current flows from known (1V) toward targets (0V)
-            # Curriculum order: start from known, end at targets
-            fixed_potentials = {idx: 0.0 for idx in seed_indices}
-            
-            # If known works are specified, clamp them to 1V (source)
+            # Voltage clamping (Dirichlet BC): solve for potentials, then derive relevance
+            # from through-current on edges.
+            source_indices: list[int] = []
             if cfg.source_work_ids:
                 source_indices = _find_work_indices(work_ids, cfg.source_work_ids)
-                if source_indices:
-                    for idx in source_indices:
-                        fixed_potentials[idx] = 1.0
-                    LOGGER.info(
-                        f"Voltage clamping: {len(source_indices)} known works at 1V (source), "
-                        f"{len(seed_indices)} targets at 0V (ground)"
-                    )
-                else:
+                if not source_indices:
                     LOGGER.warning(
                         f"No source works found in cloud - using targets only. "
                         f"Requested: {cfg.source_work_ids}"
                     )
-                    LOGGER.info(f"Voltage clamping: {len(seed_indices)} targets at 0V (leakage from 1V)")
-            else:
-                LOGGER.info(f"Voltage clamping: {len(seed_indices)} targets at 0V (leakage from 1V)")
-            
-            full_point_masses = compute_graph_potential(
-                adj,
-                fixed_potentials=fixed_potentials,
+
+            full_point_potentials, _, sources_found = compute_curriculum_ordering_potentials(
+                adj_for_solver,
+                target_indices=list(seed_indices),
+                source_indices=list(source_indices) if source_indices else None,
                 leakage=cfg.circuitrank.leakage,
                 beta=cfg.circuitrank.beta,
                 normalize=cfg.circuitrank.normalize,
+                edge_weighting=cfg.circuitrank.edge_weighting,
+                indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                degree_epsilon=cfg.circuitrank.degree_epsilon,
+                edge_series_resistance=cfg.circuitrank.edge_series_resistance,
                 gmres_tol=cfg.circuitrank.gmres_tol,
                 gmres_maxiter=cfg.circuitrank.gmres_maxiter,
                 gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
                 gmres_log_every=cfg.circuitrank.gmres_log_every,
             )
+
+            if sources_found:
+                LOGGER.info(
+                    f"Voltage clamping: {len(source_indices)} known works at 1V (source), "
+                    f"{len(seed_indices)} targets at 0V (ground)"
+                )
+            else:
+                LOGGER.info(
+                    f"Voltage clamping (targets-only): {len(seed_indices)} targets at 1V (leakage to ground)"
+                )
+
+            # Relevance: through-current magnitude under the same conductances used by the solver.
+            full_point_masses_raw = compute_current_flow(
+                adj_for_solver,
+                full_point_potentials,
+                normalize=cfg.circuitrank.normalize,
+                edge_weighting=cfg.circuitrank.edge_weighting,
+                indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                degree_epsilon=cfg.circuitrank.degree_epsilon,
+                edge_series_resistance=cfg.circuitrank.edge_series_resistance,
+            )
+
+            full_point_masses = transform_node_masses(
+                full_point_masses_raw,
+                transform=cfg.circuitrank.mass_transform,
+                power=cfg.circuitrank.mass_power,
+                renormalize=cfg.circuitrank.mass_transform_renormalize,
+            )
+
+            LOGGER.info(
+                f"Potentials: min={full_point_potentials.min():.4f}, "
+                f"max={full_point_potentials.max():.4f}, mean={full_point_potentials.mean():.4f}"
+            )
+            if cfg.circuitrank.mass_transform != "none":
+                LOGGER.info(
+                    f"Through-current (raw): min={full_point_masses_raw.min():.4e}, "
+                    f"max={full_point_masses_raw.max():.4e}, sum={full_point_masses_raw.sum():.4f}"
+                )
+                LOGGER.info(
+                    f"Through-current (transformed): min={full_point_masses.min():.4e}, "
+                    f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
+                )
+            else:
+                LOGGER.info(
+                    f"Through-current: min={full_point_masses.min():.4e}, "
+                    f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
+                )
         else:
             LOGGER.info("Running CircuitRank (Current Injection) from target topic...")
             
@@ -395,63 +550,148 @@ def run_curriculum_building(
                 LOGGER.info(f"Current injection: +1.0 into {len(seed_indices)} targets (no known works)")
             
             # Solve for potentials with no fixed nodes (all nodes free, leakage to ground)
-            potentials = compute_graph_potential(
-                adj,
-                current_sources=current_sources,
-                leakage=cfg.circuitrank.leakage,
-                beta=cfg.circuitrank.beta,
-                normalize=cfg.circuitrank.normalize,
-                gmres_tol=cfg.circuitrank.gmres_tol,
-                gmres_maxiter=cfg.circuitrank.gmres_maxiter,
-                gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
-                gmres_log_every=cfg.circuitrank.gmres_log_every,
-            )
+            if cfg.circuitrank.solve_mode == CircuitRankSolveMode.GALERKIN:
+                potentials = compute_graph_potential_galerkin(
+                    adj_for_solver,
+                    embeddings,
+                    current_sources=current_sources,
+                    leakage=cfg.circuitrank.leakage,
+                    beta=cfg.circuitrank.beta,
+                    normalize=cfg.circuitrank.normalize,
+                    edge_weighting=cfg.circuitrank.edge_weighting,
+                    indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                    degree_epsilon=cfg.circuitrank.degree_epsilon,
+                    edge_series_resistance=cfg.circuitrank.edge_series_resistance,
+                )
+            else:
+                potentials = compute_graph_potential(
+                    adj_for_solver,
+                    current_sources=current_sources,
+                    leakage=cfg.circuitrank.leakage,
+                    beta=cfg.circuitrank.beta,
+                    normalize=cfg.circuitrank.normalize,
+                    edge_weighting=cfg.circuitrank.edge_weighting,
+                    indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                    degree_epsilon=cfg.circuitrank.degree_epsilon,
+                    edge_series_resistance=cfg.circuitrank.edge_series_resistance,
+                    gmres_tol=cfg.circuitrank.gmres_tol,
+                    gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+                    gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+                    gmres_log_every=cfg.circuitrank.gmres_log_every,
+                )
             
             # Compute current flow through each node - this is symmetric wrt source/target
             # Nodes with high current flow are "on the path" between source and target
-            from artifacts_scripts.curriculum.circuitrank import compute_current_flow
-            full_point_masses = compute_current_flow(
-                adj, potentials, normalize=cfg.circuitrank.normalize
+            full_point_masses_raw = compute_current_flow(
+                adj_for_solver,
+                potentials,
+                normalize=cfg.circuitrank.normalize,
+                edge_weighting=cfg.circuitrank.edge_weighting,
+                indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                degree_epsilon=cfg.circuitrank.degree_epsilon,
+                edge_series_resistance=cfg.circuitrank.edge_series_resistance,
             )
-            LOGGER.info(
-                f"Current flow: min={full_point_masses.min():.4e}, "
-                f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
+
+            full_point_masses = transform_node_masses(
+                full_point_masses_raw,
+                transform=cfg.circuitrank.mass_transform,
+                power=cfg.circuitrank.mass_power,
+                renormalize=cfg.circuitrank.mass_transform_renormalize,
             )
-            
-            # Also compute potentials via voltage clamping for linearization
-            # This gives us directional information: source=1V (if specified), target=0V
-            # Even without source works, target-only clamping gives useful "distance to target" ordering
-            LOGGER.info("Computing potentials via voltage clamping for topic ordering...")
-            voltage_clamp_potentials = {idx: 0.0 for idx in seed_indices}  # targets at 0V
-            
-            if cfg.source_work_ids and source_indices:
-                for idx in source_indices:
-                    voltage_clamp_potentials[idx] = 1.0  # sources at 1V
+            if cfg.circuitrank.mass_transform != "none":
                 LOGGER.info(
-                    f"Voltage clamping: {len(source_indices)} sources at 1V, "
-                    f"{len(seed_indices)} targets at 0V"
+                    f"Current flow (raw): min={full_point_masses_raw.min():.4e}, "
+                    f"max={full_point_masses_raw.max():.4e}, sum={full_point_masses_raw.sum():.4f}"
+                )
+                LOGGER.info(
+                    f"Current flow (transformed): min={full_point_masses.min():.4e}, "
+                    f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
                 )
             else:
                 LOGGER.info(
-                    f"Voltage clamping: {len(seed_indices)} targets at 0V only "
-                    "(no source works, ordering by distance from target)"
+                    f"Current flow: min={full_point_masses.min():.4e}, "
+                    f"max={full_point_masses.max():.4e}, sum={full_point_masses.sum():.4f}"
                 )
             
-            full_point_potentials = compute_graph_potential(
-                adj,
-                fixed_potentials=voltage_clamp_potentials,
-                leakage=cfg.circuitrank.leakage,
-                beta=cfg.circuitrank.beta,
-                normalize=cfg.circuitrank.normalize,
-                gmres_tol=cfg.circuitrank.gmres_tol,
-                gmres_maxiter=cfg.circuitrank.gmres_maxiter,
-                gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
-                gmres_log_every=cfg.circuitrank.gmres_log_every,
-            )
-            LOGGER.info(
-                f"Voltage clamping potentials: min={full_point_potentials.min():.4f}, "
-                f"max={full_point_potentials.max():.4f}, mean={full_point_potentials.mean():.4f}"
-            )
+            # Also compute potentials via voltage clamping for linearization
+            # This gives us directional information: source=1V (if specified), target=0V
+            # If no source works are available, we use targets-only clamping (targets=1V) and invert
+            # so potentials still satisfy: high=early, low=late.
+            if cfg.circuitrank.solve_mode == CircuitRankSolveMode.GALERKIN:
+                if cfg.circuitrank.ordering_voltage_clamp:
+                    LOGGER.info(
+                        "Computing ordering potentials via node-space voltage clamping (Galerkin relevance)."
+                    )
+                    ordering_source_indices = list(source_indices) if (cfg.source_work_ids and source_indices) else None
+                    full_point_potentials, _, ordering_sources_found = compute_curriculum_ordering_potentials(
+                        adj_for_solver,
+                        target_indices=list(seed_indices),
+                        source_indices=ordering_source_indices,
+                        leakage=cfg.circuitrank.leakage,
+                        beta=cfg.circuitrank.beta,
+                        normalize=cfg.circuitrank.normalize,
+                        edge_weighting=cfg.circuitrank.edge_weighting,
+                        indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                        degree_epsilon=cfg.circuitrank.degree_epsilon,
+                        edge_series_resistance=cfg.circuitrank.edge_series_resistance,
+                        gmres_tol=cfg.circuitrank.gmres_tol,
+                        gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+                        gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+                        gmres_log_every=cfg.circuitrank.gmres_log_every,
+                    )
+
+                    if ordering_sources_found:
+                        LOGGER.info(
+                            f"Voltage clamping: {len(source_indices)} sources at 1V, "
+                            f"{len(seed_indices)} targets at 0V"
+                        )
+                    else:
+                        LOGGER.info(
+                            f"Voltage clamping (targets-only): {len(seed_indices)} targets at 1V (inverted potentials for ordering)"
+                        )
+                    LOGGER.info(
+                        f"Voltage clamping potentials: min={full_point_potentials.min():.4f}, "
+                        f"max={full_point_potentials.max():.4f}, mean={full_point_potentials.mean():.4f}"
+                    )
+                else:
+                    LOGGER.info(
+                        "Skipping voltage clamping in Galerkin mode; using current-injection potentials for ordering."
+                    )
+                    full_point_potentials = potentials
+            else:
+                LOGGER.info("Computing potentials via voltage clamping for topic ordering...")
+
+                ordering_source_indices = list(source_indices) if (cfg.source_work_ids and source_indices) else None
+                full_point_potentials, _, ordering_sources_found = compute_curriculum_ordering_potentials(
+                    adj_for_solver,
+                    target_indices=list(seed_indices),
+                    source_indices=ordering_source_indices,
+                    leakage=cfg.circuitrank.leakage,
+                    beta=cfg.circuitrank.beta,
+                    normalize=cfg.circuitrank.normalize,
+                    edge_weighting=cfg.circuitrank.edge_weighting,
+                    indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+                    degree_epsilon=cfg.circuitrank.degree_epsilon,
+                    edge_series_resistance=cfg.circuitrank.edge_series_resistance,
+                    gmres_tol=cfg.circuitrank.gmres_tol,
+                    gmres_maxiter=cfg.circuitrank.gmres_maxiter,
+                    gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
+                    gmres_log_every=cfg.circuitrank.gmres_log_every,
+                )
+
+                if ordering_sources_found:
+                    LOGGER.info(
+                        f"Voltage clamping: {len(source_indices)} sources at 1V, "
+                        f"{len(seed_indices)} targets at 0V"
+                    )
+                else:
+                    LOGGER.info(
+                        f"Voltage clamping (targets-only): {len(seed_indices)} targets at 1V (inverted potentials for ordering)"
+                    )
+                LOGGER.info(
+                    f"Voltage clamping potentials: min={full_point_potentials.min():.4f}, "
+                    f"max={full_point_potentials.max():.4f}, mean={full_point_potentials.mean():.4f}"
+                )
     else:
         raise ValueError(f"Unknown ranking method: {cfg.method}")
     
@@ -468,6 +708,16 @@ def run_curriculum_building(
         f"({100*full_mass_stats.entropy_ratio:.1f}% of max), "
         f"effective_n={full_mass_stats.effective_n:.0f}"
     )
+    if full_mass_stats.top_k_shares:
+        top_k_str = ", ".join(
+            [f"{k}={v:.3%}" for k, v in full_mass_stats.top_k_shares.items()]
+        )
+        LOGGER.info(f"Mass top-k shares: {top_k_str}")
+    if full_mass_stats.top_pct_shares:
+        top_pct_str = ", ".join(
+            [f"{k}={v:.3%}" for k, v in full_mass_stats.top_pct_shares.items()]
+        )
+        LOGGER.info(f"Mass top-pct shares: {top_pct_str}")
     
     if cfg.rank_before_clustering:
         # RANK-FIRST PIPELINE: Filter to top-k works, then cluster
@@ -580,23 +830,29 @@ def run_curriculum_building(
     else:
         cluster_mapping_for_frontier = point_to_cluster
     
-    if cfg.method == RankMethod.PAGE_RANK:
+    if cfg.method in (RankMethod.PAGE_RANK, RankMethod.BIDIRECTIONAL_PAGE_RANK):
         adj_frontier = compute_frontier_adjacency(
-            adj,  # Always use full citation graph
+            adj_citation,  # Always use full citation graph
             frontier_nodes,
             cluster_mapping_for_frontier,
             alpha=cfg.pagerank.alpha,
             tol=cfg.pagerank.tol,
             max_iter=cfg.pagerank.max_iter,
+            forward_weights=fwd_relevance,
+            reverse_weights=rev_relevance,
         )
     elif cfg.method == RankMethod.CIRCUIT_RANK:
         adj_frontier = compute_frontier_adjacency_potential(
-            adj,
+            adj_for_frontier,
             frontier_nodes,
             cluster_mapping_for_frontier,
             leakage=cfg.circuitrank.leakage,
             beta=cfg.circuitrank.beta,
             normalize=cfg.circuitrank.normalize,
+            edge_weighting=cfg.circuitrank.edge_weighting,
+            indegree_discount_gamma=cfg.circuitrank.indegree_discount_gamma,
+            degree_epsilon=cfg.circuitrank.degree_epsilon,
+            edge_series_resistance=cfg.circuitrank.edge_series_resistance,
             gmres_tol=cfg.circuitrank.gmres_tol,
             gmres_maxiter=cfg.circuitrank.gmres_maxiter,
             gmres_preconditioner=cfg.circuitrank.gmres_preconditioner,
@@ -664,6 +920,7 @@ def run_curriculum_building(
         "ranking_top_k": cfg.ranking_top_k if cfg.rank_before_clustering else None,
         "n_target_works": len(seed_indices),
         "target_work_ids": list(cfg.target_work_ids),  # Convert from Hydra ListConfig
+        "source_work_ids": list(cfg.source_work_ids),
         "desired_n_topics": cfg.desired_n_topics,
         "actual_n_topics": len(frontier_nodes),
         "ranking_method": cfg.method.value,
@@ -699,8 +956,8 @@ def run_curriculum_building(
     LOGGER.info(f"  adj_frontier.npy: {adj_frontier.shape}")
     
     # Citation graph (for visualization)
-    sp.save_npz(output_dir / "citation_graph.npz", adj)
-    LOGGER.info(f"  citation_graph.npz: {adj.shape} (sparse)")
+    sp.save_npz(output_dir / "citation_graph.npz", adj_citation)
+    LOGGER.info(f"  citation_graph.npz: {adj_citation.shape} (sparse)")
     
     # Node masses
     np.save(output_dir / "node_masses.npy", node_masses)

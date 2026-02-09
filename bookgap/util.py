@@ -50,6 +50,12 @@ CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY = joblib.Memory(CACHE_DIR / "joblib", verbose=0)
 
+class Domain(enum.Enum):
+    PHYSICAL_SCIENCES = "3"
+    def __str__(self):
+        return self.value
+    def __repr__(self):
+        return str(self)
 
 class Field(enum.Enum):
     COMP_SCI = "17"
@@ -86,6 +92,7 @@ class WorkType(str, enum.Enum):
 
 @dataclass(frozen=True)
 class Filter:
+    domain: Optional[str] = None
     field: Optional[str] = None
     subfield: Optional[str] = None
     topic: Optional[str] = None
@@ -101,6 +108,8 @@ class Filter:
 
     def to_dict(self) -> dict[str, str | list[str]]:
         ret: dict[str, str | list[str]] = {}
+        if self.domain is not None:
+            ret["primary_topic.domain.id"] = self.domain
         if self.field is not None:
             ret["primary_topic.field.id"] = self.field
         if self.topic is not None:
@@ -114,6 +123,8 @@ class Filter:
     
     def check_work(self, work: dict[str, Any]) -> bool:
         """Check if the work matches this filter."""
+        if self.domain is not None and work["primary_topic"]["domain"]["id"] != f"https://openalex.org/domains/{self.domain}":
+            return False
         if self.field is not None and work["primary_topic"]["field"]["id"] != f"https://openalex.org/fields/{self.field}":
             return False
         if self.topic is not None and work["primary_topic"]["id"] != f"https://openalex.org/{self.topic}":
@@ -128,6 +139,8 @@ class Filter:
     
     def __str__(self) -> str:
         parts = []
+        if self.domain is not None:
+            parts.append(f"domain={self.domain}")
         if self.field is not None:
             parts.append(f"field={self.field}")
         if self.topic is not None:
@@ -147,7 +160,8 @@ class Filter:
     
     def __bool__(self) -> bool:
         return (
-            self.field is not None
+            self.domain is not None
+            or self.field is not None
             or self.subfield is not None
             or self.topic is not None
             or self.work_types is not None
@@ -165,6 +179,9 @@ class FilterPair:
             post_set = set(self.post.work_types)
             if not post_set.issubset(pre_set):
                 raise ValueError("Post-filter work types must be a subset of pre-filter work types")
+        if self.pre.domain is not None and self.post.domain is not None:
+            if self.pre.domain != self.post.domain:
+                raise ValueError("Pre-filter and post-filter domains do not match")
         if self.pre.field is not None and self.post.field is not None:
             if self.pre.field != self.post.field:
                 raise ValueError("Pre-filter and post-filter fields do not match")
@@ -182,6 +199,7 @@ class FilterPair:
         preferring post values when both are specified (since post narrows pre).
         """
         # Post overrides pre for hierarchy fields (more specific)
+        domain = self.post.domain if self.post.domain is not None else self.pre.domain
         field = self.post.field if self.post.field is not None else self.pre.field
         subfield = self.post.subfield if self.post.subfield is not None else self.pre.subfield
         topic = self.post.topic if self.post.topic is not None else self.pre.topic
@@ -190,6 +208,7 @@ class FilterPair:
         work_types = self.post.work_types if self.post.work_types is not None else self.pre.work_types
         
         return Filter(
+            domain=domain,
             field=field,
             subfield=subfield,
             topic=topic,
@@ -199,6 +218,8 @@ class FilterPair:
     def merged_name(self) -> str:
         """Return a merged name for the filter pair."""
         parts: dict[str, str | list[str]] = {}
+        if self.pre.domain is not None:
+            parts["domain"] = self.pre.domain
         if self.pre.field is not None:
             parts["field"] = self.pre.field
         if self.pre.topic is not None:
@@ -207,6 +228,8 @@ class FilterPair:
             parts["subfield"] = self.pre.subfield
         if self.pre.work_types is not None:
             parts["work_types"] = list(self.pre.work_types)
+        if self.post.domain is not None:
+            parts["post_domain"] = self.post.domain
         if self.post.field is not None:
             parts["post_field"] = self.post.field
         if self.post.topic is not None:
@@ -251,6 +274,9 @@ class Filters(enum.Enum):
         if self.value.pre.work_types is not None and self.value.post.work_types is not None:
             if not set(self.value.post.work_types).issubset(set(self.value.pre.work_types)):
                 raise ValueError("Post-filter work types must be a subset of pre-filter work types")
+        if self.value.pre.domain is not None and self.value.post.domain is not None:
+            if self.value.pre.domain != self.value.post.domain:
+                raise ValueError("Pre-filter and post-filter domains do not match")
         if self.value.pre.field is not None and self.value.post.field is not None:
             if self.value.pre.field != self.value.post.field:
                 raise ValueError("Pre-filter and post-filter fields do not match")

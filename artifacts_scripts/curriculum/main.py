@@ -8,6 +8,7 @@ This is the one-stop-shop script for building curricula. It orchestrates:
 
 All steps can be toggled via Hydra configuration.
 
+On the Algebra of Logic (1885): W2325835442
 Attention is All You Need: W2626778328
 LSTM: W2064675550
 LoRA for Audio: W4391021820
@@ -17,11 +18,6 @@ Usage:
         "target_work_ids=['https://openalex.org/W4391021820']" \
         desired_n_topics=5 \
         output_dir=results/lstm
-        
-    # Skip plotting
-    python -m artifacts_scripts.curriculum.main \
-        "target_work_ids=['https://openalex.org/W4391021820']" \
-        plot.enabled=false
         
     # Use different keyword extraction method
     python -m artifacts_scripts.curriculum.main \

@@ -34,6 +34,8 @@ class MassDistributionStats:
         effective_n: Effective number of works (exp(entropy)).
         gini: Gini coefficient (0 = equal, 1 = concentrated).
         percentiles: Dictionary of percentile values.
+        top_k_shares: Fraction of total mass contained in top-k items.
+        top_pct_shares: Fraction of total mass contained in top-p% items.
     """
     total_mass: float
     min_mass: float
@@ -50,6 +52,8 @@ class MassDistributionStats:
     effective_n: float
     gini: float
     percentiles: Dict[str, float]
+    top_k_shares: Dict[str, float]
+    top_pct_shares: Dict[str, float]
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -85,6 +89,8 @@ class ClusterSizeStats:
 def compute_mass_distribution_stats(
     masses: NDArray[np.floating],
     percentile_values: List[float] = [50, 90, 95, 99, 99.9, 99.99],
+    top_k_values: List[int] = [1, 10, 100, 1000],
+    top_pct_values: List[float] = [0.1, 1.0, 5.0],
 ) -> MassDistributionStats:
     """Compute comprehensive statistics for a mass distribution.
     
@@ -135,6 +141,26 @@ def compute_mass_distribution_stats(
         f"p{p}": float(np.percentile(masses, p))
         for p in percentile_values
     }
+
+    # Hubness shares (top-k and top-pct of nodes)
+    sorted_desc = np.sort(masses)[::-1]
+    top_k_shares: Dict[str, float] = {}
+    for k in top_k_values:
+        k_eff = min(int(k), n)
+        if k_eff <= 0 or total_mass <= 0:
+            top_k_shares[f"top_{k}"] = 0.0
+        else:
+            top_k_shares[f"top_{k}"] = float(sorted_desc[:k_eff].sum() / total_mass)
+
+    top_pct_shares: Dict[str, float] = {}
+    for pct in top_pct_values:
+        pct = float(pct)
+        k_eff = int(np.ceil((pct / 100.0) * n)) if n > 0 else 0
+        k_eff = min(k_eff, n)
+        if k_eff <= 0 or total_mass <= 0:
+            top_pct_shares[f"top_{pct}%"] = 0.0
+        else:
+            top_pct_shares[f"top_{pct}%"] = float(sorted_desc[:k_eff].sum() / total_mass)
     
     return MassDistributionStats(
         total_mass=total_mass,
@@ -152,6 +178,8 @@ def compute_mass_distribution_stats(
         effective_n=effective_n,
         gini=gini,
         percentiles=percentiles,
+        top_k_shares=top_k_shares,
+        top_pct_shares=top_pct_shares,
     )
 
 

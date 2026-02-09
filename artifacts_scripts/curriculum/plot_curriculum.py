@@ -301,6 +301,10 @@ def plot_curriculum(
         LOGGER.error("Need at least 2 topics to plot")
         return
 
+    # Hardcoded flag: if False and method=LPP, fit LPP on weighted topic centroids
+    # rather than directly on the underlying works.
+    APPLY_LPP_TO_WORKS = True
+
     # If background plotting is requested, create a subset of points and project them.
     if background:
         # Load point_masses for relevance-based sampling
@@ -338,33 +342,135 @@ def plot_curriculum(
 
         indices_to_plot = sorted(set(indices_to_plot))
         indices_to_plot_arr = np.array(indices_to_plot, dtype=np.int64)
+        index_pos_map = {orig_idx: pos for pos, orig_idx in enumerate(indices_to_plot_arr.tolist())}
         embeddings_subset = embeddings[indices_to_plot_arr]
         labels_subset = leaf_to_cluster[indices_to_plot_arr]
+
+        weights_subset_raw = None
+        weights_subset_norm = None
+        if point_masses is not None:
+            weights_subset_raw = point_masses[indices_to_plot_arr]
+            weights_subset_raw = np.asarray(weights_subset_raw, dtype=np.float64)
+            weights_subset_raw = np.clip(weights_subset_raw, 0.0, None)
+            if weights_subset_raw.max() > 0:
+                weights_subset_norm = weights_subset_raw / weights_subset_raw.max()
 
         # Slice citation graph to subset if provided
         citation_graph_subset = None
         if citation_graph is not None:
             citation_graph_subset = citation_graph[indices_to_plot_arr][:, indices_to_plot_arr]
 
-        # Project subset to 2D
-        embeddings_2d, reducer = project_to_2d(
-            embeddings_subset,
-            labels=labels_subset,
-            method=method,
-            umap_config=umap_config,
-            lpp_config=lpp_config,
-            citation_graph=citation_graph_subset,
+        use_topic_lpp = (
+            method == DimensionalityReductionMethod.LPP and not APPLY_LPP_TO_WORKS
         )
 
-        # Compute centroids in 2D for visual centering
-        centroids_2d = np.zeros((n_topics, 2), dtype=np.float64)
-        index_pos_map = {orig_idx: pos for pos, orig_idx in enumerate(indices_to_plot_arr.tolist())}
-        for topic_idx in range(n_topics):
-            topic_orig_indices = per_topic_indices.get(topic_idx, np.array([], dtype=np.int64))
-            if len(topic_orig_indices) > 0:
-                subset_positions = [index_pos_map[i] for i in topic_orig_indices.tolist() if i in index_pos_map]
-                if len(subset_positions) > 0:
-                    centroids_2d[topic_idx] = embeddings_2d[subset_positions].mean(axis=0)
+        if use_topic_lpp:
+            embeddings_2d = embeddings_subset[:, :2].copy()
+            if citation_graph_subset is None:
+                raise ValueError("LPP requires citation_graph")
+
+            # Compute weighted centroids in embedding space
+            centroids_weighted = np.zeros((n_topics, embeddings_subset.shape[1]), dtype=np.float64)
+            for topic_idx in range(n_topics):
+                mask = labels_subset == topic_idx
+                if not mask.any():
+                    continue
+                topic_emb = embeddings_subset[mask]
+                if weights_subset_raw is not None:
+                    topic_weights = weights_subset_raw[mask]
+                    w_sum = topic_weights.sum()
+                    if w_sum > 0:
+                        centroids_weighted[topic_idx] = np.average(topic_emb, axis=0, weights=topic_weights)
+                    else:
+                        centroids_weighted[topic_idx] = topic_emb.mean(axis=0)
+                else:
+                    centroids_weighted[topic_idx] = topic_emb.mean(axis=0)
+
+            # Build topic-level citation graph
+            rows, cols = citation_graph_subset.nonzero()
+            data = citation_graph_subset.data
+            src_topics = labels_subset[rows]
+            dst_topics = labels_subset[cols]
+            topic_mask = (src_topics >= 0) & (dst_topics >= 0)
+            topic_graph = sp.csr_matrix(
+                (
+                    data[topic_mask],
+                    (src_topics[topic_mask], dst_topics[topic_mask]),
+                ),
+                shape=(n_topics, n_topics),
+            ).tocsr()
+
+            centroids_2d, reducer = project_to_2d(
+                centroids_weighted,
+                labels=None,
+                method=method,
+                umap_config=umap_config,
+                lpp_config=lpp_config,
+                citation_graph=topic_graph,
+            )
+
+            spread = np.ptp(centroids_2d, axis=0)
+            if np.all(spread < 1e-6):
+                LOGGER.warning(
+                    "LPP-on-centroids collapsed (near-zero spread). Falling back to PCA for plotting."
+                )
+                centroids_2d, reducer = project_to_2d(
+                    centroids_weighted,
+                    labels=None,
+                    method=DimensionalityReductionMethod.PCA,
+                    umap_config=None,
+                    lpp_config=None,
+                    citation_graph=None,
+                )
+                if hasattr(reducer, "transform"):
+                    embeddings_2d = reducer.transform(embeddings_subset)
+                else:
+                    embeddings_2d = embeddings_subset[:, :2].copy()
+
+            # Apply LPP projection to works using the centroid-fitted components
+            if isinstance(reducer, dict) and reducer.get("name") == "lpp":
+                A = reducer.get("components")
+                if A is None:
+                    raise ValueError("LPP reducer missing components")
+                if lpp_config is not None and getattr(lpp_config, "center", False):
+                    center = centroids_weighted.mean(axis=0)
+                    embeddings_centered = embeddings_subset - center
+                else:
+                    embeddings_centered = embeddings_subset
+                embeddings_2d = embeddings_centered.dot(A)
+        else:
+            # Project subset to 2D
+            embeddings_2d, reducer = project_to_2d(
+                embeddings_subset,
+                labels=labels_subset,
+                method=method,
+                umap_config=umap_config,
+                lpp_config=lpp_config,
+                citation_graph=citation_graph_subset,
+            )
+
+            # Compute centroids in 2D for visual centering (weighted by relevance if available)
+            centroids_2d = np.zeros((n_topics, 2), dtype=np.float64)
+            for topic_idx in range(n_topics):
+                topic_orig_indices = per_topic_indices.get(topic_idx, np.array([], dtype=np.int64))
+                if len(topic_orig_indices) > 0:
+                    subset_positions = [index_pos_map[i] for i in topic_orig_indices.tolist() if i in index_pos_map]
+                    if len(subset_positions) > 0:
+                        if point_masses is not None:
+                            weights = point_masses[topic_orig_indices]
+                            weights = np.asarray(weights, dtype=np.float64)
+                            weights = np.clip(weights, 0.0, None)
+                            w_sum = weights.sum()
+                            if w_sum > 0:
+                                centroids_2d[topic_idx] = np.average(
+                                    embeddings_2d[subset_positions],
+                                    axis=0,
+                                    weights=weights,
+                                )
+                            else:
+                                centroids_2d[topic_idx] = embeddings_2d[subset_positions].mean(axis=0)
+                        else:
+                            centroids_2d[topic_idx] = embeddings_2d[subset_positions].mean(axis=0)
 
         # Create figure
         fig, ax = plt.subplots(figsize=figsize)
@@ -372,19 +478,34 @@ def plot_curriculum(
         # Color map for topics
         cmap = plt.get_cmap("tab10")
 
+        # Precompute relevance weights for sizing/opacity if available
+        weights_subset = weights_subset_norm
+
         LOGGER.info(f"Plotting background points with max_points_per_topic={max_points_per_topic}")
+        MIN_SCALE = 1.0
+        MAX_SCALE = 50.0
         for topic_idx in range(n_topics):
             topic_orig_indices = per_topic_indices.get(topic_idx, np.array([], dtype=np.int64))
             subset_positions = [index_pos_map[i] for i in topic_orig_indices.tolist() if i in index_pos_map]
             if len(subset_positions) == 0:
                 continue
+            # Scale size and alpha by relevance if available
+            if weights_subset is not None:
+                topic_weights = weights_subset[subset_positions]
+                size_scale = MIN_SCALE + (MAX_SCALE - MIN_SCALE) * (topic_weights ** 2)
+                sizes = background_size * size_scale
+                point_colors = np.tile(cmap(topic_idx % 10), (len(subset_positions), 1))
+                point_colors[:, 3] = background_alpha
+            else:
+                sizes = background_size
+                point_colors = [cmap(topic_idx % 10)]
             ax.scatter(
                 embeddings_2d[subset_positions, 0],
                 embeddings_2d[subset_positions, 1],
-                s=background_size,
-                c=[cmap(topic_idx % 10)],
-                alpha=background_alpha,
+                s=sizes,
+                c=point_colors,
                 label=None,
+                zorder=5,
             )
 
         # Plot unassigned points in gray
@@ -392,12 +513,21 @@ def plot_curriculum(
             unassigned_orig = per_topic_indices[-1]
             subset_positions = [index_pos_map[i] for i in unassigned_orig.tolist() if i in index_pos_map]
             if len(subset_positions) > 0:
+                if weights_subset is not None:
+                    unassigned_weights = weights_subset[subset_positions]
+                    size_scale = 0.05 + (MAX_SCALE - 0.05) * (unassigned_weights ** 2)
+                    sizes = background_size * size_scale
+                    point_colors = np.tile(np.array([0.5, 0.5, 0.5, 1.0]), (len(subset_positions), 1))
+                    point_colors[:, 3] = background_alpha / 2
+                else:
+                    sizes = background_size
+                    point_colors = "gray"
                 ax.scatter(
                     embeddings_2d[subset_positions, 0],
                     embeddings_2d[subset_positions, 1],
-                    s=background_size,
-                    c="gray",
-                    alpha=background_alpha / 2,
+                    s=sizes,
+                    c=point_colors,
+                    zorder=5,
                 )
 
         # Draw arrows
@@ -416,8 +546,8 @@ def plot_curriculum(
             cmap=cmap,
             point_size=300,
             label_fontsize=11,
-            zorder_scatter=20,
-            zorder_label=21,
+            zorder_scatter=2,
+            zorder_label=16,
         )
 
         # Add keyword labels if available

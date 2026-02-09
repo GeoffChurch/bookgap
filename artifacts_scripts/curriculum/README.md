@@ -175,9 +175,14 @@ curriculum:
   target_work_ids:
     - "https://openalex.org/W..."
   desired_n_topics: 10       # Target number of curriculum topics
-  pagerank_alpha: 0.85       # PageRank damping factor
-  pagerank_tol: 1e-6         # Convergence tolerance
-  pagerank_max_iter: 100     # Maximum iterations
+    method: "circuit_rank"     # or "page_rank"
+    pagerank:
+        alpha: 0.85              # PageRank damping factor
+        tol: 1e-6                # Convergence tolerance
+        max_iter: 100            # Maximum iterations
+    circuitrank:
+        similarity:
+            density_correction_alpha: 0.0  # 0 disables density correction
   linkage_method: "ward"     # Clustering method (see below)
   rank_before_clustering: true  # Rank first, cluster only top-k works
   ranking_top_k: 100000      # Number of top works to cluster (when rank_before_clustering=true)

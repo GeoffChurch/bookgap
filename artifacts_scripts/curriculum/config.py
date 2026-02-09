@@ -117,13 +117,14 @@ class PlotConfig:
     max_points_per_topic: int = 300
     """Max points to plot per topic (for background mode)."""
     
-    method: DimensionalityReductionMethod = DimensionalityReductionMethod.LPP
+    method: DimensionalityReductionMethod = DimensionalityReductionMethod.LDA
     """Dimensionality reduction method for 2D projection.
     
     Options: DimensionalityReductionMethod.PCA, LDA, or UMAP
     
     - PCA: Fast, unsupervised, linear
     - LDA: Supervised, maximizes topic separation
+    - LPP: Supervised, preserves local structure (generalized eigenproblem)
     - UMAP: Supervised, preserves local and global structure (requires umap-learn package)
     """
     
@@ -143,7 +144,52 @@ class PlotConfig:
 
 class RankMethod(str, Enum):
     PAGE_RANK = "page_rank"
+    BIDIRECTIONAL_PAGE_RANK = "bidirectional_page_rank"
     CIRCUIT_RANK = "circuit_rank"
+
+
+class CircuitRankSolveMode(str, Enum):
+    NODE_UNSMOOTHED = "node_unsmoothed"
+    NODE_SMOOTHED = "node_smoothed"
+    GALERKIN = "galerkin"
+
+
+@dataclass
+class SimilarityGraphConfig:
+    """Configuration for embedding-similarity graph smoothing."""
+
+    enabled: bool = False
+    """Whether to apply similarity graph smoothing."""
+
+    knn_k: int = 5
+    """Number of neighbors per node in the directed kNN similarity graph."""
+
+    sharpness: float = 2.0
+    """Sharpness for similarity weights: w = exp(sharpness * (cos_sim - 1))."""
+
+    row_normalize: bool = True
+    """If True, row-normalize similarity weights to sum to 1 per node."""
+
+    density_correction_alpha: float = 5.0
+    """Density correction exponent for similarity weights.
+
+    Applies diagonal reweighting: W' = D_rho^{-alpha} W D_rho^{-alpha}, where
+    rho_i = sum_j W_{i,j} (local density). Set to 0 to disable.
+    """
+
+    mix_weight: float = 0.1
+    """Mixing weight for similarity edges relative to citation edges."""
+
+    mix_mode: str = "convex"
+    """Mixing strategy for citation + similarity graphs.
+
+    - "convex": A = (1-mix_weight)*A_cite + mix_weight*A_sim
+    - "additive_global_scale": A = A_cite + mix_weight * scale * A_sim,
+        where scale matches total edge mass of A_cite.
+    """
+
+    include_self: bool = False
+    """If True, keep self-neighbors in the kNN similarity graph."""
 
 @dataclass
 class PageRankConfig:
@@ -198,7 +244,7 @@ class CircuitRankConfig:
     gmres_preconditioner: Optional[str] = "jacobi"
     """Optional preconditioner for GMRES. Supported: """ "'jacobi'" """."""
 
-    gmres_log_every: Optional[int] = 25
+    gmres_log_every: Optional[int] = 50
     """If set, log GMRES progress every N inner iterations."""
     
     normalize: bool = True
@@ -213,12 +259,100 @@ class CircuitRankConfig:
     use_voltage_clamping: bool = False
     """If True, use voltage clamping (Dirichlet BC) instead of current injection.
     
-    Voltage clamping: Fix target nodes at φ=1, solve for free nodes.
+    Voltage clamping: Fix targets at φ=0 (ground) and (optionally) known/source works at φ=1.
+    If no known/source works are provided, targets are clamped at φ=1 and the resulting
+    potentials are inverted (1 - φ) for consistent ordering semantics.
     Current injection: Inject current at targets, all nodes free.
     
     With normalized adjacency, both approaches give similar distributions,
     but current injection includes the target nodes in the distribution.
     """
+
+    edge_weighting: str = "pagerank"
+    """How to weight citation edges before solving and current-flow computation.
+
+    Modes:
+    - "pagerank": existing behavior. When normalize=True, uses column-normalized
+        transposed adjacency (each citer distributes unit weight across its references).
+        When normalize=False, uses unweighted transposed adjacency.
+    - "symmetric": symmetric degree normalization with no renormalization:
+            w(v→u) = 1/sqrt(outdeg(v)*indeg(u)).
+        This directly penalizes highly-cited hubs (large indeg(u)).
+    - "symmetric_renorm": same as "symmetric", then renormalize per citer v so
+        Σ_u w(v→u) = 1.
+    - "indegree_discount_renorm": indegree discount then renormalize per citer v:
+            w̃(v→u) = 1/(indeg(u)+eps)^gamma; w(v→u) = w̃ / Σ_u w̃.
+        With gamma=0.5 this is a sqrt-style hub discount.
+
+    Note: for modes other than "pagerank", the solver uses the general circuit
+    Laplacian (D_out + leakage*I - A_eff) rather than the PageRank-form
+    ((1+leakage)I - P).
+    """
+
+    indegree_discount_gamma: float = 0.5
+    """Exponent gamma for indegree discount in edge_weighting="indegree_discount_renorm".
+
+    Typical values:
+    - 0.5: sqrt discount (variance-stabilizing)
+    - 1.0: stronger discount
+    """
+
+    degree_epsilon: float = 0
+    """Small epsilon added to degrees to avoid divide-by-zero in edge weighting."""
+
+    edge_series_resistance: float = 0.0
+    """Optional per-edge series resistance r (>= 0) applied to conductances.
+
+    For each edge conductance G, the adjusted conductance is:
+        G' = 1 / (1/G + r) = G / (1 + r*G)
+
+    This penalizes longer paths by adding a fixed resistance per hop.
+    Set to 0.0 to disable.
+    """
+
+    mass_transform: str = "none"
+    """Optional post-solver hubness mitigation applied to node masses.
+
+    This transform is applied after computing raw through-current masses and
+    before *all* downstream steps (top-k selection, clustering, topic masses,
+    keyword weighting, etc.).
+
+    Supported:
+    - "none": no transform
+    - "sqrt": m' = sqrt(m)
+    - "log1p": m' = log1p(m)
+    - "power": m' = m**mass_power
+    """
+
+    mass_power: float = 0.5
+    """Power exponent used when mass_transform="power" (e.g., 0.5 for sqrt)."""
+
+    mass_transform_renormalize: bool = True
+    """If True, rescale transformed masses to preserve the original total mass."""
+
+    solve_mode: CircuitRankSolveMode = CircuitRankSolveMode.GALERKIN
+    """How to solve CircuitRank potentials.
+
+    - NODE_UNSMOOTHED: current behavior (citation graph only)
+    - NODE_SMOOTHED: use smoothed citation+similarity graph in node space
+    - GALERKIN: solve in embedding basis (current injection only)
+    """
+
+    ordering_voltage_clamp: bool = True
+    """If True, compute ordering potentials in node-space when solve_mode=GALERKIN.
+
+    This uses voltage clamping on the (possibly smoothed) graph for ordering only.
+    """
+
+    def __post_init__(self) -> None:
+        if self.solve_mode == CircuitRankSolveMode.GALERKIN and self.use_voltage_clamping:
+            raise ValueError(
+                "CircuitRank solve_mode='galerkin' does not support voltage clamping. "
+                "Use current injection (use_voltage_clamping=False) or a node-space solve mode."
+            )
+
+        if self.edge_series_resistance < 0:
+            raise ValueError("edge_series_resistance must be >= 0")
 
 @dataclass
 class CurriculumConfig:
@@ -247,8 +381,13 @@ class CurriculumConfig:
     desired_n_topics: int = 10
     """Desired number of frontier topics in the curriculum."""
     
-    method: RankMethod = RankMethod.CIRCUIT_RANK
+    # method: RankMethod = RankMethod.PAGE_RANK
+    method: RankMethod = RankMethod.BIDIRECTIONAL_PAGE_RANK
+    # method: RankMethod = RankMethod.CIRCUIT_RANK
     """Method to use for ranking works (PageRank or CircuitRank)."""
+
+    similarity: SimilarityGraphConfig = field(default_factory=SimilarityGraphConfig)
+    """Configuration for embedding similarity graph smoothing (available to all methods)."""
     
     pagerank: PageRankConfig = field(default_factory=PageRankConfig)
     """Configuration for PageRank."""
@@ -284,14 +423,14 @@ class CurriculumConfig:
     - 15: At most 2^15 = 32k leaf clusters
     """
     
-    rank_before_clustering: bool = False
+    rank_before_clustering: bool = True
     """If True, run ranking (PageRank/CircuitRank) first and cluster only the top-k relevant works.
     
     This is more efficient for large datasets and produces more coherent topics
     since only prerequisite-relevant works are clustered.
     """
     
-    ranking_top_k: int = 100000
+    ranking_top_k: int = 5000
     """Number of top works by relevance mass to include in clustering when rank_before_clustering=True.
     
     With 100k works, Ward's linkage is tractable (~8GB memory).
@@ -326,6 +465,20 @@ class CurriculumConfig:
     """Experiment configuration (cloud settings, etc.)."""
     
     output_dir: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.similarity.enabled:
+            sim_cfg = self.similarity
+            if sim_cfg.knn_k <= 0:
+                raise ValueError("similarity.knn_k must be > 0")
+            if sim_cfg.sharpness < 0:
+                raise ValueError("similarity.sharpness must be >= 0")
+            if sim_cfg.mix_weight < 0:
+                raise ValueError("similarity.mix_weight must be >= 0")
+            if sim_cfg.mix_mode not in {"convex", "additive_global_scale"}:
+                raise ValueError(
+                    f"similarity.mix_mode must be 'convex' or 'additive_global_scale', got {sim_cfg.mix_mode!r}"
+                )
 
 
 def get_curriculum_output_dir(output_dir: str, *, auto_derived: bool = False) -> Path:
