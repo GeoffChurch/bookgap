@@ -26,11 +26,16 @@ import pyalex
 LOGGER = logging.getLogger(__name__)
 
 # Set to True to use longtable environment, False to use table* environment
-USE_LONGTABLE = True
+USE_LONGTABLE = False
 
 # Set to True to write only the inner tabular/longtable environment.
 # When True, non-longtable outputs omit the outer table/table* wrapper (and caption/label).
-TABULAR_ONLY = True
+TABULAR_ONLY = False
+
+# When USE_LONGTABLE is False and TABULAR_ONLY is False, break the table into
+# multiple table* floats of at most this many rows each.  Set to None to emit a
+# single table* regardless of length.
+CHUNK_ROWS: int | None = 35
 
 DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
@@ -777,6 +782,7 @@ def write_latex(
     table_environment: Literal["table", "longtable"] = "table",
     tabular_only: bool = TABULAR_ONLY,
     comment: str | None = None,
+    chunk_rows: int | None = CHUNK_ROWS,
 ) -> None:
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
@@ -865,37 +871,81 @@ def write_latex(
         return
 
     # Default: wrap in standard table environment
-    latex = safe_df.to_latex(
-        index=False,
-        escape=False,
-        na_rep="",
-        caption=None,
-        label=None,
-        formatters=effective_formatters,
-        multicolumn=True,
-        multicolumn_format="c",
-    )
-    latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", latex)
-    latex = _apply_group_hlines(latex, group_breaks)
-
-    lines = latex.splitlines()
-
-    if not tabular_only:
-        # Use table* instead of table when USE_LONGTABLE is False
+    if chunk_rows is not None and not tabular_only and len(safe_df) > chunk_rows:
+        # Split into multiple table* floats so each fits on a page.
         table_env = "table*" if not USE_LONGTABLE else "table"
-        result_lines = [f"\\begin{{{table_env}}}", "\\centering"]
-        result_lines.extend(lines)
+        table_parts: list[str] = []
 
-        if escaped_caption:
-            result_lines.append(f"\\caption{{{escaped_caption}}}")
-        if label:
-            result_lines.append(f"\\label{{{label}}}")
+        for chunk_start in range(0, len(safe_df), chunk_rows):
+            chunk_end = min(chunk_start + chunk_rows, len(safe_df))
+            chunk_df = safe_df.iloc[chunk_start:chunk_end]
 
-        result_lines.append(f"\\end{{{table_env}}}")
-        latex = "\n".join(result_lines)
+            chunk_latex = chunk_df.to_latex(
+                index=False,
+                escape=False,
+                na_rep="",
+                caption=None,
+                label=None,
+                formatters=effective_formatters,
+                multicolumn=True,
+                multicolumn_format="c",
+            )
+            chunk_latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", chunk_latex)
+
+            if group_breaks:
+                chunk_breaks = list(group_breaks)[chunk_start:chunk_end]
+                chunk_latex = _apply_group_hlines(chunk_latex, chunk_breaks)
+
+            chunk_lines = chunk_latex.splitlines()
+
+            result_lines = [f"\\begin{{{table_env}}}[t]"]
+            if chunk_start == 0:
+                if escaped_caption:
+                    result_lines.append(f"\\caption{{{escaped_caption}}}")
+                if label:
+                    result_lines.append(f"\\label{{{label}}}")
+            else:
+                result_lines.append("\\ContinuedFloat")
+                if escaped_caption:
+                    result_lines.append(f"\\caption[]{{{escaped_caption} (continued)}}")
+            result_lines.append("\\centering")
+            result_lines.extend(chunk_lines)
+            result_lines.append(f"\\end{{{table_env}}}")
+            table_parts.append("\n".join(result_lines))
+
+        latex = "\n\n".join(table_parts)
     else:
-        # Only the inner tabular environment.
-        latex = "\n".join(lines)
+        latex = safe_df.to_latex(
+            index=False,
+            escape=False,
+            na_rep="",
+            caption=None,
+            label=None,
+            formatters=effective_formatters,
+            multicolumn=True,
+            multicolumn_format="c",
+        )
+        latex = re.sub(r"\\\\([&%$#_{}~^])", r"\\\\\\1", latex)
+        latex = _apply_group_hlines(latex, group_breaks)
+
+        lines = latex.splitlines()
+
+        if not tabular_only:
+            # Use table* instead of table when USE_LONGTABLE is False
+            table_env = "table*" if not USE_LONGTABLE else "table"
+            result_lines = [f"\\begin{{{table_env}}}", "\\centering"]
+            result_lines.extend(lines)
+
+            if escaped_caption:
+                result_lines.append(f"\\caption{{{escaped_caption}}}")
+            if label:
+                result_lines.append(f"\\label{{{label}}}")
+
+            result_lines.append(f"\\end{{{table_env}}}")
+            latex = "\n".join(result_lines)
+        else:
+            # Only the inner tabular environment.
+            latex = "\n".join(lines)
 
     if comment:
         latex = f"% {comment}\n" + latex
