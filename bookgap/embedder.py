@@ -1,4 +1,5 @@
 import enum
+from functools import lru_cache
 import gc
 import torch
 from typing import List, Optional, Union
@@ -6,7 +7,22 @@ import numpy as np
 from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
 
-from bookgap.util import LOGGER
+from bookgap.util import LOGGER, MEMORY
+
+@lru_cache(maxsize=1)
+@MEMORY.cache
+def _cached_embedding_space(model_name: str) -> tuple[int, str]:
+    model = SentenceTransformer(model_name)
+    dummy = model.encode(["dummy"], show_progress_bar=False)
+    one, d = dummy.shape
+    if one != 1:
+        raise ValueError(f"Expected embedding of single input to have shape (1, d), got ({one}, {d})")
+    reported = model.get_sentence_embedding_dimension()
+    if reported is not None and d != reported:
+        raise ValueError(f"Model's reported embedding dimension {reported} does not match actual dimension {d}")
+    if dummy.dtype != np.float32:
+        raise ValueError(f"Expected embedding dtype to be float32, got {dummy.dtype}")
+    return d, str(dummy.dtype)
 
 class Embedder:
     class ModelName(enum.Enum):
@@ -50,17 +66,9 @@ class Embedder:
                 LOGGER.info("Performed aggressive CUDA cache cleanup")
             
     def _determine_embedding_space(self):
-        dummy = self._model().encode(["dummy"], show_progress_bar=False)
-        one, d = dummy.shape
-        if one != 1:
-            raise ValueError(f"Expected embedding of single input to have shape (1, d), got ({one}, {d})")
-        if self._model().get_sentence_embedding_dimension() is not None:
-            if d != self._model().get_sentence_embedding_dimension():
-                raise ValueError(f"Model's reported embedding dimension {self._model().get_sentence_embedding_dimension()} does not match actual dimension {d}")
-        if dummy.dtype != np.float32:
-            raise ValueError(f"Expected embedding dtype to be float32, got {dummy.dtype}")
-        self._embedding_dimension_ = dummy.shape[1]
-        self._embedding_dtype_ = dummy.dtype
+        d, dtype_str = _cached_embedding_space(self.model_name)
+        self._embedding_dimension_ = d
+        self._embedding_dtype_ = np.dtype(dtype_str)
 
     def embedding_dimension(self):
         if self._embedding_dimension_ is None:

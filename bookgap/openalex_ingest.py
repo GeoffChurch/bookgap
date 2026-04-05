@@ -386,8 +386,35 @@ def _filter_works(scope: ResolvedScope):
     artifacts_dir = ARTIFACTS_DIR / str(scope)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
+    # Disable total count query by default to avoid rate limiting issues
+    QUERY_TOTAL_COUNT = False
+    total_count = None
+    
+    if QUERY_TOTAL_COUNT:
+        # Get total count with exponential backoff for rate limiting
+        MIN_TIME_DIFF = 1.0
+        backoff_time = MIN_TIME_DIFF
+        max_retries = 5
+        retry_count = 0
+        
+        while total_count is None and retry_count < max_retries:
+            try:
+                count_start = time.time()
+                total_count = get_query(scope.filter()).count()
+                time.sleep(max(0, MIN_TIME_DIFF - (time.time() - count_start)))
+                backoff_time = MIN_TIME_DIFF  # Reset backoff on success
+            except Exception as e:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    LOGGER.warning(f"Failed to get count for {scope} after {max_retries} retries, proceeding without total")
+                    total_count = None
+                    break
+                LOGGER.warning(f"Failed to get count for {scope} (attempt {retry_count}/{max_retries}), retrying after {backoff_time}s: {e}")
+                time.sleep(backoff_time)
+                backoff_time *= 2  # Exponential backoff
+
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
-        for work in tqdm.tqdm(_get_works_for_type(scope), total=get_query(scope.filter()).count(),
+        for work in tqdm.tqdm(_get_works_for_type(scope), total=total_count,
                 desc=f"Filtering works in {scope}", mininterval=3, delay=3, smoothing=1):
             invalidators = []
             total.insert(work)

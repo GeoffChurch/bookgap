@@ -1,4 +1,4 @@
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 import enum
 from functools import lru_cache
@@ -6,11 +6,12 @@ import hashlib
 import heapq
 import itertools
 import json
+import os
 import shutil
 from pathlib import Path
 from bookgap.cloud_denoiser import ProjectiveDenoiserProjection, WorkDenoisers
 import re
-from typing import Any, Dict, Generator, List, Optional, TypeVar
+from typing import Any, Dict, List, Optional, TypeVar
 import faiss
 import numpy as np
 from numpy.typing import NDArray
@@ -41,6 +42,7 @@ from bookgap.openalex_ingest import (
 )
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
+pyalex.config.api_key = os.environ["OPENALEX_API_KEY"]
 
 @dataclass(frozen=True)
 class Cloud:
