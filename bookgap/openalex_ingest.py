@@ -27,6 +27,25 @@ from bookgap.util import (
 )
 from bookgap.openalex_scopes import resolve_filter_upward, get_subfield_topics, _suffix
 
+import threading
+
+class _RateLimiter:
+    """Global rate limiter for OpenAlex API calls."""
+    def __init__(self, min_interval: float = 1.0):
+        self._min_interval = min_interval
+        self._last_call: float = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.time()
+            elapsed = now - self._last_call
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last_call = time.time()
+
+RATE_LIMITER = _RateLimiter(min_interval=1.0)
+
 
 @dataclass(frozen=True)
 class ResolvedScope:
@@ -231,11 +250,9 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
     if state.get("next_cursor") is None:
         return
 
-    time.sleep(1.0) # Initial 1 second wait in case of earlier requests
+    RATE_LIMITER.wait()
 
     # Then yield new works
-    MIN_TIME_DIFF = 1.0 # Minimum time between requests
-    last_time = time.time() # For rate limiting
     cursor = state["next_cursor"]
     empty_page_retries = 0
     max_empty_page_retries = 10
@@ -251,8 +268,7 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
                 raise RuntimeError(
                     f"No page returned for {scope.filter()} after {max_empty_page_retries} retries"
                 )
-            time.sleep(max(0, MIN_TIME_DIFF - (time.time() - last_time)))
-            last_time = time.time()
+            RATE_LIMITER.wait()
             continue
 
         works: list[dict[str, Any]] = list(map(dict, page))
@@ -291,8 +307,7 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
                     f"Empty page for {scope.filter()} at cursor={cursor} (next_cursor={next_cursor}); retry {empty_page_retries}/{max_empty_page_retries}"
                 )
                 cursor = next_cursor
-                time.sleep(max(0, MIN_TIME_DIFF - (time.time() - last_time)))
-                last_time = time.time()
+                RATE_LIMITER.wait()
                 continue
             state["next_cursor"] = next_cursor
             with state_file.open("w") as f:
@@ -313,9 +328,7 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
 
         yield from filtered_works
 
-        time.sleep(max(0, MIN_TIME_DIFF - (time.time() - last_time)))
-        last_time = time.time()
-
+        RATE_LIMITER.wait()
         cursor = next_cursor
 
 
@@ -392,17 +405,14 @@ def _filter_works(scope: ResolvedScope):
     
     if QUERY_TOTAL_COUNT:
         # Get total count with exponential backoff for rate limiting
-        MIN_TIME_DIFF = 1.0
-        backoff_time = MIN_TIME_DIFF
+        backoff_time = 1.0
         max_retries = 5
         retry_count = 0
-        
+
         while total_count is None and retry_count < max_retries:
             try:
-                count_start = time.time()
+                RATE_LIMITER.wait()
                 total_count = get_query(scope.filter()).count()
-                time.sleep(max(0, MIN_TIME_DIFF - (time.time() - count_start)))
-                backoff_time = MIN_TIME_DIFF  # Reset backoff on success
             except Exception as e:
                 retry_count += 1
                 if retry_count >= max_retries:
@@ -481,6 +491,23 @@ def batched(iterable, n): # TODO use itertools.batched when available
 def fetch_works(scope: ResolvedScope) -> list[dict[str, Any]]:
     """Fetch and syntactically deduplicate works for a scope. Cached by joblib."""
     return deduplicate_works_syntactic(scope)
+
+
+def fetch_all_scopes(work_filter: Filter) -> list[dict[str, Any]]:
+    """Fetch works for all scopes matching a filter, with proper rate limiting.
+
+    Convenience wrapper for programmatic bulk fetching. Resolves scopes,
+    fetches each with rate limiting between scopes, and concatenates results.
+    """
+    scopes = _resolve_filter_scopes(work_filter)
+    all_works: list[dict[str, Any]] = []
+    for i, scope in enumerate(tqdm.tqdm(scopes, desc="Fetching scopes")):
+        LOGGER.info(f"Fetching scope {i + 1}/{len(scopes)}: {scope}")
+        RATE_LIMITER.wait()
+        works = fetch_works(scope)
+        all_works.extend(works)
+        LOGGER.info(f"  Got {len(works)} works (total so far: {len(all_works)})")
+    return all_works
 
 
 def embed_works(
