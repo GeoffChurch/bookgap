@@ -233,16 +233,27 @@ class SolveEighRobustlyResult:
 
 @TIMER.time(formatters=dict(a_matrix=lambda a: f"<shape={a.shape}>", b_matrix=lambda b: f"<shape={b.shape}>" if b is not None else "None"))
 def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: Optional[tuple[int, int]] = None) -> SolveEighRobustlyResult:
-    """Solves eigh, retrying with regularization upon failure."""
+    """Solves eigh, retrying with regularization upon failure.
+
+    If b_matrix is indefinite (has negative eigenvalues), clips it to PSD by
+    adding a ridge equal to |min_eigenvalue| + a small epsilon.
+    """
     try:
         eigvals, P_or_U = eigh(a=a_matrix, b=b_matrix, subset_by_index=subset)
     except LinAlgError:
-        LOGGER.warning("eigh failed, likely due to a singular b_matrix. Retrying with regularization.")
+        LOGGER.warning("eigh failed, likely due to a singular or indefinite b_matrix. Retrying with regularization.")
         if b_matrix is not None:
-            # b_matrix += np.eye(b_matrix.shape[0]) * 1e-6
-            ridge_val = np.mean(np.abs(np.diag(b_matrix))) * 1e-4 + 1e-8
-            LOGGER.warning(f"Retrying with adaptive regularization: {ridge_val:.2e}")
-            b_matrix += np.eye(b_matrix.shape[0]) * ridge_val
+            # Compute the minimum eigenvalue to determine the required ridge.
+            # If b_matrix is indefinite (min_eigval < 0), we need to shift it
+            # to PSD; if it's just near-singular, a small epsilon suffices.
+            min_eigval = float(np.linalg.eigvalsh(b_matrix).min())
+            if min_eigval < 0:
+                ridge_val = -min_eigval + 1e-8
+                LOGGER.warning(f"b_matrix is indefinite (min_eigval={min_eigval:.4e}). Adding ridge: {ridge_val:.2e}")
+            else:
+                ridge_val = np.mean(np.abs(np.diag(b_matrix))) * 1e-4 + 1e-8
+                LOGGER.warning(f"Retrying with adaptive regularization: {ridge_val:.2e}")
+            b_matrix = b_matrix + np.eye(b_matrix.shape[0]) * ridge_val
             eigvals, P_or_U = eigh(a=a_matrix, b=b_matrix, subset_by_index=subset)
         else:
             raise
@@ -985,25 +996,53 @@ class CitationErrorLDADenoiser:
     """
     Finds the subspace that balances minimizing "citation error" (S_C) against
     maximizing "citation signal" (S_T - S_C).
-    
-    This is the "purest" formulation of the objective.
-    It solves the generalized eigenvalue problem: S_C w = λ (S_T - S_C) w
-    We seek the eigenvectors with the SMALLEST eigenvalues (minimizing the ratio).
+
+    Solves the generalized eigenvalue problem: S_C w = λ (S_T - S_C) w
+    We seek the eigenvectors with the SMALLEST eigenvalues.
     Objective: min (w^T S_C w) / (w^T (S_T - S_C) w)
     """
     def projector(self, context: DenoiserContext, n_components: int):
-        S_C = context.S_C() # This is now centered
-        S_T = context.S_T() # This is now centered
-        d = S_C.shape[0]
+        X = context.X()
+        N, d = X.shape
 
-        # The "signal" matrix is Total Variance minus the "error" variance
-        S_Signal = S_T - S_C
+        if N < d:
+            LOGGER.info(f"CitationErrorLDA: N < d, using dual (SVD) formulation. N={N}, d={d}")
+            cm = context.centered()
+            X_c_dense = cm.X_centered_dense()  # N x d, dense
 
-        # We want the k SMALLEST eigenvalues
-        subset = subset_range(n=d, subset_size=n_components, smallest=True)
-        res = _solve_eigh_robustly(a_matrix=S_C, b_matrix=S_Signal, subset=subset)
-        
-        P = res.P_or_U
-        eigvals = res.eigvals
-        # No need to reverse, as we want the smallest
-        return P, eigvals
+            # Truncated SVD of X_c: keep directions where s_i/s_max > threshold
+            # This discards noise subspace so the reduced scatter matrices are well-conditioned.
+            U_svd, s_svd, Vt_svd = svd(X_c_dense, full_matrices=False)
+            sig_threshold = 1e-2 * s_svd[0]
+            r = max(int((s_svd > sig_threshold).sum()), n_components + 1)
+            V_r = Vt_svd[:r, :].T  # d x r: significant right singular vectors
+
+            # Compute citation error E = X - A@X, then center
+            A = context.A()
+            E = X - A @ X  # N x d (may be dense even if X is sparse)
+            E_mean = np.asarray(E.mean(axis=0)) if sp.issparse(E) else E.mean(axis=0, keepdims=True)
+            E_dense = np.asarray(E.todense()) if sp.issparse(E) else np.asarray(E)
+            E_c = E_dense - E_mean  # N x d, centered (dense)
+
+            # Project scatter matrices onto the r-dimensional signal subspace
+            F = E_c @ V_r  # N x r: E_c projected onto row space of X_c
+            S_C_red = F.T @ F  # r x r
+            S_T_red = np.diag(s_svd[:r] ** 2)  # r x r (diagonal by construction)
+            S_Signal_red = S_T_red - S_C_red  # r x r
+
+            LOGGER.info(f"CitationErrorLDA dual: r={r}, S_Signal_red min eigval={np.linalg.eigvalsh(S_Signal_red).min():.4e}")
+            subset = subset_range(n=r, subset_size=n_components, smallest=True)
+            res = _solve_eigh_robustly(a_matrix=S_C_red, b_matrix=S_Signal_red, subset=subset)
+            # Recover d-dimensional projector: w = V_r @ v for each eigenvector v
+            P_raw = V_r @ res.P_or_U  # d x n_components
+            P_norms = np.linalg.norm(P_raw, axis=0)
+            P_norms[P_norms == 0] = 1
+            P = P_raw / P_norms
+            return P, res.eigvals
+        else:
+            S_C = context.S_C()
+            S_T = context.S_T()
+            S_Signal = S_T - S_C
+            subset = subset_range(n=d, subset_size=n_components, smallest=True)
+            res = _solve_eigh_robustly(a_matrix=S_C, b_matrix=S_Signal, subset=subset)
+            return res.P_or_U, res.eigvals
