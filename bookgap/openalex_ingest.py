@@ -476,12 +476,19 @@ def batched(iterable, n): # TODO use itertools.batched when available
         yield batch
 
 
+@TIMER.time()
+@MEMORY.cache
+def fetch_works(scope: ResolvedScope) -> list[dict[str, Any]]:
+    """Fetch and syntactically deduplicate works for a scope. Cached by joblib."""
+    return deduplicate_works_syntactic(scope)
+
+
 def embed_works(
     scope: ResolvedScope,
     model_name: Embedder.ModelName,
 ):
     LOGGER.info(f"Embedding {scope} works with model {str(model_name)}")
-    works = deduplicate_works_syntactic(scope)
+    works = fetch_works(scope)
     n_works = len(works)
     with Embedder(model_name=model_name) as embedder:
         dim = embedder.embedding_dimension()
