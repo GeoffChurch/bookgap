@@ -44,7 +44,7 @@ class _RateLimiter:
                 time.sleep(self._min_interval - elapsed)
             self._last_call = time.time()
 
-RATE_LIMITER = _RateLimiter(min_interval=1.0)
+RATE_LIMITER = _RateLimiter(min_interval=0.1)
 
 
 @dataclass(frozen=True)
