@@ -44,6 +44,41 @@ def scatter(M: NDArray, centered: bool = False) -> NDArray:
     # S = Xc.T @ Xc / n
     return adj(M_centered) @ M_centered / n
 
+@dataclass
+class CenteredMatrix:
+    """Stores X and its mean separately to avoid materializing dense centered matrices.
+
+    For sparse X (N x V with V >> N), computing X_c = X - mean would destroy
+    sparsity. Instead, operations like gram() use algebraic identities to stay
+    in N x N space.
+    """
+    X: NDArray | sp.spmatrix  # N x d
+    mean: NDArray             # (1, d) dense
+
+    def gram(self) -> NDArray:
+        """X_c @ X_c.T  (N x N) without forming the dense centered matrix.
+
+        Uses the identity:
+            (X - 1*mu)(X - 1*mu).T = X@X.T - (X@mu.T)@1.T - 1@(X@mu.T).T + ||mu||^2 * 1@1.T
+        where 1 is (N,1) column of ones, mu is (1,d), and ||mu||^2 = mu@mu.T is a scalar.
+        """
+        n = self.X.shape[0]
+        XXT = self.X @ self.X.T                   # N x N  (sparse-safe)
+        Xmu = self.X @ self.mean.T                 # N x 1  (X dot mean^T)
+        # Convert to dense arrays to handle both sparse and dense inputs uniformly
+        XXT_dense = np.asarray(XXT.todense()) if sp.issparse(XXT) else np.asarray(XXT)
+        Xmu_dense = np.asarray(Xmu.todense()) if sp.issparse(Xmu) else np.asarray(Xmu)  # (N, 1)
+        mu_sq = float(np.squeeze(self.mean @ self.mean.T))  # scalar: ||mean||^2
+        # Xmu_dense is (N,1); broadcast: Xmu_dense @ ones.T = (N,N) where row i is Xmu[i] repeated
+        ones = np.ones((n, 1))
+        return XXT_dense - Xmu_dense @ ones.T - ones @ Xmu_dense.T + np.full((n, n), mu_sq)
+
+    def X_centered_dense(self) -> NDArray:
+        """Materialize the centered matrix. Only safe when d is small."""
+        X_dense = self.X.toarray() if sp.issparse(self.X) else np.asarray(self.X)
+        return X_dense - self.mean
+
+
 # def orthonormalize(P: NDArray) -> NDArray:
 #     Q: NDArray
 #     R: NDArray
@@ -70,28 +105,29 @@ class DenoiserContext(abc.ABC):
     Provides data and consistently centered scatter matrices.
     """
     def __init__(self):
-        self._X_mean: Optional[NDArray] = None
-        self._X_centered: Optional[NDArray] = None
+        self._centered: Optional[CenteredMatrix] = None
 
     def _init_centering(self):
         """Initializes and caches the centered data."""
-        if self._X_centered is None:
+        if self._centered is None:
             X = self.X()
-            self._X_mean = X.mean(axis=0, keepdims=True)
-            self._X_centered = X - self._X_mean
-            LOGGER.info(f"DenoiserContext: Centered X, {self._X_centered.shape=}")
+            mean = X.mean(axis=0, keepdims=True) if not sp.issparse(X) else np.asarray(X.mean(axis=0))
+            self._centered = CenteredMatrix(X=X, mean=np.atleast_2d(mean))
+            LOGGER.info(f"DenoiserContext: Centered, X shape={X.shape}")
+
+    def centered(self) -> CenteredMatrix:
+        """The CenteredMatrix wrapping X and its mean."""
+        self._init_centering()
+        assert self._centered is not None
+        return self._centered
 
     def X_centered(self) -> NDArray:
-        """The centered full embeddings matrix (X - X.mean())."""
-        self._init_centering()
-        assert self._X_centered is not None
-        return self._X_centered
-    
+        """The dense centered matrix. Only safe when d is small."""
+        return self.centered().X_centered_dense()
+
     def X_mean(self) -> NDArray:
-        """The global mean of the full embeddings matrix."""
-        self._init_centering()
-        assert self._X_mean is not None
-        return self._X_mean
+        """The global mean of X."""
+        return self.centered().mean
 
     @abc.abstractmethod
     def A(self) -> sp.csr_matrix:
@@ -127,12 +163,10 @@ class DenoiserContext(abc.ABC):
     
     def S_T(self) -> NDArray:
         """The total scatter matrix (covariance matrix of X)."""
-        self._init_centering()
         return scatter(self.X_centered(), centered=True)
     
     def S_L(self) -> NDArray:
         """The graph Laplacian scatter matrix X_c^T L X_c."""
-        self._init_centering()
         return adj(self.X_centered()) @ self.L() @ self.X_centered()
     
     def S_B(self) -> NDArray:
@@ -142,7 +176,6 @@ class DenoiserContext(abc.ABC):
     
     def S_B_multi(self, subset_indices: list[int]) -> NDArray:
         """The between-class scatter matrix for multiple subsets."""
-        self._init_centering()
         if len(subset_indices) < 2:
             d = self.X().shape[1]
             return np.zeros((d, d))
@@ -172,7 +205,6 @@ class DenoiserContext(abc.ABC):
     
     def S_subset(self, subset_index: int) -> NDArray:
         """The scatter matrix for a specific subset, relative to the global mean."""
-        self._init_centering()
         X_n_centered = self.X_n(subset_index) - self.X_mean()
         return scatter(X_n_centered, centered=True)
 
