@@ -1,5 +1,5 @@
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import enum
 from functools import lru_cache
 import hashlib
@@ -17,7 +17,7 @@ import numpy as np
 from numpy.typing import NDArray
 import pyalex
 import tqdm
-from bookgap.embedder import Embedder
+from bookgap.embedder import BaseEmbedder, Embedder, SentenceTransformerEmbedder
 from bookgap.index import IndexInfo, build_index
 import scipy.sparse as sp
 from bookgap.util import (
@@ -39,6 +39,7 @@ from bookgap.dendrogram import DendrogramResult, get_cloud_dendrogram
 from bookgap.openalex_ingest import (
     _resolve_filter_scopes,
     embed_works,
+    fetch_works,
 )
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
@@ -53,16 +54,48 @@ class Cloud:
     normalize_embeddings: bool
     denoiser: str
     drop_k: int
-    embedder_model: Embedder.ModelName
+    embedder: Any  # An embedder config dataclass (SentenceTransformerEmbedderConfig or TfGepEmbedderConfig)
 
     def __post_init__(self):
+        from bookgap.configs.embedder.embedder_config import (
+            SentenceTransformerEmbedderConfig,
+            TfGepEmbedderConfig,
+        )
         assert self.drop_k >= 0
         # Validate denoiser is a valid WorkDenoiser name
         valid_denoisers = [d.name for d in WorkDenoisers]
         if self.denoiser not in valid_denoisers:
             raise ValueError(f"denoiser must be one of {valid_denoisers}, got '{self.denoiser}'")
-        if not isinstance(self.embedder_model, Embedder.ModelName):
-            raise TypeError("embedder_model must be an instance of Embedder.ModelName")
+        # Normalize embedder to a config dataclass for hashability/caching.
+        # Accept: legacy Embedder.ModelName enum, config dataclass, or
+        # Hydra-instantiated embedder instance.
+        embedder = self.embedder
+        if isinstance(embedder, Embedder.ModelName):
+            embedder = SentenceTransformerEmbedderConfig(model_name=embedder.value)
+        elif isinstance(embedder, SentenceTransformerEmbedder):
+            embedder = SentenceTransformerEmbedderConfig(model_name=embedder.model_name)
+        else:
+            try:
+                from bookgap.tf_gep_embedder import TfGepEmbedder
+                if isinstance(embedder, TfGepEmbedder):
+                    embedder = TfGepEmbedderConfig(
+                        n_components=embedder._n_components,
+                        gep_type=embedder._gep_type,
+                        ridge_fraction=embedder._ridge_fraction,
+                        min_df=embedder._min_df,
+                        max_df=embedder._max_df,
+                        add_self_loops=embedder._add_self_loops,
+                        normalize_adjacency=embedder._normalize_adjacency,
+                    )
+            except ImportError:
+                pass
+        if embedder is not self.embedder:
+            object.__setattr__(self, "embedder", embedder)
+        if not isinstance(self.embedder, (SentenceTransformerEmbedderConfig, TfGepEmbedderConfig)):
+            raise TypeError(
+                f"embedder must be a SentenceTransformerEmbedderConfig or TfGepEmbedderConfig, "
+                f"got {type(self.embedder).__name__}"
+            )
 
     def works(self) -> List[Dict[str, Any]]:
         return get_cloud_works(self)
@@ -111,11 +144,11 @@ class Cloud:
     def name(self) -> str:
         return f"{self.filter_pair.merged_name()}"
 
-def _works_store_path(filter: Filter, max_works: Optional[int], embedder_model: Embedder.ModelName) -> tuple[Path, str]:
+def _works_store_path(filter: Filter, max_works: Optional[int], embedder_cfg: Any) -> tuple[Path, str]:
     payload = {
         "filter": str(filter),
         "max_works": max_works,
-        "embedder_model": embedder_model.value,
+        "embedder": asdict(embedder_cfg),
     }
     fingerprint = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -129,7 +162,7 @@ def _works_store_path(filter: Filter, max_works: Optional[int], embedder_model: 
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     embeddings = store.embeddings()
 
     retained_idxs = deduplicate_works_semantic(cloud, store, embeddings)
@@ -145,7 +178,7 @@ def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
 @lru_cache(maxsize=1)
 @TIMER.time()
 def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return store.to_dicts(indices=retained_idxs.tolist())
 
@@ -153,7 +186,7 @@ def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_ids(cloud: Cloud) -> List[str]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return store.to_list("id", indices=retained_idxs.tolist())
 
@@ -161,7 +194,7 @@ def get_cloud_work_ids(cloud: Cloud) -> List[str]:
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_references(cloud: Cloud) -> List[List[str]]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return store.to_list("referenced_works", indices=retained_idxs.tolist())
 
@@ -182,7 +215,7 @@ def get_cloud_citation_graph(cloud: Cloud, normalize: bool) -> sp.csr_matrix:
 @MEMORY.cache
 def get_cloud_work_titles(cloud: Cloud) -> List[str]:
     """Get display names/titles for all works in the cloud."""
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return store.to_list("display_name", indices=retained_idxs.tolist())
 
@@ -194,7 +227,7 @@ def get_cloud_work_abstracts(cloud: Cloud) -> List[str]:
     
     The abstract is already resolved from inverted index format during load_works.
     """
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return store.to_list("abstract", indices=retained_idxs.tolist())
 
@@ -203,7 +236,7 @@ def get_cloud_work_abstracts(cloud: Cloud) -> List[str]:
 @MEMORY.cache
 def get_cloud_work_publication_dates(cloud: Cloud) -> List[str]:
     """Get publication dates for all works in the cloud."""
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return store.to_list("publication_date", indices=retained_idxs.tolist())
 
@@ -220,7 +253,7 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_embeddings(cloud: Cloud):
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
     return denoise(cloud, store.embeddings(indices=retained_idxs.tolist()))
 
@@ -232,7 +265,7 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
     denoiser_enum = WorkDenoisers[cloud.denoiser]
     denoiser_impl = denoiser_enum.value
 
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model)
+    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
     retained_idxs = get_cloud_retained_idxs(cloud)
 
     retained_works = store.to_dicts(indices=retained_idxs.tolist())
@@ -243,11 +276,14 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
 
 @lru_cache(maxsize=1)
 @TIMER.time()
-def load_works(filter: Filter, max_works: Optional[int], embedder_model: Embedder.ModelName) -> WorksStore:
-    if max_works is not None:
-        raise ValueError("max_works is not supported with per-scope embedding cache; pass None")
+def load_works(filter: Filter, max_works: Optional[int], embedder_cfg: Any) -> WorksStore:
+    """Load (or build) a WorksStore for *filter*, embedding via *embedder_cfg*.
 
-    store_path, fingerprint = _works_store_path(filter, max_works, embedder_model)
+    *embedder_cfg* is a config dataclass -- either
+    ``SentenceTransformerEmbedderConfig`` (pretrained, per-scope batch cache)
+    or ``TfGepEmbedderConfig`` (corpus-fitted, needs all works first).
+    """
+    store_path, fingerprint = _works_store_path(filter, max_works, embedder_cfg)
 
     if store_path.exists():
         try:
@@ -264,20 +300,17 @@ def load_works(filter: Filter, max_works: Optional[int], embedder_model: Embedde
     if filter.work_types is None:
         raise ValueError("filter.work_types must be provided")
 
-    works: list[dict[str, Any]] = []
-    emb_chunks: list[NDArray] = []
-
-    with tqdm.tqdm(_resolve_filter_scopes(filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
-        for scope in scope_bar:
-            scope_bar.set_postfix_str(str(scope))
-            scope_works, scope_embeddings = embed_works(scope, embedder_model)
-            works.extend(scope_works)
-            emb_chunks.append(scope_embeddings)
-
-    if emb_chunks:
-        undeduped_embeddings = np.concatenate(emb_chunks, axis=0)
+    from bookgap.configs.embedder.embedder_config import (
+        SentenceTransformerEmbedderConfig,
+        TfGepEmbedderConfig,
+    )
+    # -- Branch on embedder type --
+    if isinstance(embedder_cfg, SentenceTransformerEmbedderConfig):
+        works, undeduped_embeddings = _load_works_sentence_transformer(filter, max_works, embedder_cfg)
+    elif isinstance(embedder_cfg, TfGepEmbedderConfig):
+        works, undeduped_embeddings = _load_works_tf_gep(filter, embedder_cfg)
     else:
-        undeduped_embeddings = np.empty((0, Embedder(model_name=embedder_model).embedding_dimension()))
+        raise TypeError(f"Unsupported embedder config type: {type(embedder_cfg).__name__}")
 
     # Drop works without a publication date to ensure sortable ordering
     valid_idxs = [i for i, work in enumerate(works) if work.get("publication_date")]
@@ -313,6 +346,80 @@ def load_works(filter: Filter, max_works: Optional[int], embedder_model: Embedde
     LOGGER.info(f"Wrote works store to {store_path}")
     return store
 
+
+def _load_works_sentence_transformer(
+    filter: Filter,
+    max_works: Optional[int],
+    embedder_cfg: Any,
+) -> tuple[list[dict[str, Any]], NDArray]:
+    """Sentence-transformer path: per-scope batch caching via embed_works."""
+    if max_works is not None:
+        raise ValueError("max_works is not supported with per-scope embedding cache; pass None")
+
+    model_name = Embedder.ModelName(embedder_cfg.model_name)
+
+    works: list[dict[str, Any]] = []
+    emb_chunks: list[NDArray] = []
+
+    with tqdm.tqdm(_resolve_filter_scopes(filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
+        for scope in scope_bar:
+            scope_bar.set_postfix_str(str(scope))
+            scope_works, scope_embeddings = embed_works(scope, model_name)
+            works.extend(scope_works)
+            emb_chunks.append(scope_embeddings)
+
+    if emb_chunks:
+        undeduped_embeddings = np.concatenate(emb_chunks, axis=0)
+    else:
+        undeduped_embeddings = np.empty((0, Embedder(model_name=model_name).embedding_dimension()))
+
+    return works, undeduped_embeddings
+
+
+def _load_works_tf_gep(
+    filter: Filter,
+    embedder_cfg: Any,
+) -> tuple[list[dict[str, Any]], NDArray]:
+    """TfGepEmbedder path: collect all works, build graph, fit, transform."""
+    from bookgap.tf_gep_embedder import TfGepEmbedder
+
+    works: list[dict[str, Any]] = []
+
+    with tqdm.tqdm(_resolve_filter_scopes(filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
+        for scope in scope_bar:
+            scope_bar.set_postfix_str(str(scope))
+            scope_works = fetch_works(scope)
+            works.extend(scope_works)
+
+    if not works:
+        return works, np.empty((0, embedder_cfg.n_components), dtype=np.float32)
+
+    # Build citation graph
+    work_ids = [w["id"] for w in works]
+    work_refs = [w.get("referenced_works", []) for w in works]
+    citation_graph, _ = build_citation_adjacency_from_ids(
+        work_ids, work_refs,
+        add_self_loops=embedder_cfg.add_self_loops,
+        normalize=embedder_cfg.normalize_adjacency,
+    )
+
+    # Instantiate, fit, and transform
+    embedder = TfGepEmbedder(
+        n_components=embedder_cfg.n_components,
+        gep_type=embedder_cfg.gep_type,
+        ridge_fraction=embedder_cfg.ridge_fraction,
+        min_df=embedder_cfg.min_df,
+        max_df=embedder_cfg.max_df,
+        add_self_loops=embedder_cfg.add_self_loops,
+        normalize_adjacency=embedder_cfg.normalize_adjacency,
+    )
+    embedder.fit(works, citation_graph=citation_graph)
+
+    title_abstract_pairs = [(w["display_name"], w["abstract"]) for w in works]
+    undeduped_embeddings = embedder.transform(title_abstract_pairs)
+
+    return works, undeduped_embeddings
+
 @TIMER.time(formatters=dict(embeddings=lambda embeddings: f"<{embeddings.shape}>"))
 @MEMORY.cache(ignore=["embeddings"]) # embeddings are ignored by the cache key because hashing is too slow. Use embeddings_key to disambiguate.
 def deduplicate_works_semantic_(deduplicator: Optional[Deduplicator], index_info: IndexInfo, embeddings: NDArray, embeddings_key: tuple) -> NDArray[np.uint64]:
@@ -326,7 +433,7 @@ def deduplicate_works_semantic(cloud: Cloud, store: WorksStore, embeddings):
         cloud.deduplicator,
         cloud.index_info,
         embeddings,
-        embeddings_key=(cloud.filter_pair.pre, cloud.max_works, cloud.embedder_model),
+        embeddings_key=(cloud.filter_pair.pre, cloud.max_works, cloud.embedder),
     )
 
     artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)

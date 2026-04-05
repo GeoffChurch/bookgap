@@ -41,7 +41,7 @@ def _dendrogram_cache_fingerprint(cloud: Any, linkage_method: str) -> str:
             "normalize_embeddings": cloud.normalize_embeddings,
             "denoiser": cloud.denoiser,
             "drop_k": cloud.drop_k,
-            "embedder_model": cloud.embedder_model.value,
+            "embedder": str(cloud.embedder),
         },
         "linkage_method": linkage_method,
     }

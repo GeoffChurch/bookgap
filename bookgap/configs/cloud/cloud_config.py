@@ -1,11 +1,11 @@
 """Cloud configuration structure for Hydra composition."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
-from bookgap.cloud import Embedder
 from bookgap.cloud_denoiser import WorkDenoisers
 from bookgap.configs.data.data_config import SqDistDeduplicatorConfig
+from bookgap.configs.embedder.embedder_config import SentenceTransformerEmbedderConfig
 from bookgap.configs.index.index_config import HNSWConfig
 from bookgap.configs.util.filter_config import FilterPairConfig
 
@@ -24,7 +24,7 @@ class CloudConfig:
     index_info: HNSWConfig = field(default_factory=HNSWConfig)
     denoiser: str = WorkDenoisers.NONE.name
     drop_k: int = 0
-    embedder_model: Embedder.ModelName = Embedder.ModelName.GIST_SMALL
+    embedder: Any = field(default_factory=SentenceTransformerEmbedderConfig)
     max_works: Optional[int] = None
     deduplicator: Optional[SqDistDeduplicatorConfig] = field(default_factory=SqDistDeduplicatorConfig)
     normalize_embeddings: bool = True

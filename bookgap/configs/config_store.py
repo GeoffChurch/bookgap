@@ -16,10 +16,11 @@ from .output.output_config import OutputConfig
 from .output.export_formats import ExportFormat
 from .index.index_config import HNSWConfig
 from .cloud.cloud_config import CloudConfig
+from .embedder.embedder_config import SentenceTransformerEmbedderConfig
 
 # Import required enums and types
 from bookgap.types import CellType
-from bookgap.cloud import WorkDenoisers, Embedder
+from bookgap.cloud import WorkDenoisers
 from bookgap.util import SubField, WorkType
 from .util.filter_config import FilterConfig, FilterPairConfig
 from bookgap.llm.protocols import OpenAIModel
