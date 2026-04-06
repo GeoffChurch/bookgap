@@ -261,8 +261,25 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
     empty_page_retries = 0
     max_empty_page_retries = 10
     while cursor is not None:
-        page_iter = get_query(scope.filter()).paginate(cursor=cursor, per_page=200, n_max=1) # type: ignore
-        page = next(iter(page_iter), None)
+        # Fetch one page with retry on rate-limit (429) errors
+        backoff = 2.0
+        max_retries = 5
+        page = None
+        for attempt in range(max_retries):
+            try:
+                RATE_LIMITER.wait()
+                page_iter = get_query(scope.filter()).paginate(cursor=cursor, per_page=200, n_max=1) # type: ignore
+                page = next(iter(page_iter), None)
+                break
+            except Exception as e:
+                if "429" in str(e) or "too many" in str(e).lower():
+                    LOGGER.warning(f"Rate limited on {scope} (attempt {attempt+1}/{max_retries}), backing off {backoff}s")
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    raise
+        else:
+            raise RuntimeError(f"Rate limit exceeded for {scope} after {max_retries} retries")
         if page is None:
             empty_page_retries += 1
             LOGGER.warning(
