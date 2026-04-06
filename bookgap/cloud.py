@@ -1,16 +1,13 @@
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-import enum
 from functools import lru_cache
 import hashlib
 import heapq
-import itertools
 import json
 import os
 from pathlib import Path
 from bookgap.cloud_denoiser import ProjectiveDenoiserProjection, WorkDenoisers
-import re
 from typing import Any, Dict, List, Optional, TypeVar
 import faiss
 import numpy as np
@@ -615,58 +612,6 @@ def _post_filter_mask(
         }
         mask.append(post_filter.check_work(work))
     return np.array(mask, dtype=bool)
-
-class RegexFilter:
-    def __init__(self, regex: str, flags: int = re.IGNORECASE):
-        self.regex = re.compile(regex, flags)
-    def __call__(self, work: dict[str, Any]) -> bool:
-        return self.regex.search(f"{work['display_name']} {work['abstract']}") is not None
-    def __repr__(self):
-        return f"Contains {self.regex}"
-
-class MissingFieldFilter:
-    def __init__(self, field: str):
-        self.field = field
-    def __call__(self, work: dict[str, Any]) -> bool:
-        return work.get(self.field) is None
-    def __repr__(self):
-        return f"Missing {self.field}"
-
-class ShortFieldFilter:
-    def __init__(self, field: str, min_length: int):
-        self.field = field
-        self.min_length = min_length
-    def __call__(self, work: dict[str, Any]) -> bool:
-        field = work.get(self.field)
-        return field is not None and len(field) < self.min_length
-    def __repr__(self):
-        return f"len({self.field}) < {self.min_length}"
-
-class WorkFilter(enum.Enum):
-    BINDER_NAME_CANCEL_CREATE_EXPORT      = RegexFilter(r"BinderNameCancelCreateExport")
-    NO_ABSTRACT_AVAILABLE                 = RegexFilter(r"No abstract available")
-    ABSTRACT_NOT_AVAILABLE                = RegexFilter(r"An abstract is not available")
-    SEARCH_FOR_OTHER_WORKS_BY_THIS_AUTHOR = RegexFilter(r"Search for other works by this author")
-    RUSSIAN_TEXT_IGNORED                  = RegexFilter(r"Russian Text Ignored")
-    MARITAL_ARMS                          = RegexFilter(r"Judging from repetitious appearances of her marital arms")
-    NO_DISPLAY_NAME                       = MissingFieldFilter("display_name")
-    NO_ABSTRACT                           = MissingFieldFilter("abstract")
-    SHORT_DISPLAY_NAME                    = ShortFieldFilter("display_name", min_length=4)
-    SHORT_ABSTRACT                        = ShortFieldFilter("abstract", min_length=10)
-    # NULL_REFERENCED_WORKS                 = MissingFieldFilter("referenced_works")
-    # ZERO_REFERENCED_WORKS                 = ShortFieldFilter("referenced_works", min_length=1)
-    
-    def __call__(self, work: dict[str, Any]) -> bool:
-        return self.value(work)
-
-    def __str__(self):
-        return repr(self.value)
-
-def batched(iterable, n): # TODO use itertools.batched when available
-    # batched('ABCDEFG', 3) → ABC DEF G
-    iterator = iter(iterable) # If already an iterator, `iterator is iterable == True`
-    while batch := tuple(itertools.islice(iterator, n)):
-        yield batch
 
 T = TypeVar('T', bound=np.generic)
 

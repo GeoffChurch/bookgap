@@ -4,6 +4,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, TypeVar
 
@@ -581,6 +582,7 @@ def fetch_works(scope: ResolvedScope) -> ds.Dataset:
     return ds.dataset(parquet_path, format="parquet")
 
 
+@lru_cache(maxsize=4)
 def corpus_dataset(work_filter: Filter) -> ds.Dataset:
     """Lazy Dataset spanning all scopes for a filter.
 
