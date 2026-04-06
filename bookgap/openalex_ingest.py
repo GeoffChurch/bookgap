@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, TypeVar
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 import pyalex
 import re
 import tqdm
@@ -486,6 +489,88 @@ def batched(iterable, n): # TODO use itertools.batched when available
         yield batch
 
 
+def _scope_parquet_path(scope: ResolvedScope) -> Path:
+    """Return the path for a scope's per-scope Parquet file."""
+    return CACHE_DIR / "works_parquet" / scope.field / scope.subfield / scope.topic / f"{scope.work_type}.parquet"
+
+
+def _safe_date_array(values: list) -> pa.Array:
+    """Coerce date values to date32, tolerant of strings/None."""
+    from datetime import datetime, date
+    coerced = []
+    for v in values:
+        if v is None:
+            coerced.append(None)
+        elif isinstance(v, date):
+            coerced.append(v)
+        elif isinstance(v, datetime):
+            coerced.append(v.date())
+        else:
+            try:
+                coerced.append(datetime.fromisoformat(str(v).replace("Z", "+00:00")).date())
+            except Exception:
+                coerced.append(None)
+    return pa.array(coerced, type=pa.date32())
+
+
+def _write_scope_parquet(path: Path, works: list[dict[str, Any]]) -> None:
+    """Write a list of work dicts to a single Parquet file."""
+    schema = pa.schema([
+        ("id", pa.string()),
+        ("display_name", pa.string()),
+        ("abstract", pa.string()),
+        ("type", pa.string()),
+        ("publication_date", pa.date32()),
+        ("created_date", pa.date32()),
+        ("updated_date", pa.date32()),
+        ("language", pa.string()),
+        ("topic_label", pa.string()),
+        ("primary_topic_id", pa.string()),
+        ("primary_subfield_id", pa.string()),
+        ("referenced_works", pa.list_(pa.string())),
+    ])
+
+    if not works:
+        table = pa.table({name: pa.array([], type=field.type) for name, field in zip(schema.names, schema)})
+    else:
+        primary_topic_ids = []
+        primary_subfield_ids = []
+        for w in works:
+            pt = w.get("primary_topic")
+            if isinstance(pt, dict):
+                primary_topic_ids.append(pt.get("id"))
+                sf = pt.get("subfield")
+                primary_subfield_ids.append(sf.get("id") if isinstance(sf, dict) else None)
+            else:
+                primary_topic_ids.append(None)
+                primary_subfield_ids.append(None)
+
+        refs = []
+        for w in works:
+            r = w.get("referenced_works")
+            refs.append([str(x) for x in r] if isinstance(r, list) else [])
+
+        table = pa.table({
+            "id": pa.array([w.get("id") for w in works], type=pa.string()),
+            "display_name": pa.array([w.get("display_name", "") for w in works], type=pa.string()),
+            "abstract": pa.array([w.get("abstract", "") for w in works], type=pa.string()),
+            "type": pa.array([w.get("type", "UNKNOWN") for w in works], type=pa.string()),
+            "publication_date": _safe_date_array([w.get("publication_date") for w in works]),
+            "created_date": _safe_date_array([w.get("created_date") for w in works]),
+            "updated_date": _safe_date_array([w.get("updated_date") for w in works]),
+            "language": pa.array([w.get("language") for w in works], type=pa.string()),
+            "topic_label": pa.array([w.get("topic") for w in works], type=pa.string()),
+            "primary_topic_id": pa.array(primary_topic_ids, type=pa.string()),
+            "primary_subfield_id": pa.array(primary_subfield_ids, type=pa.string()),
+            "referenced_works": pa.array(refs, type=pa.list_(pa.string())),
+        })
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".parquet.tmp")
+    pq.write_table(table, tmp_path, compression="zstd")
+    os.replace(tmp_path, path)
+
+
 @TIMER.time()
 @MEMORY.cache
 def fetch_works(scope: ResolvedScope) -> list[dict[str, Any]]:
@@ -493,22 +578,31 @@ def fetch_works(scope: ResolvedScope) -> list[dict[str, Any]]:
     return deduplicate_works_syntactic(scope)
 
 
+def _is_fetch_works_cached(scope: ResolvedScope) -> bool:
+    """Check if fetch_works result is already joblib-cached without loading it."""
+    # Access the internal store_backend to check for a cache hit
+    call_id = fetch_works._get_output_identifiers(scope)  # type: ignore[attr-defined]
+    store = fetch_works.store_backend  # type: ignore[attr-defined]
+    return store.contains_item(call_id)
+
+
 def fetch_all_scopes(work_filter: Filter) -> None:
     """Ensure all scopes for a filter are fetched and cached.
 
     Iterates scopes with rate limiting, calling fetch_works on each.
-    Results are joblib-cached per scope — use fetch_works(scope) later
-    to retrieve them without memory accumulation.
+    Skips already-cached scopes without deserializing them, so memory
+    usage stays constant regardless of how many scopes are cached.
     """
     scopes = _resolve_filter_scopes(work_filter)
-    total_works = 0
+    n_cached = 0
     for i, scope in enumerate(tqdm.tqdm(scopes, desc="Fetching scopes")):
+        if _is_fetch_works_cached(scope):
+            n_cached += 1
+            continue
         LOGGER.info(f"Fetching scope {i + 1}/{len(scopes)}: {scope}")
         RATE_LIMITER.wait()
-        n = len(fetch_works(scope))
-        total_works += n
-        LOGGER.info(f"  Got {n} works ({total_works} total)")
-    LOGGER.info(f"All {len(scopes)} scopes cached ({total_works} works)")
+        fetch_works(scope)
+    LOGGER.info(f"All {len(scopes)} scopes cached ({n_cached} were already cached)")
 
 
 def embed_works(
