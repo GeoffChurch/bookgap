@@ -1,5 +1,6 @@
 from collections import defaultdict
 from dataclasses import asdict, dataclass
+from datetime import date, datetime
 import enum
 from functools import lru_cache
 import hashlib
@@ -7,7 +8,6 @@ import heapq
 import itertools
 import json
 import os
-import shutil
 from pathlib import Path
 from bookgap.cloud_denoiser import ProjectiveDenoiserProjection, WorkDenoisers
 import re
@@ -16,6 +16,7 @@ import faiss
 import numpy as np
 from numpy.typing import NDArray
 import pyalex
+import pyarrow.dataset as ds
 import tqdm
 from bookgap.embedder import BaseEmbedder, Embedder, SentenceTransformerEmbedder
 from bookgap.index import IndexInfo, build_index
@@ -30,7 +31,6 @@ from bookgap.util import (
     LOGGER,
     build_citation_adjacency_from_ids,
 )
-from bookgap.work_store import WorksStore
 from bookgap.deduplicators import Deduplicator
 import scipy.linalg
 import pyarrow as pa
@@ -40,8 +40,8 @@ from bookgap.dendrogram import DendrogramResult, get_cloud_dendrogram
 
 from bookgap.openalex_ingest import (
     _resolve_filter_scopes,
+    corpus_dataset,
     embed_works,
-    fetch_works,
 )
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
@@ -193,59 +193,255 @@ class Cloud:
     def name(self) -> str:
         return f"{self.filter_pair.merged_name()}"
 
-def _works_store_path(filter: Filter, max_works: Optional[int], embedder_cfg: Any) -> tuple[Path, str]:
-    payload = {
-        "filter": str(filter),
-        "max_works": max_works,
-        "embedder": asdict(embedder_cfg),
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    ).hexdigest()
-    store_dir = CACHE_DIR / "arrow" / "works" / fingerprint
-    # Return directory path for partitioned dataset (not .parquet file)
-    return store_dir, fingerprint
+def _corpus_fingerprint(filter: Filter, max_works: Optional[int]) -> str:
+    """Stable fingerprint for a corpus defined by filter + max_works."""
+    payload = {"filter": str(filter), "max_works": max_works}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+
+def _sorted_corpus_idxs(corpus: ds.Dataset, max_works: Optional[int]) -> NDArray[np.uint64]:
+    """Return corpus-row indices sorted by publication_date, dropping nulls.
+
+    If *max_works* is not None, only the earliest *max_works* are returned.
+    """
+    dates = corpus.to_table(columns=["publication_date"]).column("publication_date").to_pylist()
+    valid_idxs = [i for i, d in enumerate(dates) if d is not None]
+    valid_dates = [dates[i] for i in valid_idxs]
+    if max_works is None:
+        order = sorted(range(len(valid_idxs)), key=lambda j: valid_dates[j])
+    else:
+        order = heapq.nsmallest(max_works, range(len(valid_idxs)), key=lambda j: valid_dates[j])
+    return np.array([valid_idxs[j] for j in order], dtype=np.uint64)
 
 
 @lru_cache(maxsize=1)
 @TIMER.time()
-@MEMORY.cache
-def get_cloud_retained_idxs(cloud: Cloud) -> NDArray[np.uint64]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    embeddings = store.embeddings()
+def ensure_cloud_data(cloud: Cloud) -> tuple[str, NDArray[np.uint64], NDArray[np.uint64]]:
+    """Ensure corpus is fetched, embeddings computed, and retained indices ready.
 
-    retained_idxs = deduplicate_works_semantic(cloud, store, embeddings)
-    LOGGER.info(f"Retained {len(retained_idxs)} works after deduplication")
+    Returns ``(corpus_fingerprint, sorted_idxs, retained_positions)`` where
+    *sorted_idxs* are physical corpus-row indices for the date-sorted subset,
+    and *retained_positions* are positions **into that subset** (and into the
+    embeddings file) after post-filtering and semantic dedup.
+    """
+    corpus_fp = _corpus_fingerprint(cloud.filter_pair.pre, cloud.max_works)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
 
-    mask = _post_filter_mask(store, cloud.filter_pair.post, retained_idxs)
-    retained_idxs = retained_idxs[mask]
-    LOGGER.info(f"Retained {len(retained_idxs)} works after post-filtering")
+    # 1. Date-sort + max_works truncation -> sorted_idxs (corpus row positions)
+    sorted_idxs = _sorted_corpus_idxs(corpus, cloud.max_works)
+    LOGGER.info(f"Cloud {cloud.name()} -- {len(sorted_idxs)} works after date-sort/truncation")
 
-    return retained_idxs
+    # 2. Compute and store embeddings for the sorted subset
+    emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
+    if not emb_path.exists():
+        _compute_and_store_embeddings(cloud, corpus, sorted_idxs, emb_path)
+
+    # 3. Semantic dedup (operates on the full sorted subset embeddings)
+    raw_embeddings = read_embeddings_store(emb_path)
+    dedup_positions = _deduplicate_semantic(cloud, corpus, raw_embeddings)
+    LOGGER.info(f"Retained {len(dedup_positions)} works after deduplication")
+
+    # 4. Post-filter (operates on deduped positions within sorted subset)
+    post_mask = _post_filter_mask(corpus, cloud.filter_pair.post, sorted_idxs[dedup_positions])
+    retained_positions = dedup_positions[post_mask]
+    LOGGER.info(f"Retained {len(retained_positions)} works after post-filtering")
+
+    return corpus_fp, sorted_idxs, retained_positions
+
+
+def _compute_and_store_embeddings(
+    cloud: Cloud,
+    corpus: ds.Dataset,
+    sorted_idxs: NDArray[np.uint64],
+    emb_path: Path,
+) -> None:
+    """Compute embeddings for the sorted subset and write to *emb_path*."""
+    from bookgap.configs.embedder.embedder_config import (
+        SentenceTransformerEmbedderConfig,
+        TfGepEmbedderConfig,
+    )
+
+    if isinstance(cloud.embedder, SentenceTransformerEmbedderConfig):
+        embeddings = _embed_sentence_transformer(cloud.filter_pair.pre, cloud.embedder, sorted_idxs)
+    elif isinstance(cloud.embedder, TfGepEmbedderConfig):
+        embeddings = _embed_tf_gep(corpus, cloud.embedder, sorted_idxs)
+    else:
+        raise TypeError(f"Unsupported embedder config type: {type(cloud.embedder).__name__}")
+
+    assert embeddings.shape[0] == len(sorted_idxs), (
+        f"Embeddings rows ({embeddings.shape[0]}) != sorted_idxs length ({len(sorted_idxs)})"
+    )
+    write_embeddings_store(emb_path, embeddings)
+    LOGGER.info(f"Wrote embeddings ({embeddings.shape}) to {emb_path}")
+
+
+def _embed_sentence_transformer(
+    work_filter: Filter,
+    embedder_cfg: Any,
+    sorted_idxs: NDArray[np.uint64],
+) -> NDArray[np.float32]:
+    """Sentence-transformer path: per-scope batch caching via embed_works.
+
+    Returns embeddings re-ordered to match *sorted_idxs*.
+    """
+    model_name = Embedder.ModelName(embedder_cfg.model_name)
+
+    # Collect per-scope works + embeddings in corpus-file order
+    all_works: list[dict[str, Any]] = []
+    emb_chunks: list[NDArray] = []
+
+    with tqdm.tqdm(_resolve_filter_scopes(work_filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
+        for scope in scope_bar:
+            scope_bar.set_postfix_str(str(scope))
+            scope_works, scope_embeddings = embed_works(scope, model_name)
+            all_works.extend(scope_works)
+            emb_chunks.append(scope_embeddings)
+
+    if emb_chunks:
+        all_embeddings = np.concatenate(emb_chunks, axis=0)
+    else:
+        all_embeddings = np.empty((0, Embedder(model_name=model_name).embedding_dimension()), dtype=np.float32)
+
+    # Select only the rows indicated by sorted_idxs
+    return all_embeddings[sorted_idxs]
+
+
+def _embed_tf_gep(
+    corpus: ds.Dataset,
+    embedder_cfg: Any,
+    sorted_idxs: NDArray[np.uint64],
+) -> NDArray[np.float32]:
+    """TfGepEmbedder path: read columns from corpus, fit, transform."""
+    from bookgap.tf_gep_embedder import TfGepEmbedder
+
+    # Read only the columns needed for TfGepEmbedder from the sorted subset
+    table = corpus.to_table(columns=["id", "display_name", "abstract", "referenced_works"])
+    ids = table.column("id").to_pylist()
+    display_names = table.column("display_name").to_pylist()
+    abstracts = table.column("abstract").to_pylist()
+    refs = table.column("referenced_works").to_pylist()
+
+    # Build work dicts for the sorted subset
+    works: list[dict[str, Any]] = []
+    for pos in sorted_idxs:
+        i = int(pos)
+        works.append({
+            "id": ids[i],
+            "display_name": display_names[i] or "",
+            "abstract": abstracts[i] or "",
+            "referenced_works": refs[i] or [],
+        })
+
+    if not works:
+        return np.empty((0, embedder_cfg.n_components), dtype=np.float32)
+
+    # Build citation graph
+    work_ids = [w["id"] for w in works]
+    work_refs = [w["referenced_works"] for w in works]
+    citation_graph, _ = build_citation_adjacency_from_ids(
+        work_ids, work_refs,
+        add_self_loops=embedder_cfg.add_self_loops,
+        normalize=embedder_cfg.normalize_adjacency,
+    )
+
+    embedder = TfGepEmbedder(
+        n_components=embedder_cfg.n_components,
+        gep_type=embedder_cfg.gep_type,
+        ridge_fraction=embedder_cfg.ridge_fraction,
+        min_df=embedder_cfg.min_df,
+        max_df=embedder_cfg.max_df,
+        add_self_loops=embedder_cfg.add_self_loops,
+        normalize_adjacency=embedder_cfg.normalize_adjacency,
+    )
+    embedder.fit(works, citation_graph=citation_graph)
+
+    title_abstract_pairs = [(w["display_name"], w["abstract"]) for w in works]
+    return embedder.transform(title_abstract_pairs)
+
+
+def _read_corpus_column(corpus: ds.Dataset, column: str, positions: NDArray[np.uint64]) -> List:
+    """Read a single column from the corpus at the given positions."""
+    all_values = corpus.to_table(columns=[column]).column(column).to_pylist()
+    return [all_values[int(i)] for i in positions]
+
+
+def _read_corpus_dicts(corpus: ds.Dataset, positions: NDArray[np.uint64]) -> List[Dict[str, Any]]:
+    """Read full work dicts from the corpus at the given positions."""
+    columns = [
+        "id", "display_name", "abstract", "type", "publication_date",
+        "created_date", "updated_date", "language", "topic_label",
+        "primary_topic_id", "primary_subfield_id", "referenced_works",
+    ]
+    table = corpus.to_table(columns=columns)
+    ids = table.column("id").to_pylist()
+    display_names = table.column("display_name").to_pylist()
+    abstracts = table.column("abstract").to_pylist()
+    types = table.column("type").to_pylist()
+    pub_dates = table.column("publication_date").to_pylist()
+    created_dates = table.column("created_date").to_pylist()
+    updated_dates = table.column("updated_date").to_pylist()
+    languages = table.column("language").to_pylist()
+    topic_labels = table.column("topic_label").to_pylist()
+    primary_topic_ids = table.column("primary_topic_id").to_pylist()
+    primary_subfield_ids = table.column("primary_subfield_id").to_pylist()
+    references = table.column("referenced_works").to_pylist()
+
+    works: List[Dict[str, Any]] = []
+    for pos in positions:
+        i = int(pos)
+        pub = pub_dates[i]
+        if isinstance(pub, (date, datetime)):
+            pub = pub.isoformat()
+        created = created_dates[i]
+        if isinstance(created, (date, datetime)):
+            created = created.isoformat()
+        updated = updated_dates[i]
+        if isinstance(updated, (date, datetime)):
+            updated = updated.isoformat()
+        works.append({
+            "id": ids[i],
+            "display_name": display_names[i] or "",
+            "abstract": abstracts[i] or "",
+            "type": types[i] or "UNKNOWN",
+            "publication_date": pub,
+            "created_date": created,
+            "updated_date": updated,
+            "language": languages[i],
+            "topic": topic_labels[i],
+            "primary_topic": {
+                "id": primary_topic_ids[i],
+                "subfield": {"id": primary_subfield_ids[i]},
+            },
+            "referenced_works": references[i] or [],
+        })
+    return works
 
 
 @lru_cache(maxsize=1)
 @TIMER.time()
 def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return store.to_dicts(indices=retained_idxs.tolist())
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    return _read_corpus_dicts(corpus, sorted_idxs[retained_positions])
 
 
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_ids(cloud: Cloud) -> List[str]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return store.to_list("id", indices=retained_idxs.tolist())
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    return _read_corpus_column(corpus, "id", sorted_idxs[retained_positions])
 
 
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_references(cloud: Cloud) -> List[List[str]]:
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return store.to_list("referenced_works", indices=retained_idxs.tolist())
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    refs = _read_corpus_column(corpus, "referenced_works", sorted_idxs[retained_positions])
+    return [r or [] for r in refs]
 
 
 @lru_cache(maxsize=1)
@@ -264,30 +460,28 @@ def get_cloud_citation_graph(cloud: Cloud, normalize: bool) -> sp.csr_matrix:
 @MEMORY.cache
 def get_cloud_work_titles(cloud: Cloud) -> List[str]:
     """Get display names/titles for all works in the cloud."""
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return store.to_list("display_name", indices=retained_idxs.tolist())
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    return _read_corpus_column(corpus, "display_name", sorted_idxs[retained_positions])
 
 
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_abstracts(cloud: Cloud) -> List[str]:
-    """Get abstracts for all works in the cloud.
-    
-    The abstract is already resolved from inverted index format during load_works.
-    """
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return store.to_list("abstract", indices=retained_idxs.tolist())
+    """Get abstracts for all works in the cloud."""
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    return _read_corpus_column(corpus, "abstract", sorted_idxs[retained_positions])
 
 
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_publication_dates(cloud: Cloud) -> List[str]:
     """Get publication dates for all works in the cloud."""
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return store.to_list("publication_date", indices=retained_idxs.tolist())
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    dates = _read_corpus_column(corpus, "publication_date", sorted_idxs[retained_positions])
+    return [d.isoformat() if isinstance(d, (date, datetime)) else d for d in dates]
 
 
 @lru_cache(maxsize=1)
@@ -302,9 +496,10 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_embeddings(cloud: Cloud):
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
-    return denoise(cloud, store.embeddings(indices=retained_idxs.tolist()))
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
+    all_embeddings = read_embeddings_store(emb_path)
+    return denoise(cloud, all_embeddings[retained_positions])
 
 
 @lru_cache(maxsize=1)
@@ -314,160 +509,15 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
     denoiser_enum = WorkDenoisers[cloud.denoiser]
     denoiser_impl = denoiser_enum.value
 
-    store = load_works(cloud.filter_pair.pre, cloud.max_works, cloud.embedder)
-    retained_idxs = get_cloud_retained_idxs(cloud)
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre)
+    emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
 
-    retained_works = store.to_dicts(indices=retained_idxs.tolist())
-    retained_embeddings = store.embeddings(indices=retained_idxs.tolist())
+    retained_works = _read_corpus_dicts(corpus, sorted_idxs[retained_positions])
+    all_embeddings = read_embeddings_store(emb_path)
+    retained_embeddings = all_embeddings[retained_positions]
 
     return denoiser_impl.compute_projection_artifact(cloud.drop_k, retained_works, retained_embeddings)
-
-
-@lru_cache(maxsize=1)
-@TIMER.time()
-def load_works(filter: Filter, max_works: Optional[int], embedder_cfg: Any) -> WorksStore:
-    """Load (or build) a WorksStore for *filter*, embedding via *embedder_cfg*.
-
-    *embedder_cfg* is a config dataclass -- either
-    ``SentenceTransformerEmbedderConfig`` (pretrained, per-scope batch cache)
-    or ``TfGepEmbedderConfig`` (corpus-fitted, needs all works first).
-    """
-    store_path, fingerprint = _works_store_path(filter, max_works, embedder_cfg)
-
-    if store_path.exists():
-        try:
-            store = WorksStore.load(store_path, expected_fingerprint=fingerprint)
-            if "type" not in store.schema.names:
-                LOGGER.warning(f"Cached works store at {store_path} missing 'type' column; rebuilding")
-                shutil.rmtree(store_path, ignore_errors=True)
-            else:
-                LOGGER.info(f"Reusing cached works store at {store_path}")
-                return store
-        except Exception as e:  # pragma: no cover - defensive
-            LOGGER.warning(f"Failed to load cached works store at {store_path}: {e}")
-
-    if filter.work_types is None:
-        raise ValueError("filter.work_types must be provided")
-
-    from bookgap.configs.embedder.embedder_config import (
-        SentenceTransformerEmbedderConfig,
-        TfGepEmbedderConfig,
-    )
-    # -- Branch on embedder type --
-    if isinstance(embedder_cfg, SentenceTransformerEmbedderConfig):
-        works, undeduped_embeddings = _load_works_sentence_transformer(filter, max_works, embedder_cfg)
-    elif isinstance(embedder_cfg, TfGepEmbedderConfig):
-        works, undeduped_embeddings = _load_works_tf_gep(filter, embedder_cfg)
-    else:
-        raise TypeError(f"Unsupported embedder config type: {type(embedder_cfg).__name__}")
-
-    # Drop works without a publication date to ensure sortable ordering
-    valid_idxs = [i for i, work in enumerate(works) if work.get("publication_date")]
-    if len(valid_idxs) != len(works):
-        dropped = len(works) - len(valid_idxs)
-        LOGGER.info(f"Dropped {dropped} works missing publication_date for {filter}")
-        works = [works[i] for i in valid_idxs]
-        undeduped_embeddings = undeduped_embeddings[valid_idxs]
-
-    if max_works is None:
-        argsort = np.argsort([work["publication_date"] for work in works])
-    else:
-        argsort = np.array(heapq.nsmallest(max_works, range(len(works)), key=lambda i: works[i]["publication_date"]))
-    works = [works[i] for i in argsort]
-    undeduped_embeddings = undeduped_embeddings[argsort]
-
-    LOGGER.info(f"Loaded {len(works)} works")
-    n, d = undeduped_embeddings.shape
-    assert n == len(works), f"Embeddings and works length mismatch: {n} != {len(works)}"
-
-    WHITESPACE_PAT = re.compile(r"\s")
-    for work in works:
-        work["display_name"] = WHITESPACE_PAT.sub(" ", work["display_name"])
-        work["abstract"] = WHITESPACE_PAT.sub(" ", work["abstract"])
-
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    store = WorksStore.write(
-        store_path,
-        fingerprint=fingerprint,
-        works=works,
-        embeddings=undeduped_embeddings,
-    )
-    LOGGER.info(f"Wrote works store to {store_path}")
-    return store
-
-
-def _load_works_sentence_transformer(
-    filter: Filter,
-    max_works: Optional[int],
-    embedder_cfg: Any,
-) -> tuple[list[dict[str, Any]], NDArray]:
-    """Sentence-transformer path: per-scope batch caching via embed_works."""
-    if max_works is not None:
-        raise ValueError("max_works is not supported with per-scope embedding cache; pass None")
-
-    model_name = Embedder.ModelName(embedder_cfg.model_name)
-
-    works: list[dict[str, Any]] = []
-    emb_chunks: list[NDArray] = []
-
-    with tqdm.tqdm(_resolve_filter_scopes(filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
-        for scope in scope_bar:
-            scope_bar.set_postfix_str(str(scope))
-            scope_works, scope_embeddings = embed_works(scope, model_name)
-            works.extend(scope_works)
-            emb_chunks.append(scope_embeddings)
-
-    if emb_chunks:
-        undeduped_embeddings = np.concatenate(emb_chunks, axis=0)
-    else:
-        undeduped_embeddings = np.empty((0, Embedder(model_name=model_name).embedding_dimension()))
-
-    return works, undeduped_embeddings
-
-
-def _load_works_tf_gep(
-    filter: Filter,
-    embedder_cfg: Any,
-) -> tuple[list[dict[str, Any]], NDArray]:
-    """TfGepEmbedder path: collect all works, build graph, fit, transform."""
-    from bookgap.tf_gep_embedder import TfGepEmbedder
-
-    works: list[dict[str, Any]] = []
-
-    with tqdm.tqdm(_resolve_filter_scopes(filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
-        for scope in scope_bar:
-            scope_bar.set_postfix_str(str(scope))
-            scope_works = fetch_works(scope).to_table().to_pylist()
-            works.extend(scope_works)
-
-    if not works:
-        return works, np.empty((0, embedder_cfg.n_components), dtype=np.float32)
-
-    # Build citation graph
-    work_ids = [w["id"] for w in works]
-    work_refs = [w.get("referenced_works", []) for w in works]
-    citation_graph, _ = build_citation_adjacency_from_ids(
-        work_ids, work_refs,
-        add_self_loops=embedder_cfg.add_self_loops,
-        normalize=embedder_cfg.normalize_adjacency,
-    )
-
-    # Instantiate, fit, and transform
-    embedder = TfGepEmbedder(
-        n_components=embedder_cfg.n_components,
-        gep_type=embedder_cfg.gep_type,
-        ridge_fraction=embedder_cfg.ridge_fraction,
-        min_df=embedder_cfg.min_df,
-        max_df=embedder_cfg.max_df,
-        add_self_loops=embedder_cfg.add_self_loops,
-        normalize_adjacency=embedder_cfg.normalize_adjacency,
-    )
-    embedder.fit(works, citation_graph=citation_graph)
-
-    title_abstract_pairs = [(w["display_name"], w["abstract"]) for w in works]
-    undeduped_embeddings = embedder.transform(title_abstract_pairs)
-
-    return works, undeduped_embeddings
 
 @TIMER.time(formatters=dict(embeddings=lambda embeddings: f"<{embeddings.shape}>"))
 @MEMORY.cache(ignore=["embeddings"]) # embeddings are ignored by the cache key because hashing is too slow. Use embeddings_key to disambiguate.
@@ -476,26 +526,44 @@ def deduplicate_works_semantic_(deduplicator: Optional[Deduplicator], index_info
         return np.arange(len(embeddings), dtype=np.uint64) # Retain all indices
     return deduplicator.deduplicate(embeddings, index_info)
 
-def deduplicate_works_semantic(cloud: Cloud, store: WorksStore, embeddings):
-    LOGGER.info(f"Cloud {cloud.name()} -- Applying deduplication to {len(embeddings)} embeddings with {cloud.deduplicator}")
-    retained_idxs = deduplicate_works_semantic_(
+def _deduplicate_semantic(
+    cloud: Cloud,
+    corpus: ds.Dataset,
+    embeddings: NDArray[np.float32],
+) -> NDArray[np.uint64]:
+    """Run semantic dedup and log stats.  Returns positions into the embeddings array."""
+    LOGGER.info(
+        f"Cloud {cloud.name()} -- Applying deduplication to {len(embeddings)} "
+        f"embeddings with {cloud.deduplicator}"
+    )
+    retained_positions = deduplicate_works_semantic_(
         cloud.deduplicator,
         cloud.index_info,
         embeddings,
         embeddings_key=(cloud.filter_pair.pre, cloud.max_works, cloud.embedder),
     )
 
+    # Log dedup stats by work type
     artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    work_types = store.to_list("type")
-    original_counts = defaultdict(int)
-    for wt in work_types:
-        original_counts[wt or "UNKNOWN"] += 1
-    new_counts = defaultdict(int)
-    for idx in retained_idxs:
-        wt = work_types[int(idx)] if int(idx) < len(work_types) else "UNKNOWN"
-        new_counts[wt or "UNKNOWN"] += 1
+    # Only read the "type" column we need for stats
+    all_types = corpus.to_table(columns=["type"]).column("type").to_pylist()
+    # sorted_idxs aren't directly available here; compute from ensure_cloud_data's
+    # cached sorted_idxs via _sorted_corpus_idxs.  But we need sorted_idxs to map
+    # positions back to corpus rows.  To avoid recomputation, we accept that
+    # the embeddings array is 1:1 with the sorted subset and the caller passes
+    # the corpus.  We reconstruct sorted_idxs here (cheap, only reads dates).
+    sorted_idxs = _sorted_corpus_idxs(corpus, cloud.max_works)
+
+    original_counts: dict[str, int] = defaultdict(int)
+    for idx in sorted_idxs:
+        wt = all_types[int(idx)] or "UNKNOWN"
+        original_counts[wt] += 1
+    new_counts: dict[str, int] = defaultdict(int)
+    for pos in retained_positions:
+        wt = all_types[int(sorted_idxs[int(pos)])] or "UNKNOWN"
+        new_counts[wt] += 1
 
     fname = f"deduplication_stats_{cloud.deduplicator}"
     if cloud.max_works is not None:
@@ -509,25 +577,32 @@ def deduplicate_works_semantic(cloud: Cloud, store: WorksStore, embeddings):
         f.write(f"Fraction of works retained: {total_new / total_original:.4f}\n")
         for work_type in sorted(original_counts.keys()):
             original_count = original_counts[work_type]
-            new_count = new_counts[work_type]
+            new_count = new_counts.get(work_type, 0)
             f.write(f"{work_type}: {original_count} -> {new_count} ({new_count / original_count:.4f})\n")
     with path.open("r") as f:
         LOGGER.info(f"Deduplication stats:\n{f.read()}")
-    return retained_idxs
+    return retained_positions
 
 
-def _post_filter_mask(store: WorksStore, post_filter: Filter, retained_idxs: NDArray[np.uint64]) -> NDArray[np.bool_]:
+def _post_filter_mask(
+    corpus: ds.Dataset,
+    post_filter: Filter,
+    corpus_row_idxs: NDArray[np.uint64],
+) -> NDArray[np.bool_]:
+    """Boolean mask over *corpus_row_idxs* where post_filter passes."""
     if not post_filter:
-        return np.ones(len(retained_idxs), dtype=bool)
-    types = store.to_list("type", indices=retained_idxs.tolist())
-    topic_ids = store.to_list("primary_topic_id", indices=retained_idxs.tolist())
-    subfield_ids = store.to_list("primary_subfield_id", indices=retained_idxs.tolist())
+        return np.ones(len(corpus_row_idxs), dtype=bool)
+    table = corpus.to_table(columns=["type", "primary_topic_id", "primary_subfield_id"])
+    types = table.column("type").to_pylist()
+    topic_ids = table.column("primary_topic_id").to_pylist()
+    subfield_ids = table.column("primary_subfield_id").to_pylist()
 
     mask = []
-    for work_type, topic_id, subfield_id in zip(types, topic_ids, subfield_ids):
+    for idx in corpus_row_idxs:
+        i = int(idx)
         work = {
-            "type": work_type,
-            "primary_topic": {"id": topic_id, "subfield": {"id": subfield_id}},
+            "type": types[i],
+            "primary_topic": {"id": topic_ids[i], "subfield": {"id": subfield_ids[i]}},
         }
         mask.append(post_filter.check_work(work))
     return np.array(mask, dtype=bool)
