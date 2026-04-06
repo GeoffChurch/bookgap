@@ -2,13 +2,13 @@
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(frozen=True)
 class SentenceTransformerEmbedderConfig:
     _target_: str = field(default="bookgap.embedder.SentenceTransformerEmbedder", init=False)
     model_name: str = "avsolatorio/GIST-small-Embedding-v0"
 
 
-@dataclass
+@dataclass(frozen=True)
 class TfGepEmbedderConfig:
     _target_: str = field(default="bookgap.tf_gep_embedder.TfGepEmbedder", init=False)
     n_components: int = 768

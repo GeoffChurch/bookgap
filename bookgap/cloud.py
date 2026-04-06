@@ -195,7 +195,7 @@ class Cloud:
 
 def _corpus_fingerprint(filter: Filter, max_works: Optional[int]) -> str:
     """Stable fingerprint for a corpus defined by filter + max_works."""
-    payload = {"filter": str(filter), "max_works": max_works}
+    payload = {"filter": asdict(filter), "max_works": max_works}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
@@ -210,9 +210,9 @@ def _sorted_corpus_idxs(corpus: ds.Dataset, max_works: Optional[int]) -> NDArray
     valid_idxs = [i for i, d in enumerate(dates) if d is not None]
     valid_dates = [dates[i] for i in valid_idxs]
     if max_works is None:
-        order = sorted(range(len(valid_idxs)), key=lambda j: valid_dates[j])
+        order = sorted(range(len(valid_idxs)), key=lambda j: (valid_dates[j], valid_idxs[j]))
     else:
-        order = heapq.nsmallest(max_works, range(len(valid_idxs)), key=lambda j: valid_dates[j])
+        order = heapq.nsmallest(max_works, range(len(valid_idxs)), key=lambda j: (valid_dates[j], valid_idxs[j]))
     return np.array([valid_idxs[j] for j in order], dtype=np.uint64)
 
 
@@ -596,6 +596,11 @@ def _post_filter_mask(
     """Boolean mask over *corpus_row_idxs* where post_filter passes."""
     if not post_filter:
         return np.ones(len(corpus_row_idxs), dtype=bool)
+    if post_filter.field is not None or post_filter.domain is not None:
+        raise NotImplementedError(
+            "post_filter with field or domain constraints is not supported "
+            "with per-scope Parquet storage. Use pre-filter instead."
+        )
     full_table = corpus.to_table(columns=["type", "primary_topic_id", "primary_subfield_id"])
     table = full_table.take(pa.array(corpus_row_idxs, type=pa.int64()))
     types = table.column("type").to_pylist()
