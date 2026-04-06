@@ -237,7 +237,7 @@ def ensure_cloud_data(cloud: Cloud) -> tuple[str, NDArray[np.uint64], NDArray[np
 
     # 3. Semantic dedup (operates on the full sorted subset embeddings)
     raw_embeddings = read_embeddings_store(emb_path)
-    dedup_positions = _deduplicate_semantic(cloud, corpus, raw_embeddings)
+    dedup_positions = _deduplicate_semantic(cloud, corpus, raw_embeddings, sorted_idxs)
     LOGGER.info(f"Retained {len(dedup_positions)} works after deduplication")
 
     # 4. Post-filter (operates on deduped positions within sorted subset)
@@ -300,6 +300,23 @@ def _embed_sentence_transformer(
         all_embeddings = np.concatenate(emb_chunks, axis=0)
     else:
         all_embeddings = np.empty((0, Embedder(model_name=model_name).embedding_dimension()), dtype=np.float32)
+
+    # Verify row ordering matches corpus dataset
+    corpus = corpus_dataset(work_filter)
+    corpus_ids = corpus.to_table(columns=["id"]).column("id").to_pylist()
+    concat_ids = [w["id"] for w in all_works]
+    if len(concat_ids) != len(corpus_ids):
+        raise RuntimeError(
+            f"Scope concatenation length ({len(concat_ids)}) != corpus dataset length ({len(corpus_ids)}). "
+            f"This indicates a scope resolution mismatch."
+        )
+    mismatches = [(i, concat_ids[i], corpus_ids[i]) for i in range(len(concat_ids)) if concat_ids[i] != corpus_ids[i]]
+    if mismatches:
+        first = mismatches[0]
+        raise RuntimeError(
+            f"Row ordering mismatch between scope concatenation and corpus dataset at row {first[0]}: "
+            f"concat={first[1]}, corpus={first[2]}. {len(mismatches)} total mismatches."
+        )
 
     # Select only the rows indicated by sorted_idxs
     return all_embeddings[sorted_idxs]
@@ -531,6 +548,7 @@ def _deduplicate_semantic(
     cloud: Cloud,
     corpus: ds.Dataset,
     embeddings: NDArray[np.float32],
+    sorted_idxs: NDArray[np.uint64],
 ) -> NDArray[np.uint64]:
     """Run semantic dedup and log stats.  Returns positions into the embeddings array."""
     LOGGER.info(
@@ -548,23 +566,16 @@ def _deduplicate_semantic(
     artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Only read the "type" column we need for stats
-    all_types = corpus.to_table(columns=["type"]).column("type").to_pylist()
-    # sorted_idxs aren't directly available here; compute from ensure_cloud_data's
-    # cached sorted_idxs via _sorted_corpus_idxs.  But we need sorted_idxs to map
-    # positions back to corpus rows.  To avoid recomputation, we accept that
-    # the embeddings array is 1:1 with the sorted subset and the caller passes
-    # the corpus.  We reconstruct sorted_idxs here (cheap, only reads dates).
-    sorted_idxs = _sorted_corpus_idxs(corpus, cloud.max_works)
+    # Read only the type column for the sorted subset using take()
+    type_table = corpus.to_table(columns=["type"])
+    subset_types = type_table.take(pa.array(sorted_idxs, type=pa.int64())).column("type").to_pylist()
 
     original_counts: dict[str, int] = defaultdict(int)
-    for idx in sorted_idxs:
-        wt = all_types[int(idx)] or "UNKNOWN"
-        original_counts[wt] += 1
+    for wt in subset_types:
+        original_counts[wt or "UNKNOWN"] += 1
     new_counts: dict[str, int] = defaultdict(int)
     for pos in retained_positions:
-        wt = all_types[int(sorted_idxs[int(pos)])] or "UNKNOWN"
-        new_counts[wt] += 1
+        new_counts[subset_types[int(pos)] or "UNKNOWN"] += 1
 
     fname = f"deduplication_stats_{cloud.deduplicator}"
     if cloud.max_works is not None:
