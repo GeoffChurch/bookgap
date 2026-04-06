@@ -316,26 +316,28 @@ def _embed_tf_gep(
     """TfGepEmbedder path: read columns from corpus, fit, transform."""
     from bookgap.tf_gep_embedder import TfGepEmbedder
 
-    # Read only the columns needed for TfGepEmbedder from the sorted subset
-    table = corpus.to_table(columns=["id", "display_name", "abstract", "referenced_works"])
+    if not len(sorted_idxs):
+        return np.empty((0, embedder_cfg.n_components), dtype=np.float32)
+
+    # Read only the needed columns, then use take() to select only the needed rows
+    # avoiding building Python lists for all corpus rows.
+    full_table = corpus.to_table(columns=["id", "display_name", "abstract", "referenced_works"])
+    table = full_table.take(pa.array(sorted_idxs, type=pa.int64()))
+
     ids = table.column("id").to_pylist()
     display_names = table.column("display_name").to_pylist()
     abstracts = table.column("abstract").to_pylist()
     refs = table.column("referenced_works").to_pylist()
 
-    # Build work dicts for the sorted subset
-    works: list[dict[str, Any]] = []
-    for pos in sorted_idxs:
-        i = int(pos)
-        works.append({
+    works: list[dict[str, Any]] = [
+        {
             "id": ids[i],
             "display_name": display_names[i] or "",
             "abstract": abstracts[i] or "",
             "referenced_works": refs[i] or [],
-        })
-
-    if not works:
-        return np.empty((0, embedder_cfg.n_components), dtype=np.float32)
+        }
+        for i in range(len(ids))
+    ]
 
     # Build citation graph
     work_ids = [w["id"] for w in works]
@@ -363,8 +365,9 @@ def _embed_tf_gep(
 
 def _read_corpus_column(corpus: ds.Dataset, column: str, positions: NDArray[np.uint64]) -> List:
     """Read a single column from the corpus at the given positions."""
-    all_values = corpus.to_table(columns=[column]).column(column).to_pylist()
-    return [all_values[int(i)] for i in positions]
+    table = corpus.to_table(columns=[column])
+    subset = table.take(pa.array(positions, type=pa.int64()))
+    return subset.column(column).to_pylist()
 
 
 def _read_corpus_dicts(corpus: ds.Dataset, positions: NDArray[np.uint64]) -> List[Dict[str, Any]]:
@@ -374,7 +377,9 @@ def _read_corpus_dicts(corpus: ds.Dataset, positions: NDArray[np.uint64]) -> Lis
         "created_date", "updated_date", "language", "topic_label",
         "primary_topic_id", "primary_subfield_id", "referenced_works",
     ]
-    table = corpus.to_table(columns=columns)
+    full_table = corpus.to_table(columns=columns)
+    table = full_table.take(pa.array(positions, type=pa.int64()))
+
     ids = table.column("id").to_pylist()
     display_names = table.column("display_name").to_pylist()
     abstracts = table.column("abstract").to_pylist()
@@ -389,8 +394,7 @@ def _read_corpus_dicts(corpus: ds.Dataset, positions: NDArray[np.uint64]) -> Lis
     references = table.column("referenced_works").to_pylist()
 
     works: List[Dict[str, Any]] = []
-    for pos in positions:
-        i = int(pos)
+    for i in range(len(ids)):
         pub = pub_dates[i]
         if isinstance(pub, (date, datetime)):
             pub = pub.isoformat()
@@ -592,14 +596,14 @@ def _post_filter_mask(
     """Boolean mask over *corpus_row_idxs* where post_filter passes."""
     if not post_filter:
         return np.ones(len(corpus_row_idxs), dtype=bool)
-    table = corpus.to_table(columns=["type", "primary_topic_id", "primary_subfield_id"])
+    full_table = corpus.to_table(columns=["type", "primary_topic_id", "primary_subfield_id"])
+    table = full_table.take(pa.array(corpus_row_idxs, type=pa.int64()))
     types = table.column("type").to_pylist()
     topic_ids = table.column("primary_topic_id").to_pylist()
     subfield_ids = table.column("primary_subfield_id").to_pylist()
 
     mask = []
-    for idx in corpus_row_idxs:
-        i = int(idx)
+    for i in range(len(types)):
         work = {
             "type": types[i],
             "primary_topic": {"id": topic_ids[i], "subfield": {"id": subfield_ids[i]}},
