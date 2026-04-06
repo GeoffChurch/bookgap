@@ -33,6 +33,8 @@ from bookgap.util import (
 from bookgap.work_store import WorksStore
 from bookgap.deduplicators import Deduplicator
 import scipy.linalg
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from bookgap.dendrogram import DendrogramResult, get_cloud_dendrogram
 
@@ -44,6 +46,53 @@ from bookgap.openalex_ingest import (
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
 pyalex.config.api_key = os.environ["OPENALEX_API_KEY"]
+
+
+def _embeddings_store_path(corpus_fingerprint: str, embedder_cfg: Any) -> Path:
+    """Path for the embeddings Parquet file."""
+    embedder_fp = hashlib.sha256(
+        json.dumps(asdict(embedder_cfg), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    return CACHE_DIR / "embeddings_parquet" / corpus_fingerprint / embedder_fp / "embeddings.parquet"
+
+
+def write_embeddings_store(path: Path, embeddings: NDArray[np.float32]) -> None:
+    """Write embeddings to a Parquet file with zstd compression."""
+    n = embeddings.shape[0]
+    d = embeddings.shape[1] if embeddings.ndim == 2 else 0
+
+    if n > 0:
+        flat = pa.array(embeddings.reshape(-1).astype(np.float32), type=pa.float32())
+        emb_col = pa.FixedSizeListArray.from_arrays(flat, list_size=d)
+    else:
+        # Empty: create a typed but zero-length column
+        emb_type = pa.list_(pa.float32(), d) if d > 0 else pa.list_(pa.float32())
+        emb_col = pa.array([], type=emb_type)
+
+    table = pa.table({
+        "row_id": pa.array(range(n), type=pa.int64()),
+        "embeddings": emb_col,
+    })
+    metadata = {b"bookgap:embedding_dim": str(d).encode()}
+    table = table.replace_schema_metadata(metadata)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".parquet.tmp")
+    pq.write_table(table, tmp, compression="zstd")
+    os.replace(tmp, path)
+
+
+def read_embeddings_store(path: Path) -> NDArray[np.float32]:
+    """Read embeddings from a Parquet file."""
+    table = pq.read_table(path)
+    metadata = table.schema.metadata or {}
+    d = int(metadata.get(b"bookgap:embedding_dim", b"0").decode())
+    n = len(table)
+    if n == 0:
+        return np.empty((0, d), dtype=np.float32)
+    arr = table.column("embeddings").combine_chunks().values
+    return np.asarray(arr.to_numpy(zero_copy_only=False), dtype=np.float32).reshape(n, d)
+
 
 @dataclass(frozen=True)
 class Cloud:
