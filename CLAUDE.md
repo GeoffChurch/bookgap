@@ -44,9 +44,10 @@ conda run -p .conda python batch_generator.py --config-name standard batch.num_g
 
 ### Core Data Model
 
-- **`Cloud`** (`cloud.py`): The central data object. A frozen dataclass holding a `FilterPair`, index, deduplicator, denoiser config, and embedder model. Provides cached access to works, embeddings, and citation graphs from OpenAlex. Uses `joblib.Memory` for disk caching under `cache/`.
+- **`Cloud`** (`cloud.py`): The central data object. A frozen dataclass holding a `FilterPair`, index, deduplicator, denoiser config, and embedder config. Provides cached access to works, embeddings, and citation graphs. Column-selective reads from per-scope Parquet files avoid loading the full corpus into memory.
 - **`SubCloud`** (`subcloud.py`): A lightweight filtered view over a parent `Cloud` (e.g., just books or just articles for a given topic). Does not copy data; indexes into the parent.
-- **`WorksStore`** (`work_store.py`): Columnar storage layer using PyArrow/Parquet for works and embeddings.
+- **Per-scope Parquet** (`openalex_ingest.py`): Each scope's works stored as a Parquet file under `cache/works_parquet/`. `corpus_dataset()` returns a lazy `pyarrow.dataset.Dataset` spanning all scopes with column-selective reads.
+- **Embeddings store** (`cloud.py`): Dense embeddings stored in a separate Parquet file under `cache/embeddings_parquet/`, keyed by corpus fingerprint + embedder config. Decoupled from works so switching embedders doesn't require re-fetching.
 
 ### Gap Detection
 
@@ -87,7 +88,7 @@ Hydra structured configs using dataclasses:
 
 ### Key Design Patterns
 
-- Heavy use of `@MEMORY.cache` (joblib) and `@lru_cache` for expensive computations (embeddings, gap detection, OpenAlex fetches)
+- Heavy use of `@MEMORY.cache` (joblib) and `@lru_cache` for expensive computations (gap detection, scope resolution). Per-scope Parquet files replace joblib for works caching; embeddings have their own Parquet store.
 - Frozen dataclasses throughout for hashability (required by joblib caching)
 - `FilterPair` splits cloud into two filters (e.g., books vs articles) that share the same embedding space
 - Denoiser projection is computed once and cached on `Cloud`, then reused for proposal embeddings via `Cloud.denoiser_projection()`
