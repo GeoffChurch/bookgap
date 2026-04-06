@@ -572,37 +572,39 @@ def _write_scope_parquet(path: Path, works: list[dict[str, Any]]) -> None:
 
 
 @TIMER.time()
-@MEMORY.cache
-def fetch_works(scope: ResolvedScope) -> list[dict[str, Any]]:
-    """Fetch and syntactically deduplicate works for a scope. Cached by joblib."""
-    return deduplicate_works_syntactic(scope)
+def fetch_works(scope: ResolvedScope) -> ds.Dataset:
+    """Fetch, deduplicate, and cache works for a scope as Parquet. Returns lazy Dataset."""
+    parquet_path = _scope_parquet_path(scope)
+    if not parquet_path.exists():
+        works = deduplicate_works_syntactic(scope)
+        _write_scope_parquet(parquet_path, works)
+    return ds.dataset(parquet_path, format="parquet")
 
 
-def _is_fetch_works_cached(scope: ResolvedScope) -> bool:
-    """Check if fetch_works result is already joblib-cached without loading it."""
-    # Access the internal store_backend to check for a cache hit
-    call_id = fetch_works._get_output_identifiers(scope)  # type: ignore[attr-defined]
-    store = fetch_works.store_backend  # type: ignore[attr-defined]
-    return store.contains_item(call_id)
+def corpus_dataset(work_filter: Filter) -> ds.Dataset:
+    """Lazy Dataset spanning all scopes for a filter.
+
+    Ensures all scopes are fetched first. Returns a unified view
+    that supports column-selective reads.
+    """
+    scopes = _resolve_filter_scopes(work_filter)
+    paths = []
+    for scope in tqdm.tqdm(scopes, desc="Ensuring scopes cached", delay=3, mininterval=3):
+        path = _scope_parquet_path(scope)
+        if not path.exists():
+            RATE_LIMITER.wait()
+            fetch_works(scope)
+        paths.append(path)
+    return ds.dataset(paths, format="parquet")
 
 
 def fetch_all_scopes(work_filter: Filter) -> None:
-    """Ensure all scopes for a filter are fetched and cached.
-
-    Iterates scopes with rate limiting, calling fetch_works on each.
-    Skips already-cached scopes without deserializing them, so memory
-    usage stays constant regardless of how many scopes are cached.
-    """
+    """Ensure all scope Parquet files exist without loading any data."""
     scopes = _resolve_filter_scopes(work_filter)
-    n_cached = 0
-    for i, scope in enumerate(tqdm.tqdm(scopes, desc="Fetching scopes")):
-        if _is_fetch_works_cached(scope):
-            n_cached += 1
-            continue
-        LOGGER.info(f"Fetching scope {i + 1}/{len(scopes)}: {scope}")
-        RATE_LIMITER.wait()
-        fetch_works(scope)
-    LOGGER.info(f"All {len(scopes)} scopes cached ({n_cached} were already cached)")
+    for scope in tqdm.tqdm(scopes, desc="Fetching scopes"):
+        if not _scope_parquet_path(scope).exists():
+            RATE_LIMITER.wait()
+            fetch_works(scope)
 
 
 def embed_works(
@@ -610,7 +612,7 @@ def embed_works(
     model_name: Embedder.ModelName,
 ):
     LOGGER.info(f"Embedding {scope} works with model {str(model_name)}")
-    works = fetch_works(scope)
+    works = fetch_works(scope).to_table().to_pylist()
     n_works = len(works)
     with Embedder(model_name=model_name) as embedder:
         dim = embedder.embedding_dimension()

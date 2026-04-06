@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-from bookgap.openalex_ingest import _write_scope_parquet, _scope_parquet_path, ResolvedScope
+from bookgap.openalex_ingest import _write_scope_parquet, _scope_parquet_path, ResolvedScope, fetch_works, corpus_dataset, fetch_all_scopes
+from bookgap.util import Filter, WorkType
 
 
 @pytest.fixture
@@ -83,3 +84,49 @@ class TestScopeParquetPath:
         path = _scope_parquet_path(scope)
         assert path.name == "article.parquet"
         assert "17" in str(path) and "1702" in str(path) and "T10020" in str(path)
+
+
+class TestFetchWorksParquet:
+    def test_returns_dataset(self, tmp_cache):
+        scope = ResolvedScope(field="17", subfield="1702", topic="T10020", work_type="article")
+        works = _sample_works(5)
+        path = _scope_parquet_path(scope)
+        _write_scope_parquet(path, works)
+        result = fetch_works(scope)
+        assert isinstance(result, ds.Dataset)
+        assert result.count_rows() == 5
+
+    def test_idempotent(self, tmp_cache):
+        scope = ResolvedScope(field="17", subfield="1702", topic="T10020", work_type="book")
+        path = _scope_parquet_path(scope)
+        _write_scope_parquet(path, _sample_works(3))
+        d1 = fetch_works(scope)
+        d2 = fetch_works(scope)
+        assert d1.count_rows() == d2.count_rows() == 3
+
+
+class TestCorpusDataset:
+    def test_unions_scopes(self, tmp_cache, monkeypatch):
+        scopes = [
+            ResolvedScope(field="17", subfield="1702", topic="T10020", work_type="book"),
+            ResolvedScope(field="17", subfield="1702", topic="T10020", work_type="article"),
+        ]
+        _write_scope_parquet(_scope_parquet_path(scopes[0]), _sample_works(3))
+        _write_scope_parquet(_scope_parquet_path(scopes[1]), _sample_works(7))
+        import bookgap.openalex_ingest as mod
+        monkeypatch.setattr(mod, "_resolve_filter_scopes", lambda f: scopes)
+        filt = Filter(subfield="1702", work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value))
+        dataset = corpus_dataset(filt)
+        assert isinstance(dataset, ds.Dataset)
+        assert dataset.count_rows() == 10
+
+    def test_column_selection(self, tmp_cache, monkeypatch):
+        scope = ResolvedScope(field="17", subfield="1702", topic="T10020", work_type="article")
+        _write_scope_parquet(_scope_parquet_path(scope), _sample_works(5))
+        import bookgap.openalex_ingest as mod
+        monkeypatch.setattr(mod, "_resolve_filter_scopes", lambda f: [scope])
+        filt = Filter(subfield="1702", work_types=(WorkType.ARTICLE.value,))
+        dataset = corpus_dataset(filt)
+        table = dataset.to_table(columns=["id", "referenced_works"])
+        assert table.num_columns == 2
+        assert len(table) == 5

@@ -388,7 +388,7 @@ def _load_works_tf_gep(
     with tqdm.tqdm(_resolve_filter_scopes(filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
         for scope in scope_bar:
             scope_bar.set_postfix_str(str(scope))
-            scope_works = fetch_works(scope)
+            scope_works = fetch_works(scope).to_table().to_pylist()
             works.extend(scope_works)
 
     if not works:
