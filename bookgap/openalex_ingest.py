@@ -493,21 +493,22 @@ def fetch_works(scope: ResolvedScope) -> list[dict[str, Any]]:
     return deduplicate_works_syntactic(scope)
 
 
-def fetch_all_scopes(work_filter: Filter) -> list[dict[str, Any]]:
-    """Fetch works for all scopes matching a filter, with proper rate limiting.
+def fetch_all_scopes(work_filter: Filter) -> None:
+    """Ensure all scopes for a filter are fetched and cached.
 
-    Convenience wrapper for programmatic bulk fetching. Resolves scopes,
-    fetches each with rate limiting between scopes, and concatenates results.
+    Iterates scopes with rate limiting, calling fetch_works on each.
+    Results are joblib-cached per scope — use fetch_works(scope) later
+    to retrieve them without memory accumulation.
     """
     scopes = _resolve_filter_scopes(work_filter)
-    all_works: list[dict[str, Any]] = []
+    total_works = 0
     for i, scope in enumerate(tqdm.tqdm(scopes, desc="Fetching scopes")):
         LOGGER.info(f"Fetching scope {i + 1}/{len(scopes)}: {scope}")
         RATE_LIMITER.wait()
-        works = fetch_works(scope)
-        all_works.extend(works)
-        LOGGER.info(f"  Got {len(works)} works (total so far: {len(all_works)})")
-    return all_works
+        n = len(fetch_works(scope))
+        total_works += n
+        LOGGER.info(f"  Got {n} works ({total_works} total)")
+    LOGGER.info(f"All {len(scopes)} scopes cached ({total_works} works)")
 
 
 def embed_works(
