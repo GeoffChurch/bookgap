@@ -31,22 +31,37 @@ from bookgap.util import (
 )
 from bookgap.openalex_scopes import resolve_filter_upward, get_subfield_topics, _suffix
 
-import threading
+import fcntl
 
 class _RateLimiter:
-    """Global rate limiter for OpenAlex API calls."""
-    def __init__(self, min_interval: float = 1.0):
+    """Cross-process rate limiter for OpenAlex API calls.
+
+    Uses a file lock so multiple worker processes coordinate on API timing.
+    Falls back gracefully when only one process is running.
+    """
+    def __init__(self, min_interval: float = 0.1):
         self._min_interval = min_interval
-        self._last_call: float = 0.0
-        self._lock = threading.Lock()
+
+    def _lock_path(self) -> Path:
+        return CACHE_DIR / ".rate_lock"
+
+    def _ts_path(self) -> Path:
+        return CACHE_DIR / ".rate_ts"
 
     def wait(self) -> None:
-        with self._lock:
+        lock_path = self._lock_path()
+        ts_path = self._ts_path()
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
             now = time.time()
-            elapsed = now - self._last_call
+            try:
+                last = float(ts_path.read_text())
+            except (FileNotFoundError, ValueError):
+                last = 0.0
+            elapsed = now - last
             if elapsed < self._min_interval:
                 time.sleep(self._min_interval - elapsed)
-            self._last_call = time.time()
+            ts_path.write_text(str(time.time()))
 
 RATE_LIMITER = _RateLimiter(min_interval=0.1)
 

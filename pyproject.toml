@@ -33,6 +33,9 @@ dependencies = [
     "coroica",
     "pymanopt",
     "pyriemann",
+    # For TUI scope manager
+    "textual",
+    "psutil",
 ]
 
 [project.optional-dependencies]
