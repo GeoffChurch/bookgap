@@ -51,6 +51,7 @@ dev = [
 
 [tool.setuptools]
 packages = ["bookgap", "artifacts_scripts"]
+py-modules = ["scope_manager"]
 
 [tool.pytest.ini_options]
 markers = [
