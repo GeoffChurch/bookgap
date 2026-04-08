@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pyalex
+pyalex.config.email = "gchurchill@cs.stonybrook.edu"
 import pyarrow.parquet as pq
 from textual.app import App, ComposeResult
 from textual.binding import Binding
