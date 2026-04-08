@@ -199,7 +199,9 @@ def _make_job_id(action: str, scope_str: str, model: str | None = None) -> str:
     return "_".join(parts)
 
 
-def launch_worker(action: str, scope_str: str, model: str | None = None) -> str | None:
+def launch_worker(
+    action: str, scope_str: str, model: str | None = None, work_types: list[str] | None = None,
+) -> str | None:
     """Launch a detached worker subprocess. Returns job_id or None if duplicate/at capacity."""
     if has_running_job(action, scope_str, model):
         return None
@@ -214,6 +216,8 @@ def launch_worker(action: str, scope_str: str, model: str | None = None) -> str 
     cmd = [sys.executable, os.path.abspath(__file__), "--worker", action, scope_str]
     if model:
         cmd.extend(["--model", model])
+    if work_types:
+        cmd.extend(["--work-types", ",".join(work_types)])
     cmd.extend(["--job-id", job_id])
 
     with open(log_path, "w") as log_file:
@@ -238,10 +242,14 @@ def launch_worker(action: str, scope_str: str, model: str | None = None) -> str 
     return job_id
 
 
-def run_worker(action: str, scope_str: str, model: str | None, job_id: str) -> None:
+def run_worker(
+    action: str, scope_str: str, model: str | None, job_id: str, work_types: list[str] | None = None,
+) -> None:
     """Worker entry point — called in the detached subprocess."""
     from bookgap.openalex_ingest import fetch_works, fetch_all_scopes, embed_works
     from bookgap.util import Filter
+
+    wt = tuple(work_types) if work_types else tuple(ALL_WORK_TYPES)
 
     # Update manifest with our actual PID
     manifest = read_job_manifest(job_id)
@@ -255,13 +263,13 @@ def run_worker(action: str, scope_str: str, model: str | None, job_id: str) -> N
                 scope = ResolvedScope(field=parts[0], subfield=parts[1], topic=parts[2], work_type=parts[3])
                 fetch_works(scope)
             elif len(parts) == 2:
-                filt = Filter(field=parts[0], subfield=parts[1], work_types=tuple(ALL_WORK_TYPES))
+                filt = Filter(field=parts[0], subfield=parts[1], work_types=wt)
                 fetch_all_scopes(filt)
             elif len(parts) == 1:
                 if any(d[0] == parts[0] for d in KNOWN_DOMAINS):
-                    filt = Filter(domain=parts[0], work_types=tuple(ALL_WORK_TYPES))
+                    filt = Filter(domain=parts[0], work_types=wt)
                 else:
-                    filt = Filter(field=parts[0], work_types=tuple(ALL_WORK_TYPES))
+                    filt = Filter(field=parts[0], work_types=wt)
                 fetch_all_scopes(filt)
             else:
                 raise ValueError(f"Unexpected scope format for fetch: {scope_str}")
@@ -443,7 +451,8 @@ class ModelSelectScreen(ModalScreen[str | None]):
             "gist": Embedder.ModelName.GIST_SMALL.value,
             "gemma": Embedder.ModelName.GEMMA_300M.value,
         }
-        self.dismiss(model_map.get(event.option.id))
+        if event.option.id is not None:
+            self.dismiss(model_map.get(event.option.id))
 
     def on_key(self, event) -> None:
         if event.key == "escape":
@@ -549,7 +558,7 @@ class ScopeManagerApp(App):
 
         self.query_one("#status_bar", Static).update(f"Types: {types_str} | Jobs: {jobs_str}")
         self.query_one("#key_hints", Static).update(
-            "[f]etch [e]mbed [r]efresh [d]ismiss [l]og [1-4]toggle types [q]uit"
+            escape("[f]etch [e]mbed [r]efresh [d]ismiss [l]og [1-4]toggle types [q]uit")
         )
 
     def _breadcrumb_text(self) -> str:
@@ -703,7 +712,7 @@ class ScopeManagerApp(App):
                 scope_str = row_key  # field ID
             elif self._level == 2:
                 scope_str = f"{self._path[1][0]}/{row_key}"  # field/subfield
-            job_id = launch_worker("fetch", scope_str)
+            job_id = launch_worker("fetch", scope_str, work_types=active_types)
             self.notify("Launched fetch job" if job_id else "Already running or at capacity")
 
         self._update_status_bar()
@@ -773,11 +782,13 @@ def main() -> None:
     parser.add_argument("--worker", metavar="ACTION", help="Run in worker mode (fetch|embed)")
     parser.add_argument("scope", nargs="?", help="Scope string (e.g., 17/1702/T10181/article)")
     parser.add_argument("--model", help="Embedder model name (for embed action)")
+    parser.add_argument("--work-types", help="Comma-separated work types (for aggregate fetch)")
     parser.add_argument("--job-id", help="Job ID (set by launcher)")
     args = parser.parse_args()
 
     if args.worker:
-        run_worker(args.worker, args.scope, args.model, args.job_id)
+        wt = args.work_types.split(",") if args.work_types else None
+        run_worker(args.worker, args.scope, args.model, args.job_id, work_types=wt)
     else:
         app = ScopeManagerApp()
         app.run()
