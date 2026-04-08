@@ -14,14 +14,14 @@ JOBS_DIR_NAME = ".jobs"
 def tmp_cache(tmp_path, monkeypatch):
     import bookgap.openalex_ingest as mod
     monkeypatch.setattr(mod, "CACHE_DIR", tmp_path)
-    import scope_manager as sm
-    monkeypatch.setattr(sm, "_ingest_mod", mod)
+    import bookgap.scope_ops as ops
+    monkeypatch.setattr(ops, "_ingest_mod", mod)
     return tmp_path
 
 
 class TestJobManifest:
     def test_write_and_read_manifest(self, tmp_cache):
-        from scope_manager import write_job_manifest, read_job_manifest
+        from bookgap.scope_ops import write_job_manifest, read_job_manifest
         manifest = {
             "pid": 12345,
             "action": "fetch",
@@ -41,7 +41,7 @@ class TestJobManifest:
         assert loaded["scope"] == "17/1702/T10181/article"
 
     def test_atomic_write(self, tmp_cache):
-        from scope_manager import write_job_manifest
+        from bookgap.scope_ops import write_job_manifest
         job_id = "fetch_T10181_article_123"
         write_job_manifest(job_id, {"pid": 1, "status": "running"})
         jobs_dir = tmp_cache / JOBS_DIR_NAME
@@ -50,7 +50,7 @@ class TestJobManifest:
 
 class TestDiscoverJobs:
     def test_discovers_running_job(self, tmp_cache):
-        from scope_manager import write_job_manifest, discover_jobs
+        from bookgap.scope_ops import write_job_manifest, discover_jobs
         write_job_manifest("fetch_T10181_article_100", {
             "pid": os.getpid(),
             "action": "fetch",
@@ -66,7 +66,7 @@ class TestDiscoverJobs:
         assert jobs[0]["status"] == "running"
 
     def test_detects_crashed_job(self, tmp_cache):
-        from scope_manager import write_job_manifest, discover_jobs
+        from bookgap.scope_ops import write_job_manifest, discover_jobs
         write_job_manifest("fetch_T10181_article_200", {
             "pid": 99999999,
             "action": "fetch",
@@ -82,7 +82,7 @@ class TestDiscoverJobs:
         assert jobs[0]["status"] == "crashed"
 
     def test_skips_completed_job(self, tmp_cache):
-        from scope_manager import write_job_manifest, discover_jobs
+        from bookgap.scope_ops import write_job_manifest, discover_jobs
         write_job_manifest("fetch_T10181_article_300", {
             "pid": 1,
             "action": "fetch",
@@ -100,7 +100,7 @@ class TestDiscoverJobs:
 
 class TestDuplicatePrevention:
     def test_has_running_job(self, tmp_cache):
-        from scope_manager import write_job_manifest, has_running_job
+        from bookgap.scope_ops import write_job_manifest, has_running_job
         write_job_manifest("fetch_T10181_article_100", {
             "pid": os.getpid(),
             "action": "fetch",

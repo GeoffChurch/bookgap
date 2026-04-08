@@ -42,7 +42,7 @@ def _sample_works(n: int = 5) -> list[dict]:
 
 class TestScopeStatus:
     def test_not_fetched(self, tmp_cache):
-        from scope_manager import get_scope_status
+        from bookgap.scope_ops import get_scope_status
         scope = ResolvedScope(field="17", subfield="1702", topic="T10181", work_type="article")
         status = get_scope_status(scope)
         assert status["fetched"] is False
@@ -51,7 +51,7 @@ class TestScopeStatus:
         assert status["gemma_embedded"] is False
 
     def test_fetched(self, tmp_cache):
-        from scope_manager import get_scope_status
+        from bookgap.scope_ops import get_scope_status
         scope = ResolvedScope(field="17", subfield="1702", topic="T10181", work_type="article")
         path = tmp_cache / "works_parquet" / "17" / "1702" / "T10181" / "article.parquet"
         _write_scope_parquet(path, _sample_works(10))
@@ -62,7 +62,7 @@ class TestScopeStatus:
         assert status["gist_embedded"] is False
 
     def test_embedded(self, tmp_cache):
-        from scope_manager import get_scope_status
+        from bookgap.scope_ops import get_scope_status
         scope = ResolvedScope(field="17", subfield="1702", topic="T10181", work_type="article")
         path = tmp_cache / "works_parquet" / "17" / "1702" / "T10181" / "article.parquet"
         _write_scope_parquet(path, _sample_works(5))
@@ -78,7 +78,7 @@ class TestScopeStatus:
 
 class TestHierarchy:
     def test_get_domain_fields(self):
-        from scope_manager import get_domain_fields
+        from bookgap.scope_ops import get_domain_fields
         mock_domain_data = {
             "id": "https://openalex.org/domains/3",
             "display_name": "Physical Sciences",
@@ -95,7 +95,7 @@ class TestHierarchy:
         assert fields[1] == ("22", "Engineering")
 
     def test_get_field_subfields(self):
-        from scope_manager import get_field_subfields
+        from bookgap.scope_ops import get_field_subfields
         mock_field_data = {
             "id": "https://openalex.org/fields/17",
             "display_name": "Computer Science",
@@ -110,8 +110,8 @@ class TestHierarchy:
         assert len(subfields) == 2
         assert subfields[0] == ("1702", "Artificial Intelligence")
 
-    def test_get_subfield_topics_named(self):
-        from scope_manager import get_subfield_topics_named
+    def test_get_subfield_topics(self):
+        from bookgap.scope_ops import get_subfield_topics
         mock_pages = [
             [
                 {"id": "https://openalex.org/topics/T10181", "display_name": "Natural Language Processing"},
@@ -122,6 +122,6 @@ class TestHierarchy:
             mock_filter = MagicMock()
             mock_filter.paginate.return_value = mock_pages
             mock_topics.return_value.filter.return_value = mock_filter
-            topics = get_subfield_topics_named("1702")
+            topics = get_subfield_topics("1702")
         assert len(topics) == 2
         assert ("T10181", "Natural Language Processing") in topics
