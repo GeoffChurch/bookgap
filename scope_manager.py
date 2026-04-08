@@ -288,6 +288,84 @@ def run_worker(action: str, scope_str: str, model: str | None, job_id: str) -> N
 
 
 # ---------------------------------------------------------------------------
+# Aggregate status helpers
+# ---------------------------------------------------------------------------
+
+def get_aggregate_status(
+    scopes: list[ResolvedScope],
+    active_types: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Compute aggregate fetch/embed status per work type."""
+    result: dict[str, dict[str, Any]] = {}
+    for wt in active_types:
+        wt_scopes = [s for s in scopes if s.work_type == wt]
+        fetched = 0
+        gist = 0
+        gemma = 0
+        total_works = 0
+        for s in wt_scopes:
+            status = get_scope_status(s)
+            if status["fetched"]:
+                fetched += 1
+                total_works += status["work_count"]
+            if status["gist_embedded"]:
+                gist += 1
+            if status["gemma_embedded"]:
+                gemma += 1
+        result[wt] = {
+            "fetched": fetched,
+            "total": len(wt_scopes),
+            "gist_count": gist,
+            "gemma_count": gemma,
+            "total_works": total_works,
+        }
+    return result
+
+
+def resolve_scopes_for_node(
+    level: int, path: list[tuple[str, str]], node_id: str, work_types: list[str],
+) -> list[ResolvedScope]:
+    """Resolve all concrete scopes under a given hierarchy node."""
+    if level == 0:
+        fields = get_domain_fields(node_id)
+        scopes: list[ResolvedScope] = []
+        for field_id, _ in fields:
+            subfields = get_field_subfields(field_id)
+            for sf_id, _ in subfields:
+                topics = get_subfield_topics_named(sf_id)
+                for topic_id, _ in topics:
+                    for wt in work_types:
+                        scopes.append(ResolvedScope(field=field_id, subfield=sf_id, topic=topic_id, work_type=wt))
+        return scopes
+    elif level == 1:
+        field_id = node_id
+        subfields = get_field_subfields(field_id)
+        scopes = []
+        for sf_id, _ in subfields:
+            topics = get_subfield_topics_named(sf_id)
+            for topic_id, _ in topics:
+                for wt in work_types:
+                    scopes.append(ResolvedScope(field=field_id, subfield=sf_id, topic=topic_id, work_type=wt))
+        return scopes
+    elif level == 2:
+        field_id = path[1][0]
+        sf_id = node_id
+        topics = get_subfield_topics_named(sf_id)
+        scopes = []
+        for topic_id, _ in topics:
+            for wt in work_types:
+                scopes.append(ResolvedScope(field=field_id, subfield=sf_id, topic=topic_id, work_type=wt))
+        return scopes
+    else:
+        field_id = path[1][0]
+        sf_id = path[2][0]
+        return [
+            ResolvedScope(field=field_id, subfield=sf_id, topic=node_id, work_type=wt)
+            for wt in work_types
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Known domains
 # ---------------------------------------------------------------------------
 
@@ -451,14 +529,59 @@ class ScopeManagerApp(App):
         table = self.query_one("#scope_table", DataTable)
         table.clear(columns=True)
 
+        active_types = self._active_type_names()
+
+        # Determine rows for this level
         if self._level == 0:
             self._rows = KNOWN_DOMAINS
-            table.add_column("Domain", key="name")
-            for row_id, name in self._rows:
-                table.add_row(name, key=row_id)
-        else:
-            # Levels 1-3 implemented in Task 5
-            pass
+        elif self._level == 1:
+            domain_id = self._path[0][0]
+            self._rows = get_domain_fields(domain_id)
+        elif self._level == 2:
+            field_id = self._path[1][0]
+            self._rows = get_field_subfields(field_id)
+        elif self._level == 3:
+            subfield_id = self._path[2][0]
+            self._rows = get_subfield_topics_named(subfield_id)
+
+        # Build columns: Name + per-work-type status columns
+        table.add_column("Name", key="name", width=30)
+        for wt in active_types:
+            table.add_column(f"{wt[:8]} fetch", key=f"{wt}_fetch", width=12)
+            table.add_column(f"{wt[:8]} GIST", key=f"{wt}_gist", width=8)
+            table.add_column(f"{wt[:8]} Gem", key=f"{wt}_gemma", width=8)
+
+        # Populate rows
+        for node_id, name in self._rows:
+            if self._level == 3:
+                # Topic level: per-work-type direct status
+                cells: list[str] = [name]
+                for wt in active_types:
+                    scope = ResolvedScope(
+                        field=self._path[1][0],
+                        subfield=self._path[2][0],
+                        topic=node_id,
+                        work_type=wt,
+                    )
+                    status = get_scope_status(scope)
+                    if status["fetched"]:
+                        cells.append(str(status["work_count"]))
+                    else:
+                        cells.append("-")
+                    cells.append("\u2713" if status["gist_embedded"] else "-")
+                    cells.append("\u2713" if status["gemma_embedded"] else "-")
+                table.add_row(*cells, key=node_id)
+            else:
+                # Aggregate level: fetch/embed counts across descendants
+                cells = [name]
+                scopes = resolve_scopes_for_node(self._level, self._path, node_id, active_types)
+                agg = get_aggregate_status(scopes, active_types)
+                for wt in active_types:
+                    wt_agg = agg.get(wt, {"fetched": 0, "total": 0, "gist_count": 0, "gemma_count": 0})
+                    cells.append(f"{wt_agg['fetched']}/{wt_agg['total']}")
+                    cells.append(str(wt_agg["gist_count"]))
+                    cells.append(str(wt_agg["gemma_count"]))
+                table.add_row(*cells, key=node_id)
 
         self._update_status_bar()
 
@@ -480,6 +603,43 @@ class ScopeManagerApp(App):
 
     def action_refresh(self) -> None:
         self._render_current_level()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Drill down on Enter/click."""
+        if self._level >= 3:
+            return
+        row_key = str(event.row_key.value)
+        name = ""
+        for rid, rname in self._rows:
+            if rid == row_key:
+                name = rname
+                break
+        self._path.append((row_key, name))
+        self._level += 1
+        self._render_current_level()
+
+    def on_key(self, event) -> None:
+        table = self.query_one("#scope_table", DataTable)
+        if event.key == "left" or event.key == "backspace":
+            if self._level > 0:
+                self._path.pop()
+                self._level -= 1
+                self._render_current_level()
+        elif event.key == "right":
+            if self._level < 3 and table.cursor_row is not None:
+                row_key = str(list(table.rows.keys())[table.cursor_row].value)
+                name = ""
+                for rid, rname in self._rows:
+                    if rid == row_key:
+                        name = rname
+                        break
+                self._path.append((row_key, name))
+                self._level += 1
+                self._render_current_level()
+        elif event.key == "j":
+            table.action_cursor_down()
+        elif event.key == "k":
+            table.action_cursor_up()
 
     # Placeholder actions for Task 5-6
     def action_fetch(self) -> None:
