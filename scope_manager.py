@@ -14,6 +14,9 @@ from typing import Any
 
 import pyalex
 import pyarrow.parquet as pq
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import DataTable, Static
 
 import bookgap.openalex_ingest as _ingest_mod
 from bookgap.embedder import SentenceTransformerEmbedder as Embedder
@@ -294,6 +297,205 @@ KNOWN_DOMAINS: list[tuple[str, str]] = [
 
 
 # ---------------------------------------------------------------------------
+# System resource helper
+# ---------------------------------------------------------------------------
+
+def get_system_resources() -> str:
+    """Return a formatted string of CPU/RAM/GPU usage."""
+    parts: list[str] = []
+    try:
+        import psutil
+        cpu = psutil.cpu_percent(interval=None)
+        cores = psutil.cpu_count()
+        mem = psutil.virtual_memory()
+        parts.append(f"CPU: {cpu:.0f}% ({cores} cores)")
+        parts.append(f"RAM: {mem.used / (1024**3):.1f}/{mem.total / (1024**3):.1f} GB ({mem.percent:.0f}%)")
+    except ImportError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().splitlines():
+                used, total = line.split(",")
+                used_gb = int(used.strip()) / 1024
+                total_gb = int(total.strip()) / 1024
+                pct = (used_gb / total_gb * 100) if total_gb > 0 else 0
+                parts.append(f"GPU: {used_gb:.1f}/{total_gb:.1f} GB VRAM ({pct:.0f}%)")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return " | ".join(parts) if parts else "System info unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Textual TUI app
+# ---------------------------------------------------------------------------
+
+class ScopeManagerApp(App):
+    """TUI for browsing OpenAlex scopes, viewing status, and launching fetch/embed jobs."""
+
+    TITLE = "Scope Manager"
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("f", "fetch", "Fetch"),
+        Binding("e", "embed", "Embed"),
+        Binding("d", "dismiss_jobs", "Dismiss"),
+        Binding("l", "view_log", "Log"),
+        Binding("1", "toggle_type_1", "article", show=False),
+        Binding("2", "toggle_type_2", "book", show=False),
+        Binding("3", "toggle_type_3", "book-chapter", show=False),
+        Binding("4", "toggle_type_4", "preprint", show=False),
+    ]
+
+    CSS = """
+    #breadcrumb {
+        dock: top;
+        height: 1;
+        background: $primary-background;
+        color: $text;
+        padding: 0 1;
+    }
+    #resource_bar {
+        dock: bottom;
+        height: 1;
+        background: $surface;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    #status_bar {
+        dock: bottom;
+        height: 1;
+        background: $primary-background;
+        color: $text;
+        padding: 0 1;
+    }
+    #key_hints {
+        dock: bottom;
+        height: 1;
+        background: $surface;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    DataTable {
+        height: 1fr;
+    }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._level: int = 0  # 0=domains, 1=fields, 2=subfields, 3=topics
+        self._path: list[tuple[str, str]] = []  # [(id, name), ...] of navigation selections
+        self._active_types: list[bool] = [True, True, True, True]
+        self._rows: list[tuple[str, str]] = []  # [(id, display_name), ...]
+
+    def compose(self) -> ComposeResult:
+        yield Static("Scope Manager", id="breadcrumb")
+        yield DataTable(id="scope_table")
+        yield Static("", id="key_hints")
+        yield Static("", id="status_bar")
+        yield Static("", id="resource_bar")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#scope_table", DataTable)
+        table.cursor_type = "row"
+        self._update_resource_bar()
+        self.set_interval(3, self._update_resource_bar)
+        self.set_interval(3, self._update_status_bar)
+        self._render_current_level()
+
+    def _update_resource_bar(self) -> None:
+        self.query_one("#resource_bar", Static).update(get_system_resources())
+
+    def _update_status_bar(self) -> None:
+        from rich.markup import escape
+        type_parts: list[str] = []
+        for i, wt in enumerate(ALL_WORK_TYPES):
+            if self._active_types[i]:
+                type_parts.append(escape(f"[{wt}]"))
+            else:
+                type_parts.append(escape(wt))
+        types_str = " ".join(type_parts)
+
+        jobs = discover_jobs()
+        running = sum(1 for j in jobs if j["status"] == "running")
+        failed = sum(1 for j in jobs if j["status"] in ("failed", "crashed"))
+        job_parts: list[str] = []
+        if running:
+            job_parts.append(f"{running} running")
+        if failed:
+            job_parts.append(f"{failed} failed")
+        jobs_str = ", ".join(job_parts) if job_parts else "no jobs"
+
+        self.query_one("#status_bar", Static).update(f"Types: {types_str} | Jobs: {jobs_str}")
+        self.query_one("#key_hints", Static).update(
+            "[f]etch [e]mbed [r]efresh [d]ismiss [l]og [1-4]toggle types [q]uit"
+        )
+
+    def _breadcrumb_text(self) -> str:
+        parts = [name for _, name in self._path]
+        if not parts:
+            return "Domains"
+        return " > ".join(parts)
+
+    def _active_type_names(self) -> list[str]:
+        return [ALL_WORK_TYPES[i] for i in range(4) if self._active_types[i]]
+
+    def _render_current_level(self) -> None:
+        self.query_one("#breadcrumb", Static).update(self._breadcrumb_text())
+        table = self.query_one("#scope_table", DataTable)
+        table.clear(columns=True)
+
+        if self._level == 0:
+            self._rows = KNOWN_DOMAINS
+            table.add_column("Domain", key="name")
+            for row_id, name in self._rows:
+                table.add_row(name, key=row_id)
+        else:
+            # Levels 1-3 implemented in Task 5
+            pass
+
+        self._update_status_bar()
+
+    def _toggle_type(self, index: int) -> None:
+        self._active_types[index] = not self._active_types[index]
+        self._render_current_level()
+
+    def action_toggle_type_1(self) -> None:
+        self._toggle_type(0)
+
+    def action_toggle_type_2(self) -> None:
+        self._toggle_type(1)
+
+    def action_toggle_type_3(self) -> None:
+        self._toggle_type(2)
+
+    def action_toggle_type_4(self) -> None:
+        self._toggle_type(3)
+
+    def action_refresh(self) -> None:
+        self._render_current_level()
+
+    # Placeholder actions for Task 5-6
+    def action_fetch(self) -> None:
+        pass
+
+    def action_embed(self) -> None:
+        pass
+
+    def action_dismiss_jobs(self) -> None:
+        pass
+
+    def action_view_log(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -308,9 +510,8 @@ def main() -> None:
     if args.worker:
         run_worker(args.worker, args.scope, args.model, args.job_id)
     else:
-        # TUI mode — implemented in Task 4
-        print("TUI not implemented yet. Use --worker for headless mode.")
-        sys.exit(1)
+        app = ScopeManagerApp()
+        app.run()
 
 
 if __name__ == "__main__":
