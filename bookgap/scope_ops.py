@@ -341,6 +341,11 @@ def has_running_job(action: str, scope_str: str, model: str | None = None) -> bo
     return False
 
 
+def get_job_log_path(job_id: str) -> Path:
+    """Return the log file path for a job."""
+    return _jobs_path() / f"{job_id}.log"
+
+
 def dismiss_finished_jobs() -> int:
     """Remove completed/failed/crashed job manifests. Returns count dismissed."""
     jobs = discover_jobs()

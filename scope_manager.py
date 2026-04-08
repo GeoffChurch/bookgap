@@ -15,9 +15,9 @@ from bookgap.scope_ops import (
     get_subfield_topics,
     get_system_resources,
     has_running_job,
+    get_job_log_path,
     launch_worker,
     run_worker,
-    _jobs_path,
 )
 from bookgap.embedder import SentenceTransformerEmbedder as Embedder
 from bookgap.openalex_ingest import ResolvedScope
@@ -359,7 +359,7 @@ class ScopeManagerApp(App):
         if not running:
             self.notify("No running jobs")
             return
-        log_path = _jobs_path() / f"{running[0]['_job_id']}.log"
+        log_path = get_job_log_path(running[0]['_job_id'])
         if log_path.exists():
             self.notify(f"Log: {log_path}")
         else:
@@ -423,6 +423,8 @@ def _build_cli():
                 typer.echo("parent_id (subfield ID) is required for 'topics'", err=True)
                 raise typer.Exit(1)
             rows = get_subfield_topics(parent_id)
+        else:
+            raise typer.Exit(1)  # unreachable — guarded by ENTITY_CHOICES check above
 
         if _use_json:
             console.print_json(_json.dumps([{"id": r[0], "name": r[1]} for r in rows]))
