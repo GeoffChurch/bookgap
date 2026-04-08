@@ -2,6 +2,10 @@
 """Scope Manager — CLI and TUI for browsing OpenAlex taxonomy, viewing status, launching jobs."""
 from __future__ import annotations
 
+from typing import Optional
+
+import typer
+
 from bookgap.scope_ops import (
     ALL_WORK_TYPES,
     KNOWN_DOMAINS,
@@ -375,9 +379,7 @@ class ScopeManagerApp(App):
 def _build_cli():
     """Build and return the Typer app. Deferred to avoid import cost when running TUI directly."""
     import json as _json
-    from typing import Optional
 
-    import typer
     from rich.console import Console
     from rich.table import Table
 
