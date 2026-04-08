@@ -28,8 +28,9 @@ from bookgap.openalex_ingest import ResolvedScope
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, OptionList, Static
+from textual.widgets import DataTable, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 
@@ -72,6 +73,133 @@ class ModelSelectScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
 
+class JobsScreen(ModalScreen):
+    """Modal screen showing jobs list and live log viewer."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Back"),
+        Binding("d", "dismiss_jobs", "Dismiss finished"),
+        Binding("j", "cursor_down", "Down", key_display="j/\u2193"),
+        Binding("k", "cursor_up", "Up", key_display="k/\u2191"),
+    ]
+
+    CSS = """
+    JobsScreen {
+        align: center middle;
+    }
+    #jobs_container {
+        width: 95%;
+        height: 90%;
+        border: solid $primary;
+        background: $surface;
+    }
+    #jobs_table {
+        height: 1fr;
+        max-height: 12;
+    }
+    #log_viewer {
+        height: 3fr;
+        border-top: solid $primary-background;
+    }
+    #log_header {
+        height: 1;
+        background: $primary-background;
+        color: $text;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._selected_job_id: str | None = None
+        self._log_offset: int = 0
+        self._timer = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="jobs_container"):
+            yield DataTable(id="jobs_table")
+            yield Static("Select a job to view its log", id="log_header")
+            yield RichLog(id="log_viewer", wrap=True, highlight=True)
+
+    def on_mount(self) -> None:
+        table = self.query_one("#jobs_table", DataTable)
+        table.cursor_type = "row"
+        self._refresh_jobs_table()
+        self._timer = self.set_interval(1, self._poll_log)
+
+    def _refresh_jobs_table(self) -> None:
+        table = self.query_one("#jobs_table", DataTable)
+        table.clear(columns=True)
+        table.add_column("Job ID", key="job_id", width=30)
+        table.add_column("Action", key="action", width=8)
+        table.add_column("Scope", key="scope", width=30)
+        table.add_column("Status", key="status", width=10)
+        table.add_column("Started", key="started", width=20)
+
+        jobs = discover_jobs()
+        for job in jobs:
+            table.add_row(
+                job.get("_job_id", "?"),
+                job.get("action", "?"),
+                job.get("scope", "?"),
+                job.get("status", "?"),
+                job.get("started_at", "?"),
+                key=job.get("_job_id", ""),
+            )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self._select_job(str(event.row_key.value))
+
+    def on_data_table_cursor_changed(self, event: DataTable.CursorChanged) -> None:
+        if event.cursor_row is not None:
+            table = self.query_one("#jobs_table", DataTable)
+            keys = list(table.rows.keys())
+            if 0 <= event.cursor_row < len(keys):
+                self._select_job(str(keys[event.cursor_row].value))
+
+    def _select_job(self, job_id: str) -> None:
+        if job_id == self._selected_job_id:
+            return
+        self._selected_job_id = job_id
+        self._log_offset = 0
+        log_viewer = self.query_one("#log_viewer", RichLog)
+        log_viewer.clear()
+        self.query_one("#log_header", Static).update(f"Log: {job_id}")
+        self._poll_log()
+
+    def _poll_log(self) -> None:
+        if not self._selected_job_id:
+            return
+        log_path = get_job_log_path(self._selected_job_id)
+        if not log_path.exists():
+            return
+        try:
+            with open(log_path) as f:
+                f.seek(self._log_offset)
+                new_data = f.read()
+                if new_data:
+                    self._log_offset = f.tell()
+                    log_viewer = self.query_one("#log_viewer", RichLog)
+                    for line in new_data.splitlines():
+                        log_viewer.write(line)
+        except OSError:
+            pass
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#jobs_table", DataTable).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#jobs_table", DataTable).action_cursor_up()
+
+    def action_dismiss_jobs(self) -> None:
+        dismissed = dismiss_finished_jobs()
+        self.notify(f"Dismissed {dismissed} job(s)" if dismissed else "No jobs to dismiss")
+        self._refresh_jobs_table()
+
+    def action_dismiss(self) -> None:
+        self.app.pop_screen()
+
+
 class ScopeManagerApp(App):
     """TUI for browsing OpenAlex scopes, viewing status, and launching fetch/embed jobs."""
 
@@ -84,7 +212,7 @@ class ScopeManagerApp(App):
         Binding("f", "fetch", "Fetch"),
         Binding("e", "embed", "Embed"),
         Binding("d", "dismiss_jobs", "Dismiss jobs"),
-        Binding("l", "view_log", "View log"),
+        Binding("l", "view_log", "Jobs/logs"),
         Binding("left", "nav_back", "Back", key_display="\u2190/BS"),
         Binding("backspace", "nav_back", "Back", show=False),
         Binding("right", "nav_forward", "Drill down", key_display="\u2192/Enter"),
@@ -357,17 +485,8 @@ class ScopeManagerApp(App):
         self._update_status_bar()
 
     def action_view_log(self) -> None:
-        """Show path to the most recent running job's log."""
-        jobs = discover_jobs()
-        running = [j for j in jobs if j["status"] == "running"]
-        if not running:
-            self.notify("No running jobs")
-            return
-        log_path = get_job_log_path(running[0]['_job_id'])
-        if log_path.exists():
-            self.notify(f"Log: {log_path}")
-        else:
-            self.notify("No log file found")
+        """Open the jobs screen with live log viewer."""
+        self.push_screen(JobsScreen())
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +702,60 @@ def _build_cli():
             console.print_json(_json.dumps({"dismissed": count}))
         else:
             console.print(f"Dismissed {count} job(s)." if count else "No jobs to dismiss.")
+
+    @jobs_app.command()
+    def log(
+        job_id: Optional[str] = typer.Argument(None, help="Job ID (default: most recent running job)"),
+        follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output (like tail -f)"),
+        tail: int = typer.Option(20, "--tail", "-n", help="Number of lines to show from end"),
+    ):
+        """Show or follow a job's log file."""
+        import time as _time
+
+        if job_id is None:
+            jobs = discover_jobs()
+            running = [j for j in jobs if j["status"] == "running"]
+            if running:
+                job_id = running[0]["_job_id"]
+            elif jobs:
+                job_id = jobs[-1]["_job_id"]
+            else:
+                typer.echo("No jobs found.", err=True)
+                raise typer.Exit(1)
+
+        log_path = get_job_log_path(job_id)
+        if not log_path.exists():
+            typer.echo(f"No log file for job: {job_id}", err=True)
+            raise typer.Exit(1)
+
+        if _use_json:
+            with open(log_path) as f:
+                lines = f.readlines()
+            console.print_json(_json.dumps({
+                "job_id": job_id,
+                "log_path": str(log_path),
+                "lines": [l.rstrip() for l in lines[-tail:]],
+            }))
+            return
+
+        console.print(f"[dim]Log: {log_path}[/dim]")
+        with open(log_path) as f:
+            all_lines = f.readlines()
+            start = max(0, len(all_lines) - tail)
+            for line in all_lines[start:]:
+                console.print(line.rstrip())
+
+            if follow:
+                console.print("[dim]--- following (Ctrl+C to stop) ---[/dim]")
+                try:
+                    while True:
+                        line = f.readline()
+                        if line:
+                            console.print(line.rstrip())
+                        else:
+                            _time.sleep(0.5)
+                except KeyboardInterrupt:
+                    console.print("\n[dim]Stopped.[/dim]")
 
     # -- tui subcommand --
 
