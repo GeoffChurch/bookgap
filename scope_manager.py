@@ -16,7 +16,9 @@ import pyalex
 import pyarrow.parquet as pq
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Static
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, OptionList, Static
+from textual.widgets.option_list import Option
 
 import bookgap.openalex_ingest as _ingest_mod
 from bookgap.embedder import SentenceTransformerEmbedder as Embedder
@@ -413,6 +415,40 @@ def get_system_resources() -> str:
 # Textual TUI app
 # ---------------------------------------------------------------------------
 
+class ModelSelectScreen(ModalScreen[str | None]):
+    """Modal popup for selecting an embedding model."""
+
+    CSS = """
+    ModelSelectScreen {
+        align: center middle;
+    }
+    #model_list {
+        width: 50;
+        height: 8;
+        border: solid $primary;
+        background: $surface;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield OptionList(
+            Option("GIST-small (384d)", id="gist"),
+            Option("Gemma-300M (768d)", id="gemma"),
+            id="model_list",
+        )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        model_map = {
+            "gist": Embedder.ModelName.GIST_SMALL.value,
+            "gemma": Embedder.ModelName.GEMMA_300M.value,
+        }
+        self.dismiss(model_map.get(event.option.id))
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
+
+
 class ScopeManagerApp(App):
     """TUI for browsing OpenAlex scopes, viewing status, and launching fetch/embed jobs."""
 
@@ -641,18 +677,90 @@ class ScopeManagerApp(App):
         elif event.key == "k":
             table.action_cursor_up()
 
-    # Placeholder actions for Task 5-6
     def action_fetch(self) -> None:
-        pass
+        """Launch fetch jobs for the selected scope."""
+        table = self.query_one("#scope_table", DataTable)
+        if table.cursor_row is None:
+            return
+        row_key = str(list(table.rows.keys())[table.cursor_row].value)
+        active_types = self._active_type_names()
+
+        if self._level == 3:
+            field_id = self._path[1][0]
+            sf_id = self._path[2][0]
+            launched = 0
+            for wt in active_types:
+                scope_str = f"{field_id}/{sf_id}/{row_key}/{wt}"
+                job_id = launch_worker("fetch", scope_str)
+                if job_id:
+                    launched += 1
+            self.notify(f"Launched {launched} fetch job(s)" if launched else "Already running or at capacity")
+        else:
+            if self._level == 0:
+                scope_str = row_key  # domain ID
+            elif self._level == 1:
+                scope_str = row_key  # field ID
+            elif self._level == 2:
+                scope_str = f"{self._path[1][0]}/{row_key}"  # field/subfield
+            job_id = launch_worker("fetch", scope_str)
+            self.notify("Launched fetch job" if job_id else "Already running or at capacity")
+
+        self._update_status_bar()
 
     def action_embed(self) -> None:
-        pass
+        """Prompt for model, then launch embed jobs."""
+        table = self.query_one("#scope_table", DataTable)
+        if table.cursor_row is None:
+            return
+        row_key = str(list(table.rows.keys())[table.cursor_row].value)
+
+        def on_model_selected(model: str | None) -> None:
+            if model is None:
+                return
+            active_types = self._active_type_names()
+            if self._level == 3:
+                field_id = self._path[1][0]
+                sf_id = self._path[2][0]
+                launched = 0
+                for wt in active_types:
+                    scope_str = f"{field_id}/{sf_id}/{row_key}/{wt}"
+                    job_id = launch_worker("embed", scope_str, model=model)
+                    if job_id:
+                        launched += 1
+                self.notify(f"Launched {launched} embed job(s)" if launched else "Already running or at capacity")
+            else:
+                self.notify("Embed is only supported at topic level")
+            self._update_status_bar()
+
+        self.push_screen(ModelSelectScreen(), callback=on_model_selected)
 
     def action_dismiss_jobs(self) -> None:
-        pass
+        """Remove completed/failed/crashed job manifests."""
+        jobs = discover_jobs()
+        dismissed = 0
+        for job in jobs:
+            if job.get("status") in ("complete", "failed", "crashed"):
+                job_id = job["_job_id"]
+                manifest_path = _jobs_path() / f"{job_id}.json"
+                log_path = _jobs_path() / f"{job_id}.log"
+                manifest_path.unlink(missing_ok=True)
+                log_path.unlink(missing_ok=True)
+                dismissed += 1
+        self.notify(f"Dismissed {dismissed} job(s)" if dismissed else "No jobs to dismiss")
+        self._update_status_bar()
 
     def action_view_log(self) -> None:
-        pass
+        """Show path to the most recent running job's log."""
+        jobs = discover_jobs()
+        running = [j for j in jobs if j["status"] == "running"]
+        if not running:
+            self.notify("No running jobs")
+            return
+        log_path = _jobs_path() / f"{running[0]['_job_id']}.log"
+        if log_path.exists():
+            self.notify(f"Log: {log_path}")
+        else:
+            self.notify("No log file found")
 
 
 # ---------------------------------------------------------------------------
