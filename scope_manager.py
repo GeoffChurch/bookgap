@@ -1,423 +1,32 @@
 #!/usr/bin/env python3
-"""Scope Manager TUI — browse OpenAlex taxonomy, view fetch/embed status, launch jobs."""
+"""Scope Manager — CLI and TUI for browsing OpenAlex taxonomy, viewing status, launching jobs."""
 from __future__ import annotations
 
-import argparse
-import datetime
-import json
-import os
-import subprocess
-import sys
-import time
-from pathlib import Path
-from typing import Any
+from bookgap.scope_ops import (
+    ALL_WORK_TYPES,
+    KNOWN_DOMAINS,
+    MODEL_PATHS,
+    discover_jobs,
+    dismiss_finished_jobs,
+    get_domain_fields,
+    get_fast_aggregate_status,
+    get_field_subfields,
+    get_scope_status,
+    get_subfield_topics,
+    get_system_resources,
+    has_running_job,
+    launch_worker,
+    run_worker,
+    _jobs_path,
+)
+from bookgap.embedder import SentenceTransformerEmbedder as Embedder
+from bookgap.openalex_ingest import ResolvedScope
 
-import pyalex
-pyalex.config.email = "gchurchill@cs.stonybrook.edu"
-import pyarrow.parquet as pq
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.option_list import Option
-
-import bookgap.openalex_ingest as _ingest_mod
-from bookgap.embedder import SentenceTransformerEmbedder as Embedder
-from bookgap.openalex_ingest import ResolvedScope, _scope_parquet_path
-from bookgap.util import WorkType
-
-# ---------------------------------------------------------------------------
-# Hierarchy resolution (PyAlex queries — returns (id, display_name) pairs)
-# ---------------------------------------------------------------------------
-
-def _suffix(raw_id: str) -> str:
-    return raw_id.rsplit("/", 1)[-1]
-
-
-def get_domain_fields(domain_id: str) -> list[tuple[str, str]]:
-    """Return (field_id, display_name) pairs for a domain, sorted by name."""
-    data: Any = pyalex.Domains()[domain_id]
-    fields = data.get("fields", [])
-    result = [(_suffix(f["id"]), f["display_name"]) for f in fields]
-    return sorted(result, key=lambda x: x[1])
-
-
-def get_field_subfields(field_id: str) -> list[tuple[str, str]]:
-    """Return (subfield_id, display_name) pairs for a field, sorted by name."""
-    data: Any = pyalex.Fields()[field_id]
-    subfields = data.get("subfields", [])
-    result = [(_suffix(sf["id"]), sf["display_name"]) for sf in subfields]
-    return sorted(result, key=lambda x: x[1])
-
-
-def get_subfield_topics_named(subfield_id: str) -> list[tuple[str, str]]:
-    """Return (topic_id, display_name) pairs for a subfield, sorted by name, deduplicated."""
-    result: list[tuple[str, str]] = []
-    for page in pyalex.Topics().filter(**{"subfield.id": subfield_id}).paginate(per_page=200):
-        for topic in page:
-            tid = topic.get("id")
-            name = topic.get("display_name", "")
-            if isinstance(tid, str):
-                result.append((_suffix(tid), name))
-    # Deduplicate by ID, sort by name
-    seen: set[str] = set()
-    unique: list[tuple[str, str]] = []
-    for tid, name in sorted(result, key=lambda x: x[1]):
-        if tid not in seen:
-            seen.add(tid)
-            unique.append((tid, name))
-    return unique
-
-
-# ---------------------------------------------------------------------------
-# Status queries (filesystem only — no API calls)
-# ---------------------------------------------------------------------------
-
-_MODEL_PATHS = {
-    "gist": Embedder.ModelName.GIST_SMALL.value,   # "avsolatorio/GIST-small-Embedding-v0"
-    "gemma": Embedder.ModelName.GEMMA_300M.value,   # "google/embeddinggemma-300m"
-}
-
-
-def _embedding_dir(scope: ResolvedScope, model_value: str) -> Path:
-    """Return the embedding cache directory for a scope + model.
-
-    Uses the same CACHE_DIR as bookgap.openalex_ingest so that test
-    monkeypatches on that module-level variable are respected.
-    """
-    cache_dir: Path = _ingest_mod.CACHE_DIR
-    return cache_dir / "embeddings" / model_value / scope.field / scope.subfield / scope.topic / scope.work_type
-
-
-def get_scope_status(scope: ResolvedScope) -> dict[str, Any]:
-    """Check fetch and embed status for a single scope. Filesystem only."""
-    parquet_path = _scope_parquet_path(scope)
-    fetched = parquet_path.exists()
-    work_count = 0
-    if fetched:
-        try:
-            work_count = pq.read_metadata(parquet_path).num_rows
-        except Exception:
-            work_count = -1  # corrupt file
-
-    gist_dir = _embedding_dir(scope, _MODEL_PATHS["gist"])
-    gemma_dir = _embedding_dir(scope, _MODEL_PATHS["gemma"])
-
-    return {
-        "fetched": fetched,
-        "work_count": work_count,
-        "gist_embedded": gist_dir.exists() and any(gist_dir.glob("batch_*_embeddings.npy")),
-        "gemma_embedded": gemma_dir.exists() and any(gemma_dir.glob("batch_*_embeddings.npy")),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Job manifest management
-# ---------------------------------------------------------------------------
-
-JOBS_DIR = ".jobs"
-
-
-def _jobs_path() -> Path:
-    cache_dir: Path = _ingest_mod.CACHE_DIR
-    d = cache_dir / JOBS_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def write_job_manifest(job_id: str, manifest: dict[str, Any]) -> None:
-    """Write a job manifest atomically (temp file + rename)."""
-    dest = _jobs_path() / f"{job_id}.json"
-    tmp = dest.with_suffix(".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, default=str))
-    os.replace(tmp, dest)
-
-
-def read_job_manifest(job_id: str) -> dict[str, Any]:
-    """Read a job manifest by ID."""
-    path = _jobs_path() / f"{job_id}.json"
-    return json.loads(path.read_text())
-
-
-def _is_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def discover_jobs() -> list[dict[str, Any]]:
-    """Scan job manifests, detect crashed workers, return all jobs with IDs."""
-    jobs_dir = _jobs_path()
-    results: list[dict[str, Any]] = []
-    for path in sorted(jobs_dir.glob("*.json")):
-        try:
-            manifest = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        manifest["_job_id"] = path.stem
-        if manifest.get("status") == "running" and not _is_pid_alive(manifest.get("pid", -1)):
-            manifest["status"] = "crashed"
-            write_job_manifest(path.stem, manifest)
-        results.append(manifest)
-    return results
-
-
-def has_running_job(action: str, scope_str: str, model: str | None = None) -> bool:
-    """Check if there's already a running job for this action+scope+model."""
-    for job in discover_jobs():
-        if (
-            job.get("status") == "running"
-            and job.get("action") == action
-            and job.get("scope") == scope_str
-            and job.get("model") == model
-        ):
-            return True
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Worker launch + entry point
-# ---------------------------------------------------------------------------
-
-ALL_WORK_TYPES: list[str] = [wt.value for wt in WorkType]
-MAX_CONCURRENT_WORKERS = 3
-
-
-def _make_job_id(action: str, scope_str: str, model: str | None = None) -> str:
-    parts = [action]
-    scope_parts = scope_str.split("/")
-    if len(scope_parts) >= 4:
-        parts.append(scope_parts[2])  # topic
-        parts.append(scope_parts[3])  # work_type
-    else:
-        parts.append(scope_str.replace("/", "_"))
-    if model:
-        parts.append(model.split("/")[-1][:8])
-    parts.append(str(int(time.time())))
-    return "_".join(parts)
-
-
-def launch_worker(
-    action: str, scope_str: str, model: str | None = None, work_types: list[str] | None = None,
-) -> str | None:
-    """Launch a detached worker subprocess. Returns job_id or None if duplicate/at capacity."""
-    if has_running_job(action, scope_str, model):
-        return None
-    jobs = discover_jobs()
-    running_count = sum(1 for j in jobs if j.get("status") == "running")
-    if running_count >= MAX_CONCURRENT_WORKERS:
-        return None
-
-    job_id = _make_job_id(action, scope_str, model)
-    log_path = _jobs_path() / f"{job_id}.log"
-
-    cmd = [sys.executable, os.path.abspath(__file__), "--worker", action, scope_str]
-    if model:
-        cmd.extend(["--model", model])
-    if work_types:
-        cmd.extend(["--work-types", ",".join(work_types)])
-    cmd.extend(["--job-id", job_id])
-
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-
-    manifest = {
-        "pid": proc.pid,
-        "action": action,
-        "scope": scope_str,
-        "model": model,
-        "status": "running",
-        "started_at": datetime.datetime.now().isoformat(),
-        "finished_at": None,
-        "error": None,
-    }
-    write_job_manifest(job_id, manifest)
-    return job_id
-
-
-def run_worker(
-    action: str, scope_str: str, model: str | None, job_id: str, work_types: list[str] | None = None,
-) -> None:
-    """Worker entry point — called in the detached subprocess."""
-    from bookgap.openalex_ingest import fetch_works, fetch_all_scopes, embed_works
-    from bookgap.util import Filter
-
-    wt = tuple(work_types) if work_types else tuple(ALL_WORK_TYPES)
-
-    # Update manifest with our actual PID
-    manifest = read_job_manifest(job_id)
-    manifest["pid"] = os.getpid()
-    write_job_manifest(job_id, manifest)
-
-    try:
-        parts = scope_str.split("/")
-        if action == "fetch":
-            if len(parts) == 4:
-                scope = ResolvedScope(field=parts[0], subfield=parts[1], topic=parts[2], work_type=parts[3])
-                fetch_works(scope)
-            elif len(parts) == 2:
-                filt = Filter(field=parts[0], subfield=parts[1], work_types=wt)
-                fetch_all_scopes(filt)
-            elif len(parts) == 1:
-                if any(d[0] == parts[0] for d in KNOWN_DOMAINS):
-                    filt = Filter(domain=parts[0], work_types=wt)
-                else:
-                    filt = Filter(field=parts[0], work_types=wt)
-                fetch_all_scopes(filt)
-            else:
-                raise ValueError(f"Unexpected scope format for fetch: {scope_str}")
-        elif action == "embed":
-            if len(parts) != 4:
-                raise ValueError(f"Embed requires a full scope (field/subfield/topic/work_type), got: {scope_str}")
-            if model is None:
-                raise ValueError("Embed requires --model")
-            scope = ResolvedScope(field=parts[0], subfield=parts[1], topic=parts[2], work_type=parts[3])
-            model_enum = Embedder.ModelName(model)
-            embed_works(scope, model_enum)
-        else:
-            raise ValueError(f"Unknown action: {action}")
-
-        manifest = read_job_manifest(job_id)
-        manifest["status"] = "complete"
-        manifest["finished_at"] = datetime.datetime.now().isoformat()
-        write_job_manifest(job_id, manifest)
-
-    except Exception as e:
-        manifest = read_job_manifest(job_id)
-        manifest["status"] = "failed"
-        manifest["error"] = str(e)
-        manifest["finished_at"] = datetime.datetime.now().isoformat()
-        write_job_manifest(job_id, manifest)
-        raise
-
-
-# ---------------------------------------------------------------------------
-# Aggregate status helpers
-# ---------------------------------------------------------------------------
-
-def get_aggregate_status(
-    scopes: list[ResolvedScope],
-    active_types: list[str],
-) -> dict[str, dict[str, Any]]:
-    """Compute aggregate fetch/embed status per work type."""
-    result: dict[str, dict[str, Any]] = {}
-    for wt in active_types:
-        wt_scopes = [s for s in scopes if s.work_type == wt]
-        fetched = 0
-        gist = 0
-        gemma = 0
-        total_works = 0
-        for s in wt_scopes:
-            status = get_scope_status(s)
-            if status["fetched"]:
-                fetched += 1
-                total_works += status["work_count"]
-            if status["gist_embedded"]:
-                gist += 1
-            if status["gemma_embedded"]:
-                gemma += 1
-        result[wt] = {
-            "fetched": fetched,
-            "total": len(wt_scopes),
-            "gist_count": gist,
-            "gemma_count": gemma,
-            "total_works": total_works,
-        }
-    return result
-
-
-def resolve_scopes_for_node(
-    level: int, path: list[tuple[str, str]], node_id: str, work_types: list[str],
-) -> list[ResolvedScope]:
-    """Resolve all concrete scopes under a given hierarchy node."""
-    if level == 0:
-        fields = get_domain_fields(node_id)
-        scopes: list[ResolvedScope] = []
-        for field_id, _ in fields:
-            subfields = get_field_subfields(field_id)
-            for sf_id, _ in subfields:
-                topics = get_subfield_topics_named(sf_id)
-                for topic_id, _ in topics:
-                    for wt in work_types:
-                        scopes.append(ResolvedScope(field=field_id, subfield=sf_id, topic=topic_id, work_type=wt))
-        return scopes
-    elif level == 1:
-        field_id = node_id
-        subfields = get_field_subfields(field_id)
-        scopes = []
-        for sf_id, _ in subfields:
-            topics = get_subfield_topics_named(sf_id)
-            for topic_id, _ in topics:
-                for wt in work_types:
-                    scopes.append(ResolvedScope(field=field_id, subfield=sf_id, topic=topic_id, work_type=wt))
-        return scopes
-    elif level == 2:
-        field_id = path[1][0]
-        sf_id = node_id
-        topics = get_subfield_topics_named(sf_id)
-        scopes = []
-        for topic_id, _ in topics:
-            for wt in work_types:
-                scopes.append(ResolvedScope(field=field_id, subfield=sf_id, topic=topic_id, work_type=wt))
-        return scopes
-    else:
-        field_id = path[1][0]
-        sf_id = path[2][0]
-        return [
-            ResolvedScope(field=field_id, subfield=sf_id, topic=node_id, work_type=wt)
-            for wt in work_types
-        ]
-
-
-# ---------------------------------------------------------------------------
-# Known domains
-# ---------------------------------------------------------------------------
-
-KNOWN_DOMAINS: list[tuple[str, str]] = [
-    ("3", "Physical Sciences"),
-]
-
-
-# ---------------------------------------------------------------------------
-# System resource helper
-# ---------------------------------------------------------------------------
-
-def get_system_resources() -> str:
-    """Return a formatted string of CPU/RAM/GPU usage."""
-    parts: list[str] = []
-    try:
-        import psutil
-        cpu = psutil.cpu_percent(interval=None)
-        cores = psutil.cpu_count()
-        mem = psutil.virtual_memory()
-        parts.append(f"CPU: {cpu:.0f}% ({cores} cores)")
-        parts.append(f"RAM: {mem.used / (1024**3):.1f}/{mem.total / (1024**3):.1f} GB ({mem.percent:.0f}%)")
-    except ImportError:
-        pass
-
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().splitlines():
-                used, total = line.split(",")
-                used_gb = int(used.strip()) / 1024
-                total_gb = int(total.strip()) / 1024
-                pct = (used_gb / total_gb * 100) if total_gb > 0 else 0
-                parts.append(f"GPU: {used_gb:.1f}/{total_gb:.1f} GB VRAM ({pct:.0f}%)")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    return " | ".join(parts) if parts else "System info unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -465,16 +74,22 @@ class ScopeManagerApp(App):
     TITLE = "Scope Manager"
 
     BINDINGS = [
+        Binding("question_mark", "show_help_panel", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("f", "fetch", "Fetch"),
         Binding("e", "embed", "Embed"),
-        Binding("d", "dismiss_jobs", "Dismiss"),
-        Binding("l", "view_log", "Log"),
-        Binding("1", "toggle_type_1", "article", show=False),
-        Binding("2", "toggle_type_2", "book", show=False),
-        Binding("3", "toggle_type_3", "book-chapter", show=False),
-        Binding("4", "toggle_type_4", "preprint", show=False),
+        Binding("d", "dismiss_jobs", "Dismiss jobs"),
+        Binding("l", "view_log", "View log"),
+        Binding("left", "nav_back", "Back", key_display="\u2190/BS"),
+        Binding("backspace", "nav_back", "Back", show=False),
+        Binding("right", "nav_forward", "Drill down", key_display="\u2192/Enter"),
+        Binding("j", "cursor_down", "Down", key_display="j/\u2193"),
+        Binding("k", "cursor_up", "Up", key_display="k/\u2191"),
+        Binding("1", "toggle_type_1", "Toggle article"),
+        Binding("2", "toggle_type_2", "Toggle book"),
+        Binding("3", "toggle_type_3", "Toggle book-chapter"),
+        Binding("4", "toggle_type_4", "Toggle preprint"),
     ]
 
     CSS = """
@@ -499,13 +114,6 @@ class ScopeManagerApp(App):
         color: $text;
         padding: 0 1;
     }
-    #key_hints {
-        dock: bottom;
-        height: 1;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-    }
     DataTable {
         height: 1fr;
     }
@@ -513,15 +121,14 @@ class ScopeManagerApp(App):
 
     def __init__(self):
         super().__init__()
-        self._level: int = 0  # 0=domains, 1=fields, 2=subfields, 3=topics
-        self._path: list[tuple[str, str]] = []  # [(id, name), ...] of navigation selections
+        self._level: int = 0
+        self._path: list[tuple[str, str]] = []
         self._active_types: list[bool] = [True, True, True, True]
-        self._rows: list[tuple[str, str]] = []  # [(id, display_name), ...]
+        self._rows: list[tuple[str, str]] = []
 
     def compose(self) -> ComposeResult:
         yield Static("Scope Manager", id="breadcrumb")
         yield DataTable(id="scope_table")
-        yield Static("", id="key_hints")
         yield Static("", id="status_bar")
         yield Static("", id="resource_bar")
 
@@ -556,9 +163,8 @@ class ScopeManagerApp(App):
             job_parts.append(f"{failed} failed")
         jobs_str = ", ".join(job_parts) if job_parts else "no jobs"
 
-        self.query_one("#status_bar", Static).update(f"Types: {types_str} | Jobs: {jobs_str}")
-        self.query_one("#key_hints", Static).update(
-            escape("[f]etch [e]mbed [r]efresh [d]ismiss [l]og [1-4]toggle types [q]uit")
+        self.query_one("#status_bar", Static).update(
+            f"Types: {types_str} | Jobs: {jobs_str} | Press [bold]?[/bold] for help"
         )
 
     def _breadcrumb_text(self) -> str:
@@ -577,7 +183,6 @@ class ScopeManagerApp(App):
 
         active_types = self._active_type_names()
 
-        # Determine rows for this level
         if self._level == 0:
             self._rows = KNOWN_DOMAINS
         elif self._level == 1:
@@ -588,19 +193,16 @@ class ScopeManagerApp(App):
             self._rows = get_field_subfields(field_id)
         elif self._level == 3:
             subfield_id = self._path[2][0]
-            self._rows = get_subfield_topics_named(subfield_id)
+            self._rows = get_subfield_topics(subfield_id)
 
-        # Build columns: Name + per-work-type status columns
         table.add_column("Name", key="name", width=30)
         for wt in active_types:
             table.add_column(f"{wt[:8]} fetch", key=f"{wt}_fetch", width=12)
             table.add_column(f"{wt[:8]} GIST", key=f"{wt}_gist", width=8)
             table.add_column(f"{wt[:8]} Gem", key=f"{wt}_gemma", width=8)
 
-        # Populate rows
         for node_id, name in self._rows:
             if self._level == 3:
-                # Topic level: per-work-type direct status
                 cells: list[str] = [name]
                 for wt in active_types:
                     scope = ResolvedScope(
@@ -618,10 +220,8 @@ class ScopeManagerApp(App):
                     cells.append("\u2713" if status["gemma_embedded"] else "-")
                 table.add_row(*cells, key=node_id)
             else:
-                # Aggregate level: fetch/embed counts across descendants
                 cells = [name]
-                scopes = resolve_scopes_for_node(self._level, self._path, node_id, active_types)
-                agg = get_aggregate_status(scopes, active_types)
+                agg = get_fast_aggregate_status(self._level, node_id, self._path, active_types)
                 for wt in active_types:
                     wt_agg = agg.get(wt, {"fetched": 0, "total": 0, "gist_count": 0, "gemma_count": 0})
                     cells.append(f"{wt_agg['fetched']}/{wt_agg['total']}")
@@ -650,6 +250,31 @@ class ScopeManagerApp(App):
     def action_refresh(self) -> None:
         self._render_current_level()
 
+    def action_cursor_down(self) -> None:
+        self.query_one("#scope_table", DataTable).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#scope_table", DataTable).action_cursor_up()
+
+    def action_nav_back(self) -> None:
+        if self._level > 0:
+            self._path.pop()
+            self._level -= 1
+            self._render_current_level()
+
+    def action_nav_forward(self) -> None:
+        table = self.query_one("#scope_table", DataTable)
+        if self._level < 3 and table.cursor_row is not None:
+            row_key = str(list(table.rows.keys())[table.cursor_row].value)
+            name = ""
+            for rid, rname in self._rows:
+                if rid == row_key:
+                    name = rname
+                    break
+            self._path.append((row_key, name))
+            self._level += 1
+            self._render_current_level()
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Drill down on Enter/click."""
         if self._level >= 3:
@@ -663,29 +288,6 @@ class ScopeManagerApp(App):
         self._path.append((row_key, name))
         self._level += 1
         self._render_current_level()
-
-    def on_key(self, event) -> None:
-        table = self.query_one("#scope_table", DataTable)
-        if event.key == "left" or event.key == "backspace":
-            if self._level > 0:
-                self._path.pop()
-                self._level -= 1
-                self._render_current_level()
-        elif event.key == "right":
-            if self._level < 3 and table.cursor_row is not None:
-                row_key = str(list(table.rows.keys())[table.cursor_row].value)
-                name = ""
-                for rid, rname in self._rows:
-                    if rid == row_key:
-                        name = rname
-                        break
-                self._path.append((row_key, name))
-                self._level += 1
-                self._render_current_level()
-        elif event.key == "j":
-            table.action_cursor_down()
-        elif event.key == "k":
-            table.action_cursor_up()
 
     def action_fetch(self) -> None:
         """Launch fetch jobs for the selected scope."""
@@ -707,11 +309,11 @@ class ScopeManagerApp(App):
             self.notify(f"Launched {launched} fetch job(s)" if launched else "Already running or at capacity")
         else:
             if self._level == 0:
-                scope_str = row_key  # domain ID
+                scope_str = row_key
             elif self._level == 1:
-                scope_str = row_key  # field ID
+                scope_str = row_key
             elif self._level == 2:
-                scope_str = f"{self._path[1][0]}/{row_key}"  # field/subfield
+                scope_str = f"{self._path[1][0]}/{row_key}"
             job_id = launch_worker("fetch", scope_str, work_types=active_types)
             self.notify("Launched fetch job" if job_id else "Already running or at capacity")
 
@@ -746,16 +348,7 @@ class ScopeManagerApp(App):
 
     def action_dismiss_jobs(self) -> None:
         """Remove completed/failed/crashed job manifests."""
-        jobs = discover_jobs()
-        dismissed = 0
-        for job in jobs:
-            if job.get("status") in ("complete", "failed", "crashed"):
-                job_id = job["_job_id"]
-                manifest_path = _jobs_path() / f"{job_id}.json"
-                log_path = _jobs_path() / f"{job_id}.log"
-                manifest_path.unlink(missing_ok=True)
-                log_path.unlink(missing_ok=True)
-                dismissed += 1
+        dismissed = dismiss_finished_jobs()
         self.notify(f"Dismissed {dismissed} job(s)" if dismissed else "No jobs to dismiss")
         self._update_status_bar()
 
@@ -774,24 +367,251 @@ class ScopeManagerApp(App):
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Typer CLI app
+# ---------------------------------------------------------------------------
+# Imports here to avoid loading Typer/Rich when only the TUI is needed
+# (Textual has its own Rich dependency but Typer is separate)
+
+def _build_cli():
+    """Build and return the Typer app. Deferred to avoid import cost when running TUI directly."""
+    import json as _json
+    from typing import Optional
+
+    import typer
+    from rich.console import Console
+    from rich.table import Table
+
+    cli = typer.Typer(help="Scope Manager — browse OpenAlex taxonomy, check status, launch jobs.")
+    console = Console()
+    _use_json = False
+
+    @cli.callback()
+    def cli_main(
+        json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+    ):
+        nonlocal _use_json
+        _use_json = json_output
+
+    # -- list subcommand --
+
+    ENTITY_CHOICES = ["domains", "fields", "subfields", "topics"]
+
+    @cli.command()
+    def list(
+        entity: str = typer.Argument(help="Entity type: domains, fields, subfields, topics"),
+        parent_id: Optional[str] = typer.Argument(None, help="Parent ID (required for fields/subfields/topics)"),
+    ):
+        """List hierarchy entities (domains, fields, subfields, topics)."""
+        if entity not in ENTITY_CHOICES:
+            typer.echo(f"Unknown entity: {entity}. Choose from: {', '.join(ENTITY_CHOICES)}", err=True)
+            raise typer.Exit(1)
+
+        if entity == "domains":
+            rows = KNOWN_DOMAINS
+        elif entity == "fields":
+            if not parent_id:
+                typer.echo("parent_id (domain ID) is required for 'fields'", err=True)
+                raise typer.Exit(1)
+            rows = get_domain_fields(parent_id)
+        elif entity == "subfields":
+            if not parent_id:
+                typer.echo("parent_id (field ID) is required for 'subfields'", err=True)
+                raise typer.Exit(1)
+            rows = get_field_subfields(parent_id)
+        elif entity == "topics":
+            if not parent_id:
+                typer.echo("parent_id (subfield ID) is required for 'topics'", err=True)
+                raise typer.Exit(1)
+            rows = get_subfield_topics(parent_id)
+
+        if _use_json:
+            console.print_json(_json.dumps([{"id": r[0], "name": r[1]} for r in rows]))
+        else:
+            table = Table(title=f"{entity.title()}")
+            table.add_column("ID", style="cyan")
+            table.add_column("Name")
+            for rid, name in rows:
+                table.add_row(rid, name)
+            console.print(table)
+
+    # -- status subcommand --
+
+    @cli.command()
+    def status(
+        scope_path: str = typer.Argument(help="Scope path (e.g., 17/1702/T10181/article or 17/1702)"),
+        work_types: Optional[str] = typer.Option(None, "--work-types", "-w", help="Comma-separated work types"),
+    ):
+        """Show fetch/embed status for a scope (single or aggregate)."""
+        parts = scope_path.split("/")
+        active_types = work_types.split(",") if work_types else ALL_WORK_TYPES
+
+        if len(parts) == 4:
+            scope = ResolvedScope(field=parts[0], subfield=parts[1], topic=parts[2], work_type=parts[3])
+            result = get_scope_status(scope)
+            if _use_json:
+                console.print_json(_json.dumps(result))
+            else:
+                table = Table(title=f"Status: {scope_path}")
+                table.add_column("Property")
+                table.add_column("Value")
+                table.add_row("Fetched", str(result["fetched"]))
+                table.add_row("Work count", str(result["work_count"]))
+                table.add_row("GIST embedded", str(result["gist_embedded"]))
+                table.add_row("Gemma embedded", str(result["gemma_embedded"]))
+                console.print(table)
+        elif len(parts) in (1, 2):
+            if len(parts) == 1:
+                level, node_id = 1, parts[0]
+                path_tuples: list[tuple[str, str]] = [("", "")]
+            else:
+                level, node_id = 2, parts[1]
+                path_tuples = [("", ""), (parts[0], "")]
+
+            agg = get_fast_aggregate_status(level, node_id, path_tuples, active_types)
+            if _use_json:
+                console.print_json(_json.dumps(agg))
+            else:
+                table = Table(title=f"Aggregate status: {scope_path}")
+                table.add_column("Work Type")
+                table.add_column("Fetched")
+                table.add_column("GIST")
+                table.add_column("Gemma")
+                for wt, data in agg.items():
+                    table.add_row(
+                        wt,
+                        f"{data['fetched']}/{data['total']}",
+                        str(data["gist_count"]),
+                        str(data["gemma_count"]),
+                    )
+                console.print(table)
+        else:
+            typer.echo(f"Invalid scope path: {scope_path}", err=True)
+            raise typer.Exit(1)
+
+    # -- fetch subcommand --
+
+    @cli.command()
+    def fetch(
+        scope_path: str = typer.Argument(help="Scope path (e.g., 17/1702/T10181/article or 17/1702)"),
+        work_types: Optional[str] = typer.Option(None, "--work-types", "-w", help="Comma-separated work types"),
+    ):
+        """Launch a fetch job for the given scope."""
+        wt = work_types.split(",") if work_types else None
+        job_id = launch_worker("fetch", scope_path, work_types=wt)
+        if job_id:
+            result = {"job_id": job_id, "status": "launched"}
+            if _use_json:
+                console.print_json(_json.dumps(result))
+            else:
+                console.print(f"Launched fetch job: [cyan]{job_id}[/cyan]")
+        else:
+            if _use_json:
+                console.print_json(_json.dumps({"error": "duplicate or at capacity"}))
+            else:
+                console.print("[red]Already running or at capacity[/red]")
+            raise typer.Exit(1)
+
+    # -- embed subcommand --
+
+    MODEL_ALIASES = {"gist": MODEL_PATHS["gist"], "gemma": MODEL_PATHS["gemma"]}
+
+    @cli.command()
+    def embed(
+        scope_path: str = typer.Argument(help="Full scope path (field/subfield/topic/work_type)"),
+        model: str = typer.Option(..., "--model", "-m", help="Model: gist or gemma"),
+    ):
+        """Launch an embed job for the given scope."""
+        resolved_model = MODEL_ALIASES.get(model, model)
+        job_id = launch_worker("embed", scope_path, model=resolved_model)
+        if job_id:
+            result = {"job_id": job_id, "status": "launched"}
+            if _use_json:
+                console.print_json(_json.dumps(result))
+            else:
+                console.print(f"Launched embed job: [cyan]{job_id}[/cyan]")
+        else:
+            if _use_json:
+                console.print_json(_json.dumps({"error": "duplicate or at capacity"}))
+            else:
+                console.print("[red]Already running or at capacity[/red]")
+            raise typer.Exit(1)
+
+    # -- jobs subcommand --
+
+    jobs_app = typer.Typer(help="Manage background jobs.")
+    cli.add_typer(jobs_app, name="jobs", invoke_without_command=True)
+
+    @jobs_app.callback(invoke_without_command=True)
+    def jobs_list(ctx: typer.Context):
+        """List all jobs (default when no subcommand given)."""
+        if ctx.invoked_subcommand is not None:
+            return
+        all_jobs = discover_jobs()
+        if _use_json:
+            console.print_json(_json.dumps(all_jobs, default=str))
+        else:
+            if not all_jobs:
+                console.print("No jobs found.")
+                return
+            table = Table(title="Jobs")
+            table.add_column("Job ID", style="cyan")
+            table.add_column("Action")
+            table.add_column("Scope")
+            table.add_column("Model")
+            table.add_column("Status")
+            table.add_column("Started")
+            for job in all_jobs:
+                table.add_row(
+                    job.get("_job_id", "?"),
+                    job.get("action", "?"),
+                    job.get("scope", "?"),
+                    job.get("model") or "-",
+                    job.get("status", "?"),
+                    job.get("started_at", "?"),
+                )
+            console.print(table)
+
+    @jobs_app.command()
+    def dismiss():
+        """Remove completed/failed/crashed job manifests."""
+        count = dismiss_finished_jobs()
+        if _use_json:
+            console.print_json(_json.dumps({"dismissed": count}))
+        else:
+            console.print(f"Dismissed {count} job(s)." if count else "No jobs to dismiss.")
+
+    # -- tui subcommand --
+
+    @cli.command()
+    def tui():
+        """Launch the interactive TUI."""
+        app = ScopeManagerApp()
+        app.run()
+
+    # -- worker subcommand (hidden, called by launch_worker) --
+
+    @cli.command(hidden=True)
+    def worker(
+        action: str = typer.Argument(help="Action: fetch or embed"),
+        scope: str = typer.Argument(help="Scope string"),
+        model: Optional[str] = typer.Option(None, "--model"),
+        work_types: Optional[str] = typer.Option(None, "--work-types"),
+        job_id: str = typer.Option(..., "--job-id"),
+    ):
+        """Internal worker entry point (called by launch_worker)."""
+        wt = work_types.split(",") if work_types else None
+        run_worker(action, scope, model, job_id, work_types=wt)
+
+    return cli
+
+
+# ---------------------------------------------------------------------------
+# Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scope Manager TUI")
-    parser.add_argument("--worker", metavar="ACTION", help="Run in worker mode (fetch|embed)")
-    parser.add_argument("scope", nargs="?", help="Scope string (e.g., 17/1702/T10181/article)")
-    parser.add_argument("--model", help="Embedder model name (for embed action)")
-    parser.add_argument("--work-types", help="Comma-separated work types (for aggregate fetch)")
-    parser.add_argument("--job-id", help="Job ID (set by launcher)")
-    args = parser.parse_args()
-
-    if args.worker:
-        wt = args.work_types.split(",") if args.work_types else None
-        run_worker(args.worker, args.scope, args.model, args.job_id, work_types=wt)
-    else:
-        app = ScopeManagerApp()
-        app.run()
+    cli = _build_cli()
+    cli()
 
 
 if __name__ == "__main__":
