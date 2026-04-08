@@ -33,10 +33,14 @@ dependencies = [
     "coroica",
     "pymanopt",
     "pyriemann",
-    # For TUI scope manager
+    # For scope manager CLI/TUI
     "textual",
     "psutil",
+    "typer",
 ]
+
+[project.scripts]
+scope-manager = "scope_manager:main"
 
 [project.optional-dependencies]
 dev = [
