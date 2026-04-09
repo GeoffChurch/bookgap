@@ -399,16 +399,35 @@ def launch_worker(
         cmd.extend(["--work-types", ",".join(work_types)])
     cmd.extend(["--job-id", job_id])
 
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+
+    child_pid = os.fork()
+    if child_pid == 0:
+        # First child — start new session and fork again to fully detach.
+        os.setsid()
+        grandchild_pid = os.fork()
+        if grandchild_pid == 0:
+            # Grandchild — becomes the actual worker, parented by init.
+            os.dup2(log_fd, 1)
+            os.dup2(log_fd, 2)
+            os.close(log_fd)
+            os.execve(sys.executable, cmd, env)
+        else:
+            # First child writes grandchild PID for the parent, then exits.
+            os.write(log_fd, f"__PID__:{grandchild_pid}\n".encode())
+            os.close(log_fd)
+            os._exit(0)
+    else:
+        # Parent — wait for first child (instant) and read grandchild PID.
+        os.close(log_fd)
+        os.waitpid(child_pid, 0)
+        with open(log_path) as f:
+            first_line = f.readline().strip()
+        worker_pid = int(first_line.split(":")[1])
 
     manifest = {
-        "pid": proc.pid,
+        "pid": worker_pid,
         "action": action,
         "scope": scope_str,
         "model": model,
@@ -425,14 +444,30 @@ def run_worker(
     action: str, scope_str: str, model: str | None, job_id: str, work_types: list[str] | None = None,
 ) -> None:
     """Worker entry point — called in the detached subprocess."""
+    import faulthandler
+    import signal
+
     from bookgap.openalex_ingest import fetch_works, fetch_all_scopes, embed_works
     from bookgap.util import Filter
+
+    faulthandler.enable()
 
     wt = tuple(work_types) if work_types else tuple(ALL_WORK_TYPES)
 
     manifest = read_job_manifest(job_id)
     manifest["pid"] = os.getpid()
     write_job_manifest(job_id, manifest)
+
+    def _on_sigterm(signum: int, frame: Any) -> None:
+        print(f"\nWorker killed by signal {signum}", flush=True)
+        m = read_job_manifest(job_id)
+        m["status"] = "failed"
+        m["error"] = f"killed by signal {signum}"
+        m["finished_at"] = datetime.datetime.now().isoformat()
+        write_job_manifest(job_id, m)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     try:
         parts = scope_str.split("/")
