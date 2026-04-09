@@ -87,7 +87,7 @@ class TestHierarchy:
                 {"id": "https://openalex.org/fields/22", "display_name": "Engineering"},
             ],
         }
-        with patch("pyalex.Domains") as mock_domains:
+        with patch("bookgap.scope_ops.pyalex.Domains") as mock_domains:
             mock_domains.return_value.__getitem__ = MagicMock(return_value=mock_domain_data)
             fields = get_domain_fields("3")
         assert len(fields) == 2
@@ -104,7 +104,7 @@ class TestHierarchy:
                 {"id": "https://openalex.org/subfields/1709", "display_name": "Human-Computer Interaction"},
             ],
         }
-        with patch("pyalex.Fields") as mock_fields:
+        with patch("bookgap.scope_ops.pyalex.Fields") as mock_fields:
             mock_fields.return_value.__getitem__ = MagicMock(return_value=mock_field_data)
             subfields = get_field_subfields("17")
         assert len(subfields) == 2
@@ -118,7 +118,7 @@ class TestHierarchy:
                 {"id": "https://openalex.org/topics/T10191", "display_name": "Robotics and Automation"},
             ]
         ]
-        with patch("pyalex.Topics") as mock_topics:
+        with patch("bookgap.scope_ops.pyalex.Topics") as mock_topics:
             mock_filter = MagicMock()
             mock_filter.paginate.return_value = mock_pages
             mock_topics.return_value.filter.return_value = mock_filter
