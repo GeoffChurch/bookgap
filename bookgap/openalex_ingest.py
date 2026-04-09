@@ -12,13 +12,13 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-import pyalex
 import re
 import tqdm
 
 from numpy.typing import NDArray
 
 from bookgap.embedder import Embedder
+from bookgap.pyalex_client import pyalex, RATE_LIMITER
 from bookgap.util import (
     ARTIFACTS_DIR,
     CACHE_DIR,
@@ -30,40 +30,6 @@ from bookgap.util import (
     get_stats,
 )
 from bookgap.openalex_scopes import resolve_filter_upward, get_subfield_topics, _suffix
-
-import fcntl
-
-class _RateLimiter:
-    """Cross-process rate limiter for OpenAlex API calls.
-
-    Uses a file lock so multiple worker processes coordinate on API timing.
-    Falls back gracefully when only one process is running.
-    """
-    def __init__(self, min_interval: float = 0.1):
-        self._min_interval = min_interval
-
-    def _lock_path(self) -> Path:
-        return CACHE_DIR / ".rate_lock"
-
-    def _ts_path(self) -> Path:
-        return CACHE_DIR / ".rate_ts"
-
-    def wait(self) -> None:
-        lock_path = self._lock_path()
-        ts_path = self._ts_path()
-        with open(lock_path, "w") as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            now = time.time()
-            try:
-                last = float(ts_path.read_text())
-            except (FileNotFoundError, ValueError):
-                last = 0.0
-            elapsed = now - last
-            if elapsed < self._min_interval:
-                time.sleep(self._min_interval - elapsed)
-            ts_path.write_text(str(time.time()))
-
-RATE_LIMITER = _RateLimiter(min_interval=0.1)
 
 
 @dataclass(frozen=True)
@@ -276,25 +242,9 @@ def _get_works_for_type(scope: ResolvedScope) -> Generator[dict[str, Any], None,
     empty_page_retries = 0
     max_empty_page_retries = 10
     while cursor is not None:
-        # Fetch one page with retry on rate-limit (429) errors
-        backoff = 2.0
-        max_retries = 5
-        page = None
-        for attempt in range(max_retries):
-            try:
-                RATE_LIMITER.wait()
-                page_iter = get_query(scope.filter()).paginate(cursor=cursor, per_page=200, n_max=1) # type: ignore
-                page = next(iter(page_iter), None)
-                break
-            except Exception as e:
-                if "429" in str(e) or "too many" in str(e).lower():
-                    LOGGER.warning(f"Rate limited on {scope} (attempt {attempt+1}/{max_retries}), backing off {backoff}s")
-                    time.sleep(backoff)
-                    backoff *= 2
-                else:
-                    raise
-        else:
-            raise RuntimeError(f"Rate limit exceeded for {scope} after {max_retries} retries")
+        RATE_LIMITER.wait()
+        page_iter = get_query(scope.filter()).paginate(cursor=cursor, per_page=200, n_max=1) # type: ignore
+        page = next(iter(page_iter), None)
         if page is None:
             empty_page_retries += 1
             LOGGER.warning(

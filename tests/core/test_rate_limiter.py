@@ -1,4 +1,4 @@
-"""Tests for the cross-process file-lock rate limiter in openalex_ingest."""
+"""Tests for the cross-process file-lock rate limiter in pyalex_client."""
 
 import multiprocessing
 import time
@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-import bookgap.openalex_ingest as _oa_mod
-from bookgap.openalex_ingest import _RateLimiter
+import bookgap.pyalex_client as _pyalex_client_mod
+from bookgap.pyalex_client import _RateLimiter
 
 
 @pytest.fixture()
 def tmp_cache(tmp_path, monkeypatch):
-    """Monkeypatch CACHE_DIR in bookgap.openalex_ingest and return a fresh _RateLimiter."""
-    monkeypatch.setattr(_oa_mod, "CACHE_DIR", tmp_path)
+    """Monkeypatch CACHE_DIR in bookgap.pyalex_client and return a fresh _RateLimiter."""
+    monkeypatch.setattr(_pyalex_client_mod, "CACHE_DIR", tmp_path)
     limiter = _RateLimiter(min_interval=0.1)
     return limiter, tmp_path
 
@@ -39,7 +39,7 @@ def test_lock_files_created(tmp_cache):
 
 def _worker(cache_dir_str: str, result_queue: "multiprocessing.Queue[float]") -> None:
     """Worker that calls the rate limiter once and records the timestamp."""
-    import bookgap.openalex_ingest as mod
+    import bookgap.pyalex_client as mod
     from pathlib import Path
 
     cache_dir = Path(cache_dir_str)
