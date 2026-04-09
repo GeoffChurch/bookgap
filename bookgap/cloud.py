@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, TypeVar
 import faiss
 import numpy as np
 from numpy.typing import NDArray
-import pyalex
+from bookgap.pyalex_client import pyalex
 import pyarrow.dataset as ds
 import tqdm
 from bookgap.embedder import BaseEmbedder, Embedder, SentenceTransformerEmbedder
@@ -40,10 +40,6 @@ from bookgap.openalex_ingest import (
     corpus_dataset,
     embed_works,
 )
-
-pyalex.config.email = "gchurchill@cs.stonybrook.edu"
-pyalex.config.api_key = os.environ["OPENALEX_API_KEY"]
-
 
 def _embeddings_store_path(corpus_fingerprint: str, embedder_cfg: Any) -> Path:
     """Path for the embeddings Parquet file."""

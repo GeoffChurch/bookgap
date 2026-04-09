@@ -14,7 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pathlib import Path
 import plotly.express as px
-import pyalex
+from bookgap.pyalex_client import pyalex
 import re
 # from scipy.spatial import ConvexHull
 from scipy.stats import gaussian_kde
@@ -40,8 +40,6 @@ from bookgap.deduplicators import FractionalDeduplicator, SqDistDeduplicator
 from bookgap.plot_utils import PlotManager, StatisticalPlotUtils, DPI
 
 FIGSIZE = (10, 6)
-
-pyalex.config.email = "gchurchill@cs.stonybrook.edu"
 
 @TIMER.time(formatters=dict(index_info=lambda _: "<...>", clouds=lambda clouds: f"<{len(clouds)} clouds, num works={[len(cloud.works()) for cloud in clouds]}>"))
 @MEMORY.cache

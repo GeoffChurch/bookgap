@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-import pyalex
+from bookgap.pyalex_client import pyalex
 
 from bookgap.util import Filter
 

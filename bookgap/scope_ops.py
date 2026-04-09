@@ -13,8 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pyalex
-pyalex.config.email = "gchurchill@cs.stonybrook.edu"
+from bookgap.pyalex_client import pyalex
 import pyarrow.parquet as pq
 
 import bookgap.openalex_ingest as _ingest_mod

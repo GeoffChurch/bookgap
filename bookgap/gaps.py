@@ -10,7 +10,7 @@ from __future__ import annotations
 from itertools import islice
 from typing import Any
 
-import pyalex
+from bookgap.pyalex_client import pyalex
 
 from hydra.utils import instantiate
 
