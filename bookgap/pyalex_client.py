@@ -16,17 +16,40 @@ import os
 import time
 from pathlib import Path
 
+import dotenv
 import pyalex
+import requests.adapters
 
 from bookgap.util import CACHE_DIR
 
 # -- Configuration (runs on import) ------------------------------------------
+
+dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 pyalex.config.email = "gchurchill@cs.stonybrook.edu"
 if os.environ.get("OPENALEX_API_KEY"):
     pyalex.config.api_key = os.environ["OPENALEX_API_KEY"]
 pyalex.config.max_retries = 5
 pyalex.config.retry_backoff_factor = 0.5
+
+# -- HTTP timeout -------------------------------------------------------------
+# pyalex never sets a request timeout, so a dead socket hangs forever.
+# Inject a default at the HTTPAdapter level so urllib3's Retry still works
+# normally — each individual request gets a timeout, but retries and backoff
+# proceed as configured.
+
+_HTTP_TIMEOUT = 5  # seconds per HTTP request
+
+_original_adapter_send = requests.adapters.HTTPAdapter.send
+
+
+def _adapter_send_with_timeout(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+    if timeout is None:
+        timeout = _HTTP_TIMEOUT
+    return _original_adapter_send(self, request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)
+
+
+requests.adapters.HTTPAdapter.send = _adapter_send_with_timeout
 
 
 # -- Cross-process rate limiter ----------------------------------------------
