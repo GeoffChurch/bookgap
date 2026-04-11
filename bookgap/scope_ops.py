@@ -445,12 +445,20 @@ def run_worker(
 ) -> None:
     """Worker entry point — called in the detached subprocess."""
     import faulthandler
+    import resource
     import signal
 
     from bookgap.openalex_ingest import fetch_works, fetch_all_scopes, embed_works
     from bookgap.util import Filter
 
     faulthandler.enable()
+
+    # Cap virtual memory at 80% of physical RAM so we get a catchable
+    # MemoryError instead of an uncatchable SIGKILL from the OOM killer.
+    import psutil
+    total_ram = psutil.virtual_memory().total
+    mem_limit = int(total_ram * 0.8)
+    resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
 
     wt = tuple(work_types) if work_types else tuple(ALL_WORK_TYPES)
 
