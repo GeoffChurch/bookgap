@@ -6,6 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import eigh, svd, qr
 import scipy.sparse as sp
+from scipy.sparse.linalg import LinearOperator, eigsh
 from sklearn.decomposition import PCA
 from numpy.linalg import pinv, LinAlgError, lstsq
 from bookgap.rsdc import rnojd, manopt_rnojd
@@ -266,6 +267,123 @@ def _solve_eigh_robustly(a_matrix: NDArray, b_matrix: NDArray | None, subset: Op
     
     LOGGER.info(f"{eigvals.shape=} {P_or_U.shape=}")
     return SolveEighRobustlyResult(eigvals=eigvals, P_or_U=P_or_U)
+
+
+def _centered_matvec(X: sp.spmatrix | NDArray, mean: NDArray, v: NDArray) -> NDArray:
+    """Compute X_c.T @ (X_c @ v) without materializing X_c.
+
+    X_c = X - 1@mean where mean is (1, d).
+    X_c @ v = X @ v - mean @ v * ones
+    X_c.T @ u = X.T @ u - mean.T * sum(u)
+    """
+    N = X.shape[0]
+    # Forward: X_c @ v
+    Xv = X @ v  # (N,) or (N,1)
+    mean_dot_v = mean.ravel() @ v.ravel()  # scalar
+    Xc_v = np.asarray(Xv).ravel() - mean_dot_v  # (N,)
+    # Backward: X_c.T @ (X_c @ v)
+    XtXcv = X.T @ Xc_v  # (d,)
+    result = np.asarray(XtXcv).ravel() - mean.ravel() * Xc_v.sum()  # (d,)
+    return result
+
+
+def _solve_gep_sparse(
+    X: sp.spmatrix,
+    A: sp.spmatrix,
+    n_components: int,
+) -> SolveEighRobustlyResult:
+    """Solve a citation-error GEP for sparse X via truncated SVD reduction.
+
+    Solves  S_C w = λ (S_T - S_C) w  for the smallest eigenvalues, where:
+      S_T = X_c.T @ X_c / N       (total scatter)
+      S_C = E_c.T @ E_c / N       (citation-error scatter, E = X - A@X)
+
+    Strategy: use truncated SVD to find the top-r right singular vectors of
+    X_c, project both scatter matrices into that r-dimensional subspace, then
+    solve the small r×r dense GEP.  This is mathematically identical to the
+    existing dual-path approach in CitationErrorLDADenoiser but uses
+    scipy.sparse.linalg.svds to avoid materializing dense N×V matrices.
+
+    Memory: O(N*r + r^2), never O(N*V) or O(V^2).
+    Time:   O(nnz(X)*r) for the truncated SVD, O(r^3) for the dense GEP.
+    """
+    from scipy.sparse.linalg import svds
+
+    N, V = X.shape
+    LOGGER.info(f"Sparse GEP: N={N}, V={V}, k={n_components}")
+
+    # Choose r: enough dimensions to capture signal, but small enough for dense GEP.
+    # Mirrors the dual-path logic: keep directions with s_i/s_max > 1e-2.
+    # Start with a generous r and trim after seeing the singular values.
+    r = min(min(N, V) - 1, max(n_components * 3, 512))
+    LOGGER.info(f"Sparse GEP: computing rank-{r} truncated SVD ...")
+
+    # svds works directly on sparse X (only needs matvecs).
+    # We subtract the mean via a LinearOperator to stay sparse-safe.
+    X_mean = np.asarray(X.mean(axis=0)).ravel()  # (V,)
+
+    def Xc_matvec(v):
+        """(X - 1@mu) @ v = X@v - mu * sum(v)"""
+        v = np.asarray(v).ravel()
+        Xv = np.asarray(X @ v).ravel()  # (N,)
+        return Xv - X_mean.dot(v)  # scalar broadcast to (N,)
+
+    def Xc_rmatvec(u):
+        """(X - 1@mu).T @ u = X.T@u - mu * sum(u)"""
+        u = np.asarray(u).ravel()
+        Xtu = np.asarray(X.T @ u).ravel()  # (V,)
+        return Xtu - X_mean * u.sum()  # (V,)
+
+    Xc_op = LinearOperator((N, V), matvec=Xc_matvec, rmatvec=Xc_rmatvec, dtype=np.float64)
+
+    U_svd, s_svd, Vt_svd = svds(Xc_op, k=r, which="LM")
+    # svds returns in ascending order; reverse to descending
+    U_svd = U_svd[:, ::-1]
+    s_svd = s_svd[::-1]
+    Vt_svd = Vt_svd[::-1, :]
+
+    # Trim to significant dimensions (s_i/s_max > 1e-2)
+    sig_threshold = 1e-2 * s_svd[0]
+    r_eff = max(int((s_svd > sig_threshold).sum()), n_components + 1)
+    r_eff = min(r_eff, r)
+    V_r = Vt_svd[:r_eff, :].T  # V x r_eff
+
+    LOGGER.info(
+        f"Sparse GEP: SVD done, r_eff={r_eff}, "
+        f"top s-vals: {' '.join(f'{v:.1f}' for v in s_svd[:5])}"
+    )
+
+    # Project into r_eff-dimensional space
+    Z = np.asarray(X @ V_r)  # N x r_eff (dense)
+    if sp.issparse(Z):
+        Z = Z.toarray()
+    Z_c = Z - Z.mean(axis=0, keepdims=True)
+
+    # Citation error in reduced space
+    AZ = A @ Z  # N x r_eff
+    AZ = np.asarray(AZ.todense()) if sp.issparse(AZ) else np.asarray(AZ)
+    E_r = Z - AZ
+    E_r_c = E_r - E_r.mean(axis=0, keepdims=True)
+
+    # Build r_eff × r_eff scatter matrices
+    S_T_r = Z_c.T @ Z_c / N
+    S_C_r = E_r_c.T @ E_r_c / N
+    S_signal_r = S_T_r - S_C_r
+
+    LOGGER.info(f"Sparse GEP: solving {r_eff}x{r_eff} dense GEP ...")
+
+    subset = subset_range(n=r_eff, subset_size=n_components, smallest=True)
+    res = _solve_eigh_robustly(a_matrix=S_C_r, b_matrix=S_signal_r, subset=subset)
+
+    # Recover V-dimensional projector: P = V_r @ P_reduced
+    P_raw = V_r @ res.P_or_U  # V x n_components
+    P_norms = np.linalg.norm(P_raw, axis=0)
+    P_norms[P_norms == 0] = 1
+    P = P_raw / P_norms
+
+    LOGGER.info(f"Sparse GEP done: eigvals range=[{res.eigvals[0]:.4g}, {res.eigvals[-1]:.4g}]")
+    return SolveEighRobustlyResult(eigvals=res.eigvals, P_or_U=P)
+
 
 @TIMER.time(formatters=dict(X=lambda X: f"<shape={X.shape}>", U=lambda U: f"<shape={U.shape}>"))
 def _recover_projector_from_dual(X: NDArray, U: NDArray) -> NDArray:
@@ -1004,6 +1122,13 @@ class CitationErrorLDADenoiser:
     def projector(self, context: DenoiserContext, n_components: int):
         X = context.X()
         N, d = X.shape
+
+        # Sparse path: when X is sparse, use iterative eigensolver to avoid
+        # materializing dense V×V scatter matrices.
+        if sp.issparse(X):
+            LOGGER.info(f"CitationErrorLDA: sparse X ({N}x{d}), using iterative eigensolver")
+            res = _solve_gep_sparse(X, context.A(), n_components)
+            return res.P_or_U, res.eigvals
 
         if N < d:
             LOGGER.info(f"CitationErrorLDA: N < d, using dual (SVD) formulation. N={N}, d={d}")
