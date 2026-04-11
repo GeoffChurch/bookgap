@@ -391,8 +391,17 @@ def launch_worker(
 
     job_id = _make_job_id(action, scope_str, model)
     log_path = _jobs_path() / f"{job_id}.log"
+    scope_unit = f"bookgap-{job_id}.scope"
 
-    cmd = [sys.executable, "-m", "scope_manager", "worker", action, scope_str]
+    # systemd-run --user --scope places the worker in its own transient
+    # scope cgroup under user@.service, so it survives SSH logout. The
+    # old double-fork + setsid didn't, because setsid doesn't escape the
+    # session-N.scope cgroup that logind tears down on logout.
+    cmd = [
+        "systemd-run", "--user", "--scope", "--quiet", "--collect",
+        f"--unit={scope_unit}",
+        sys.executable, "-m", "scope_manager", "worker", action, scope_str,
+    ]
     if model:
         cmd.extend(["--model", model])
     if work_types:
@@ -401,33 +410,22 @@ def launch_worker(
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-
-    child_pid = os.fork()
-    if child_pid == 0:
-        # First child — start new session and fork again to fully detach.
-        os.setsid()
-        grandchild_pid = os.fork()
-        if grandchild_pid == 0:
-            # Grandchild — becomes the actual worker, parented by init.
-            os.dup2(log_fd, 1)
-            os.dup2(log_fd, 2)
-            os.close(log_fd)
-            os.execve(sys.executable, cmd, env)
-        else:
-            # First child writes grandchild PID for the parent, then exits.
-            os.write(log_fd, f"__PID__:{grandchild_pid}\n".encode())
-            os.close(log_fd)
-            os._exit(0)
-    else:
-        # Parent — wait for first child (instant) and read grandchild PID.
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
+    finally:
         os.close(log_fd)
-        os.waitpid(child_pid, 0)
-        with open(log_path) as f:
-            first_line = f.readline().strip()
-        worker_pid = int(first_line.split(":")[1])
 
     manifest = {
-        "pid": worker_pid,
+        "pid": proc.pid,
+        "scope_unit": scope_unit,
         "action": action,
         "scope": scope_str,
         "model": model,
