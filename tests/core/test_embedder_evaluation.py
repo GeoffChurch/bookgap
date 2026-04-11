@@ -4,7 +4,12 @@ import numpy as np
 import scipy.sparse as sp
 from numpy.testing import assert_allclose
 
-from artifacts_scripts.embedder_evaluation import citation_recall_at_k, citation_map
+from artifacts_scripts.embedder_evaluation import (
+    _faiss_search,
+    _mask_self_neighbors,
+    citation_recall_at_k,
+    citation_map_at_k,
+)
 
 
 def _simple_graph_and_embeddings():
@@ -22,24 +27,33 @@ def _simple_graph_and_embeddings():
     return embeddings, A
 
 
+def _get_neighbors(embeddings, k):
+    I_raw = _faiss_search(embeddings, k)
+    return _mask_self_neighbors(I_raw)
+
+
 class TestCitationRecall:
     def test_perfect_recall(self):
         embeddings, A = _simple_graph_and_embeddings()
-        recall = citation_recall_at_k(embeddings, A, k=1)
+        neighbors = _get_neighbors(embeddings, k=3)
+        recall = citation_recall_at_k(neighbors, A, k=1)
         assert_allclose(recall, 1.0, atol=1e-6)
 
     def test_recall_decreases_with_noise(self):
         embeddings, A = _simple_graph_and_embeddings()
         rng = np.random.default_rng(42)
         noisy = embeddings + rng.normal(scale=10.0, size=embeddings.shape).astype(np.float32)
-        recall_clean = citation_recall_at_k(embeddings, A, k=1)
-        recall_noisy = citation_recall_at_k(noisy, A, k=1)
+        neighbors_clean = _get_neighbors(embeddings, k=3)
+        neighbors_noisy = _get_neighbors(noisy, k=3)
+        recall_clean = citation_recall_at_k(neighbors_clean, A, k=1)
+        recall_noisy = citation_recall_at_k(neighbors_noisy, A, k=1)
         assert recall_clean >= recall_noisy
 
     def test_recall_at_higher_k(self):
         embeddings, A = _simple_graph_and_embeddings()
-        recall_1 = citation_recall_at_k(embeddings, A, k=1)
-        recall_3 = citation_recall_at_k(embeddings, A, k=3)
+        neighbors = _get_neighbors(embeddings, k=3)
+        recall_1 = citation_recall_at_k(neighbors, A, k=1)
+        recall_3 = citation_recall_at_k(neighbors, A, k=3)
         assert recall_3 >= recall_1
 
     def test_isolated_docs_excluded(self):
@@ -49,12 +63,14 @@ class TestCitationRecall:
             [99.0, 99.0],
         ], dtype=np.float32)
         A = sp.csr_matrix(([1, 1], ([0, 1], [1, 0])), shape=(3, 3))
-        recall = citation_recall_at_k(embeddings, A, k=1)
+        neighbors = _get_neighbors(embeddings, k=2)
+        recall = citation_recall_at_k(neighbors, A, k=1)
         assert_allclose(recall, 1.0, atol=1e-6)
 
 
 class TestCitationMAP:
     def test_perfect_map(self):
         embeddings, A = _simple_graph_and_embeddings()
-        map_score = citation_map(embeddings, A)
+        neighbors = _get_neighbors(embeddings, k=3)
+        map_score = citation_map_at_k(neighbors, A, k=3)
         assert_allclose(map_score, 1.0, atol=1e-6)

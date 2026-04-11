@@ -19,63 +19,131 @@ from numpy.typing import NDArray
 import scipy.sparse as sp
 
 
-def citation_recall_at_k(
+def _faiss_search(
     embeddings: NDArray[np.float32],
-    citation_graph: sp.spmatrix,
+    k: int,
+) -> NDArray[np.int64]:
+    """Build a FAISS FlatL2 index and return the (N, k+1) neighbor matrix.
+
+    Searches k+1 so the self-match can be masked out downstream.
+    """
+    import logging, time
+    log = logging.getLogger(__name__)
+    N, d = embeddings.shape
+    log.info(f"    FAISS: building index ({N} vectors, d={d}) ...")
+    index = faiss.IndexFlatL2(d)
+    index.add(embeddings)
+    log.info(f"    FAISS: searching k={k} ...")
+    t0 = time.monotonic()
+    _, I = index.search(embeddings, k + 1)
+    log.info(f"    FAISS: search done in {time.monotonic() - t0:.1f}s")
+    return I
+
+
+def _mask_self_neighbors(I: NDArray[np.int64]) -> NDArray[np.int64]:
+    """Remove self from each row of neighbor matrix, returning (N, k) array.
+
+    Each row originally has k+1 entries; we drop the self-match and keep k.
+    Fully vectorized — no Python loop.
+    """
+    N, kp1 = I.shape
+    k = kp1 - 1
+    row_idx = np.arange(N)[:, None]
+    is_self = I == row_idx  # (N, k+1) boolean
+
+    # Replace self-match with last column value (shift it out), then take first k
+    # Strategy: where self appears, shift remaining entries left
+    # Faster: set self-matches to N (out of range), sort each row, take first k
+    I_masked = I.copy()
+    I_masked[is_self] = N  # sentinel > any valid index
+    # Stable sort pushes sentinels to end; take first k
+    # But sorting destroys distance ordering — instead, just drop the self column.
+    # Self is almost always at position 0. Handle the rare case it isn't:
+    self_col = np.argmax(is_self, axis=1)  # column index of self in each row
+    # Build result by selecting all columns except the self column
+    # Use advanced indexing: for each row, take columns [0..self_col-1, self_col+1..k]
+    col_range = np.arange(kp1)
+    # Mask: columns != self_col for each row
+    keep = col_range[None, :] != self_col[:, None]  # (N, k+1)
+    return I[keep].reshape(N, k)
+
+
+def citation_recall_at_k(
+    neighbors: NDArray[np.int64],
+    citation_graph: sp.csr_matrix,
     k: int = 20,
 ) -> float:
-    """Mean fraction of actual citations found among k nearest embedding neighbors.
+    """Vectorized citation recall@k using sparse matrix operations.
 
-    Documents with no citations (zero rows in citation_graph) are excluded.
+    Args:
+        neighbors: (N, max_k) neighbor index matrix (self already excluded).
+        citation_graph: (N, N) binary sparse citation matrix.
+        k: number of neighbors to consider.
     """
-    N, d = embeddings.shape
-    index = faiss.IndexFlatL2(d)
-    index.add(embeddings)
-    # k+1 because nearest neighbor of a point is itself
-    _, I = index.search(embeddings, k + 1)
+    N = citation_graph.shape[0]
+    knn = neighbors[:, :k]
 
-    recalls = []
-    for i in range(N):
-        true_citations = set(citation_graph[i].nonzero()[1])
-        if not true_citations:
-            continue
-        # Exclude self from neighbor list
-        neighbors = set(int(j) for j in I[i] if j != i)
-        # Take only k neighbors (excluding self may have given us k from k+1)
-        if len(neighbors) > k:
-            neighbors = set(list(neighbors)[:k])
-        recall = len(true_citations & neighbors) / len(true_citations)
-        recalls.append(recall)
+    # Build sparse N x N indicator: indicator[i, knn[i,j]] = 1
+    rows = np.repeat(np.arange(N), k)
+    cols = knn.ravel()
+    data = np.ones(len(rows), dtype=np.float32)
+    neighbor_indicator = sp.csr_matrix((data, (rows, cols)), shape=(N, N))
 
-    return float(np.mean(recalls)) if recalls else 0.0
+    # hits[i] = number of true citations in neighbor set
+    hits = np.asarray((neighbor_indicator.multiply(citation_graph)).sum(axis=1)).ravel()
+
+    # number of true citations per row
+    n_citations = np.asarray(citation_graph.sum(axis=1)).ravel()
+
+    # Only include rows that have at least one citation
+    has_citations = n_citations > 0
+    if not has_citations.any():
+        return 0.0
+
+    recalls = hits[has_citations] / n_citations[has_citations]
+    return float(recalls.mean())
 
 
-def citation_map(
-    embeddings: NDArray[np.float32],
-    citation_graph: sp.spmatrix,
+def citation_map_at_k(
+    neighbors: NDArray[np.int64],
+    citation_graph: sp.csr_matrix,
+    k: int = 1000,
 ) -> float:
-    """Mean Average Precision: how well does embedding distance rank actual citations?"""
-    N, d = embeddings.shape
-    index = faiss.IndexFlatL2(d)
-    index.add(embeddings)
-    _, I = index.search(embeddings, N)  # full ranking
+    """Mean Average Precision truncated at rank k.
 
-    aps = []
-    for i in range(N):
-        true_citations = set(citation_graph[i].nonzero()[1])
-        if not true_citations:
-            continue
-        ranking = [int(j) for j in I[i] if j != i]
-        hits = 0
-        precision_sum = 0.0
-        for rank, j in enumerate(ranking, 1):
-            if j in true_citations:
-                hits += 1
-                precision_sum += hits / rank
-        ap = precision_sum / len(true_citations)
-        aps.append(ap)
+    Args:
+        neighbors: (N, max_k) neighbor index matrix (self already excluded).
+        citation_graph: (N, N) binary sparse citation matrix.
+        k: maximum rank to consider.
+    """
+    N = citation_graph.shape[0]
+    knn = neighbors[:, :k]
 
-    return float(np.mean(aps)) if aps else 0.0
+    # Build binary relevance matrix: rel[i, r] = 1 if knn[i, r] is a true citation
+    # Use advanced indexing into CSR matrix
+    rows_idx = np.repeat(np.arange(N), k)
+    cols_idx = knn.ravel()
+    # Extract citation indicators via sparse indexing
+    rel = np.asarray(
+        citation_graph[rows_idx, cols_idx]
+    ).ravel().reshape(N, k).astype(np.float32)
+
+    # Cumulative hits at each rank
+    cum_hits = np.cumsum(rel, axis=1)  # (N, k)
+    ranks = np.arange(1, k + 1, dtype=np.float32)  # (k,)
+    precision_at_rank = cum_hits / ranks  # (N, k)
+
+    # Sum precision only where relevant (rel == 1)
+    precision_sum = np.sum(precision_at_rank * rel, axis=1)  # (N,)
+
+    # Number of true citations per document
+    n_citations = np.asarray(citation_graph.sum(axis=1)).ravel()
+    has_citations = n_citations > 0
+    if not has_citations.any():
+        return 0.0
+
+    ap = precision_sum[has_citations] / n_citations[has_citations]
+    return float(ap.mean())
 
 
 def scatter_metrics(
@@ -149,8 +217,15 @@ class EvalConfig:
     # k values for recall@k metrics.
     ks: List[int] = field(default_factory=lambda: [10, 20, 50])
 
+    # Truncation depth for MAP (search only top map_k neighbors).
+    map_k: int = 1000
+
     # OpenAlex subfield ID used to filter works (1702 = AI/ML).
     subfield: int = 1702
+
+    # Optional OpenAlex topic ID. When set, filters to this single topic
+    # instead of the full subfield (useful when not all scopes are cached).
+    topic: Optional[str] = None
 
     # Directory where the output CSV is written.
     output_dir: str = "artifacts/embedder_evaluation"
@@ -276,9 +351,10 @@ def main(cfg: EvalConfig) -> None:
 
     import pandas as pd
 
-    from bookgap.cloud import load_works
+    from bookgap.cloud import Cloud, ensure_cloud_data, corpus_dataset, read_embeddings_store, _embeddings_store_path, _read_corpus_dicts, _read_corpus_column, _corpus_fingerprint
     from bookgap.cloud_denoiser import WorkDenoisers
-    from bookgap.util import Filter, WorkType, LOGGER
+    from bookgap.index import FlatL2
+    from bookgap.util import Filter, FilterPair, WorkType, LOGGER
 
     log = logging.getLogger(__name__)
 
@@ -292,16 +368,18 @@ def main(cfg: EvalConfig) -> None:
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build the pre-filter using the configured subfield
-    pre_filter = Filter(
-        subfield=str(cfg.subfield),
-        work_types=(
-            WorkType.BOOK.value,
-            WorkType.ARTICLE.value,
-            WorkType.BOOK_CHAPTER.value,
-            WorkType.PREPRINT.value,
-        ),
+    work_types = (
+        WorkType.BOOK.value,
+        WorkType.ARTICLE.value,
+        WorkType.BOOK_CHAPTER.value,
+        WorkType.PREPRINT.value,
     )
+
+    # Build the pre-filter — topic-level if specified, else subfield
+    if cfg.topic:
+        pre_filter = Filter(topic=cfg.topic, work_types=work_types)
+    else:
+        pre_filter = Filter(subfield=str(cfg.subfield), work_types=work_types)
 
     all_rows: List[Dict[str, Any]] = []
 
@@ -310,14 +388,29 @@ def main(cfg: EvalConfig) -> None:
         emb_label = _embedder_label(embedder_cfg)
         log.info(f"=== Embedder: {emb_label} ===")
 
-        # Load works and raw embeddings (cached on disk)
-        store = load_works(pre_filter, None, embedder_cfg)
+        # Build a Cloud (no post-filter, no dedup, no denoising for raw eval)
+        cloud = Cloud(
+            filter_pair=FilterPair(pre=pre_filter, post=Filter()),
+            index_info=FlatL2(),
+            max_works=None,
+            deduplicator=None,
+            normalize_embeddings=False,
+            denoiser="NONE",
+            drop_k=0,
+            embedder=embedder_cfg,
+        )
 
-        # Retain all works (no deduplication in evaluation harness for simplicity)
-        all_indices = list(range(store.length))
+        # Ensure data is computed (fetches if needed, computes embeddings)
+        corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+        corpus = corpus_dataset(pre_filter)
+        positions = sorted_idxs[retained_positions]
 
-        raw_embeddings: NDArray[np.float32] = store.embeddings(indices=all_indices)
-        works: List[Dict[str, Any]] = store.to_dicts(indices=all_indices)
+        # Read raw embeddings (before any denoising)
+        emb_path = _embeddings_store_path(corpus_fp, embedder_cfg)
+        all_embeddings = read_embeddings_store(emb_path)
+        raw_embeddings: NDArray[np.float32] = all_embeddings[retained_positions]
+
+        works: List[Dict[str, Any]] = _read_corpus_dicts(corpus, positions)
         work_ids: List[str] = [w["id"] for w in works]
         work_references: List[List[str]] = [w.get("referenced_works", []) for w in works]
 
@@ -335,7 +428,7 @@ def main(cfg: EvalConfig) -> None:
         )
 
         # Build book mask for class-separability metric
-        work_types_list = store.to_list("type", indices=all_indices)
+        work_types_list = _read_corpus_column(corpus, "type", positions)
         book_mask: NDArray[np.bool_] = np.array(
             [wt == WorkType.BOOK.value for wt in work_types_list], dtype=bool
         )
@@ -373,24 +466,30 @@ def main(cfg: EvalConfig) -> None:
                 "embedding_dim": embeddings.shape[1],
             }
 
+            # Single FAISS search at max depth, reused for recall@k and MAP
+            max_search_k = max(max(cfg.ks), cfg.map_k)
+            log.info(f"    FAISS search k={max_search_k} ...")
+            I_raw = _faiss_search(embeddings, max_search_k)
+            neighbors = _mask_self_neighbors(I_raw)
+
             # Recall@k
             for k in cfg.ks:
                 try:
-                    recall = citation_recall_at_k(embeddings, eval_citation_graph, k=k)
+                    recall = citation_recall_at_k(neighbors, eval_citation_graph, k=k)
                     row[f"recall@{k}"] = recall
                     log.info(f"    recall@{k} = {recall:.4f}")
                 except Exception as exc:
                     log.error(f"    recall@{k} failed: {exc}")
                     row[f"recall@{k}"] = float("nan")
 
-            # MAP
+            # MAP@k
             try:
-                map_score = citation_map(embeddings, eval_citation_graph)
-                row["MAP"] = map_score
-                log.info(f"    MAP = {map_score:.4f}")
+                map_score = citation_map_at_k(neighbors, eval_citation_graph, k=cfg.map_k)
+                row[f"MAP@{cfg.map_k}"] = map_score
+                log.info(f"    MAP@{cfg.map_k} = {map_score:.4f}")
             except Exception as exc:
-                log.error(f"    MAP failed: {exc}")
-                row["MAP"] = float("nan")
+                log.error(f"    MAP@{cfg.map_k} failed: {exc}")
+                row[f"MAP@{cfg.map_k}"] = float("nan")
 
             # Scatter metrics
             try:
