@@ -8,7 +8,7 @@ from typing import Any, Optional
 import numpy as np
 from numpy.typing import NDArray
 import scipy.sparse as sp
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 
 from bookgap.denoisers import (
     CenteredMatrix,
@@ -65,6 +65,9 @@ _GEP_REGISTRY: dict[str, type] = {
     "pca": PCADenoiser,
 }
 
+# gep_types that bypass the GEP and use SVD directly
+_SVD_TYPES = {"lsa"}
+
 
 class TfGepEmbedder(BaseEmbedder):
     """Corpus-fitted embedder: raw TF -> GEP projection -> dense."""
@@ -79,8 +82,8 @@ class TfGepEmbedder(BaseEmbedder):
         add_self_loops: bool = True,
         normalize_adjacency: bool = True,
     ):
-        if gep_type not in _GEP_REGISTRY:
-            raise ValueError(f"Unknown gep_type '{gep_type}'. Choose from: {list(_GEP_REGISTRY)}")
+        if gep_type not in _GEP_REGISTRY and gep_type not in _SVD_TYPES:
+            raise ValueError(f"Unknown gep_type '{gep_type}'. Choose from: {list(_GEP_REGISTRY) + list(_SVD_TYPES)}")
         self._n_components = n_components
         self._gep_type = gep_type
         self._ridge_fraction = ridge_fraction
@@ -108,7 +111,12 @@ class TfGepEmbedder(BaseEmbedder):
         embeddings_pretrained: NDArray | None = None,
         citation_graph: sp.csr_matrix | None = None,
     ) -> None:
+        from scipy.sparse.linalg import svds
+
         texts = [f"{w['display_name']} {w['abstract']}" for w in works]
+
+        if self._gep_type in _SVD_TYPES:
+            return self._fit_svd(texts, works)
 
         # 1. Build sparse TF matrix
         self._vectorizer = CountVectorizer(
@@ -144,6 +152,38 @@ class TfGepEmbedder(BaseEmbedder):
         LOGGER.info(
             f"TfGepEmbedder fitted: gep_type={self._gep_type}, "
             f"V={V}, d={actual_k}, eigvals range=[{eigvals[0]:.4g}, {eigvals[-1]:.4g}]"
+        )
+
+    def _fit_svd(self, texts: list[str], works: list[dict[str, Any]]) -> None:
+        """LSA path: TF-IDF + truncated SVD, no citation graph."""
+        from scipy.sparse.linalg import svds
+
+        self._vectorizer = TfidfVectorizer(
+            min_df=self._min_df, max_df=self._max_df, dtype=np.float64,
+        )
+        X_sparse: sp.csr_matrix = self._vectorizer.fit_transform(texts)
+        N, V = X_sparse.shape
+        LOGGER.info(f"TfGepEmbedder(lsa): built {N}x{V} TF-IDF matrix")
+
+        actual_k = min(self._n_components, min(N, V) - 1)
+        self._actual_n_components = actual_k
+
+        LOGGER.info(f"TfGepEmbedder(lsa): computing rank-{actual_k} truncated SVD ...")
+        # svds returns (U, s, Vt) with Vt being (k, V)
+        _, s, Vt = svds(X_sparse, k=actual_k, which="LM")
+        # svds returns in ascending order; reverse to descending
+        s = s[::-1]
+        Vt = Vt[::-1, :]
+
+        # Projection matrix: V x k (right singular vectors)
+        P = Vt.T
+        self._projection_matrix = np.ascontiguousarray(P.astype(np.float32))
+        # For TF-IDF, centering is not needed (IDF already handles global weighting)
+        self._fit_mean = None
+
+        LOGGER.info(
+            f"TfGepEmbedder(lsa) fitted: V={V}, d={actual_k}, "
+            f"top s-vals: {' '.join(f'{v:.1f}' for v in s[:5])}"
         )
 
     def transform(self, title_abstract_pairs: list[tuple[str, str]]) -> NDArray[np.float32]:
