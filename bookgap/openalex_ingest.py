@@ -31,7 +31,6 @@ from bookgap.util import (
 )
 from bookgap.openalex_scopes import resolve_filter_upward, get_subfield_topics, _suffix
 
-
 @dataclass(frozen=True)
 class ResolvedScope:
     field: str
@@ -585,10 +584,17 @@ def corpus_dataset(work_filter: Filter) -> ds.Dataset:
 def fetch_all_scopes(work_filter: Filter) -> None:
     """Ensure all scope Parquet files exist without loading any data."""
     scopes = _resolve_filter_scopes(work_filter)
+    failed: list[tuple[ResolvedScope, str]] = []
     for scope in tqdm.tqdm(scopes, desc="Fetching scopes"):
         if not _scope_parquet_path(scope).exists():
-            RATE_LIMITER.wait()
-            fetch_works(scope)
+            try:
+                RATE_LIMITER.wait()
+                fetch_works(scope)
+            except Exception as e:
+                LOGGER.error(f"Failed to fetch {scope}: {e}")
+                failed.append((scope, str(e)))
+    if failed:
+        LOGGER.warning(f"{len(failed)} scope(s) failed: {[str(s) for s, _ in failed]}")
 
 
 def embed_works(
