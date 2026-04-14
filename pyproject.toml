@@ -10,6 +10,7 @@ dependencies = [
     "accelerate",
     "adalflow",
     "bitsandbytes",
+    "boto3",
     "faiss-cpu",
     "graphviz", # for adalflow
     "hydra-core",

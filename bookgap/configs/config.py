@@ -5,7 +5,8 @@ This is the top-level configuration class that combines all sub-configurations
 and provides the primary interface for Hydra-managed experiments.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 from hydra.utils import instantiate
 
@@ -19,6 +20,18 @@ from .cloud.cloud_config import CloudConfig
 
 
 @dataclass
+class SnapshotConfig:
+    """Configuration for snapshot-based ingestion from the OpenAlex S3 snapshot."""
+
+    snapshot_date: str = "2026-04-01"  # override per run; pins reproducibility
+    bucket: str = "openalex"
+    prefix: str = "data/works/"
+    shard_row_flush_threshold: int = 10_000
+    max_resident_rows: int = 1_000_000
+    disk_abort_pct: float = 95.0
+
+
+@dataclass
 class ExperimentConfig:
     """Top-level configuration for a complete BookGap batch experiment.
     
@@ -28,10 +41,13 @@ class ExperimentConfig:
     
     # Core configuration components - each controls a different aspect of the analysis pipeline
     gap: GapConfig      # Gap detection algorithm parameters and spatial search settings
-    llm: LLMConfig      # Language model configuration, prompt structure, and generation settings  
+    llm: LLMConfig      # Language model configuration, prompt structure, and generation settings
     batch: BatchConfig  # Batch processing control, OpenAI API settings, and job execution options
     output: OutputConfig # Output formatting, export options, and file organization preferences
     cloud: CloudConfig  # Cloud construction parameters for gap analysis workflows
+
+    # Optional snapshot ingestion config; None means use the default API path
+    snapshot: Optional[SnapshotConfig] = field(default=None)
     
     def __post_init__(self):
         """Validate that gap work types are compatible with cloud filter."""

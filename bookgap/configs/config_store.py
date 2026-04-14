@@ -7,7 +7,7 @@ with common use case patterns.
 
 from hydra.core.config_store import ConfigStore
 
-from .config import ExperimentConfig
+from .config import ExperimentConfig, SnapshotConfig
 from .gap.gap_config import GapConfig
 from .llm.llm_config import LLMConfig
 from .data.data_config import SqDistDeduplicatorConfig
@@ -31,6 +31,7 @@ def register_configs():
     cs = ConfigStore.instance()
     cs.store(name="gap", node=GapConfig())
     cs.store(name="cloud", node=CloudConfig())
+    cs.store(group="snapshot", name="default", node=SnapshotConfig())
     # Provide a fully-instantiated default experiment configuration to avoid
     # missing-required-args errors when importing/using configs.
     cs.store(
