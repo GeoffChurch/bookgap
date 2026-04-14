@@ -6,10 +6,15 @@ same pipeline as the API path. See docs/superpowers/specs/2026-04-14-snapshot-in
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
+
+import boto3
+from botocore import UNSIGNED
+from botocore.client import Config
 
 from bookgap.util import LOGGER
 
@@ -53,3 +58,44 @@ def check_disk_or_abort(cache_dir: Path, abort_pct: float) -> None:
             f"disk usage {used_pct:.1f}% >= {abort_pct}% abort threshold; "
             f"free {usage.free / 1e9:.1f} GB on {cache_dir}"
         )
+
+
+def make_s3_client():
+    return boto3.client("s3", config=Config(signature_version=UNSIGNED))
+
+
+def list_shards(client, bucket: str, prefix: str, snapshot_date: str) -> list[str]:
+    """List snapshot shard keys not newer than snapshot_date.
+
+    We use list_objects_v2 rather than parsing the snapshot manifest because
+    the date partition is already encoded in the key path, so a single
+    paginated listing suffices and avoids a second schema dependency.
+    """
+    paginator = client.get_paginator("list_objects_v2")
+    shards: list[str] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith(".gz"):
+                continue
+            partition = _partition_date_from_key(key)
+            if partition is None or partition > snapshot_date:
+                continue
+            shards.append(key)
+    return sorted(shards)
+
+
+_PARTITION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _partition_date_from_key(key: str) -> Optional[str]:
+    # Keys look like: data/works/updated_date=2026-04-01/part_012.gz.
+    # We require an exact YYYY-MM-DD partition; anything else is treated as
+    # unrecognized and dropped by list_shards.
+    for seg in key.split("/"):
+        if seg.startswith("updated_date="):
+            value = seg.split("=", 1)[1]
+            if _PARTITION_DATE_RE.match(value):
+                return value
+            return None
+    return None
