@@ -15,12 +15,15 @@ import fcntl
 import os
 import time
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import dotenv
 import pyalex
 import requests.adapters
+import requests.exceptions
+import urllib3.util.retry
 
-from bookgap.util import CACHE_DIR
+from bookgap.util import CACHE_DIR, LOGGER
 
 # -- Configuration (runs on import) ------------------------------------------
 
@@ -42,11 +45,64 @@ _HTTP_TIMEOUT = 5  # seconds per HTTP request
 
 _original_adapter_send = requests.adapters.HTTPAdapter.send
 
+# Ignore server Retry-After entirely: a 17000s "come back later" would wedge the
+# process, and transient throttling is already handled by urllib3's own
+# exponential backoff_factor. Returning 0 makes urllib3 use its own backoff.
+_original_get_retry_after = urllib3.util.retry.Retry.get_retry_after
+
+
+def _ignore_retry_after(self, response):
+    return 0
+
+
+urllib3.util.retry.Retry.get_retry_after = _ignore_retry_after
+
+
+def _strip_api_key(url: str) -> str:
+    parts = urlparse(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "api_key"]
+    return urlunparse(parts._replace(query=urlencode(query)))
+
+
+def _strip_auth(request) -> None:
+    """Remove pyalex's Authorization header so the request goes to the polite pool."""
+    request.headers.pop("Authorization", None)
+    request.url = _strip_api_key(request.url)
+
+
+def _is_budget_exhausted(response) -> bool:
+    if response.status_code != 429:
+        return False
+    try:
+        body = response.content[:1024]
+    except Exception:
+        return False
+    return b"Insufficient budget" in body or b"insufficient budget" in body
+
+
+def _fallback_to_polite_pool(request) -> None:
+    LOGGER.warning(
+        "OpenAlex rate/budget limit exhausted; dropping api_key and retrying in polite pool (mailto only) for the rest of this process"
+    )
+    pyalex.config.api_key = None
+    _strip_auth(request)
+
 
 def _adapter_send_with_timeout(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
     if timeout is None:
         timeout = _HTTP_TIMEOUT
-    return _original_adapter_send(self, request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)
+    try:
+        response = _original_adapter_send(self, request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)
+    except requests.exceptions.RetryError:
+        if not pyalex.config.api_key:
+            raise
+        _fallback_to_polite_pool(request)
+        response = _original_adapter_send(self, request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)
+        return response
+    if _is_budget_exhausted(response) and pyalex.config.api_key:
+        _fallback_to_polite_pool(request)
+        response = _original_adapter_send(self, request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)
+    return response
 
 
 requests.adapters.HTTPAdapter.send = _adapter_send_with_timeout
