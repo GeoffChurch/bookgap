@@ -634,6 +634,30 @@ def _build_cli():
                 console.print("[red]Already running or at capacity[/red]")
             raise typer.Exit(1)
 
+    # -- snapshot subcommand --
+
+    @cli.command()
+    def snapshot(
+        scope_path: str = typer.Argument(help="Scope path (e.g., 3 or 31/3102/T10805/article)"),
+        work_types: Optional[str] = typer.Option(None, "--work-types", "-w", help="Comma-separated work types"),
+        snapshot_date: Optional[str] = typer.Option(None, "--snapshot-date", "-d", help="Pin to a specific OpenAlex snapshot date (YYYY-MM-DD). Defaults to SnapshotConfig.snapshot_date."),
+    ):
+        """Launch a snapshot-based ingest job for the given scope."""
+        wt = work_types.split(",") if work_types else None
+        job_id = launch_worker("snapshot", scope_path, work_types=wt, snapshot_date=snapshot_date)
+        if job_id:
+            result = {"job_id": job_id, "status": "launched"}
+            if _use_json:
+                console.print_json(_json.dumps(result))
+            else:
+                console.print(f"Launched snapshot job: [cyan]{job_id}[/cyan]")
+        else:
+            if _use_json:
+                console.print_json(_json.dumps({"error": "duplicate or at capacity"}))
+            else:
+                console.print("[red]Already running or at capacity[/red]")
+            raise typer.Exit(1)
+
     # -- embed subcommand --
 
     MODEL_ALIASES = {"gist": MODEL_PATHS["gist"], "gemma": MODEL_PATHS["gemma"]}
@@ -769,15 +793,16 @@ def _build_cli():
 
     @cli.command(hidden=True)
     def worker(
-        action: str = typer.Argument(help="Action: fetch or embed"),
+        action: str = typer.Argument(help="Action: fetch, embed, or snapshot"),
         scope: str = typer.Argument(help="Scope string"),
         model: Optional[str] = typer.Option(None, "--model"),
         work_types: Optional[str] = typer.Option(None, "--work-types"),
+        snapshot_date: Optional[str] = typer.Option(None, "--snapshot-date"),
         job_id: str = typer.Option(..., "--job-id"),
     ):
         """Internal worker entry point (called by launch_worker)."""
         wt = work_types.split(",") if work_types else None
-        run_worker(action, scope, model, job_id, work_types=wt)
+        run_worker(action, scope, model, job_id, work_types=wt, snapshot_date=snapshot_date)
 
     return cli
 

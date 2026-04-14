@@ -794,3 +794,143 @@ def test_run_raises_when_work_types_is_none(tmp_path, monkeypatch):
             spill_dir=tmp_path / "spill",
             s3_client=None,  # never reached
         )
+
+
+# ---------------------------------------------------------------------------
+# run_worker snapshot dispatch test (Task 6)
+# ---------------------------------------------------------------------------
+
+
+def test_run_worker_snapshot_action_dispatches_correctly(tmp_path, monkeypatch):
+    """run_worker('snapshot', ...) should build a Filter and invoke snapshot_ingest.run."""
+    import resource
+
+    import bookgap.scope_ops
+    import bookgap.snapshot_ingest
+
+    called = {}
+
+    def fake_run(**kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
+
+    # Patch manifest IO so we don't touch disk
+    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+
+    # Disable RLIMIT_AS — it's a process-wide side effect unsafe for pytest.
+    monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
+
+    bookgap.scope_ops.run_worker(
+        action="snapshot",
+        scope_str="31/3102/T10805/article",
+        model=None,
+        job_id="test_job",
+        work_types=None,
+        snapshot_date="2026-04-01",
+    )
+
+    assert called["snapshot_date"] == "2026-04-01"
+    assert called["work_filter"].field == "31"
+    assert called["work_filter"].subfield == "3102"
+    assert called["work_filter"].topic == "T10805"
+    assert called["work_filter"].work_types == ("article",)
+
+
+def test_run_worker_snapshot_3part_scope_builds_topic_filter(monkeypatch):
+    """3-part scope (field/subfield/topic) should build topic-level filter."""
+    import resource
+
+    import bookgap.scope_ops
+    import bookgap.snapshot_ingest
+
+    called = {}
+
+    def fake_run(**kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
+    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
+
+    bookgap.scope_ops.run_worker(
+        action="snapshot",
+        scope_str="31/3102/T10805",
+        model=None,
+        job_id="test_job",
+        work_types=["article"],
+        snapshot_date="2026-04-01",
+    )
+
+    f = called["work_filter"]
+    assert f.field == "31"
+    assert f.subfield == "3102"
+    assert f.topic == "T10805"
+    assert f.work_types == ("article",)
+
+
+def test_run_worker_snapshot_2part_scope_builds_subfield_filter(monkeypatch):
+    """2-part scope (field/subfield) should build subfield-level filter."""
+    import resource
+
+    import bookgap.scope_ops
+    import bookgap.snapshot_ingest
+
+    called = {}
+
+    def fake_run(**kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
+    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
+
+    bookgap.scope_ops.run_worker(
+        action="snapshot",
+        scope_str="31/3102",
+        model=None,
+        job_id="test_job",
+        work_types=["article", "book"],
+        snapshot_date="2026-04-01",
+    )
+
+    f = called["work_filter"]
+    assert f.field == "31"
+    assert f.subfield == "3102"
+    assert f.topic is None
+    assert set(f.work_types) == {"article", "book"}
+
+
+def test_run_worker_snapshot_1part_domain_scope_builds_domain_filter(monkeypatch):
+    """1-part scope (domain) should build domain-level filter."""
+    import resource
+
+    import bookgap.scope_ops
+    import bookgap.snapshot_ingest
+
+    called = {}
+
+    def fake_run(**kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
+    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
+
+    bookgap.scope_ops.run_worker(
+        action="snapshot",
+        scope_str="3",
+        model=None,
+        job_id="test_job",
+        work_types=["article"],
+        snapshot_date="2026-04-01",
+    )
+
+    f = called["work_filter"]
+    assert f.domain == "3"
+    assert f.field is None
+    assert f.work_types == ("article",)

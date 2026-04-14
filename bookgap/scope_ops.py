@@ -380,6 +380,7 @@ def _make_job_id(action: str, scope_str: str, model: str | None = None) -> str:
 
 def launch_worker(
     action: str, scope_str: str, model: str | None = None, work_types: list[str] | None = None,
+    snapshot_date: str | None = None,
 ) -> str | None:
     """Launch a detached worker subprocess. Returns job_id or None if duplicate/at capacity."""
     if has_running_job(action, scope_str, model):
@@ -406,6 +407,8 @@ def launch_worker(
         cmd.extend(["--model", model])
     if work_types:
         cmd.extend(["--work-types", ",".join(work_types)])
+    if snapshot_date:
+        cmd.extend(["--snapshot-date", snapshot_date])
     cmd.extend(["--job-id", job_id])
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
@@ -429,6 +432,7 @@ def launch_worker(
         "action": action,
         "scope": scope_str,
         "model": model,
+        "snapshot_date": snapshot_date,
         "status": "running",
         "started_at": datetime.datetime.now().isoformat(),
         "finished_at": None,
@@ -440,6 +444,7 @@ def launch_worker(
 
 def run_worker(
     action: str, scope_str: str, model: str | None, job_id: str, work_types: list[str] | None = None,
+    snapshot_date: str | None = None,
 ) -> None:
     """Worker entry point — called in the detached subprocess."""
     import faulthandler
@@ -500,6 +505,39 @@ def run_worker(
             scope = ResolvedScope(field=parts[0], subfield=parts[1], topic=parts[2], work_type=parts[3])
             model_enum = Embedder.ModelName(model)
             embed_works(scope, model_enum)
+        elif action == "snapshot":
+            from bookgap.snapshot_ingest import run as snapshot_run
+            from bookgap.configs.config import SnapshotConfig
+
+            if len(parts) == 4:
+                filt = Filter(field=parts[0], subfield=parts[1], topic=parts[2], work_types=(parts[3],))
+            elif len(parts) == 3:
+                filt = Filter(field=parts[0], subfield=parts[1], topic=parts[2], work_types=wt)
+            elif len(parts) == 2:
+                filt = Filter(field=parts[0], subfield=parts[1], work_types=wt)
+            elif len(parts) == 1:
+                if any(d[0] == parts[0] for d in KNOWN_DOMAINS):
+                    filt = Filter(domain=parts[0], work_types=wt)
+                else:
+                    filt = Filter(field=parts[0], work_types=wt)
+            else:
+                raise ValueError(f"Unexpected scope format for snapshot: {scope_str}")
+
+            # NOTE: We instantiate SnapshotConfig directly (not via Hydra compose) so
+            # scope_manager can be invoked without the full experiment config stack.
+            # Any Hydra YAML overrides for snapshot.* are ignored by this path — the
+            # only override is the --snapshot-date CLI flag.
+            cfg = SnapshotConfig()
+            effective_date = snapshot_date or cfg.snapshot_date
+            snapshot_run(
+                work_filter=filt,
+                snapshot_date=effective_date,
+                bucket=cfg.bucket,
+                prefix=cfg.prefix,
+                shard_row_flush_threshold=cfg.shard_row_flush_threshold,
+                max_resident_rows=cfg.max_resident_rows,
+                disk_abort_pct=cfg.disk_abort_pct,
+            )
         else:
             raise ValueError(f"Unknown action: {action}")
 
