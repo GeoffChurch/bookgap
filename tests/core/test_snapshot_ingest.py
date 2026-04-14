@@ -1,5 +1,8 @@
+import gzip
+import io
 import json
 from pathlib import Path
+
 import pytest
 
 from bookgap.snapshot_ingest import (
@@ -199,3 +202,189 @@ def test_list_shards_drops_keys_with_malformed_partition():
     }])
     shards = list_shards(client, "openalex", "data/works/", snapshot_date="2026-04-01")
     assert shards == ["data/works/updated_date=2026-04-01/part.gz"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers for stream_shard / Bucketer tests
+# ---------------------------------------------------------------------------
+
+
+def _make_gzipped_jsonl(works: list[dict]) -> io.BytesIO:
+    """Build an in-memory gzipped JSONL blob from a list of work dicts."""
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        for work in works:
+            gz.write((json.dumps(work) + "\n").encode())
+    buf.seek(0)
+    return buf
+
+
+def _work(field_id: str, subfield_id: str, topic_id: str, wtype: str = "article") -> dict:
+    """Convenience builder for a minimal OpenAlex work dict."""
+    return {
+        "id": f"https://openalex.org/W{topic_id}999",
+        "type": wtype,
+        "primary_topic": {
+            "id": f"https://openalex.org/T{topic_id}",
+            "field": {"id": f"https://openalex.org/fields/{field_id}"},
+            "subfield": {"id": f"https://openalex.org/subfields/{subfield_id}"},
+        },
+    }
+
+
+class RecordingSink:
+    def __init__(self):
+        self.calls = []  # list of (scope_key, list[dict])
+
+    def __call__(self, scope_key, rows):
+        self.calls.append((scope_key, list(rows)))
+
+
+# ---------------------------------------------------------------------------
+# stream_shard tests
+# ---------------------------------------------------------------------------
+
+def test_stream_shard_yields_scope_keyed_works():
+    from bookgap.snapshot_ingest import stream_shard
+
+    works = [
+        _work("31", "2100", "10805"),          # field 31 -> match
+        _work("31", "2100", "10806"),          # field 31 -> match
+        _work("99", "9900", "99001"),          # field 99 -> no match
+    ]
+    blob = _make_gzipped_jsonl(works)
+    results = list(stream_shard(blob, target_fields={"31"}))
+
+    assert len(results) == 2
+    for key, work in results:
+        field, subfield, topic, wtype = key
+        assert field == "31"
+        assert subfield == "2100"
+        assert isinstance(topic, str) and topic
+        assert wtype == "article"
+
+
+def test_stream_shard_drops_works_without_primary_topic():
+    from bookgap.snapshot_ingest import stream_shard
+
+    works = [
+        {"id": "https://openalex.org/W1", "type": "article"},          # no primary_topic
+        _work("31", "2100", "10805"),
+    ]
+    blob = _make_gzipped_jsonl(works)
+    results = list(stream_shard(blob, target_fields=None))
+
+    assert len(results) == 1
+    assert results[0][0][0] == "31"
+
+
+def test_stream_shard_drops_malformed_json_lines():
+    from bookgap.snapshot_ingest import stream_shard
+
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        gz.write(b"not json at all\n")
+        gz.write((json.dumps(_work("31", "2100", "10805")) + "\n").encode())
+    buf.seek(0)
+
+    results = list(stream_shard(buf, target_fields=None))
+    assert len(results) == 1
+
+
+def test_stream_shard_no_target_fields_yields_all():
+    from bookgap.snapshot_ingest import stream_shard
+
+    works = [
+        _work("31", "2100", "10805"),
+        _work("55", "3300", "20001"),
+        _work("77", "4400", "30002", wtype="book"),
+    ]
+    blob = _make_gzipped_jsonl(works)
+    results = list(stream_shard(blob, target_fields=None))
+
+    assert len(results) == 3
+    field_ids = {key[0] for key, _ in results}
+    assert field_ids == {"31", "55", "77"}
+
+
+# ---------------------------------------------------------------------------
+# Bucketer tests
+# ---------------------------------------------------------------------------
+
+def test_bucketer_flushes_when_threshold_reached():
+    from bookgap.snapshot_ingest import Bucketer
+
+    sink = RecordingSink()
+    threshold = 5
+    bucketer = Bucketer(sink=sink, flush_threshold=threshold, max_resident=10_000)
+
+    key = ("31", "2100", "10805", "article")
+    work = _work("31", "2100", "10805")
+
+    for _ in range(threshold):
+        bucketer.insert(key, work)
+
+    # Exactly at threshold -> one flush with all threshold rows
+    assert len(sink.calls) == 1
+    assert len(sink.calls[0][1]) == threshold
+    assert sink.calls[0][0] == key
+
+
+def test_bucketer_evicts_largest_bucket_when_resident_cap_hit():
+    from bookgap.snapshot_ingest import Bucketer
+
+    sink = RecordingSink()
+    # max_resident = 5; threshold high so per-bucket flush won't fire
+    bucketer = Bucketer(sink=sink, flush_threshold=1_000, max_resident=5)
+
+    key_a = ("31", "2100", "10805", "article")
+    key_b = ("55", "3300", "20001", "article")
+    work_a = _work("31", "2100", "10805")
+    work_b = _work("55", "3300", "20001")
+
+    # Insert 3 into A, 2 into B (total = 5, exactly at cap — one more triggers eviction)
+    for _ in range(3):
+        bucketer.insert(key_a, work_a)
+    for _ in range(2):
+        bucketer.insert(key_b, work_b)
+
+    # No flush yet (resident == max_resident, not exceeding)
+    assert len(sink.calls) == 0
+
+    # One more into B brings total to 6 > max_resident -> largest (A, size 3) flushed
+    bucketer.insert(key_b, work_b)
+    assert len(sink.calls) == 1
+    assert sink.calls[0][0] == key_a
+    assert len(sink.calls[0][1]) == 3
+
+
+def test_bucketer_flush_all_empties_all_buckets():
+    from bookgap.snapshot_ingest import Bucketer
+
+    sink = RecordingSink()
+    bucketer = Bucketer(sink=sink, flush_threshold=1_000, max_resident=1_000)
+
+    key_a = ("31", "2100", "10805", "article")
+    key_b = ("55", "3300", "20001", "book")
+    work_a = _work("31", "2100", "10805")
+    work_b = _work("55", "3300", "20001", wtype="book")
+
+    bucketer.insert(key_a, work_a)
+    bucketer.insert(key_a, work_a)
+    bucketer.insert(key_b, work_b)
+
+    bucketer.flush_all()
+
+    # Both buckets flushed; sink called twice
+    assert len(sink.calls) == 2
+    flushed_keys = {call[0] for call in sink.calls}
+    assert flushed_keys == {key_a, key_b}
+
+    # Totals match what was inserted
+    total_rows = sum(len(call[1]) for call in sink.calls)
+    assert total_rows == 3
+
+    # Subsequent flush_all is a no-op
+    sink.calls.clear()
+    bucketer.flush_all()
+    assert len(sink.calls) == 0
