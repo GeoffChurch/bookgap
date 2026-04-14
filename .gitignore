@@ -1,5 +1,6 @@
 /.venv
 /.conda
+/.worktrees
 /bookgap.egg-info
 /cache
 /logs
