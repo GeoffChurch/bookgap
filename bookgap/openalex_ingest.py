@@ -365,8 +365,13 @@ class WorkFilter(enum.Enum):
         return repr(self.value)
 
 
-def _filter_works(scope: ResolvedScope):
-    """Filter works for a single concrete scope (field/subfield/topic/work_type)."""
+def _filter_works_iter(scope: ResolvedScope, works_iter):
+    """Filter works from an externally-provided iterator for a single scope.
+
+    Identical semantics to _filter_works, but takes the raw work iterator as a
+    parameter instead of calling _get_works_for_type internally. Used by both
+    the API ingest path (via _filter_works) and the snapshot ingest path.
+    """
     filters = list(WorkFilter)
 
     class PerTypeCounter:
@@ -384,32 +389,8 @@ def _filter_works(scope: ResolvedScope):
     artifacts_dir = ARTIFACTS_DIR / str(scope)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Disable total count query by default to avoid rate limiting issues
-    QUERY_TOTAL_COUNT = False
-    total_count = None
-    
-    if QUERY_TOTAL_COUNT:
-        # Get total count with exponential backoff for rate limiting
-        backoff_time = 1.0
-        max_retries = 5
-        retry_count = 0
-
-        while total_count is None and retry_count < max_retries:
-            try:
-                RATE_LIMITER.wait()
-                total_count = get_query(scope.filter()).count()
-            except Exception as e:
-                retry_count += 1
-                if retry_count >= max_retries:
-                    LOGGER.warning(f"Failed to get count for {scope} after {max_retries} retries, proceeding without total")
-                    total_count = None
-                    break
-                LOGGER.warning(f"Failed to get count for {scope} (attempt {retry_count}/{max_retries}), retrying after {backoff_time}s: {e}")
-                time.sleep(backoff_time)
-                backoff_time *= 2  # Exponential backoff
-
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
-        for work in tqdm.tqdm(_get_works_for_type(scope), total=total_count,
+        for work in tqdm.tqdm(works_iter,
                 desc=f"Filtering works in {scope}", mininterval=3, delay=3, smoothing=1):
             invalidators = []
             total.insert(work)
@@ -434,9 +415,17 @@ def _filter_works(scope: ResolvedScope):
         LOGGER.info(f"{scope} filter stats: {json.dumps(stats, indent=2)}")
 
 
-@MEMORY.cache
-def deduplicate_works_syntactic(scope: ResolvedScope):
-    works = list(_filter_works(scope))
+def _filter_works(scope: ResolvedScope):
+    """Filter works for a single concrete scope (field/subfield/topic/work_type)."""
+    yield from _filter_works_iter(scope, _get_works_for_type(scope))
+
+
+def _deduplicate_works(works: list[dict[str, Any]], scope: ResolvedScope) -> list[dict[str, Any]]:
+    """Stateless syntactic dedup for a pre-filtered list of works.
+
+    Writes the per-scope syntactic_deduplication_stats.txt artifact and returns
+    a list containing one representative per normalized-text equivalence class.
+    """
     deduped: dict[str, list[dict[str, Any]]] = {}
     def normalize_work(work: dict[str, Any], _NONWORD_PAT=re.compile(r"\W")) -> str:
         s = f"{work['display_name']} {work['abstract']}"
@@ -450,10 +439,10 @@ def deduplicate_works_syntactic(scope: ResolvedScope):
     artifacts_dir = ARTIFACTS_DIR / create_unicode_safe_filename(f"{scope}")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
+    total_works = len(works)
+    unique_works = len(deduped)
+    dup_groups = [group for group in deduped.values() if len(group) > 1]
     with (artifacts_dir / f"syntactic_deduplication_stats.txt").open("w") as f:
-        total_works = len(works)
-        unique_works = len(deduped)
-        dup_groups = [group for group in deduped.values() if len(group) > 1]
         f.write(f"Total works: {total_works}\n")
         f.write(f"Unique works: {unique_works} ({unique_works / total_works if total_works else 0:.2%})\n")
         f.write(f"Number of duplicate groups: {len(dup_groups)}\n")
@@ -461,7 +450,12 @@ def deduplicate_works_syntactic(scope: ResolvedScope):
         f.write(f"{get_stats(np.array([len(group) for group in dup_groups]))}\n")
         f.write("\n")
 
-    return [group[0] for group in deduped.values()] # Return the first work of each deduplicated group
+    return [group[0] for group in deduped.values()]  # Return the first work of each deduplicated group
+
+
+@MEMORY.cache
+def deduplicate_works_syntactic(scope: ResolvedScope):
+    return _deduplicate_works(list(_filter_works(scope)), scope)
 
 
 def batched(iterable, n): # TODO use itertools.batched when available

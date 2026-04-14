@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 
 from bookgap.snapshot_ingest import (
@@ -13,6 +14,10 @@ from bookgap.snapshot_ingest import (
     DiskFullError,
     make_s3_client,
     list_shards,
+    SpillSink,
+    _normalize_snapshot_work,
+    ScopeKey,
+    run,
 )
 
 
@@ -388,3 +393,404 @@ def test_bucketer_flush_all_empties_all_buckets():
     sink.calls.clear()
     bucketer.flush_all()
     assert len(sink.calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# _normalize_snapshot_work tests (Part B)
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_work_raw(
+    field_id="31",
+    subfield_id="3102",
+    topic_id="T99999",
+    wtype="article",
+    abstract_inverted_index=None,
+    openalex_id="https://openalex.org/W12345",
+) -> dict:
+    """Build a raw snapshot JSON work record."""
+    return {
+        "ids": {"openalex": openalex_id, "mag": "99"},
+        "type": wtype,
+        "display_name": "A Great Paper",
+        "abstract_inverted_index": abstract_inverted_index or {"Hello": [0], "world": [1]},
+        "primary_topic": {
+            "id": f"https://openalex.org/{topic_id}",
+            "field": {"id": f"https://openalex.org/fields/{field_id}"},
+            "subfield": {"id": f"https://openalex.org/subfields/{subfield_id}"},
+        },
+    }
+
+
+def test_normalize_snapshot_work_happy_path():
+    scope_key: ScopeKey = ("31", "3102", "T99999", "article")
+    raw = _snapshot_work_raw()
+    result = _normalize_snapshot_work(raw, scope_key)
+
+    assert result is not None
+    # abstract decoded from inverted index
+    assert result["abstract"] == "Hello world"
+    assert "abstract_inverted_index" not in result
+    # id extracted from ids.openalex
+    assert result["id"] == "https://openalex.org/W12345"
+    assert "ids" not in result
+    # scope labels set
+    assert result["topic"] == "T99999"
+    assert result["field_id"] == "31"
+    assert result["subfield_id"] == "3102"
+    assert result["topic_id"] == "T99999"
+
+
+def test_normalize_snapshot_work_drops_no_abstract():
+    scope_key: ScopeKey = ("31", "3102", "T99999", "article")
+    raw = _snapshot_work_raw(abstract_inverted_index=None)
+    raw.pop("abstract_inverted_index")
+    assert _normalize_snapshot_work(raw, scope_key) is None
+
+
+def test_normalize_snapshot_work_drops_empty_abstract():
+    scope_key: ScopeKey = ("31", "3102", "T99999", "article")
+    raw = _snapshot_work_raw()
+    raw["abstract_inverted_index"] = {}  # falsy
+    assert _normalize_snapshot_work(raw, scope_key) is None
+
+
+# ---------------------------------------------------------------------------
+# SpillSink tests (Part C)
+# ---------------------------------------------------------------------------
+
+
+def test_spill_sink_writes_one_file_per_scope(tmp_path):
+    sink = SpillSink(tmp_path / "spill")
+    key_a: ScopeKey = ("31", "3102", "T99999", "article")
+    key_b: ScopeKey = ("17", "1702", "T10181", "book")
+    rows_a = [{"x": 1}, {"x": 2}]
+    rows_b = [{"y": 10}]
+    sink(key_a, rows_a)
+    sink(key_b, rows_b)
+
+    path_a = sink._spill_path(key_a)
+    path_b = sink._spill_path(key_b)
+    assert path_a.exists()
+    assert path_b.exists()
+
+    lines_a = path_a.read_text().strip().splitlines()
+    lines_b = path_b.read_text().strip().splitlines()
+    assert len(lines_a) == 2
+    assert len(lines_b) == 1
+    assert json.loads(lines_a[0]) == {"x": 1}
+    assert json.loads(lines_b[0]) == {"y": 10}
+
+
+def test_spill_sink_appends_across_calls(tmp_path):
+    sink = SpillSink(tmp_path / "spill")
+    key: ScopeKey = ("31", "3102", "T99999", "article")
+    sink(key, [{"n": 1}, {"n": 2}])
+    sink(key, [{"n": 3}])
+
+    path = sink._spill_path(key)
+    lines = path.read_text().strip().splitlines()
+    assert len(lines) == 3
+    assert [json.loads(l)["n"] for l in lines] == [1, 2, 3]
+
+
+def test_spill_sink_discovers_existing_files_on_init(tmp_path):
+    """SpillSink must pre-populate _files_written from any *.jsonl already on disk.
+
+    This covers the resume case: a prior interrupted run wrote spill files but
+    never called finalize_all(), so a fresh SpillSink must not silently drop them.
+    """
+    spill_dir = tmp_path / "spill"
+    key: ScopeKey = ("31", "3102", "T99999", "article")
+
+    # Manually create a synthetic spill file as a prior run would have done.
+    file_path = spill_dir / "31" / "3102" / "T99999" / "article.jsonl"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(json.dumps({"x": 1}) + "\n")
+
+    # Now instantiate a fresh SpillSink — it should discover the existing file.
+    sink = SpillSink(spill_dir)
+    assert key in sink._files_written
+
+
+# ---------------------------------------------------------------------------
+# _normalize_snapshot_work malformed abstract test
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_snapshot_work_handles_malformed_abstract(tmp_path):
+    """_normalize_snapshot_work must return None (not raise) on a malformed abstract.
+
+    resolve_abstract_inverted_index asserts that words contain no spaces.
+    A word with a space in the inverted index triggers AssertionError; we confirm
+    _normalize_snapshot_work catches it and returns None gracefully.
+    """
+    scope_key: ScopeKey = ("31", "3102", "T99999", "article")
+    raw = _snapshot_work_raw(
+        abstract_inverted_index={"hello world": [0]},  # space in word -> AssertionError
+    )
+    result = _normalize_snapshot_work(raw, scope_key)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# end-to-end run() test (Part D + E)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmp_ingest(tmp_path, monkeypatch):
+    """Redirect CACHE_DIR and ARTIFACTS_DIR to tmp_path for ingest modules."""
+    import bookgap.openalex_ingest as oi_mod
+    import bookgap.snapshot_ingest as si_mod
+    import bookgap.util as util_mod
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    monkeypatch.setattr(oi_mod, "CACHE_DIR", cache)
+    monkeypatch.setattr(oi_mod, "ARTIFACTS_DIR", artifacts)
+    monkeypatch.setattr(si_mod, "CACHE_DIR", cache)
+    monkeypatch.setattr(util_mod, "CACHE_DIR", cache)
+    monkeypatch.setattr(util_mod, "ARTIFACTS_DIR", artifacts)
+
+    return tmp_path
+
+
+def _make_gzipped_jsonl_bytes(works: list[dict]) -> bytes:
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        for work in works:
+            gz.write((json.dumps(work) + "\n").encode())
+    return buf.getvalue()
+
+
+class FakeS3Client:
+    """Minimal boto3 client stub for end-to-end test."""
+
+    def __init__(self, shard_key: str, shard_bytes: bytes):
+        self._shard_key = shard_key
+        self._shard_bytes = shard_bytes
+
+    def get_paginator(self, operation_name):
+        assert operation_name == "list_objects_v2"
+
+        class _Paginator:
+            def paginate(self_, Bucket, Prefix):
+                return iter([{
+                    "Contents": [{"Key": self._shard_key}]
+                }])
+
+        return _Paginator()
+
+    def download_file(self, bucket, key, local_path):
+        Path(local_path).write_bytes(self._shard_bytes)
+
+
+def test_run_entrypoint_end_to_end(tmp_ingest, monkeypatch):
+    """Full pipeline: shard → stream → bucket → spill → filter → dedup → parquet."""
+    import bookgap.openalex_ingest as oi_mod
+    from bookgap.openalex_ingest import ResolvedScope
+    from bookgap.util import Filter
+
+    # The scope we'll target
+    FIELD = "31"
+    SUBFIELD = "3102"
+    TOPIC = "T99999"
+    WTYPE = "article"
+    scope_key: ScopeKey = (FIELD, SUBFIELD, TOPIC, WTYPE)
+
+    # Monkeypatch _resolve_filter_scopes to return the single concrete scope
+    fake_scope = ResolvedScope(field=FIELD, subfield=SUBFIELD, topic=TOPIC, work_type=WTYPE)
+    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f: [fake_scope])
+
+    # Build a synthetic shard: one matching work, one in a different field
+    matching_work = {
+        "ids": {"openalex": "https://openalex.org/W99001"},
+        "type": WTYPE,
+        "display_name": "Quantum Computing Fundamentals",
+        "abstract_inverted_index": {"Quantum": [0], "computing": [1], "is": [2], "interesting": [3]},
+        "primary_topic": {
+            "id": f"https://openalex.org/{TOPIC}",
+            "field": {"id": f"https://openalex.org/fields/{FIELD}"},
+            "subfield": {"id": f"https://openalex.org/subfields/{SUBFIELD}"},
+        },
+        "language": "en",
+        "publication_date": "2024-01-15",
+        "created_date": "2024-01-15",
+        "updated_date": "2024-01-15",
+        "referenced_works": [],
+    }
+    other_field_work = {
+        "ids": {"openalex": "https://openalex.org/W99002"},
+        "type": "article",
+        "display_name": "Economics Paper",
+        "abstract_inverted_index": {"Economics": [0], "stuff": [1]},
+        "primary_topic": {
+            "id": "https://openalex.org/T11111",
+            "field": {"id": "https://openalex.org/fields/99"},
+            "subfield": {"id": "https://openalex.org/subfields/9901"},
+        },
+        "language": "en",
+        "publication_date": "2024-01-15",
+        "created_date": "2024-01-15",
+        "updated_date": "2024-01-15",
+        "referenced_works": [],
+    }
+
+    shard_key = f"data/works/updated_date=2026-04-01/part_000.gz"
+    shard_bytes = _make_gzipped_jsonl_bytes([matching_work, other_field_work])
+
+    fake_client = FakeS3Client(shard_key=shard_key, shard_bytes=shard_bytes)
+
+    cache_dir = tmp_ingest / "cache"
+    state_path = cache_dir / "snapshot_state.json"
+    spill_dir = cache_dir / "snapshot_tmp"
+
+    run(
+        work_filter=Filter(field=FIELD, topic=TOPIC, work_types=(WTYPE,)),
+        snapshot_date="2026-04-01",
+        state_path=state_path,
+        spill_dir=spill_dir,
+        s3_client=fake_client,
+        shard_row_flush_threshold=100,
+        max_resident_rows=10_000,
+    )
+
+    # State file should have finished_at set and the shard in shards_completed
+    state = load_state(state_path, snapshot_date="2026-04-01")
+    assert state.finished_at is not None
+    assert shard_key in state.shards_completed
+
+    # Parquet file should exist and be readable
+    import bookgap.openalex_ingest as oi_mod
+    scope = ResolvedScope(field=FIELD, subfield=SUBFIELD, topic=TOPIC, work_type=WTYPE)
+    parquet_path = oi_mod._scope_parquet_path(scope)
+    assert parquet_path.exists(), f"Expected parquet at {parquet_path}"
+
+    table = pq.read_table(parquet_path)
+    assert table.num_rows >= 1
+
+    # The target work must be present; the off-target work must NOT be present.
+    ids = table.column("id").to_pylist()
+    assert "https://openalex.org/W99001" in ids, "Target work missing from parquet"
+    assert "https://openalex.org/W99002" not in ids, "Off-target work must not appear in parquet"
+
+    # Parquet schema must include all expected columns.
+    expected_columns = {
+        "id", "display_name", "abstract", "type",
+        "publication_date", "created_date", "updated_date",
+        "language", "topic_label", "primary_topic_id",
+        "primary_subfield_id", "referenced_works",
+    }
+    assert expected_columns <= set(table.schema.names), (
+        f"Missing columns: {expected_columns - set(table.schema.names)}"
+    )
+
+    # Per-scope artifact files must exist.
+    artifacts_dir = tmp_ingest / "artifacts" / str(scope)
+    assert (artifacts_dir / "invalid_works.txt").exists(), (
+        f"invalid_works.txt not found under {artifacts_dir}"
+    )
+    assert (artifacts_dir / "invalid_works_stats.json").exists(), (
+        f"invalid_works_stats.json not found under {artifacts_dir}"
+    )
+
+
+def test_run_skips_completed_shards(tmp_ingest, monkeypatch):
+    """If a shard is already in shards_completed, run() must skip it."""
+    import bookgap.openalex_ingest as oi_mod
+    from bookgap.openalex_ingest import ResolvedScope
+    from bookgap.util import Filter
+
+    FIELD = "31"
+    fake_scope = ResolvedScope(field=FIELD, subfield="3102", topic="T99999", work_type="article")
+    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f: [fake_scope])
+
+    shard_key = "data/works/updated_date=2026-04-01/part_000.gz"
+
+    # Prime the state with the shard already completed
+    cache_dir = tmp_ingest / "cache"
+    state_path = cache_dir / "snapshot_state.json"
+    state = SnapshotState(
+        snapshot_date="2026-04-01",
+        shards_completed=[shard_key],
+        started_at="2026-04-01T00:00:00+00:00",
+    )
+    save_state(state_path, state)
+
+    downloads: list[str] = []
+
+    class TrackingClient:
+        def get_paginator(self, op):
+            class _P:
+                def paginate(self_, Bucket, Prefix):
+                    return iter([{"Contents": [{"Key": shard_key}]}])
+            return _P()
+
+        def download_file(self, bucket, key, local_path):
+            downloads.append(key)
+            # Write an empty gzip so the file is valid if accidentally opened
+            Path(local_path).write_bytes(_make_gzipped_jsonl_bytes([]))
+
+    spill_dir = cache_dir / "snapshot_tmp"
+    run(
+        work_filter=Filter(field=FIELD, work_types=("article",)),
+        snapshot_date="2026-04-01",
+        state_path=state_path,
+        spill_dir=spill_dir,
+        s3_client=TrackingClient(),
+    )
+
+    # The shard was already done — download_file must never have been called
+    assert downloads == [], f"Expected no downloads, got {downloads}"
+
+
+def test_run_raises_when_filter_resolves_to_no_scopes(tmp_path, monkeypatch):
+    """run() must raise ValueError immediately when _resolve_filter_scopes returns []."""
+    import bookgap.openalex_ingest as oi_mod
+    from bookgap import snapshot_ingest
+    from bookgap.util import Filter
+    import shutil
+
+    # Redirect disk-usage check so it passes
+    class FakeUsage:
+        total = 100
+        used = 10
+        free = 90
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: FakeUsage())
+
+    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f: [])
+
+    with pytest.raises(ValueError, match="resolved to zero scopes"):
+        snapshot_ingest.run(
+            work_filter=Filter(domain="3", work_types=("article",)),
+            snapshot_date="2026-04-01",
+            state_path=tmp_path / "state.json",
+            spill_dir=tmp_path / "spill",
+            s3_client=None,  # never reached
+        )
+
+
+def test_run_raises_when_work_types_is_none(tmp_path, monkeypatch):
+    """run() must raise ValueError with a helpful message when work_filter.work_types is None."""
+    from bookgap import snapshot_ingest
+    from bookgap.util import Filter
+    import shutil
+
+    class FakeUsage:
+        total = 100
+        used = 10
+        free = 90
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: FakeUsage())
+
+    with pytest.raises(ValueError, match="work_filter.work_types must be provided"):
+        snapshot_ingest.run(
+            work_filter=Filter(domain="3"),  # work_types defaults to None
+            snapshot_date="2026-04-01",
+            state_path=tmp_path / "state.json",
+            spill_dir=tmp_path / "spill",
+            s3_client=None,  # never reached
+        )

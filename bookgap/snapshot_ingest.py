@@ -1,7 +1,17 @@
 """Snapshot-based OpenAlex ingest (parallel to openalex_ingest.py).
 
-Reads the OpenAlex S3 snapshot and writes per-scope parquet files using the
-same pipeline as the API path. See docs/superpowers/specs/2026-04-14-snapshot-ingest-design.md.
+This module exists because the OpenAlex API enforces a daily call cap that
+makes full-corpus ingestion impractical. Instead, we download the public S3
+snapshot directly.
+
+High-level flow: list shard keys up to snapshot_date → download each shard
+in turn → stream works through a Bucketer → flush buckets to per-scope JSONL
+spill files on disk → finalize_all() reads each spill file, normalises,
+filters, deduplicates, and writes the final per-scope Parquet. Spill files
+survive crashes, so a resumed run skips already-completed shards but still
+includes their data via the pre-existing spill files.
+
+run() is the canonical entrypoint. See docs/superpowers/specs/2026-04-14-snapshot-ingest-design.md.
 """
 from __future__ import annotations
 
@@ -11,6 +21,7 @@ import re
 import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, IO, Iterator, Optional
 
@@ -18,7 +29,7 @@ import boto3
 from botocore import UNSIGNED
 from botocore.client import Config
 
-from bookgap.util import LOGGER
+from bookgap.util import CACHE_DIR, Filter, LOGGER
 
 
 class DiskFullError(RuntimeError):
@@ -193,3 +204,216 @@ class Bucketer:
         # Sort for stable, reproducible log/artifact output when debugging.
         for key in sorted(self._buckets.keys()):
             self._flush_bucket(key)
+
+
+# ---------------------------------------------------------------------------
+# Work normalization (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_snapshot_work(work: dict, scope_key: ScopeKey) -> Optional[dict]:
+    """Transform a raw snapshot JSON record into the shape _filter_works expects.
+
+    Returns None if the work has no abstract (pre-filter; mirrors the API path's
+    dropped_no_abstract behavior).
+    """
+    from bookgap.openalex_ingest import resolve_abstract_inverted_index
+
+    inverted = work.get("abstract_inverted_index")
+    if not inverted:
+        return None
+    try:
+        abstract = resolve_abstract_inverted_index(inverted)
+    except Exception as exc:
+        ids = work.get("ids") if isinstance(work.get("ids"), dict) else {}
+        work_id = ids.get("openalex") or work.get("id") or "<unknown>"
+        LOGGER.warning(
+            "snapshot_ingest: failed to decode abstract for %s, skipping: %s",
+            work_id, exc,
+        )
+        return None
+    work = dict(work)  # copy
+    work["abstract"] = abstract
+    work.pop("abstract_inverted_index", None)
+    ids = work.get("ids")
+    if isinstance(ids, dict):
+        work["id"] = ids.get("openalex", work.get("id"))
+        work.pop("ids", None)
+    field_id, subfield_id, topic_id, _wtype = scope_key
+    work["topic"] = topic_id
+    work["field_id"] = field_id
+    work["subfield_id"] = subfield_id
+    work["topic_id"] = topic_id
+    return work
+
+
+# ---------------------------------------------------------------------------
+# SpillSink (Task 5)
+# ---------------------------------------------------------------------------
+
+
+class SpillSink:
+    """Bucketer sink that spills each flush to a per-scope JSONL file on disk.
+
+    On finalize_all(), reads each spill file back, normalizes+filters+dedups
+    its works through the existing pipeline, writes the final per-scope
+    parquet, and deletes the spill file.
+    """
+
+    def __init__(self, spill_dir: Path):
+        self._spill_dir = spill_dir
+        self._spill_dir.mkdir(parents=True, exist_ok=True)
+        self._files_written: set[ScopeKey] = set()
+        # Discover any spill files left over from an interrupted prior run so
+        # finalize_all() picks them up even if no new rows arrive for those scopes.
+        for jsonl_path in self._spill_dir.rglob("*.jsonl"):
+            try:
+                rel = jsonl_path.relative_to(self._spill_dir)
+                parts = rel.parts  # (field, subfield, topic, "<wtype>.jsonl")
+                if len(parts) != 4:
+                    continue
+                field, subfield, topic, wtype_file = parts
+                wtype = wtype_file.removesuffix(".jsonl")
+                self._files_written.add((field, subfield, topic, wtype))
+            except ValueError:
+                continue
+
+    def _spill_path(self, key: ScopeKey) -> Path:
+        field, subfield, topic, wtype = key
+        return self._spill_dir / field / subfield / topic / f"{wtype}.jsonl"
+
+    def __call__(self, key: ScopeKey, rows: list[dict]) -> None:
+        """Append rows as JSONL to the scope's spill file."""
+        path = self._spill_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            for row in rows:
+                f.write(json.dumps(row))
+                f.write("\n")
+        self._files_written.add(key)
+
+    def finalize_all(self) -> None:
+        """For each scope with a spill file: normalize, filter, dedup, write parquet, delete spill."""
+        from bookgap.openalex_ingest import (
+            _filter_works_iter,
+            _deduplicate_works,
+            _write_scope_parquet,
+            _scope_parquet_path,
+            ResolvedScope,
+        )
+        for key in sorted(self._files_written):
+            spill_path = self._spill_path(key)
+            if not spill_path.exists():
+                continue
+            field, subfield, topic, wtype = key
+            scope = ResolvedScope(field=field, subfield=subfield, topic=topic, work_type=wtype)
+
+            def works_iter(sp=spill_path, k=key):
+                with sp.open() as f:
+                    for line in f:
+                        raw = json.loads(line)
+                        normalized = _normalize_snapshot_work(raw, k)
+                        if normalized is not None:
+                            yield normalized
+
+            filtered = list(_filter_works_iter(scope, works_iter()))
+            deduped = _deduplicate_works(filtered, scope)
+            parquet_path = _scope_parquet_path(scope)
+            _write_scope_parquet(parquet_path, deduped)
+            spill_path.unlink()
+        self._files_written.clear()
+
+
+# ---------------------------------------------------------------------------
+# Top-level run() entrypoint (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def run(
+    *,
+    work_filter: Filter,
+    snapshot_date: str,
+    bucket: str = "openalex",
+    prefix: str = "data/works/",
+    shard_row_flush_threshold: int = 10_000,
+    max_resident_rows: int = 1_000_000,
+    disk_abort_pct: float = 95.0,
+    state_path: Optional[Path] = None,
+    spill_dir: Optional[Path] = None,
+    s3_client=None,
+) -> None:
+    """Top-level snapshot ingest entrypoint."""
+    from bookgap.openalex_ingest import _resolve_filter_scopes
+
+    state_path = state_path or (CACHE_DIR / "snapshot_state.json")
+    spill_dir = spill_dir or (CACHE_DIR / "snapshot_tmp")
+    check_disk_or_abort(CACHE_DIR, disk_abort_pct)
+
+    if work_filter.work_types is None:
+        raise ValueError(
+            "work_filter.work_types must be provided "
+            "(e.g. Filter(domain='3', work_types=('book','article','preprint','book-chapter')))"
+        )
+
+    # Resolve the filter into concrete scopes; extract the set of target field IDs.
+    resolved_scopes = _resolve_filter_scopes(work_filter)
+    if not resolved_scopes:
+        raise ValueError(
+            f"work_filter {work_filter} resolved to zero scopes; nothing to fetch"
+        )
+    target_fields: set[str] = {s.field for s in resolved_scopes}
+    LOGGER.info(
+        "snapshot_ingest: target fields = %s (%d scopes), snapshot_date = %s",
+        sorted(target_fields),
+        len(resolved_scopes),
+        snapshot_date,
+    )
+
+    state = load_state(state_path, snapshot_date)
+    state.started_at = state.started_at or datetime.now(timezone.utc).isoformat()
+    save_state(state_path, state)
+
+    client = s3_client or make_s3_client()
+    shards = list_shards(client, bucket, prefix, snapshot_date)
+    LOGGER.info(
+        "snapshot_ingest: %d shards total, %d already done",
+        len(shards),
+        len(state.shards_completed),
+    )
+
+    sink = SpillSink(spill_dir)
+    bucketer = Bucketer(sink, flush_threshold=shard_row_flush_threshold, max_resident=max_resident_rows)
+
+    tmp_shard_dir = CACHE_DIR / "snapshot_download_tmp"
+    tmp_shard_dir.mkdir(parents=True, exist_ok=True)
+
+    completed_set = set(state.shards_completed)
+    for shard_key in shards:
+        if shard_key in completed_set:
+            continue
+        check_disk_or_abort(CACHE_DIR, disk_abort_pct)
+        tmp_path = tmp_shard_dir / Path(shard_key).name
+        LOGGER.info("snapshot_ingest: downloading %s", shard_key)
+        client.download_file(bucket, shard_key, str(tmp_path))
+        matched = 0
+        try:
+            with tmp_path.open("rb") as f:
+                for key, work in stream_shard(f, target_fields):
+                    bucketer.insert(key, work)
+                    matched += 1
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        LOGGER.info(
+            "snapshot_ingest: shard %s done — %d works matched target fields",
+            shard_key,
+            matched,
+        )
+        state.shards_completed.append(shard_key)
+        save_state(state_path, state)
+
+    bucketer.flush_all()
+    sink.finalize_all()
+
+    state.finished_at = datetime.now(timezone.utc).isoformat()
+    save_state(state_path, state)
+    LOGGER.info("snapshot_ingest: done")
