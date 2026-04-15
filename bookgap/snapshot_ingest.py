@@ -77,7 +77,21 @@ def check_disk_or_abort(cache_dir: Path, abort_pct: float) -> None:
 
 
 def make_s3_client():
-    return boto3.client("s3", config=Config(signature_version=UNSIGNED))
+    # botocore does not set HTTP socket timeouts by default, so a dead
+    # connection (remote-side FIN with unread bytes, i.e. CLOSE_WAIT) hangs
+    # the download thread forever. We've observed this both with pyalex and
+    # boto3; pyalex_client monkey-patches HTTPAdapter.send but that does not
+    # affect botocore's own urllib3 stack. Set explicit connect/read timeouts
+    # and let botocore retry a few times at the transfer layer.
+    return boto3.client(
+        "s3",
+        config=Config(
+            signature_version=UNSIGNED,
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"max_attempts": 5, "mode": "standard"},
+        ),
+    )
 
 
 def list_shards(client, bucket: str, prefix: str, snapshot_date: str) -> list[str]:
