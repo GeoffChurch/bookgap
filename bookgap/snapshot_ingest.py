@@ -450,7 +450,12 @@ def run(
     _producer_error: list[BaseException] = []
 
     def _download_one(shard_key: str) -> tuple[str, Path]:
-        tmp_path = tmp_shard_dir / Path(shard_key).name
+        # Concurrent downloads share tmp_shard_dir, so we must disambiguate
+        # per shard. Every OpenAlex shard has basename part_NNNN.gz, so using
+        # Path(shard_key).name would collide across dates and cause a write
+        # race. Encode the full key into a flat filename.
+        safe_name = shard_key.replace("/", "__")
+        tmp_path = tmp_shard_dir / safe_name
         client.download_file(bucket, shard_key, str(tmp_path))
         return shard_key, tmp_path
 
