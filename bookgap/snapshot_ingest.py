@@ -366,7 +366,7 @@ DEFAULT_DOWNLOAD_QUEUE_DEPTH = 6
 
 def run(
     *,
-    work_filter: Filter,
+    work_filter: "Filter | list[Filter]",
     snapshot_date: str,
     bucket: str = "openalex",
     prefix: str = "data/works/",
@@ -379,33 +379,50 @@ def run(
     download_concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
     download_queue_depth: int = DEFAULT_DOWNLOAD_QUEUE_DEPTH,
 ) -> None:
-    """Top-level snapshot ingest entrypoint."""
+    """Top-level snapshot ingest entrypoint.
+
+    work_filter may be a single Filter or a list of Filters. When a list is
+    passed, each filter is resolved independently and the resulting scopes
+    are unioned, so one streaming pass can populate multiple fields that
+    aren't reachable from a single Filter (e.g. three non-contiguous fields
+    under the same domain).
+    """
     from bookgap.openalex_ingest import _resolve_filter_scopes
 
     state_path = state_path or (CACHE_DIR / "snapshot_state.json")
     spill_dir = spill_dir or (CACHE_DIR / "snapshot_tmp")
     check_disk_or_abort(CACHE_DIR, disk_abort_pct)
 
-    if work_filter.work_types is None:
-        raise ValueError(
-            "work_filter.work_types must be provided "
-            "(e.g. Filter(domain='3', work_types=('book','article','preprint','book-chapter')))"
-        )
+    filters = list(work_filter) if isinstance(work_filter, list) else [work_filter]
+    if not filters:
+        raise ValueError("work_filter must be a Filter or a non-empty list of Filters")
+    for i, f in enumerate(filters):
+        if f.work_types is None:
+            raise ValueError(
+                f"work_filter[{i}].work_types must be provided "
+                f"(e.g. Filter(field='31', work_types=('book','article','preprint','book-chapter')))"
+            )
 
-    # Resolve the filter into concrete scopes; extract the set of target field IDs.
-    resolved_scopes = _resolve_filter_scopes(work_filter)
+    # Resolve each filter into concrete scopes; union the results.
+    resolved_scopes = []
+    seen: set[tuple] = set()
+    for f in filters:
+        for s in _resolve_filter_scopes(f):
+            key = (s.field, s.subfield, s.topic, s.work_type)
+            if key not in seen:
+                seen.add(key)
+                resolved_scopes.append(s)
     if not resolved_scopes:
         raise ValueError(
-            f"work_filter {work_filter} resolved to zero scopes; nothing to fetch"
+            f"work_filter {filters} resolved to zero scopes; nothing to fetch"
         )
     target_fields: set[str] = {s.field for s in resolved_scopes}
-    target_scopes: set[ScopeKey] = {
-        (s.field, s.subfield, s.topic, s.work_type) for s in resolved_scopes
-    }
+    target_scopes: set[ScopeKey] = set(seen)
     LOGGER.info(
-        "snapshot_ingest: target fields = %s (%d scopes), snapshot_date = %s",
+        "snapshot_ingest: target fields = %s (%d scopes from %d filter(s)), snapshot_date = %s",
         sorted(target_fields),
         len(resolved_scopes),
+        len(filters),
         snapshot_date,
     )
 

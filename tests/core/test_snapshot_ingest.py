@@ -831,7 +831,7 @@ def test_run_raises_when_work_types_is_none(tmp_path, monkeypatch):
         free = 90
     monkeypatch.setattr(shutil, "disk_usage", lambda p: FakeUsage())
 
-    with pytest.raises(ValueError, match="work_filter.work_types must be provided"):
+    with pytest.raises(ValueError, match="work_types must be provided"):
         snapshot_ingest.run(
             work_filter=Filter(domain="3"),  # work_types defaults to None
             snapshot_date="2026-04-01",
@@ -839,6 +839,73 @@ def test_run_raises_when_work_types_is_none(tmp_path, monkeypatch):
             spill_dir=tmp_path / "spill",
             s3_client=None,  # never reached
         )
+
+
+def test_run_accepts_list_of_filters_and_unions_scopes(tmp_path, monkeypatch):
+    """run() should accept a list of filters and union their resolved scopes,
+    so one streaming pass can cover multiple non-contiguous fields."""
+    from bookgap import snapshot_ingest
+    import bookgap.openalex_ingest
+    from bookgap.openalex_ingest import ResolvedScope
+    from bookgap.util import Filter
+    import shutil
+
+    class FakeUsage:
+        total = 100
+        used = 10
+        free = 90
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: FakeUsage())
+
+    resolved_by_field = {
+        "23": [
+            ResolvedScope(field="23", subfield="2301", topic="T11111", work_type="article"),
+            ResolvedScope(field="23", subfield="2301", topic="T11111", work_type="book"),
+        ],
+        "25": [
+            ResolvedScope(field="25", subfield="2500", topic="T22222", work_type="article"),
+        ],
+        "26": [
+            ResolvedScope(field="26", subfield="2600", topic="T33333", work_type="preprint"),
+        ],
+    }
+
+    def fake_resolve(f):
+        return resolved_by_field[f.field]
+
+    monkeypatch.setattr(bookgap.openalex_ingest, "_resolve_filter_scopes", fake_resolve)
+
+    # Record what list_shards returns (we don't actually download anything).
+    monkeypatch.setattr(snapshot_ingest, "list_shards", lambda *a, **kw: [])
+
+    captured = {}
+    orig_make_client = snapshot_ingest.make_s3_client
+    monkeypatch.setattr(snapshot_ingest, "make_s3_client", lambda: object())
+
+    # Patch LOGGER.info to capture the target_fields/scopes summary.
+    import bookgap.util
+    infos: list = []
+    monkeypatch.setattr(bookgap.util.LOGGER, "info", lambda *a, **kw: infos.append((a, kw)))
+
+    snapshot_ingest.run(
+        work_filter=[
+            Filter(field="23", work_types=("article", "book")),
+            Filter(field="25", work_types=("article",)),
+            Filter(field="26", work_types=("preprint",)),
+        ],
+        snapshot_date="2025-11-06",
+        state_path=tmp_path / "state.json",
+        spill_dir=tmp_path / "spill",
+    )
+
+    # The info log should mention all three fields.
+    summary_line = next((a for a, _ in infos if "target fields" in a[0]), None)
+    assert summary_line is not None
+    # a[1] is the sorted list of fields
+    assert summary_line[1] == ["23", "25", "26"]
+    # a[2] is the scope count — should be 4 (2 from field 23, 1 from 25, 1 from 26)
+    assert summary_line[2] == 4
+    # a[3] is the filter count
+    assert summary_line[3] == 3
 
 
 # ---------------------------------------------------------------------------
