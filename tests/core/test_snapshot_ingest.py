@@ -312,6 +312,51 @@ def test_stream_shard_no_target_fields_yields_all():
     assert field_ids == {"31", "55", "77"}
 
 
+def test_stream_shard_prefilter_patterns_drop_unmatched_lines():
+    """Bytes prefilter should skip lines that don't contain any anchor
+    pattern, while still yielding works whose lines do contain a pattern.
+    Result set with prefilter must be a subset of the result set without."""
+    from bookgap.snapshot_ingest import stream_shard
+
+    works = [
+        _work("31", "3103", "10805"),     # physics — match
+        _work("55", "3300", "20001"),     # some other field — no match
+        _work("31", "3107", "11234"),     # physics — match
+        _work("27", "2700", "30002"),     # medicine — no match
+    ]
+    blob1 = _make_gzipped_jsonl(works)
+
+    # Without prefilter: target_fields still filters to field 31 (2 works).
+    baseline = list(stream_shard(blob1, target_fields={"31"}))
+    assert {k[0] for k, _ in baseline} == {"31"}
+    assert len(baseline) == 2
+
+    # With a prefilter that matches the raw bytes of field 31 URLs, result
+    # set must be identical — the prefilter is advisory, not additive.
+    blob2 = _make_gzipped_jsonl(works)
+    prefiltered = list(
+        stream_shard(
+            blob2,
+            target_fields={"31"},
+            prefilter_patterns=[b'/fields/31"'],
+        )
+    )
+    assert len(prefiltered) == len(baseline)
+    assert {k[0] for k, _ in prefiltered} == {"31"}
+
+    # Prefilter with a pattern that matches nothing should yield zero works
+    # (still correct, since it proves the prefilter can filter at the byte level).
+    blob3 = _make_gzipped_jsonl(works)
+    empty = list(
+        stream_shard(
+            blob3,
+            target_fields={"31"},
+            prefilter_patterns=[b'/fields/99999"'],
+        )
+    )
+    assert empty == []
+
+
 # ---------------------------------------------------------------------------
 # Bucketer tests
 # ---------------------------------------------------------------------------
