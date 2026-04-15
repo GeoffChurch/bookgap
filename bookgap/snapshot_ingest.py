@@ -362,6 +362,9 @@ def run(
             f"work_filter {work_filter} resolved to zero scopes; nothing to fetch"
         )
     target_fields: set[str] = {s.field for s in resolved_scopes}
+    target_scopes: set[ScopeKey] = {
+        (s.field, s.subfield, s.topic, s.work_type) for s in resolved_scopes
+    }
     LOGGER.info(
         "snapshot_ingest: target fields = %s (%d scopes), snapshot_date = %s",
         sorted(target_fields),
@@ -399,12 +402,19 @@ def run(
         try:
             with tmp_path.open("rb") as f:
                 for key, work in stream_shard(f, target_fields):
+                    # Field-level stream filter is a cheap prefilter; the
+                    # definitive check is against the resolved (field, subfield,
+                    # topic, work_type) tuple. Works whose scope key is not in
+                    # target_scopes (e.g. work_type="other", or a topic under
+                    # the target field that we didn't ask for) are dropped here.
+                    if key not in target_scopes:
+                        continue
                     bucketer.insert(key, work)
                     matched += 1
         finally:
             tmp_path.unlink(missing_ok=True)
         LOGGER.info(
-            "snapshot_ingest: shard %s done — %d works matched target fields",
+            "snapshot_ingest: shard %s done — %d works matched target scopes",
             shard_key,
             matched,
         )
