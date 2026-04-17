@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -505,61 +506,79 @@ def test_normalize_snapshot_work_drops_empty_abstract():
 # ---------------------------------------------------------------------------
 
 
+def _normalized_work(work_id: str, **overrides) -> dict:
+    """Build a minimal normalized work dict matching SCOPE_PARQUET_SCHEMA."""
+    base = {
+        "id": work_id,
+        "display_name": "Test Work",
+        "abstract": "Some abstract text",
+        "type": "article",
+        "publication_date": "2024-01-15",
+        "created_date": "2024-01-15",
+        "updated_date": "2024-01-15",
+        "language": "en",
+        "topic": "T10805",
+        "primary_topic": {"id": "https://openalex.org/T10805", "subfield": {"id": "https://openalex.org/subfields/3102"}},
+        "referenced_works": [],
+    }
+    base.update(overrides)
+    return base
+
+
 def test_spill_sink_writes_one_file_per_scope(tmp_path):
     sink = SpillSink(tmp_path / "spill")
     key_a: ScopeKey = ("31", "3102", "T99999", "article")
     key_b: ScopeKey = ("17", "1702", "T10181", "book")
-    rows_a = [{"x": 1}, {"x": 2}]
-    rows_b = [{"y": 10}]
-    sink(key_a, rows_a)
-    sink(key_b, rows_b)
+    sink(key_a, [_normalized_work("W1"), _normalized_work("W2")])
+    sink(key_b, [_normalized_work("W10", type="book")])
 
-    path_a = sink._spill_path(key_a)
-    path_b = sink._spill_path(key_b)
+    path_a = sink._spill_path(key_a, 0)
+    path_b = sink._spill_path(key_b, 0)
     assert path_a.exists()
     assert path_b.exists()
 
-    with gzip.open(path_a, "rt") as f:
-        lines_a = f.read().strip().splitlines()
-    with gzip.open(path_b, "rt") as f:
-        lines_b = f.read().strip().splitlines()
-    assert len(lines_a) == 2
-    assert len(lines_b) == 1
-    assert json.loads(lines_a[0]) == {"x": 1}
-    assert json.loads(lines_b[0]) == {"y": 10}
+    table_a = pq.read_table(path_a)
+    table_b = pq.read_table(path_b)
+    assert table_a.num_rows == 2
+    assert table_b.num_rows == 1
+    assert table_a.column("id").to_pylist() == ["W1", "W2"]
+    assert table_b.column("id").to_pylist() == ["W10"]
 
 
-def test_spill_sink_appends_across_calls(tmp_path):
+def test_spill_sink_writes_one_shard_per_call(tmp_path):
     sink = SpillSink(tmp_path / "spill")
     key: ScopeKey = ("31", "3102", "T99999", "article")
-    sink(key, [{"n": 1}, {"n": 2}])
-    sink(key, [{"n": 3}])
+    sink(key, [_normalized_work("W1"), _normalized_work("W2")])
+    sink(key, [_normalized_work("W3")])
 
-    path = sink._spill_path(key)
-    with gzip.open(path, "rt") as f:
-        lines = f.read().strip().splitlines()
-    assert len(lines) == 3
-    assert [json.loads(l)["n"] for l in lines] == [1, 2, 3]
+    paths = sink._shards_for(key)
+    assert len(paths) == 2
+    combined = pa.concat_tables([pq.read_table(p) for p in paths])
+    assert combined.column("id").to_pylist() == ["W1", "W2", "W3"]
 
 
-def test_spill_sink_discovers_existing_files_on_init(tmp_path):
-    """SpillSink must pre-populate _files_written from any *.jsonl.gz already on disk.
+def test_spill_sink_discovers_existing_shards_on_init(tmp_path):
+    """SpillSink must pre-populate _files_written and _next_seq from existing shards.
 
-    This covers the resume case: a prior interrupted run wrote spill files but
-    never called finalize_all(), so a fresh SpillSink must not silently drop them.
+    Covers resume: a prior interrupted run wrote shards but never finalized;
+    a fresh SpillSink must pick them up AND continue numbering correctly.
     """
     spill_dir = tmp_path / "spill"
     key: ScopeKey = ("31", "3102", "T99999", "article")
 
-    # Manually create a synthetic gzipped spill file as a prior run would have done.
-    file_path = spill_dir / "31" / "3102" / "T99999" / "article.jsonl.gz"
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(file_path, "wt") as f:
-        f.write(json.dumps({"x": 1}) + "\n")
+    scope_dir = spill_dir / "31" / "3102" / "T99999"
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    # Write two synthetic prior shards at sequence 0 and 1.
+    from bookgap.openalex_ingest import works_to_table
+    table = works_to_table([_normalized_work("W1")])
+    pq.write_table(table, scope_dir / "article_0000.parquet")
+    pq.write_table(table, scope_dir / "article_0001.parquet")
 
-    # Now instantiate a fresh SpillSink — it should discover the existing file.
     sink = SpillSink(spill_dir)
     assert key in sink._files_written
+    # Next write should land at sequence 2 (0 and 1 are taken).
+    sink(key, [_normalized_work("W2")])
+    assert (scope_dir / "article_0002.parquet").exists()
 
 
 # ---------------------------------------------------------------------------

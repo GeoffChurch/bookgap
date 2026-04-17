@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Callable, IO, Iterator, Optional
 
 import boto3
+import pyarrow as pa
+import pyarrow.parquet as pq
 from botocore import UNSIGNED
 from botocore.client import Config
 
@@ -450,20 +452,25 @@ def _normalize_snapshot_work(work: dict, scope_key: ScopeKey) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-_SPILL_SUFFIX = ".jsonl.gz"
-# Compression level 1 gives ~6x compression at ~10x the write cost of plain
-# JSONL, vs level 6's 8x at ~24x. In practice spill writes are a small
-# fraction of per-shard processing time (parse dominates), so the extra
-# CPU is negligible and the disk savings are large.
-_SPILL_COMPRESSLEVEL = 1
+_SPILL_SUFFIX = ".parquet"
+# zstd compression level 1 is fast and gives near-best compression on
+# typed columnar data. Most of the win over the prior gzip-JSONL design
+# comes from columnar layout + dictionary encoding (work types, topic IDs,
+# language codes), not from the compression algorithm itself.
+_SPILL_ZSTD_LEVEL = 1
 
 
 class SpillSink:
-    """Bucketer sink that spills each flush to a per-scope gzipped JSONL file.
+    """Bucketer sink that writes per-scope works as zstd-compressed parquet shards.
 
-    On finalize_all(), reads each spill file back, normalizes+filters+dedups
-    its works through the existing pipeline, writes the final per-scope
-    parquet, and deletes the spill file.
+    Each flush produces one new sequence-numbered shard file under
+    spill_dir/<field>/<subfield>/<topic>/<wtype>_NNNN.parquet. No file
+    handles persist between calls (each open is open-write-close), so
+    file-descriptor limits aren't an issue regardless of scope count.
+
+    On finalize_all(), all shards for a scope are concatenated, filtered
+    and deduped through the existing pipeline, written as the final
+    per-scope parquet (atomic), and the shards are deleted.
 
     disk_abort_root / disk_abort_pct: if set, check_disk_or_abort runs
     after each flush so growth within a single shard can't silently
@@ -481,43 +488,67 @@ class SpillSink:
         self._disk_abort_root = disk_abort_root
         self._disk_abort_pct = disk_abort_pct
         self._files_written: set[ScopeKey] = set()
-        # Discover any spill files left over from an interrupted prior run so
-        # finalize_all() picks them up even if no new rows arrive for those scopes.
+        self._next_seq: dict[ScopeKey, int] = {}
+        # Discover existing shards from interrupted prior runs so finalize_all
+        # picks them up. Also derive the next sequence number per scope so we
+        # don't collide with prior shards.
         for spill_path in self._spill_dir.rglob(f"*{_SPILL_SUFFIX}"):
             try:
                 rel = spill_path.relative_to(self._spill_dir)
-                parts = rel.parts  # (field, subfield, topic, "<wtype>.jsonl.gz")
+                parts = rel.parts  # (field, subfield, topic, "<wtype>_NNNN.parquet")
                 if len(parts) != 4:
                     continue
-                field, subfield, topic, wtype_file = parts
-                wtype = wtype_file.removesuffix(_SPILL_SUFFIX)
-                self._files_written.add((field, subfield, topic, wtype))
+                field, subfield, topic, fname = parts
+                stem = fname.removesuffix(_SPILL_SUFFIX)
+                if "_" not in stem:
+                    continue
+                wtype, seq_str = stem.rsplit("_", 1)
+                try:
+                    seq = int(seq_str)
+                except ValueError:
+                    continue
+                key = (field, subfield, topic, wtype)
+                self._files_written.add(key)
+                self._next_seq[key] = max(self._next_seq.get(key, 0), seq + 1)
             except ValueError:
                 continue
 
-    def _spill_path(self, key: ScopeKey) -> Path:
-        field, subfield, topic, wtype = key
-        return self._spill_dir / field / subfield / topic / f"{wtype}{_SPILL_SUFFIX}"
+    def _scope_dir(self, key: ScopeKey) -> Path:
+        field, subfield, topic, _wtype = key
+        return self._spill_dir / field / subfield / topic
+
+    def _spill_path(self, key: ScopeKey, seq: int) -> Path:
+        wtype = key[3]
+        return self._scope_dir(key) / f"{wtype}_{seq:04d}{_SPILL_SUFFIX}"
+
+    def _shards_for(self, key: ScopeKey) -> list[Path]:
+        return sorted(self._scope_dir(key).glob(f"{key[3]}_*{_SPILL_SUFFIX}"))
 
     def __call__(self, key: ScopeKey, rows: list[dict]) -> None:
-        """Append rows as gzipped JSONL to the scope's spill file.
+        """Write `rows` as one new parquet shard.
 
-        gzip's member-concatenation property means we can open the file in
-        append mode and write a fresh gzip stream for each flush; readers
-        (gzip.open in text mode) transparently read the concatenation.
+        Rows must already be normalized into the canonical work shape
+        (display_name, abstract decoded, id, etc.). Normalization happens
+        upstream in run() before bucketing.
         """
-        path = self._spill_path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(path, "ab", compresslevel=_SPILL_COMPRESSLEVEL) as f:
-            for row in rows:
-                f.write(json.dumps(row).encode())
-                f.write(b"\n")
+        if not rows:
+            return
+        from bookgap.openalex_ingest import works_to_table
+
+        scope_dir = self._scope_dir(key)
+        scope_dir.mkdir(parents=True, exist_ok=True)
+        seq = self._next_seq.get(key, 0)
+        path = self._spill_path(key, seq)
+        self._next_seq[key] = seq + 1
+
+        table = works_to_table(rows)
+        pq.write_table(table, path, compression="zstd", compression_level=_SPILL_ZSTD_LEVEL)
         self._files_written.add(key)
         if self._disk_abort_root is not None and self._disk_abort_pct is not None:
             check_disk_or_abort(self._disk_abort_root, self._disk_abort_pct)
 
     def finalize_all(self) -> None:
-        """For each scope with a spill file: normalize, filter, dedup, write parquet, delete spill."""
+        """For each scope: concat shards, filter+dedup, write final parquet, delete shards."""
         from bookgap.openalex_ingest import (
             _filter_works_iter,
             _deduplicate_works,
@@ -526,26 +557,24 @@ class SpillSink:
             ResolvedScope,
         )
         for key in sorted(self._files_written):
-            spill_path = self._spill_path(key)
-            if not spill_path.exists():
+            shard_paths = self._shards_for(key)
+            if not shard_paths:
                 continue
             field, subfield, topic, wtype = key
             scope = ResolvedScope(field=field, subfield=subfield, topic=topic, work_type=wtype)
 
-            def works_iter(sp=spill_path, k=key):
-                with gzip.open(sp, "rt") as f:
-                    for line in f:
-                        raw = json.loads(line)
-                        normalized = _normalize_snapshot_work(raw, k)
-                        if normalized is not None:
-                            yield normalized
+            tables = [pq.read_table(p) for p in shard_paths]
+            combined = pa.concat_tables(tables)
+            works = combined.to_pylist()
 
-            filtered = list(_filter_works_iter(scope, works_iter()))
+            filtered = list(_filter_works_iter(scope, iter(works)))
             deduped = _deduplicate_works(filtered, scope)
             parquet_path = _scope_parquet_path(scope)
             _write_scope_parquet(parquet_path, deduped)
-            spill_path.unlink()
+            for p in shard_paths:
+                p.unlink()
         self._files_written.clear()
+        self._next_seq.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -728,8 +757,14 @@ def run(
                         # outside the requested subfield, etc.
                         if not any(filt.check_work(work) for filt in filters):
                             continue
-                        bucketer.insert(key, work)
+                        # Observe taxonomy from the raw work (which still has
+                        # the full primary_topic chain) before normalization
+                        # strips/transforms fields.
                         taxonomy_acc.observe(work)
+                        normalized = _normalize_snapshot_work(work, key)
+                        if normalized is None:
+                            continue
+                        bucketer.insert(key, normalized)
                         matched += 1
             finally:
                 tmp_path.unlink(missing_ok=True)

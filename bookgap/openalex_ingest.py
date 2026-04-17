@@ -472,58 +472,71 @@ def _safe_date_array(values: list) -> pa.Array:
     return pa.array(coerced, type=pa.date32())
 
 
-def _write_scope_parquet(path: Path, works: list[dict[str, Any]]) -> None:
-    """Write a list of work dicts to a single Parquet file."""
-    schema = pa.schema([
-        ("id", pa.string()),
-        ("display_name", pa.string()),
-        ("abstract", pa.string()),
-        ("type", pa.string()),
-        ("publication_date", pa.date32()),
-        ("created_date", pa.date32()),
-        ("updated_date", pa.date32()),
-        ("language", pa.string()),
-        ("topic_label", pa.string()),
-        ("primary_topic_id", pa.string()),
-        ("primary_subfield_id", pa.string()),
-        ("referenced_works", pa.list_(pa.string())),
-    ])
+SCOPE_PARQUET_SCHEMA = pa.schema([
+    ("id", pa.string()),
+    ("display_name", pa.string()),
+    ("abstract", pa.string()),
+    ("type", pa.string()),
+    ("publication_date", pa.date32()),
+    ("created_date", pa.date32()),
+    ("updated_date", pa.date32()),
+    ("language", pa.string()),
+    ("topic_label", pa.string()),
+    ("primary_topic_id", pa.string()),
+    ("primary_subfield_id", pa.string()),
+    ("referenced_works", pa.list_(pa.string())),
+])
 
+
+def works_to_table(works: list[dict[str, Any]]) -> pa.Table:
+    """Build a pyarrow Table for a list of normalized work dicts.
+
+    The resulting table has SCOPE_PARQUET_SCHEMA — the canonical layout
+    used by both _write_scope_parquet (final per-scope outputs) and
+    snapshot_ingest's intermediate spill shards.
+    """
     if not works:
-        table = pa.table({name: pa.array([], type=field.type) for name, field in zip(schema.names, schema)})
-    else:
-        primary_topic_ids = []
-        primary_subfield_ids = []
-        for w in works:
-            pt = w.get("primary_topic")
-            if isinstance(pt, dict):
-                primary_topic_ids.append(pt.get("id"))
-                sf = pt.get("subfield")
-                primary_subfield_ids.append(sf.get("id") if isinstance(sf, dict) else None)
-            else:
-                primary_topic_ids.append(None)
-                primary_subfield_ids.append(None)
-
-        refs = []
-        for w in works:
-            r = w.get("referenced_works")
-            refs.append([str(x) for x in r] if isinstance(r, list) else [])
-
-        table = pa.table({
-            "id": pa.array([w.get("id") for w in works], type=pa.string()),
-            "display_name": pa.array([w.get("display_name", "") for w in works], type=pa.string()),
-            "abstract": pa.array([w.get("abstract", "") for w in works], type=pa.string()),
-            "type": pa.array([w.get("type", "UNKNOWN") for w in works], type=pa.string()),
-            "publication_date": _safe_date_array([w.get("publication_date") for w in works]),
-            "created_date": _safe_date_array([w.get("created_date") for w in works]),
-            "updated_date": _safe_date_array([w.get("updated_date") for w in works]),
-            "language": pa.array([w.get("language") for w in works], type=pa.string()),
-            "topic_label": pa.array([w.get("topic") for w in works], type=pa.string()),
-            "primary_topic_id": pa.array(primary_topic_ids, type=pa.string()),
-            "primary_subfield_id": pa.array(primary_subfield_ids, type=pa.string()),
-            "referenced_works": pa.array(refs, type=pa.list_(pa.string())),
+        return pa.table({
+            name: pa.array([], type=field.type)
+            for name, field in zip(SCOPE_PARQUET_SCHEMA.names, SCOPE_PARQUET_SCHEMA)
         })
 
+    primary_topic_ids: list = []
+    primary_subfield_ids: list = []
+    for w in works:
+        pt = w.get("primary_topic")
+        if isinstance(pt, dict):
+            primary_topic_ids.append(pt.get("id"))
+            sf = pt.get("subfield")
+            primary_subfield_ids.append(sf.get("id") if isinstance(sf, dict) else None)
+        else:
+            primary_topic_ids.append(None)
+            primary_subfield_ids.append(None)
+
+    refs: list = []
+    for w in works:
+        r = w.get("referenced_works")
+        refs.append([str(x) for x in r] if isinstance(r, list) else [])
+
+    return pa.table({
+        "id": pa.array([w.get("id") for w in works], type=pa.string()),
+        "display_name": pa.array([w.get("display_name", "") for w in works], type=pa.string()),
+        "abstract": pa.array([w.get("abstract", "") for w in works], type=pa.string()),
+        "type": pa.array([w.get("type", "UNKNOWN") for w in works], type=pa.string()),
+        "publication_date": _safe_date_array([w.get("publication_date") for w in works]),
+        "created_date": _safe_date_array([w.get("created_date") for w in works]),
+        "updated_date": _safe_date_array([w.get("updated_date") for w in works]),
+        "language": pa.array([w.get("language") for w in works], type=pa.string()),
+        "topic_label": pa.array([w.get("topic") for w in works], type=pa.string()),
+        "primary_topic_id": pa.array(primary_topic_ids, type=pa.string()),
+        "primary_subfield_id": pa.array(primary_subfield_ids, type=pa.string()),
+        "referenced_works": pa.array(refs, type=pa.list_(pa.string())),
+    })
+
+
+def _write_scope_parquet(path: Path, works: list[dict[str, Any]]) -> None:
+    """Write a list of work dicts to a single Parquet file."""
+    table = works_to_table(works)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".parquet.tmp")
     pq.write_table(table, tmp_path, compression="zstd")
