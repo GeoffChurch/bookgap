@@ -94,6 +94,173 @@ def make_s3_client():
     )
 
 
+def taxonomy_path(snapshot_date: str) -> Path:
+    """Path to the per-snapshot derived taxonomy file."""
+    return CACHE_DIR / f"snapshot_taxonomy_{snapshot_date}.json"
+
+
+@dataclass(frozen=True)
+class PinnedTaxonomy:
+    """Read-only view of the taxonomy derived from a works snapshot.
+
+    Built bottom-up from the per-work primary_topic chain seen during ingest,
+    so it reflects exactly the taxonomy state at snapshot_date. Records use
+    the same nested-dict shape as OpenAlex's official taxonomy entity schema
+    so callers can lookup parents via tax.subfields[sf_id]["field"]["id"]
+    etc., without caring whether the source was the API or a snapshot.
+    """
+    snapshot_date: str
+    fields: dict[str, dict]      # field_id (e.g. "31") -> field record
+    subfields: dict[str, dict]   # subfield_id (e.g. "3102") -> subfield record
+    topics: dict[str, dict]      # topic_id (e.g. "T10805") -> topic record
+
+
+_TAXONOMY_CACHE: dict[str, PinnedTaxonomy] = {}
+
+
+class _TaxonomyAccumulator:
+    """Collects distinct domain/field/subfield/topic tuples during streaming.
+
+    Each call to observe(work) extracts the work's primary_topic chain and
+    threads it into the in-memory taxonomy. emit() returns the final dict
+    structure ready to merge with any pre-existing taxonomy file.
+    """
+
+    def __init__(self) -> None:
+        self.fields: dict[str, dict] = {}
+        self.subfields: dict[str, dict] = {}
+        self.topics: dict[str, dict] = {}
+
+    @staticmethod
+    def _short(record: dict) -> Optional[str]:
+        rid = record.get("id")
+        return rid.rsplit("/", 1)[-1] if isinstance(rid, str) else None
+
+    def observe(self, work: dict) -> None:
+        pt = work.get("primary_topic")
+        if not isinstance(pt, dict):
+            return
+        topic_id = self._short(pt)
+        if topic_id is None:
+            return
+        subfield = pt.get("subfield") or {}
+        field = pt.get("field") or {}
+        domain = pt.get("domain") or {}
+        sf_id = self._short(subfield)
+        f_id = self._short(field)
+        if sf_id is None or f_id is None:
+            return
+
+        self.topics.setdefault(topic_id, {
+            "id": pt.get("id"),
+            "display_name": pt.get("display_name"),
+            "subfield": {"id": subfield.get("id"), "display_name": subfield.get("display_name")},
+        })
+
+        sf_rec = self.subfields.setdefault(sf_id, {
+            "id": subfield.get("id"),
+            "display_name": subfield.get("display_name"),
+            "field": {"id": field.get("id"), "display_name": field.get("display_name")},
+            "topics": [],
+            "_topic_ids": set(),
+        })
+        if topic_id not in sf_rec["_topic_ids"]:
+            sf_rec["_topic_ids"].add(topic_id)
+            sf_rec["topics"].append({"id": pt.get("id"), "display_name": pt.get("display_name")})
+
+        f_rec = self.fields.setdefault(f_id, {
+            "id": field.get("id"),
+            "display_name": field.get("display_name"),
+            "domain": {"id": domain.get("id"), "display_name": domain.get("display_name")},
+            "subfields": [],
+            "_subfield_ids": set(),
+        })
+        if sf_id not in f_rec["_subfield_ids"]:
+            f_rec["_subfield_ids"].add(sf_id)
+            f_rec["subfields"].append({"id": subfield.get("id"), "display_name": subfield.get("display_name")})
+
+    def emit(self) -> dict[str, dict[str, dict]]:
+        """Return JSON-serializable dicts. Strips the internal _id sets."""
+        def clean(d: dict) -> dict:
+            return {k: v for k, v in d.items() if not k.startswith("_")}
+        return {
+            "fields": {k: clean(v) for k, v in self.fields.items()},
+            "subfields": {k: clean(v) for k, v in self.subfields.items()},
+            "topics": {k: clean(v) for k, v in self.topics.items()},
+        }
+
+
+def _save_taxonomy(snapshot_date: str, accumulator: _TaxonomyAccumulator) -> None:
+    """Write the accumulator's contents to taxonomy_path, merging with any
+    existing file for the same snapshot_date so successive ingests
+    accumulate into a single taxonomy."""
+    out_path = taxonomy_path(snapshot_date)
+    new = accumulator.emit()
+    if out_path.exists():
+        prior = json.loads(out_path.read_text())
+        if prior.get("snapshot_date") not in (None, snapshot_date):
+            raise ValueError(
+                f"Existing taxonomy at {out_path} has snapshot_date={prior.get('snapshot_date')!r}, "
+                f"refusing to merge with snapshot_date={snapshot_date!r}"
+            )
+        for entity in ("fields", "subfields", "topics"):
+            for k, v in (prior.get(entity) or {}).items():
+                if k in new[entity]:
+                    # Merge child lists from prior (some scopes may have been
+                    # ingested before; their children should be retained).
+                    if entity == "fields":
+                        seen = {sf["id"] for sf in new[entity][k].get("subfields", [])}
+                        for sf in v.get("subfields", []):
+                            if sf.get("id") and sf["id"] not in seen:
+                                new[entity][k].setdefault("subfields", []).append(sf)
+                    elif entity == "subfields":
+                        seen = {t["id"] for t in new[entity][k].get("topics", [])}
+                        for t in v.get("topics", []):
+                            if t.get("id") and t["id"] not in seen:
+                                new[entity][k].setdefault("topics", []).append(t)
+                else:
+                    new[entity][k] = v
+    out = {"snapshot_date": snapshot_date, **new}
+    tmp = out_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(out, indent=2))
+    tmp.replace(out_path)
+    _TAXONOMY_CACHE.pop(snapshot_date, None)
+    LOGGER.info(
+        "snapshot_ingest: wrote derived taxonomy %s (%d fields, %d subfields, %d topics)",
+        out_path, len(out["fields"]), len(out["subfields"]), len(out["topics"]),
+    )
+
+
+def load_taxonomy(snapshot_date: str) -> PinnedTaxonomy:
+    """Load (and memoize) the per-snapshot derived taxonomy.
+
+    Raises FileNotFoundError with a helpful message if the snapshot ingest
+    for this snapshot_date has not produced a taxonomy file yet.
+    """
+    if snapshot_date in _TAXONOMY_CACHE:
+        return _TAXONOMY_CACHE[snapshot_date]
+    path = taxonomy_path(snapshot_date)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Derived taxonomy missing for snapshot_date={snapshot_date!r} at {path}. "
+            f"Run bookgap.snapshot_ingest.run(work_filter=..., snapshot_date={snapshot_date!r}) "
+            f"to ingest works (the taxonomy is built as a byproduct)."
+        )
+    raw = json.loads(path.read_text())
+    if raw.get("snapshot_date") != snapshot_date:
+        raise ValueError(
+            f"Taxonomy file {path} has snapshot_date={raw.get('snapshot_date')!r}, expected {snapshot_date!r}"
+        )
+    tax = PinnedTaxonomy(
+        snapshot_date=snapshot_date,
+        fields=raw.get("fields", {}) or {},
+        subfields=raw.get("subfields", {}) or {},
+        topics=raw.get("topics", {}) or {},
+    )
+    _TAXONOMY_CACHE[snapshot_date] = tax
+    return tax
+
+
 def list_shards(client, bucket: str, prefix: str, snapshot_date: str) -> list[str]:
     """List snapshot shard keys not newer than snapshot_date.
 
@@ -381,14 +548,16 @@ def run(
 ) -> None:
     """Top-level snapshot ingest entrypoint.
 
-    work_filter may be a single Filter or a list of Filters. When a list is
-    passed, each filter is resolved independently and the resulting scopes
-    are unioned, so one streaming pass can populate multiple fields that
-    aren't reachable from a single Filter (e.g. three non-contiguous fields
-    under the same domain).
-    """
-    from bookgap.openalex_ingest import _resolve_filter_scopes
+    work_filter may be a single Filter or a list of Filters. Each work in
+    the snapshot is matched against any of the supplied filters via
+    Filter.check_work; matching works are bucketed by their (field,
+    subfield, topic, work_type) tuple and spilled to disk.
 
+    The taxonomy is built bottom-up from the matched works themselves —
+    every primary_topic chain seen contributes to the per-snapshot
+    taxonomy file. No separate taxonomy snapshot is required, and the
+    taxonomy is guaranteed to be consistent with the works.
+    """
     state_path = state_path or (CACHE_DIR / "snapshot_state.json")
     spill_dir = spill_dir or (CACHE_DIR / "snapshot_tmp")
     check_disk_or_abort(CACHE_DIR, disk_abort_pct)
@@ -403,27 +572,9 @@ def run(
                 f"(e.g. Filter(field='31', work_types=('book','article','preprint','book-chapter')))"
             )
 
-    # Resolve each filter into concrete scopes; union the results.
-    resolved_scopes = []
-    seen: set[tuple] = set()
-    for f in filters:
-        for s in _resolve_filter_scopes(f):
-            key = (s.field, s.subfield, s.topic, s.work_type)
-            if key not in seen:
-                seen.add(key)
-                resolved_scopes.append(s)
-    if not resolved_scopes:
-        raise ValueError(
-            f"work_filter {filters} resolved to zero scopes; nothing to fetch"
-        )
-    target_fields: set[str] = {s.field for s in resolved_scopes}
-    target_scopes: set[ScopeKey] = set(seen)
     LOGGER.info(
-        "snapshot_ingest: target fields = %s (%d scopes from %d filter(s)), snapshot_date = %s",
-        sorted(target_fields),
-        len(resolved_scopes),
-        len(filters),
-        snapshot_date,
+        "snapshot_ingest: %d filter(s), snapshot_date=%s, filters=%s",
+        len(filters), snapshot_date, [str(f) for f in filters],
     )
 
     state = load_state(state_path, snapshot_date)
@@ -440,14 +591,35 @@ def run(
 
     sink = SpillSink(spill_dir)
     bucketer = Bucketer(sink, flush_threshold=shard_row_flush_threshold, max_resident=max_resident_rows)
+    taxonomy_acc = _TaxonomyAccumulator()
 
     tmp_shard_dir = CACHE_DIR / "snapshot_download_tmp"
     tmp_shard_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build a bytes-level prefilter so the JSON parser can skip over works
-    # whose field isn't in our target set without decoding them. See
-    # stream_shard's docstring for the exact anchor pattern.
-    prefilter_patterns = [f'/fields/{fid}"'.encode() for fid in sorted(target_fields)]
+    # Build a bytes-level prefilter from whatever's most specific in the
+    # filters. For a topic-only filter, anchor on /T<topic>"; for subfield,
+    # /subfields/<id>"; for field, /fields/<id>"; for domain, /domains/<id>".
+    # Each filter contributes its own pattern; if any pattern matches the
+    # raw line, we parse and run the full check_work. The prefilter is
+    # advisory: it must not under-accept (drop a line that would have
+    # matched), so we pick the most-specific level present per filter.
+    def _prefilter_pattern(f: Filter) -> bytes:
+        if f.topic is not None:
+            return f'/{f.topic}"'.encode()
+        if f.subfield is not None:
+            return f'/subfields/{f.subfield}"'.encode()
+        if f.field is not None:
+            return f'/fields/{f.field}"'.encode()
+        if f.domain is not None:
+            return f'/domains/{f.domain}"'.encode()
+        return b""  # accept-all
+    prefilter_patterns = [_prefilter_pattern(f) for f in filters]
+    if any(p == b"" for p in prefilter_patterns):
+        prefilter_patterns = None  # one filter accepts everything → no prefilter
+    # stream_shard's `target_fields` set is a coarse field-level filter
+    # applied after JSON parse. Skip it (pass None) since check_work below
+    # is the definitive predicate.
+    target_fields_set = None
 
     completed_set = set(state.shards_completed)
     pending = [k for k in shards if k not in completed_set]
@@ -524,20 +696,19 @@ def run(
             matched = 0
             try:
                 with tmp_path.open("rb") as f:
-                    for key, work in stream_shard(f, target_fields, prefilter_patterns=prefilter_patterns):
-                        # Field-level stream filter is a cheap prefilter; the
-                        # definitive check is against the resolved (field,
-                        # subfield, topic, work_type) tuple. Drops "other"
-                        # work types and off-target topics under the target
-                        # field.
-                        if key not in target_scopes:
+                    for key, work in stream_shard(f, target_fields_set, prefilter_patterns=prefilter_patterns):
+                        # Definitive predicate: at least one filter accepts
+                        # this work. Drops off-target work types, topics
+                        # outside the requested subfield, etc.
+                        if not any(filt.check_work(work) for filt in filters):
                             continue
                         bucketer.insert(key, work)
+                        taxonomy_acc.observe(work)
                         matched += 1
             finally:
                 tmp_path.unlink(missing_ok=True)
             LOGGER.info(
-                "snapshot_ingest: shard %s done — %d works matched target scopes",
+                "snapshot_ingest: shard %s done — %d works matched filters",
                 shard_key,
                 matched,
             )
@@ -551,6 +722,10 @@ def run(
 
     bucketer.flush_all()
     sink.finalize_all()
+
+    # Persist the derived taxonomy. Done after finalize_all so it only
+    # records scopes whose parquets were actually written.
+    _save_taxonomy(snapshot_date, taxonomy_acc)
 
     state.finished_at = datetime.now(timezone.utc).isoformat()
     save_state(state_path, state)

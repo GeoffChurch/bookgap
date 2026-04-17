@@ -480,6 +480,12 @@ def run_worker(
 
     signal.signal(signal.SIGTERM, _on_sigterm)
 
+    # Resolve the snapshot date for any action that needs taxonomy lookup
+    # (fetch, snapshot). Falls back to the SnapshotConfig default when not
+    # passed via --snapshot-date.
+    from bookgap.configs.config import SnapshotConfig
+    effective_snapshot_date = snapshot_date or SnapshotConfig().snapshot_date
+
     try:
         parts = scope_str.split("/")
         if action == "fetch":
@@ -488,13 +494,13 @@ def run_worker(
                 fetch_works(scope)
             elif len(parts) == 2:
                 filt = Filter(field=parts[0], subfield=parts[1], work_types=wt)
-                fetch_all_scopes(filt)
+                fetch_all_scopes(filt, snapshot_date=effective_snapshot_date)
             elif len(parts) == 1:
                 if any(d[0] == parts[0] for d in KNOWN_DOMAINS):
                     filt = Filter(domain=parts[0], work_types=wt)
                 else:
                     filt = Filter(field=parts[0], work_types=wt)
-                fetch_all_scopes(filt)
+                fetch_all_scopes(filt, snapshot_date=effective_snapshot_date)
             else:
                 raise ValueError(f"Unexpected scope format for fetch: {scope_str}")
         elif action == "embed":
@@ -528,10 +534,9 @@ def run_worker(
             # Any Hydra YAML overrides for snapshot.* are ignored by this path — the
             # only override is the --snapshot-date CLI flag.
             cfg = SnapshotConfig()
-            effective_date = snapshot_date or cfg.snapshot_date
             snapshot_run(
                 work_filter=filt,
-                snapshot_date=effective_date,
+                snapshot_date=effective_snapshot_date,
                 bucket=cfg.bucket,
                 prefix=cfg.prefix,
                 shard_row_flush_threshold=cfg.shard_row_flush_threshold,

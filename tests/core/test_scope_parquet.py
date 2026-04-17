@@ -114,9 +114,9 @@ class TestCorpusDataset:
         _write_scope_parquet(_scope_parquet_path(scopes[0]), _sample_works(3))
         _write_scope_parquet(_scope_parquet_path(scopes[1]), _sample_works(7))
         import bookgap.openalex_ingest as mod
-        monkeypatch.setattr(mod, "_resolve_filter_scopes", lambda f: scopes)
+        monkeypatch.setattr(mod, "_resolve_filter_scopes", lambda f, snapshot_date: scopes)
         filt = Filter(subfield="1702", work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value))
-        dataset = corpus_dataset(filt)
+        dataset = corpus_dataset(filt, "TEST")
         assert isinstance(dataset, ds.Dataset)
         assert dataset.count_rows() == 10
 
@@ -124,9 +124,9 @@ class TestCorpusDataset:
         scope = ResolvedScope(field="17", subfield="1702", topic="T10020", work_type="article")
         _write_scope_parquet(_scope_parquet_path(scope), _sample_works(5))
         import bookgap.openalex_ingest as mod
-        monkeypatch.setattr(mod, "_resolve_filter_scopes", lambda f: [scope])
+        monkeypatch.setattr(mod, "_resolve_filter_scopes", lambda f, snapshot_date: [scope])
         filt = Filter(subfield="1702", work_types=(WorkType.ARTICLE.value,))
-        dataset = corpus_dataset(filt)
+        dataset = corpus_dataset(filt, "TEST")
         table = dataset.to_table(columns=["id", "referenced_works"])
         assert table.num_columns == 2
         assert len(table) == 5

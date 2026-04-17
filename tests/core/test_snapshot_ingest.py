@@ -649,7 +649,7 @@ def test_run_entrypoint_end_to_end(tmp_ingest, monkeypatch):
 
     # Monkeypatch _resolve_filter_scopes to return the single concrete scope
     fake_scope = ResolvedScope(field=FIELD, subfield=SUBFIELD, topic=TOPIC, work_type=WTYPE)
-    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f: [fake_scope])
+    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f, snapshot_date: [fake_scope])
 
     # Build a synthetic shard: one matching work, one in a different field
     matching_work = {
@@ -752,7 +752,7 @@ def test_run_skips_completed_shards(tmp_ingest, monkeypatch):
 
     FIELD = "31"
     fake_scope = ResolvedScope(field=FIELD, subfield="3102", topic="T99999", work_type="article")
-    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f: [fake_scope])
+    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f, snapshot_date: [fake_scope])
 
     shard_key = "data/works/updated_date=2026-04-01/part_000.gz"
 
@@ -807,7 +807,7 @@ def test_run_raises_when_filter_resolves_to_no_scopes(tmp_path, monkeypatch):
         free = 90
     monkeypatch.setattr(shutil, "disk_usage", lambda p: FakeUsage())
 
-    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f: [])
+    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f, snapshot_date: [])
 
     with pytest.raises(ValueError, match="resolved to zero scopes"):
         snapshot_ingest.run(
@@ -1046,3 +1046,104 @@ def test_run_worker_snapshot_1part_domain_scope_builds_domain_filter(monkeypatch
     assert f.domain == "3"
     assert f.field is None
     assert f.work_types == ("article",)
+
+# ---------------------------------------------------------------------------
+# Derived taxonomy + reproducibility tests
+# ---------------------------------------------------------------------------
+
+def test_load_taxonomy_raises_when_missing(tmp_path, monkeypatch):
+    """load_taxonomy must error clearly if snapshot_ingest hasn't run for this date."""
+    import bookgap.snapshot_ingest as si
+    monkeypatch.setattr(si, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(si, "_TAXONOMY_CACHE", {})
+    with pytest.raises(FileNotFoundError, match="Derived taxonomy missing"):
+        si.load_taxonomy("2025-11-06")
+
+
+def test_load_taxonomy_reads_derived_file(tmp_path, monkeypatch):
+    """load_taxonomy should parse the per-snapshot taxonomy JSON and return it."""
+    import bookgap.snapshot_ingest as si
+    monkeypatch.setattr(si, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(si, "_TAXONOMY_CACHE", {})
+    (tmp_path / "snapshot_taxonomy_2025-11-06.json").write_text(json.dumps({
+        "snapshot_date": "2025-11-06",
+        "fields": {"31": {"display_name": "Physics"}},
+        "subfields": {"3102": {"display_name": "X"}},
+        "topics": {"T10805": {"display_name": "Y"}},
+    }))
+    tax = si.load_taxonomy("2025-11-06")
+    assert tax.snapshot_date == "2025-11-06"
+    assert tax.fields["31"]["display_name"] == "Physics"
+    assert tax.subfields["3102"]["display_name"] == "X"
+    assert tax.topics["T10805"]["display_name"] == "Y"
+
+
+def test_load_taxonomy_rejects_date_mismatch(tmp_path, monkeypatch):
+    """load_taxonomy must refuse a file whose snapshot_date does not match the request."""
+    import bookgap.snapshot_ingest as si
+    monkeypatch.setattr(si, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(si, "_TAXONOMY_CACHE", {})
+    (tmp_path / "snapshot_taxonomy_2025-11-06.json").write_text(json.dumps({
+        "snapshot_date": "2026-01-01",  # wrong!
+        "fields": {}, "subfields": {}, "topics": {},
+    }))
+    with pytest.raises(ValueError, match="has snapshot_date"):
+        si.load_taxonomy("2025-11-06")
+
+
+def test_taxonomy_accumulator_builds_nested_hierarchy():
+    """_TaxonomyAccumulator.observe should thread primary_topic into a nested dict."""
+    from bookgap.snapshot_ingest import _TaxonomyAccumulator
+    acc = _TaxonomyAccumulator()
+    acc.observe({
+        "primary_topic": {
+            "id": "https://openalex.org/T10805",
+            "display_name": "Y",
+            "subfield": {"id": "https://openalex.org/subfields/3102", "display_name": "X"},
+            "field": {"id": "https://openalex.org/fields/31", "display_name": "Physics"},
+            "domain": {"id": "https://openalex.org/domains/3", "display_name": "Physical Sciences"},
+        },
+    })
+    out = acc.emit()
+    assert "31" in out["fields"]
+    assert out["fields"]["31"]["display_name"] == "Physics"
+    assert any(sf["id"].endswith("/3102") for sf in out["fields"]["31"]["subfields"])
+    assert "3102" in out["subfields"]
+    assert any(t["id"].endswith("/T10805") for t in out["subfields"]["3102"]["topics"])
+    assert "T10805" in out["topics"]
+
+
+def test_corpus_dataset_raises_when_parquet_missing(tmp_path, monkeypatch):
+    """corpus_dataset must raise MissingScopeParquetError instead of falling back to API."""
+    import bookgap.openalex_ingest as oi
+    import bookgap.snapshot_ingest as si
+    from bookgap.util import Filter
+
+    monkeypatch.setattr(oi, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(si, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(si, "_TAXONOMY_CACHE", {})
+    # Prime a derived taxonomy covering one topic.
+    (tmp_path / "snapshot_taxonomy_2025-11-06.json").write_text(json.dumps({
+        "snapshot_date": "2025-11-06",
+        "fields": {"31": {
+            "id": "https://openalex.org/fields/31",
+            "display_name": "Physics",
+            "domain": {"id": "https://openalex.org/domains/3"},
+            "subfields": [{"id": "https://openalex.org/subfields/3102"}],
+        }},
+        "subfields": {"3102": {
+            "id": "https://openalex.org/subfields/3102",
+            "display_name": "X",
+            "field": {"id": "https://openalex.org/fields/31"},
+            "topics": [{"id": "https://openalex.org/T10805"}],
+        }},
+        "topics": {"T10805": {
+            "id": "https://openalex.org/T10805",
+            "display_name": "Y",
+            "subfield": {"id": "https://openalex.org/subfields/3102"},
+        }},
+    }))
+    oi.corpus_dataset.cache_clear()
+    f = Filter(field="31", work_types=("article",))
+    with pytest.raises(oi.MissingScopeParquetError, match="missing for filter"):
+        oi.corpus_dataset(f, "2025-11-06")

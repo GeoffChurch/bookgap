@@ -78,13 +78,14 @@ def multi_scope_corpus(tmp_path, monkeypatch):
     _write_scope_parquet(_scope_parquet_path(scopes[2]), _make_scope_works(scopes[2], 8, start_id=200))
 
     # Monkeypatch scope resolution to return our test scopes
-    monkeypatch.setattr(ingest_mod, "_resolve_filter_scopes", lambda f: scopes)
+    monkeypatch.setattr(ingest_mod, "_resolve_filter_scopes", lambda f, snapshot_date: scopes)
 
     work_filter = Filter(subfield="1702", work_types=(WorkType.BOOK.value, WorkType.ARTICLE.value))
 
     yield {
         "scopes": scopes,
         "filter": work_filter,
+        "snapshot_date": "TEST",
         "tmp_path": tmp_path,
         "total_works": 23,  # 5 + 10 + 8
     }
@@ -96,12 +97,12 @@ def multi_scope_corpus(tmp_path, monkeypatch):
 class TestCorpusDatasetRowOrder:
     def test_multi_scope_row_count(self, multi_scope_corpus):
         """corpus_dataset should contain all works from all scopes."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         assert corpus.count_rows() == multi_scope_corpus["total_works"]
 
     def test_row_order_matches_scope_concatenation(self, multi_scope_corpus):
         """Rows should appear in scope order: scope0 then scope1 then scope2."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         ids = corpus.to_table(columns=["id"]).column("id").to_pylist()
 
         # First 5 should be W0-W4 (books from scope 0)
@@ -116,7 +117,7 @@ class TestCorpusDatasetRowOrder:
 
     def test_column_selective_read(self, multi_scope_corpus):
         """Reading specific columns should not load others."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         table = corpus.to_table(columns=["id", "type"])
         assert table.num_columns == 2
         assert "abstract" not in table.schema.names
@@ -125,7 +126,7 @@ class TestCorpusDatasetRowOrder:
 class TestSortedCorpusIdxs:
     def test_sorts_by_date(self, multi_scope_corpus):
         """_sorted_corpus_idxs should reorder works by publication_date."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         # All 23 works should be included
@@ -138,20 +139,20 @@ class TestSortedCorpusIdxs:
 
     def test_result_is_subset_of_corpus_rows(self, multi_scope_corpus):
         """sorted_idxs must be valid physical row indices into the corpus."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
         n = corpus.count_rows()
         assert all(0 <= int(idx) < n for idx in sorted_idxs)
 
     def test_max_works_truncates(self, multi_scope_corpus):
         """max_works should return only the earliest N works."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=10)
         assert len(sorted_idxs) == 10
 
     def test_max_works_returns_earliest(self, multi_scope_corpus):
         """The truncated set should contain the N earliest dates, not arbitrary ones."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         full_idxs = _sorted_corpus_idxs(corpus, max_works=None)
         trunc_idxs = _sorted_corpus_idxs(corpus, max_works=10)
 
@@ -160,14 +161,14 @@ class TestSortedCorpusIdxs:
 
     def test_deterministic_for_tied_dates(self, multi_scope_corpus):
         """Multiple calls should return identical results even with tied dates."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         idxs1 = _sorted_corpus_idxs(corpus, max_works=None)
         idxs2 = _sorted_corpus_idxs(corpus, max_works=None)
         np.testing.assert_array_equal(idxs1, idxs2)
 
     def test_no_duplicate_indices(self, multi_scope_corpus):
         """Each physical row should appear at most once in sorted_idxs."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
         assert len(sorted_idxs) == len(set(sorted_idxs.tolist()))
 
@@ -175,7 +176,7 @@ class TestSortedCorpusIdxs:
 class TestPostFilterMask:
     def test_filter_by_work_type_books(self, multi_scope_corpus):
         """Post-filter should correctly retain only books."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         book_filter = Filter(work_types=(WorkType.BOOK.value,))
@@ -192,7 +193,7 @@ class TestPostFilterMask:
 
     def test_filter_by_work_type_articles(self, multi_scope_corpus):
         """Post-filter for articles should retain all 18 articles."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         article_filter = Filter(work_types=(WorkType.ARTICLE.value,))
@@ -203,7 +204,7 @@ class TestPostFilterMask:
 
     def test_empty_filter_passes_all(self, multi_scope_corpus):
         """Filter() with no constraints should pass all works."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         empty_filter = Filter()
@@ -213,7 +214,7 @@ class TestPostFilterMask:
 
     def test_mask_length_matches_input_positions(self, multi_scope_corpus):
         """The mask must have exactly as many entries as corpus_row_idxs."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=15)
 
         book_filter = Filter(work_types=(WorkType.BOOK.value,))
@@ -222,7 +223,7 @@ class TestPostFilterMask:
 
     def test_mask_dtype_is_bool(self, multi_scope_corpus):
         """Mask should be a boolean numpy array."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         mask = _post_filter_mask(corpus, Filter(), sorted_idxs)
@@ -232,7 +233,7 @@ class TestPostFilterMask:
 class TestReadCorpusColumn:
     def test_returns_correct_values_at_positions(self, multi_scope_corpus):
         """_read_corpus_column should return values at the specified positions."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         # Physical rows 0, 5, 15 are the first works from scopes 0, 1, 2
         positions = np.array([0, 5, 15], dtype=np.uint64)
         ids = _read_corpus_column(corpus, "id", positions)
@@ -244,7 +245,7 @@ class TestReadCorpusColumn:
 
     def test_single_element_position(self, multi_scope_corpus):
         """Should work correctly with a single-element position array."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         positions = np.array([0], dtype=np.uint64)
         ids = _read_corpus_column(corpus, "id", positions)
         assert len(ids) == 1
@@ -252,7 +253,7 @@ class TestReadCorpusColumn:
 
     def test_type_column(self, multi_scope_corpus):
         """Reading the 'type' column should return correct work types."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         # Row 0 is a book (scope 0), row 5 is an article (scope 1)
         positions = np.array([0, 5], dtype=np.uint64)
         types = _read_corpus_column(corpus, "type", positions)
@@ -261,7 +262,7 @@ class TestReadCorpusColumn:
 
     def test_positions_can_be_non_contiguous(self, multi_scope_corpus):
         """Positions do not need to be contiguous."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         positions = np.array([0, 2, 4, 22], dtype=np.uint64)
         ids = _read_corpus_column(corpus, "id", positions)
         assert ids[0] == "https://openalex.org/W0"
@@ -275,7 +276,7 @@ class TestIndexChainConsistency:
 
     def test_sorted_idxs_index_into_corpus(self, multi_scope_corpus):
         """sorted_idxs values must be valid row indices for the corpus dataset."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         # Use sorted_idxs to read IDs and verify they are valid OpenAlex URLs
@@ -284,7 +285,7 @@ class TestIndexChainConsistency:
 
     def test_post_filter_positions_index_into_sorted_idxs(self, multi_scope_corpus):
         """retained_positions from post_filter index into sorted_idxs."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         book_filter = Filter(work_types=(WorkType.BOOK.value,))
@@ -300,7 +301,7 @@ class TestIndexChainConsistency:
 
     def test_sorted_order_preserved_through_chain(self, multi_scope_corpus):
         """Works accessed via sorted_idxs should be in ascending date order."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         dates = _read_corpus_column(corpus, "publication_date", sorted_idxs)
@@ -308,7 +309,7 @@ class TestIndexChainConsistency:
 
     def test_book_retained_positions_are_sorted(self, multi_scope_corpus):
         """Even after post-filtering, the remaining works should be in date order."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
 
         book_filter = Filter(work_types=(WorkType.BOOK.value,))
@@ -321,7 +322,7 @@ class TestIndexChainConsistency:
 
     def test_embeddings_align_with_sorted_idxs(self, multi_scope_corpus):
         """Embeddings written for sorted_idxs should index 1:1 with those positions."""
-        corpus = corpus_dataset(multi_scope_corpus["filter"])
+        corpus = corpus_dataset(multi_scope_corpus["filter"], multi_scope_corpus["snapshot_date"])
         sorted_idxs = _sorted_corpus_idxs(corpus, max_works=None)
         n = len(sorted_idxs)
 

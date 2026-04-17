@@ -120,9 +120,9 @@ def _compute_gaps_impl(
     # Merge pre and post filters to get the most specific constraints
     merged_filter = cloud.filter_pair.merged()
     
-    # Resolve upward to fill in missing field/subfield
-    resolved_filter = resolve_filter_upward(merged_filter)
-    
+    # Resolve upward to fill in missing field/subfield, pinned to the cloud's snapshot.
+    resolved_filter = resolve_filter_upward(merged_filter, snapshot_date=cloud.snapshot_date)
+
     # Determine which topics to iterate over
     if resolved_filter.topic is not None:
         # Single topic specified
@@ -132,22 +132,25 @@ def _compute_gaps_impl(
         field_id = resolved_filter.field
         subfield_id = resolved_filter.subfield
         assert field_id is not None
-        valid_topics = get_subfield_topics(subfield_id)
+        valid_topics = get_subfield_topics(subfield_id, snapshot_date=cloud.snapshot_date)
     else:
         # Field-only: enumerate all topics for this field
         field_id = resolved_filter.field
         assert field_id is not None
-        valid_topics = get_field_topics(field_id)
+        valid_topics = get_field_topics(field_id, snapshot_date=cloud.snapshot_date)
     
     if not valid_topics:
         raise ValueError("No topics resolved from cloud.filter_pair.merged()")
     
     gaps: list[GapWithContext] = []
 
+    from bookgap.snapshot_ingest import load_taxonomy
+    pinned_tax = load_taxonomy(cloud.snapshot_date)
+
     for i, topic_id in enumerate(valid_topics):
-        # Fetch topic metadata for display
-        topic_data: Any = pyalex.Topics()[topic_id]  # type: ignore
-        topic_name = topic_data["display_name"]
+        # Topic metadata for display, drawn from the snapshot taxonomy.
+        topic_rec = pinned_tax.topics.get(topic_id, {})
+        topic_name = topic_rec.get("display_name", topic_id)
 
         LOGGER.info(
             "Analyzing topic %s/%s: %s (%s)",

@@ -110,102 +110,85 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
 
 @TIMER.time()
 @MEMORY.cache
-def _resolve_filter_scopes(work_filter: Filter) -> list[ResolvedScope]:
-    """Resolve a filter into concrete (field, subfield, topic, work_type) scopes."""
-    
+def _resolve_filter_scopes(work_filter: Filter, snapshot_date: str) -> list[ResolvedScope]:
+    """Resolve a filter into concrete (field, subfield, topic, work_type) scopes.
+
+    Reads the snapshot-derived taxonomy at cache/snapshot_taxonomy_<date>.json
+    (built as a byproduct of bookgap.snapshot_ingest.run). There is no live
+    API path. The taxonomy reflects exactly the scopes for which works were
+    ingested at snapshot_date.
+    """
+    from bookgap.snapshot_ingest import load_taxonomy
+
     if work_filter.work_types is None:
         raise ValueError("work_types must be provided to resolve scopes")
 
-    # First, resolve upward to fill in field/subfield if needed
-    resolved_filter = resolve_filter_upward(work_filter)
-    
-    # Now determine which topics to iterate over
+    resolved_filter = resolve_filter_upward(work_filter, snapshot_date=snapshot_date)
+    tax = load_taxonomy(snapshot_date)
+
+    def _topics_in_subfield(subfield_id: str) -> list[str]:
+        return get_subfield_topics(subfield_id, snapshot_date=snapshot_date)
+
+    def _subfields_in_field(field_id: str) -> list[str]:
+        field_data = tax.fields.get(field_id)
+        if field_data is None:
+            raise ValueError(f"Field {field_id} not in snapshot taxonomy ({snapshot_date})")
+        ids = sorted({_suffix(sf["id"]) for sf in field_data.get("subfields", []) if isinstance(sf.get("id"), str)})
+        if not ids:
+            raise ValueError(f"No subfields recorded for field {field_id} at snapshot {snapshot_date}")
+        return ids
+
+    def _fields_in_domain(domain_id: str) -> list[str]:
+        out: list[str] = []
+        for fid, f in tax.fields.items():
+            dom = f.get("domain")
+            if isinstance(dom, dict) and _suffix(dom.get("id", "")) == domain_id:
+                out.append(fid)
+        out = sorted(set(out))
+        if not out:
+            raise ValueError(f"No fields recorded for domain {domain_id} at snapshot {snapshot_date}")
+        return out
+
     if resolved_filter.topic is not None:
-        # Single topic specified
-        topics = [resolved_filter.topic]
         field_id = resolved_filter.field
         subfield_id = resolved_filter.subfield
         assert field_id is not None and subfield_id is not None
-        
-        # Build scopes for this single (field, subfield, topic) with all work_types
-        scopes = [
-            ResolvedScope(
-                field=field_id,
-                subfield=subfield_id,
-                topic=resolved_filter.topic,
-                work_type=wt,
-            )
+        return [
+            ResolvedScope(field=field_id, subfield=subfield_id, topic=resolved_filter.topic, work_type=wt)
             for wt in work_filter.work_types
         ]
-    elif resolved_filter.subfield is not None:
-        # Subfield specified: enumerate topics for this subfield
+
+    if resolved_filter.subfield is not None:
         field_id = resolved_filter.field
         subfield_id = resolved_filter.subfield
         assert field_id is not None
-        
-        topics = get_subfield_topics(subfield_id)
-        
-        # Build scopes for all (field, subfield, topic) combinations with all work_types
-        scopes = [
-            ResolvedScope(
-                field=field_id,
-                subfield=subfield_id,
-                topic=topic_id,
-                work_type=wt,
-            )
-            for topic_id in topics
+        return [
+            ResolvedScope(field=field_id, subfield=subfield_id, topic=topic_id, work_type=wt)
+            for topic_id in _topics_in_subfield(subfield_id)
             for wt in work_filter.work_types
         ]
-    elif resolved_filter.field is not None:
-        # Field-only: enumerate all subfields, then all topics
+
+    if resolved_filter.field is not None:
         field_id = resolved_filter.field
-        
-        field_data: Any = pyalex.Fields()[field_id]  # type: ignore
-        subfield_ids: list[str] = [_suffix(sf["id"]) for sf in field_data.get("subfields", [])]
-        subfield_ids = sorted(set(subfield_ids))
-        if not subfield_ids:
-            raise ValueError(f"No subfields found for field {field_id}")
-        
-        scopes = []
-        for subfield_id in subfield_ids:
-            topics = get_subfield_topics(subfield_id)
-            for topic_id in topics:
+        scopes: list[ResolvedScope] = []
+        for subfield_id in _subfields_in_field(field_id):
+            for topic_id in _topics_in_subfield(subfield_id):
                 for wt in work_filter.work_types:
                     scopes.append(ResolvedScope(
-                        field=field_id,
-                        subfield=subfield_id,
-                        topic=topic_id,
-                        work_type=wt,
+                        field=field_id, subfield=subfield_id, topic=topic_id, work_type=wt,
                     ))
-    else:
-        # Domain-only: enumerate all fields, subfields, then topics
-        domain_id = resolved_filter.domain
-        assert domain_id is not None
+        return scopes
 
-        domain_data: Any = pyalex.Domains()[domain_id]  # type: ignore
-        field_ids: list[str] = [_suffix(f["id"]) for f in domain_data.get("fields", [])]
-        field_ids = sorted(set(field_ids))
-        if not field_ids:
-            raise ValueError(f"No fields found for domain {domain_id}")
-
-        scopes = []
-        for field_id in field_ids:
-            field_data: Any = pyalex.Fields()[field_id]  # type: ignore
-            subfield_ids: list[str] = [_suffix(sf["id"]) for sf in field_data.get("subfields", [])]
-            subfield_ids = sorted(set(subfield_ids))
-            if not subfield_ids:
-                continue
-            for subfield_id in subfield_ids:
-                topics = get_subfield_topics(subfield_id)
-                for topic_id in topics:
-                    for wt in work_filter.work_types:
-                        scopes.append(ResolvedScope(
-                            field=field_id,
-                            subfield=subfield_id,
-                            topic=topic_id,
-                            work_type=wt,
-                        ))
-    
+    domain_id = resolved_filter.domain
+    assert domain_id is not None
+    scopes = []
+    for field_id in _fields_in_domain(domain_id):
+        for subfield_id in _subfields_in_field(field_id):
+            for topic_id in _topics_in_subfield(subfield_id):
+                for wt in work_filter.work_types:
+                    scopes.append(ResolvedScope(
+                        field=field_id, subfield=subfield_id, topic=topic_id, work_type=wt,
+                    ))
     return scopes
 
 
@@ -557,27 +540,54 @@ def fetch_works(scope: ResolvedScope) -> ds.Dataset:
     return ds.dataset(parquet_path, format="parquet")
 
 
-@lru_cache(maxsize=4)
-def corpus_dataset(work_filter: Filter) -> ds.Dataset:
-    """Lazy Dataset spanning all scopes for a filter.
+class MissingScopeParquetError(FileNotFoundError):
+    """Raised by corpus_dataset when a required per-scope parquet is missing.
 
-    Ensures all scopes are fetched first. Returns a unified view
-    that supports column-selective reads.
+    This protects reproducibility: corpus_dataset never silently falls back
+    to a live API fetch. Use bookgap.snapshot_ingest.run() to populate the
+    missing parquets, or bookgap.openalex_ingest.fetch_all_scopes() for the
+    live-API path (separate, explicit step).
     """
-    scopes = _resolve_filter_scopes(work_filter)
-    paths = []
-    for scope in tqdm.tqdm(scopes, desc="Ensuring scopes cached", delay=3, mininterval=3):
+
+
+@lru_cache(maxsize=4)
+def corpus_dataset(work_filter: Filter, snapshot_date: str) -> ds.Dataset:
+    """Lazy Dataset spanning all scopes for a filter at a snapshot date.
+
+    Resolves scopes from the snapshot-derived taxonomy and reads only the
+    parquets that already exist on disk. If any required parquet is
+    missing, raises MissingScopeParquetError listing the gaps. The snapshot
+    is the single source of truth: there is no live API fallback.
+    """
+    scopes = _resolve_filter_scopes(work_filter, snapshot_date)
+    paths: list[Path] = []
+    missing: list[ResolvedScope] = []
+    for scope in scopes:
         path = _scope_parquet_path(scope)
-        if not path.exists():
-            RATE_LIMITER.wait()
-            fetch_works(scope)
-        paths.append(path)
+        if path.exists():
+            paths.append(path)
+        else:
+            missing.append(scope)
+    if missing:
+        sample = ", ".join(str(s) for s in missing[:5])
+        more = f" (and {len(missing) - 5} more)" if len(missing) > 5 else ""
+        raise MissingScopeParquetError(
+            f"{len(missing)} of {len(scopes)} scope parquets are missing for filter "
+            f"{work_filter} at snapshot {snapshot_date}: {sample}{more}. "
+            f"Run bookgap.snapshot_ingest.run(work_filter=..., snapshot_date={snapshot_date!r}) "
+            f"to populate them."
+        )
     return ds.dataset(paths, format="parquet")
 
 
-def fetch_all_scopes(work_filter: Filter) -> None:
-    """Ensure all scope Parquet files exist without loading any data."""
-    scopes = _resolve_filter_scopes(work_filter)
+def fetch_all_scopes(work_filter: Filter, snapshot_date: str) -> None:
+    """Ensure all scope Parquet files exist without loading any data.
+
+    Iterates the scopes resolved against the snapshot taxonomy and runs the
+    live API path for any that don't have a parquet yet. This is the
+    explicit live-fetch entry point, complementary to snapshot_ingest.run.
+    """
+    scopes = _resolve_filter_scopes(work_filter, snapshot_date)
     failed: list[tuple[ResolvedScope, str]] = []
     for scope in tqdm.tqdm(scopes, desc="Fetching scopes"):
         if not _scope_parquet_path(scope).exists():

@@ -28,6 +28,7 @@ class CloudConfig:
     max_works: Optional[int] = None
     deduplicator: Optional[SqDistDeduplicatorConfig] = field(default_factory=SqDistDeduplicatorConfig)
     normalize_embeddings: bool = True
+    snapshot_date: str = "2025-11-06"
 
 
 __all__ = ["CloudConfig"]

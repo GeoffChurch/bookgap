@@ -328,7 +328,7 @@ def run_curriculum_building(
     LOGGER.info("Loading cloud...")
     cloud: Cloud = instantiate(cfg.experiment.cloud)
     LOGGER.info(f"Cloud: {cloud.name()}")
-    LOGGER.info(f"Embedder: {cloud.embedder_model.value}")
+    LOGGER.info(f"Embedder: {cloud.embedder}")
     LOGGER.info(f"Denoiser: {cloud.denoiser}")
     
     work_ids = cloud.work_ids()
@@ -912,7 +912,7 @@ def run_curriculum_building(
     # Prepare metadata
     metadata = {
         "cloud_name": cloud.name(),
-        "embedder": cloud.embedder_model.value,
+        "embedder": str(cloud.embedder),
         "denoiser": str(cloud.denoiser),
         "n_works_total": n_total,
         "n_works_clustered": n_samples,

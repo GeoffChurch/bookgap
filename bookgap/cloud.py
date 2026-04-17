@@ -1,5 +1,5 @@
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from functools import lru_cache
 import hashlib
@@ -97,6 +97,10 @@ class Cloud:
     denoiser: str
     drop_k: int
     embedder: Any  # An embedder config dataclass (SentenceTransformerEmbedderConfig or TfGepEmbedderConfig)
+    # Pin taxonomy resolution and the corpus parquet set to a specific
+    # OpenAlex snapshot for reproducibility. The snapshot must have been
+    # ingested via bookgap.snapshot_ingest before constructing the Cloud.
+    snapshot_date: str = field(default="2025-11-06")
 
     def __post_init__(self):
         from bookgap.configs.embedder.embedder_config import (
@@ -220,7 +224,7 @@ def ensure_cloud_data(cloud: Cloud) -> tuple[str, NDArray[np.uint64], NDArray[np
     embeddings file) after post-filtering and semantic dedup.
     """
     corpus_fp = _corpus_fingerprint(cloud.filter_pair.pre, cloud.max_works)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
 
     # 1. Date-sort + max_works truncation -> sorted_idxs (corpus row positions)
     sorted_idxs = _sorted_corpus_idxs(corpus, cloud.max_works)
@@ -257,7 +261,7 @@ def _compute_and_store_embeddings(
     )
 
     if isinstance(cloud.embedder, SentenceTransformerEmbedderConfig):
-        embeddings = _embed_sentence_transformer(cloud.filter_pair.pre, cloud.embedder, sorted_idxs)
+        embeddings = _embed_sentence_transformer(cloud.filter_pair.pre, cloud.embedder, sorted_idxs, cloud.snapshot_date)
     elif isinstance(cloud.embedder, TfGepEmbedderConfig):
         embeddings = _embed_tf_gep(corpus, cloud.embedder, sorted_idxs)
     else:
@@ -274,6 +278,7 @@ def _embed_sentence_transformer(
     work_filter: Filter,
     embedder_cfg: Any,
     sorted_idxs: NDArray[np.uint64],
+    snapshot_date: str,
 ) -> NDArray[np.float32]:
     """Sentence-transformer path: per-scope batch caching via embed_works.
 
@@ -285,7 +290,7 @@ def _embed_sentence_transformer(
     all_works: list[dict[str, Any]] = []
     emb_chunks: list[NDArray] = []
 
-    with tqdm.tqdm(_resolve_filter_scopes(work_filter), desc="Scopes", delay=3, mininterval=3) as scope_bar:
+    with tqdm.tqdm(_resolve_filter_scopes(work_filter, snapshot_date), desc="Scopes", delay=3, mininterval=3) as scope_bar:
         for scope in scope_bar:
             scope_bar.set_postfix_str(str(scope))
             scope_works, scope_embeddings = embed_works(scope, model_name)
@@ -298,7 +303,7 @@ def _embed_sentence_transformer(
         all_embeddings = np.empty((0, Embedder(model_name=model_name).embedding_dimension()), dtype=np.float32)
 
     # Verify row ordering matches corpus dataset
-    corpus = corpus_dataset(work_filter)
+    corpus = corpus_dataset(work_filter, snapshot_date)
     corpus_ids = corpus.to_table(columns=["id"]).column("id").to_pylist()
     concat_ids = [w["id"] for w in all_works]
     if len(concat_ids) != len(corpus_ids):
@@ -437,7 +442,7 @@ def _read_corpus_dicts(corpus: ds.Dataset, positions: NDArray[np.uint64]) -> Lis
 @TIMER.time()
 def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     return _read_corpus_dicts(corpus, sorted_idxs[retained_positions])
 
 
@@ -445,7 +450,7 @@ def get_cloud_works(cloud: Cloud) -> List[Dict[str, Any]]:
 @MEMORY.cache
 def get_cloud_work_ids(cloud: Cloud) -> List[str]:
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     return _read_corpus_column(corpus, "id", sorted_idxs[retained_positions])
 
 
@@ -453,7 +458,7 @@ def get_cloud_work_ids(cloud: Cloud) -> List[str]:
 @MEMORY.cache
 def get_cloud_work_references(cloud: Cloud) -> List[List[str]]:
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     refs = _read_corpus_column(corpus, "referenced_works", sorted_idxs[retained_positions])
     return [r or [] for r in refs]
 
@@ -475,7 +480,7 @@ def get_cloud_citation_graph(cloud: Cloud, normalize: bool) -> sp.csr_matrix:
 def get_cloud_work_titles(cloud: Cloud) -> List[str]:
     """Get display names/titles for all works in the cloud."""
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     return _read_corpus_column(corpus, "display_name", sorted_idxs[retained_positions])
 
 
@@ -484,7 +489,7 @@ def get_cloud_work_titles(cloud: Cloud) -> List[str]:
 def get_cloud_work_abstracts(cloud: Cloud) -> List[str]:
     """Get abstracts for all works in the cloud."""
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     return _read_corpus_column(corpus, "abstract", sorted_idxs[retained_positions])
 
 
@@ -493,7 +498,7 @@ def get_cloud_work_abstracts(cloud: Cloud) -> List[str]:
 def get_cloud_work_publication_dates(cloud: Cloud) -> List[str]:
     """Get publication dates for all works in the cloud."""
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     dates = _read_corpus_column(corpus, "publication_date", sorted_idxs[retained_positions])
     return [d.isoformat() if isinstance(d, (date, datetime)) else d for d in dates]
 
@@ -524,7 +529,7 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
     denoiser_impl = denoiser_enum.value
 
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
-    corpus = corpus_dataset(cloud.filter_pair.pre)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
 
     retained_works = _read_corpus_dicts(corpus, sorted_idxs[retained_positions])
