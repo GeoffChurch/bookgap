@@ -450,45 +450,71 @@ def _normalize_snapshot_work(work: dict, scope_key: ScopeKey) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
+_SPILL_SUFFIX = ".jsonl.gz"
+# Compression level 1 gives ~6x compression at ~10x the write cost of plain
+# JSONL, vs level 6's 8x at ~24x. In practice spill writes are a small
+# fraction of per-shard processing time (parse dominates), so the extra
+# CPU is negligible and the disk savings are large.
+_SPILL_COMPRESSLEVEL = 1
+
+
 class SpillSink:
-    """Bucketer sink that spills each flush to a per-scope JSONL file on disk.
+    """Bucketer sink that spills each flush to a per-scope gzipped JSONL file.
 
     On finalize_all(), reads each spill file back, normalizes+filters+dedups
     its works through the existing pipeline, writes the final per-scope
     parquet, and deletes the spill file.
+
+    disk_abort_root / disk_abort_pct: if set, check_disk_or_abort runs
+    after each flush so growth within a single shard can't silently
+    overshoot the per-shard check at the run() level.
     """
 
-    def __init__(self, spill_dir: Path):
+    def __init__(
+        self,
+        spill_dir: Path,
+        disk_abort_root: Optional[Path] = None,
+        disk_abort_pct: Optional[float] = None,
+    ):
         self._spill_dir = spill_dir
         self._spill_dir.mkdir(parents=True, exist_ok=True)
+        self._disk_abort_root = disk_abort_root
+        self._disk_abort_pct = disk_abort_pct
         self._files_written: set[ScopeKey] = set()
         # Discover any spill files left over from an interrupted prior run so
         # finalize_all() picks them up even if no new rows arrive for those scopes.
-        for jsonl_path in self._spill_dir.rglob("*.jsonl"):
+        for spill_path in self._spill_dir.rglob(f"*{_SPILL_SUFFIX}"):
             try:
-                rel = jsonl_path.relative_to(self._spill_dir)
-                parts = rel.parts  # (field, subfield, topic, "<wtype>.jsonl")
+                rel = spill_path.relative_to(self._spill_dir)
+                parts = rel.parts  # (field, subfield, topic, "<wtype>.jsonl.gz")
                 if len(parts) != 4:
                     continue
                 field, subfield, topic, wtype_file = parts
-                wtype = wtype_file.removesuffix(".jsonl")
+                wtype = wtype_file.removesuffix(_SPILL_SUFFIX)
                 self._files_written.add((field, subfield, topic, wtype))
             except ValueError:
                 continue
 
     def _spill_path(self, key: ScopeKey) -> Path:
         field, subfield, topic, wtype = key
-        return self._spill_dir / field / subfield / topic / f"{wtype}.jsonl"
+        return self._spill_dir / field / subfield / topic / f"{wtype}{_SPILL_SUFFIX}"
 
     def __call__(self, key: ScopeKey, rows: list[dict]) -> None:
-        """Append rows as JSONL to the scope's spill file."""
+        """Append rows as gzipped JSONL to the scope's spill file.
+
+        gzip's member-concatenation property means we can open the file in
+        append mode and write a fresh gzip stream for each flush; readers
+        (gzip.open in text mode) transparently read the concatenation.
+        """
         path = self._spill_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
+        with gzip.open(path, "ab", compresslevel=_SPILL_COMPRESSLEVEL) as f:
             for row in rows:
-                f.write(json.dumps(row))
-                f.write("\n")
+                f.write(json.dumps(row).encode())
+                f.write(b"\n")
         self._files_written.add(key)
+        if self._disk_abort_root is not None and self._disk_abort_pct is not None:
+            check_disk_or_abort(self._disk_abort_root, self._disk_abort_pct)
 
     def finalize_all(self) -> None:
         """For each scope with a spill file: normalize, filter, dedup, write parquet, delete spill."""
@@ -507,7 +533,7 @@ class SpillSink:
             scope = ResolvedScope(field=field, subfield=subfield, topic=topic, work_type=wtype)
 
             def works_iter(sp=spill_path, k=key):
-                with sp.open() as f:
+                with gzip.open(sp, "rt") as f:
                     for line in f:
                         raw = json.loads(line)
                         normalized = _normalize_snapshot_work(raw, k)
@@ -539,7 +565,7 @@ def run(
     prefix: str = "data/works/",
     shard_row_flush_threshold: int = 10_000,
     max_resident_rows: int = 1_000_000,
-    disk_abort_pct: float = 95.0,
+    disk_abort_pct: float = 90.0,
     state_path: Optional[Path] = None,
     spill_dir: Optional[Path] = None,
     s3_client=None,
@@ -589,7 +615,7 @@ def run(
         len(state.shards_completed),
     )
 
-    sink = SpillSink(spill_dir)
+    sink = SpillSink(spill_dir, disk_abort_root=CACHE_DIR, disk_abort_pct=disk_abort_pct)
     bucketer = Bucketer(sink, flush_threshold=shard_row_flush_threshold, max_resident=max_resident_rows)
     taxonomy_acc = _TaxonomyAccumulator()
 

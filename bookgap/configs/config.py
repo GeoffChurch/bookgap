@@ -23,12 +23,12 @@ from .cloud.cloud_config import CloudConfig
 class SnapshotConfig:
     """Configuration for snapshot-based ingestion from the OpenAlex S3 snapshot."""
 
-    snapshot_date: str = "2026-04-01"  # override per run; pins reproducibility
+    snapshot_date: str = "2025-11-06"  # override per run; pins reproducibility
     bucket: str = "openalex"
     prefix: str = "data/works/"
     shard_row_flush_threshold: int = 10_000
     max_resident_rows: int = 1_000_000
-    disk_abort_pct: float = 95.0
+    disk_abort_pct: float = 90.0
 
 
 @dataclass

@@ -519,8 +519,10 @@ def test_spill_sink_writes_one_file_per_scope(tmp_path):
     assert path_a.exists()
     assert path_b.exists()
 
-    lines_a = path_a.read_text().strip().splitlines()
-    lines_b = path_b.read_text().strip().splitlines()
+    with gzip.open(path_a, "rt") as f:
+        lines_a = f.read().strip().splitlines()
+    with gzip.open(path_b, "rt") as f:
+        lines_b = f.read().strip().splitlines()
     assert len(lines_a) == 2
     assert len(lines_b) == 1
     assert json.loads(lines_a[0]) == {"x": 1}
@@ -534,13 +536,14 @@ def test_spill_sink_appends_across_calls(tmp_path):
     sink(key, [{"n": 3}])
 
     path = sink._spill_path(key)
-    lines = path.read_text().strip().splitlines()
+    with gzip.open(path, "rt") as f:
+        lines = f.read().strip().splitlines()
     assert len(lines) == 3
     assert [json.loads(l)["n"] for l in lines] == [1, 2, 3]
 
 
 def test_spill_sink_discovers_existing_files_on_init(tmp_path):
-    """SpillSink must pre-populate _files_written from any *.jsonl already on disk.
+    """SpillSink must pre-populate _files_written from any *.jsonl.gz already on disk.
 
     This covers the resume case: a prior interrupted run wrote spill files but
     never called finalize_all(), so a fresh SpillSink must not silently drop them.
@@ -548,10 +551,11 @@ def test_spill_sink_discovers_existing_files_on_init(tmp_path):
     spill_dir = tmp_path / "spill"
     key: ScopeKey = ("31", "3102", "T99999", "article")
 
-    # Manually create a synthetic spill file as a prior run would have done.
-    file_path = spill_dir / "31" / "3102" / "T99999" / "article.jsonl"
+    # Manually create a synthetic gzipped spill file as a prior run would have done.
+    file_path = spill_dir / "31" / "3102" / "T99999" / "article.jsonl.gz"
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(json.dumps({"x": 1}) + "\n")
+    with gzip.open(file_path, "wt") as f:
+        f.write(json.dumps({"x": 1}) + "\n")
 
     # Now instantiate a fresh SpillSink — it should discover the existing file.
     sink = SpillSink(spill_dir)
