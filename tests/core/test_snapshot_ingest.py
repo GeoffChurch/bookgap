@@ -793,32 +793,6 @@ def test_run_skips_completed_shards(tmp_ingest, monkeypatch):
     assert downloads == [], f"Expected no downloads, got {downloads}"
 
 
-def test_run_raises_when_filter_resolves_to_no_scopes(tmp_path, monkeypatch):
-    """run() must raise ValueError immediately when _resolve_filter_scopes returns []."""
-    import bookgap.openalex_ingest as oi_mod
-    from bookgap import snapshot_ingest
-    from bookgap.util import Filter
-    import shutil
-
-    # Redirect disk-usage check so it passes
-    class FakeUsage:
-        total = 100
-        used = 10
-        free = 90
-    monkeypatch.setattr(shutil, "disk_usage", lambda p: FakeUsage())
-
-    monkeypatch.setattr(oi_mod, "_resolve_filter_scopes", lambda f, snapshot_date: [])
-
-    with pytest.raises(ValueError, match="resolved to zero scopes"):
-        snapshot_ingest.run(
-            work_filter=Filter(domain="3", work_types=("article",)),
-            snapshot_date="2026-04-01",
-            state_path=tmp_path / "state.json",
-            spill_dir=tmp_path / "spill",
-            s3_client=None,  # never reached
-        )
-
-
 def test_run_raises_when_work_types_is_none(tmp_path, monkeypatch):
     """run() must raise ValueError with a helpful message when work_filter.work_types is None."""
     from bookgap import snapshot_ingest

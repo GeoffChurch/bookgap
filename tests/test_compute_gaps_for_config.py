@@ -37,6 +37,18 @@ class _TopicsDict:
         return {"display_name": self.display_name, "subfield": {"id": "https://openalex.org/S1711"}}
 
 
+def _fake_taxonomy(topic_display_name: str, topic_id: str = "T10828"):
+    """Build a minimal PinnedTaxonomy stub for tests that only need topic lookup."""
+    from bookgap.snapshot_ingest import PinnedTaxonomy
+    return PinnedTaxonomy(
+        snapshot_date="TEST",
+        fields={},
+        subfields={"1711": {"topics": [{"id": f"https://openalex.org/{topic_id}"}]}},
+        topics={topic_id: {"id": f"https://openalex.org/{topic_id}", "display_name": topic_display_name,
+                            "subfield": {"id": "https://openalex.org/subfields/1711"}}},
+    )
+
+
 class _SubCloudStub:
     def __init__(self, embeddings: np.ndarray):
         self._embeddings = embeddings
@@ -46,8 +58,9 @@ class _SubCloudStub:
 
 def _make_cloud_mock(merged_filter: Filter) -> Mock:
     """Create a mock Cloud object with the given merged filter."""
-    mock_cloud = Mock(spec=['filter_pair'])
+    mock_cloud = Mock(spec=['filter_pair', 'snapshot_date'])
     mock_cloud.filter_pair.merged.return_value = merged_filter
+    mock_cloud.snapshot_date = "TEST"
     return mock_cloud
 
 
@@ -80,7 +93,7 @@ def _make_args(
 
 @patch("bookgap.gaps.instantiate")
 @patch("bookgap.gaps.get_subclouds_for_topic")
-@patch("bookgap.gaps.pyalex.Topics", return_value=_TopicsDict("Machine Learning"))
+@patch("bookgap.snapshot_ingest.load_taxonomy", return_value=_fake_taxonomy("Machine Learning"))
 @patch("bookgap.gaps.resolve_filter_upward", return_value=Filter(field="17", subfield="1711", topic="T10828"))
 def test_compute_gaps_for_config_single_topic_success(mock_resolve, mock_topics, mock_get_subclouds, mock_instantiate):
     # Cloud with merged filter specifying a single topic
@@ -129,7 +142,7 @@ def test_compute_gaps_for_config_single_topic_success(mock_resolve, mock_topics,
 
 @patch("bookgap.gaps.instantiate")
 @patch("bookgap.gaps.get_subclouds_for_topic")
-@patch("bookgap.gaps.pyalex.Topics", return_value=_TopicsDict("AI"))
+@patch("bookgap.snapshot_ingest.load_taxonomy", return_value=_fake_taxonomy("AI"))
 @patch("bookgap.gaps.resolve_filter_upward", return_value=Filter(field="17", subfield="1711", topic="T10828"))
 def test_compute_gaps_for_config_no_articles(mock_resolve, mock_topics, mock_get_subclouds, mock_instantiate):
     # Single topic path again
@@ -151,7 +164,7 @@ def test_compute_gaps_for_config_no_articles(mock_resolve, mock_topics, mock_get
 @patch("bookgap.gaps.instantiate")
 @patch("bookgap.gaps.get_field_topics", return_value=["T123", "T456"])
 @patch("bookgap.gaps.get_subfield_topics")
-@patch("bookgap.gaps.pyalex.Topics", side_effect=[_TopicsDict("Topic A"), _TopicsDict("Topic B")])
+@patch("bookgap.snapshot_ingest.load_taxonomy", return_value=_fake_taxonomy("Topic A"))
 @patch("bookgap.gaps.get_subclouds_for_topic")
 @patch("bookgap.gaps.resolve_filter_upward", return_value=Filter(field="17"))
 def test_compute_gaps_for_config_field_only(mock_resolve, mock_get_subclouds, mock_topics, mock_get_subfield_topics, mock_get_field_topics, mock_instantiate):
