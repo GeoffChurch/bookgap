@@ -897,15 +897,19 @@ def test_run_accepts_list_of_filters_and_unions_scopes(tmp_path, monkeypatch):
         spill_dir=tmp_path / "spill",
     )
 
-    # The info log should mention all three fields.
-    summary_line = next((a for a, _ in infos if "target fields" in a[0]), None)
-    assert summary_line is not None
-    # a[1] is the sorted list of fields
-    assert summary_line[1] == ["23", "25", "26"]
-    # a[2] is the scope count — should be 4 (2 from field 23, 1 from 25, 1 from 26)
-    assert summary_line[2] == 4
-    # a[3] is the filter count
-    assert summary_line[3] == 3
+    # The info log should mention all three filters by their string form.
+    summary_line = next(
+        (a for a, _ in infos if "filter(s)" in a[0] and "filters=" in a[0]),
+        None,
+    )
+    assert summary_line is not None, f"no 'filter(s)' summary in {infos}"
+    # a[1] is the filter count
+    assert summary_line[1] == 3
+    # a[3] is the list of filter str() representations
+    filter_strs = summary_line[3]
+    assert any("field=23" in s for s in filter_strs)
+    assert any("field=25" in s for s in filter_strs)
+    assert any("field=26" in s for s in filter_strs)
 
 
 # ---------------------------------------------------------------------------
