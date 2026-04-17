@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable, IO, Iterator, Optional
 
 import boto3
+import orjson
 import pyarrow as pa
 import pyarrow.parquet as pq
 from botocore import UNSIGNED
@@ -347,8 +348,8 @@ def stream_shard(
             if prefilter_patterns is not None and not any(p in line for p in prefilter_patterns):
                 continue
             try:
-                work = json.loads(line)
-            except json.JSONDecodeError:
+                work = orjson.loads(line)
+            except orjson.JSONDecodeError:
                 continue
             key = _scope_key(work)
             if key is None:

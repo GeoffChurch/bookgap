@@ -12,6 +12,7 @@ dependencies = [
     "bitsandbytes",
     "boto3",
     "faiss-cpu",
+    "orjson",
     "graphviz", # for adalflow
     "hydra-core",
     "omegaconf",
