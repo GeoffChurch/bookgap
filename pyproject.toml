@@ -13,6 +13,7 @@ dependencies = [
     "boto3",
     "faiss-cpu",
     "orjson",
+    "pysimdjson",
     "graphviz", # for adalflow
     "hydra-core",
     "omegaconf",
