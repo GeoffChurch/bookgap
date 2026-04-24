@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from bookgap.cloud_denoiser import WorkDenoisers
-from bookgap.configs.data.data_config import SqDistDeduplicatorConfig
+from bookgap.configs.data.data_config import SimHashDeduplicatorConfig, SqDistDeduplicatorConfig
 from bookgap.configs.embedder.embedder_config import SentenceTransformerEmbedderConfig
 from bookgap.configs.index.index_config import HNSWConfig
 from bookgap.configs.util.filter_config import FilterPairConfig
@@ -26,7 +26,11 @@ class CloudConfig:
     drop_k: int = 0
     embedder: Any = field(default_factory=SentenceTransformerEmbedderConfig)
     max_works: Optional[int] = None
-    deduplicator: Optional[SqDistDeduplicatorConfig] = field(default_factory=SqDistDeduplicatorConfig)
+    # Defaults to SimHash (k=32, L=20) since it's much faster than the
+    # HNSW-based SqDist path at 42M-corpus scale while maintaining
+    # 99.98-99.9998% recall across both sparse and dense duplicate
+    # regimes. See artifacts_scripts/dedup_methods_bench.py.
+    deduplicator: Optional[Any] = field(default_factory=SimHashDeduplicatorConfig)
     normalize_embeddings: bool = True
     snapshot_date: str = "2025-11-06"
 
