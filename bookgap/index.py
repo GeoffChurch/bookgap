@@ -14,12 +14,15 @@
 import abc
 from dataclasses import dataclass, field
 import enum
+import time
 from typing import Callable, Generic, Optional, TypeVar
 
 import faiss
 import numpy as np
 from numpy.typing import NDArray
 import tqdm
+
+from bookgap.util import LOGGER
 
 def init_flatl2_(d: int, _index_info: 'FlatL2') -> faiss.IndexFlatL2:
     assert isinstance(_index_info, FlatL2), f"Expected FlatL2 IndexInfo, got {_index_info}"
@@ -224,40 +227,64 @@ def range_search_(
 
 
 def range_search_with_(
-    index: faiss.Index, 
-    query: NDArray, 
+    index: faiss.Index,
+    query: NDArray,
     epsilon: float,
     kernel_fn: Callable[[int, NDArray, NDArray], None],
-    batch_size: int = 24
+    batch_size: int = 24,
+    log_every: Optional[int] = 50_000,
 ) -> None:
     """
     Range search that processes results point-by-point to avoid memory bottlenecks.
-    
+
     Args:
         index: The FAISS index to search
         query: Query vectors, shape (N, D)
         epsilon: Search radius
         kernel_fn: Function called as kernel_fn(query_idx, neighbor_dists, neighbor_ids)
                   for each query point
-        batch_size: Number of queries to process at once
+        batch_size: Number of queries per FAISS call. Very small batches pay a
+            per-call Python overhead on every iteration (42 M queries / 24 = 1.75 M
+            iterations); very large batches can blow up the transient result
+            buffer when many query balls are populated. Benchmark-driven tuning
+            via ``artifacts_scripts.hnsw_dedup_bench`` is recommended.
+        log_every: Emit a LOGGER.info progress line every `log_every` queries
+            completed. ``None`` disables logging (tqdm still drives the bar).
+            Useful in long runs where tqdm output is buffered by the launcher
+            (e.g. ``conda run``) and the pipeline.log file is the only live
+            source of progress telemetry.
     """
-    with tqdm.tqdm(desc="Range search with kernel", total=len(query), mininterval=3, delay=3) as pbar:
-        for i in range(0, len(query), batch_size):
+    n = len(query)
+    t_start = time.monotonic()
+    last_log_at = 0
+    with tqdm.tqdm(desc="Range search with kernel", total=n, mininterval=3, delay=3) as pbar:
+        for i in range(0, n, batch_size):
             batch = query[i:i + batch_size]
             lims_, dists_, ids_ = index.range_search(batch, epsilon) # type: ignore
-            
+
             # Process each query in the batch
             for j in range(len(batch)):
                 query_idx = i + j
                 start_idx = lims_[j]
                 end_idx = lims_[j + 1]
-                
+
                 neighbor_dists = dists_[start_idx:end_idx] if len(dists_) > 0 else np.array([])
                 neighbor_ids = ids_[start_idx:end_idx] if len(ids_) > 0 else np.array([])
-                
+
                 kernel_fn(query_idx, neighbor_dists, neighbor_ids)
-            
+
             pbar.update(len(batch))
+            done = i + len(batch)
+            if log_every is not None and done - last_log_at >= log_every:
+                elapsed = time.monotonic() - t_start
+                rate = done / elapsed if elapsed > 0 else 0.0
+                remaining = (n - done) / rate if rate > 0 else float("inf")
+                LOGGER.info(
+                    "range_search_with_: %d/%d queries (%.1f%%), "
+                    "%.0f q/s, %.1f min elapsed, ~%.1f min remaining",
+                    done, n, 100.0 * done / n, rate, elapsed / 60.0, remaining / 60.0,
+                )
+                last_log_at = done
 
 def kballs_with(ambient: faiss.Index, landmark: faiss.Index, query: NDArray, 
                 radius_fraction: float, k: int,
