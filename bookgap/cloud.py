@@ -30,6 +30,7 @@ from bookgap.util import (
 )
 from bookgap.deduplicators import Deduplicator
 import scipy.linalg
+from sklearn.preprocessing import normalize as sk_normalize
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -41,6 +42,22 @@ from bookgap.openalex_ingest import (
     corpus_dataset,
     embed_works,
 )
+
+def _log_rss(tag: str) -> None:
+    """Log current process RSS at a named transition.
+
+    Used at big-allocation boundaries (pre/post full embeddings load,
+    pre/post dedup, pre/post filtered load) so that if we ever OOM again
+    the pipeline log tells us which step was over budget — far faster than
+    another kernel-log forensic exercise.
+    """
+    try:
+        import psutil
+        rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+        LOGGER.info(f"[rss:{tag}] {rss_gb:.1f} GB")
+    except Exception:  # psutil not installed / /proc unreadable
+        pass
+
 
 def _embeddings_store_path(corpus_fingerprint: str, embedder_cfg: Any) -> Path:
     """Path for the embeddings Parquet file."""
@@ -77,7 +94,14 @@ def write_embeddings_store(path: Path, embeddings: NDArray[np.float32]) -> None:
 
 
 def read_embeddings_store(path: Path) -> NDArray[np.float32]:
-    """Read embeddings from a Parquet file."""
+    """Read ALL embeddings from a Parquet file.
+
+    Memory-heavy: holds the arrow table plus a numpy copy at peak. Used by
+    the dedup input path where we genuinely need every row. Callers that
+    only need a subset should use :func:`read_embeddings_rows` instead;
+    at 42M × 384 × 4B = 64 GB this function plus a fancy-index copy is
+    how we reliably OOM a 250 GB box.
+    """
     table = pq.read_table(path)
     metadata = table.schema.metadata or {}
     d = int(metadata.get(b"bookgap:embedding_dim", b"0").decode())
@@ -86,6 +110,76 @@ def read_embeddings_store(path: Path) -> NDArray[np.float32]:
         return np.empty((0, d), dtype=np.float32)
     arr = table.column("embeddings").combine_chunks().values
     return np.asarray(arr.to_numpy(zero_copy_only=False), dtype=np.float32).reshape(n, d)
+
+
+def read_embeddings_rows(
+    path: Path,
+    retained_positions: Optional[NDArray[np.uint64]] = None,
+) -> NDArray[np.float32]:
+    """Read a subset of embeddings rows from Parquet, streaming row-group by
+    row-group.
+
+    Pre-allocates the output at ``(len(retained_positions), d)`` and fills
+    it in row-group-sized chunks; peak transient memory beyond the output
+    is one row group's worth of arrow buffers (~1 GB at 1 M rows × 384 × 4 B
+    for our shape), not a full copy of the corpus.
+
+    Designed for the post-dedup read path, where ``retained_positions``
+    typically keeps ~97 % of rows. It replaces the old ``read_embeddings_store
+    (...)[retained_positions]`` pattern that simultaneously holds the full
+    64 GB source array AND a 62 GB filtered copy during fancy indexing —
+    the exact shape we OOM-killed on (see cache/.jobs/curriculum_qc_1776788277
+    journal / kernel oom-kill record).
+
+    ``retained_positions`` must be in ascending order (the typical output
+    of the dedup step). If None, returns every row.
+    """
+    pf = pq.ParquetFile(path)
+    metadata = pf.schema_arrow.metadata or {}
+    d = int(metadata.get(b"bookgap:embedding_dim", b"0").decode())
+    n_total = pf.metadata.num_rows
+
+    if retained_positions is None:
+        retained_positions = np.arange(n_total, dtype=np.uint64)
+    n_out = int(len(retained_positions))
+    if n_out == 0:
+        return np.empty((0, d), dtype=np.float32)
+    if n_out > 1 and not np.all(retained_positions[:-1] <= retained_positions[1:]):
+        raise ValueError(
+            "read_embeddings_rows requires retained_positions to be ascending; "
+            "caller should sort (and remember an inverse permutation) before calling."
+        )
+
+    out = np.empty((n_out, d), dtype=np.float32)
+    row_offset = 0
+    pos_cursor = 0
+    for rg_idx in range(pf.num_row_groups):
+        rg_num_rows = pf.metadata.row_group(rg_idx).num_rows
+        rg_end = row_offset + rg_num_rows
+        # Advance the cursor past any retained positions that lie entirely
+        # before this row group (shouldn't happen with sorted input, but
+        # defensive).
+        while pos_cursor < n_out and retained_positions[pos_cursor] < row_offset:
+            pos_cursor += 1
+        # Find the first retained position that lies in a later row group.
+        next_cursor = pos_cursor
+        while next_cursor < n_out and retained_positions[next_cursor] < rg_end:
+            next_cursor += 1
+        if next_cursor > pos_cursor:
+            rg_table = pf.read_row_group(rg_idx, columns=["embeddings"])
+            col = rg_table.column("embeddings").combine_chunks()
+            rg_arr = np.asarray(
+                col.values.to_numpy(zero_copy_only=False), dtype=np.float32
+            ).reshape(rg_num_rows, d)
+            local_idx = (retained_positions[pos_cursor:next_cursor] - row_offset).astype(np.int64)
+            out[pos_cursor:next_cursor] = rg_arr[local_idx]
+            # Explicit drop so the arrow buffer can be reclaimed before the
+            # next iteration allocates a new one.
+            del rg_table, col, rg_arr
+            pos_cursor = next_cursor
+        row_offset = rg_end
+
+    return out
 
 
 @dataclass(frozen=True)
@@ -216,6 +310,7 @@ def _sorted_corpus_idxs(corpus: ds.Dataset, max_works: Optional[int]) -> NDArray
 
 @lru_cache(maxsize=1)
 @TIMER.time()
+@MEMORY.cache
 def ensure_cloud_data(cloud: Cloud) -> tuple[str, NDArray[np.uint64], NDArray[np.uint64]]:
     """Ensure corpus is fetched, embeddings computed, and retained indices ready.
 
@@ -236,10 +331,22 @@ def ensure_cloud_data(cloud: Cloud) -> tuple[str, NDArray[np.uint64], NDArray[np
     if not emb_path.exists():
         _compute_and_store_embeddings(cloud, corpus, sorted_idxs, emb_path)
 
-    # 3. Semantic dedup (operates on the full sorted subset embeddings)
+    # 3. Semantic dedup (operates on the full sorted subset embeddings).
+    # This is the one place that genuinely needs every row in memory; the
+    # dedup algorithm compares each point against every other. Once it
+    # returns, we hold a small index array and must drop the 64 GB
+    # ``raw_embeddings`` promptly so downstream code (which loads its own
+    # filtered view via read_embeddings_rows) doesn't race with this
+    # footprint and trip a global OOM.
+    _log_rss("before-read-embeddings-for-dedup")
     raw_embeddings = read_embeddings_store(emb_path)
+    _log_rss("after-read-embeddings-for-dedup")
     dedup_positions = _deduplicate_semantic(cloud, corpus, raw_embeddings, sorted_idxs)
     LOGGER.info(f"Retained {len(dedup_positions)} works after deduplication")
+    del raw_embeddings
+    import gc
+    gc.collect()
+    _log_rss("after-drop-raw-embeddings")
 
     # 4. Post-filter (operates on deduped positions within sorted subset)
     post_mask = _post_filter_mask(corpus, cloud.filter_pair.post, sorted_idxs[dedup_positions])
@@ -491,14 +598,143 @@ def get_cloud_work_references(cloud: Cloud) -> List[List[str]]:
     return [r or [] for r in refs]
 
 
+def _citation_adjacency_streamed(
+    cloud: Cloud,
+    add_self_loops: bool = True,
+    normalize: bool = False,
+    chunk_size: int = 500_000,
+) -> sp.csr_matrix:
+    """Build the citation adjacency matrix without materialising all
+    referenced_works as Python strings at once.
+
+    The naive path — ``_read_corpus_column(..., 'referenced_works')`` then
+    ``build_citation_adjacency_from_ids`` — holds ~1 B Python reference
+    strings in memory simultaneously (~100 GB at 40 M-work corpus scale),
+    which OOM-killed the pipeline. This streamed version:
+
+      - builds a ``{work_id: row_idx}`` dict once from the work_ids column
+        (~4 GB at 40 M × ~50 bytes Python-string-plus-dict-overhead),
+      - iterates over the corpus in row-group-scale chunks,
+      - for each chunk, materialises only that chunk's referenced_works
+        to Python (~250 MB at chunk_size=500k × 30 refs × ~100 bytes),
+      - resolves references against the dict, appending to per-chunk
+        int32 numpy arrays,
+      - discards each chunk's Python objects before loading the next.
+
+    Peak scratch beyond the id_to_idx dict: one chunk's referenced_works
+    (~250 MB) + growing row/col int32 arrays (~6 GB at final size for
+    1.6 B edges). Total peak ~11 GB, vs ~100 GB for the naive path.
+    """
+    _log_rss("before-citation-graph")
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
+
+    global_positions = sorted_idxs[retained_positions].astype(np.int64)
+    n = len(global_positions)
+
+    # Step 1: stream the "id" column in batches to build the id→row_idx
+    # dict. We need the corpus-global row positions of retained works so we
+    # can mask later batches by range; we don't materialise the full id
+    # column up front (though at 40 M short strings it'd only be ~4 GB, the
+    # referenced_works column on the same pass would be ~100 GB which we
+    # definitely can't materialise).
+    import gc
+    id_to_idx: Dict[str, int] = {}
+    row_offset = 0
+    scanner = corpus.scanner(columns=["id"], batch_size=chunk_size)
+    for batch in scanner.to_batches():
+        batch_end = row_offset + batch.num_rows
+        # Find retained global positions falling in this batch range.
+        in_batch = np.asarray(
+            (global_positions >= row_offset) & (global_positions < batch_end)
+        ).nonzero()[0]
+        if in_batch.size:
+            globals_here = global_positions[in_batch]
+            local_idx = (globals_here - row_offset).astype(np.int64)
+            ids_py = batch.column("id").take(pa.array(local_idx, type=pa.int64())).to_pylist()
+            for k, wid in enumerate(ids_py):
+                id_to_idx[wid] = int(in_batch[k])
+        row_offset = batch_end
+    del scanner
+    _log_rss("citation-graph:after-id-map")
+
+    # Step 2: stream referenced_works in the same batched fashion, never
+    # materialising more than ``chunk_size`` rows' worth of Python string
+    # lists at once.
+    row_chunks: list[NDArray[np.int32]] = []
+    col_chunks: list[NDArray[np.int32]] = []
+    row_offset = 0
+    batch_idx = 0
+    scanner = corpus.scanner(columns=["referenced_works"], batch_size=chunk_size)
+    for batch in scanner.to_batches():
+        batch_end = row_offset + batch.num_rows
+        in_batch = np.asarray(
+            (global_positions >= row_offset) & (global_positions < batch_end)
+        ).nonzero()[0]
+        if in_batch.size:
+            globals_here = global_positions[in_batch]
+            local_idx = (globals_here - row_offset).astype(np.int64)
+            refs_py = (
+                batch.column("referenced_works")
+                .take(pa.array(local_idx, type=pa.int64()))
+                .to_pylist()
+            )
+            # Bound-preallocate per-sub-chunk row/col buffers.
+            max_edges = in_batch.size + sum(len(r or ()) for r in refs_py)
+            row_buf = np.empty(max_edges, dtype=np.int32)
+            col_buf = np.empty(max_edges, dtype=np.int32)
+            cursor = 0
+            for k, refs in enumerate(refs_py):
+                my_row = int(in_batch[k])
+                if add_self_loops:
+                    row_buf[cursor] = my_row
+                    col_buf[cursor] = my_row
+                    cursor += 1
+                if refs:
+                    for ref_id in refs:
+                        target = id_to_idx.get(ref_id)
+                        if target is not None:
+                            row_buf[cursor] = my_row
+                            col_buf[cursor] = target
+                            cursor += 1
+            row_chunks.append(row_buf[:cursor])
+            col_chunks.append(col_buf[:cursor])
+            del refs_py, row_buf, col_buf
+        row_offset = batch_end
+        batch_idx += 1
+        if batch_idx % 10 == 0:
+            _log_rss(f"citation-graph:batch-{batch_idx}")
+    del scanner, id_to_idx
+    gc.collect()
+
+    row = np.concatenate(row_chunks)
+    col = np.concatenate(col_chunks)
+    del row_chunks, col_chunks
+    _log_rss("citation-graph:after-chunks")
+
+    data = np.ones(len(row), dtype=np.float32)
+    adj = sp.csr_matrix((data, (row, col)), shape=(n, n))
+    del row, col, data
+    _log_rss("citation-graph:after-csr")
+
+    if normalize:
+        adj = sk_normalize(adj, norm="l1", axis=1, copy=False)
+
+    LOGGER.info(
+        f"Built citation adjacency: {n} works, {adj.nnz} edges "
+        f"(density: {adj.nnz / (n * n):.2e})"
+    )
+    return adj
+
+
 @lru_cache(maxsize=1)
 @TIMER.time()
 @MEMORY.cache
 def get_cloud_citation_graph(cloud: Cloud, normalize: bool) -> sp.csr_matrix:
     """Return the citation adjacency/transition matrix for the cloud."""
-    work_ids = get_cloud_work_ids(cloud)
-    work_references = get_cloud_work_references(cloud)
-    adj, _ = build_citation_adjacency_from_ids(work_ids, work_references, add_self_loops=True, normalize=normalize)
+    adj = _citation_adjacency_streamed(
+        cloud, add_self_loops=True, normalize=normalize
+    )
     LOGGER.info(f"Cloud {cloud.name()} citation graph: shape={adj.shape}, nnz={adj.nnz}")
     return adj
 
@@ -545,8 +781,13 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 def get_cloud_embeddings(cloud: Cloud):
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
     emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
-    all_embeddings = read_embeddings_store(emb_path)
-    return denoise(cloud, all_embeddings[retained_positions])
+    # Streamed row-group read: allocates exactly one N_retained × D
+    # output array (~62 GB on the domain=3 corpus) rather than the prior
+    # full-64GB load + fancy-index copy pattern.
+    _log_rss("before-streamed-embeddings-read")
+    retained_embeddings = read_embeddings_rows(emb_path, retained_positions)
+    _log_rss("after-streamed-embeddings-read")
+    return denoise(cloud, retained_embeddings)
 
 
 @lru_cache(maxsize=1)
@@ -561,8 +802,7 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
     emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
 
     retained_works = _read_corpus_dicts(corpus, sorted_idxs[retained_positions])
-    all_embeddings = read_embeddings_store(emb_path)
-    retained_embeddings = all_embeddings[retained_positions]
+    retained_embeddings = read_embeddings_rows(emb_path, retained_positions)
 
     return denoiser_impl.compute_projection_artifact(cloud.drop_k, retained_works, retained_embeddings)
 
@@ -655,11 +895,37 @@ def _post_filter_mask(
 
 T = TypeVar('T', bound=np.generic)
 
+def _centered_singular_values(X: NDArray) -> NDArray:
+    """All singular values of (X - X.mean(axis=0)) in descending order,
+    without materialising the centered matrix or running a full LAPACK gesdd.
+
+    Uses the identity (X_c)^T (X_c) = X^T X - n μ μ^T, then takes the
+    eigenvalues of that d×d Gram matrix. For our shape (40M × 384) this
+    is one BLAS matmul (~30 s, reads X once) plus a microsecond 384×384
+    eigh. The old ``svdvals(X - X.mean(0))`` path allocated a 62 GB
+    centered copy AND a 62 GB LAPACK workspace on top of the 62 GB input —
+    cumulative ~200 GB, reliably OOM-killed the process. The returned
+    array has ``min(X.shape[1], X.shape[0])`` entries so callers that
+    previously used the full vector (e.g. for total-variance ratios) work
+    unchanged.
+    """
+    n, d = X.shape
+    mean = X.mean(axis=0)
+    gram = X.T @ X
+    gram -= n * np.outer(mean, mean)
+    # Symmetrise to kill asymmetric float-noise from the matmul;
+    # eigvalsh on a slightly-non-symmetric matrix silently misbehaves.
+    gram = 0.5 * (gram + gram.T)
+    eigvals = scipy.linalg.eigvalsh(gram)  # ascending
+    eigvals = np.clip(eigvals[::-1], 0.0, None)  # descending, non-negative
+    return np.sqrt(eigvals)
+
+
 def denoise(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
     """Apply projective denoising with full orchestration."""
-    # Pre-projection PCA for baseline singular values
-    s_orig: NDArray = scipy.linalg.svdvals(embeddings - embeddings.mean(axis=0))  # type: ignore
-    
+    # Baseline singular values (top-10) for diagnostic logging. Uses the
+    # Gram-matrix trick so memory is O(d²) not O(nd) in scratch.
+    s_orig = _centered_singular_values(embeddings)
     LOGGER.info(f"Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
 
     # Dimensionality reduction/cleaning
@@ -674,10 +940,8 @@ def denoise(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
         norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
         denoised_embeddings = denoised_embeddings / norms
 
-    s_post: NDArray = scipy.linalg.svdvals(denoised_embeddings - denoised_embeddings.mean(axis=0))  # type: ignore
-    
+    s_post: NDArray = _centered_singular_values(denoised_embeddings)
 
-    
     # Calculate variance decay
     total_variance_orig = np.sum(s_orig**2)
     total_variance_post = np.sum(s_post**2)
