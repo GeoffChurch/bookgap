@@ -252,6 +252,21 @@ class SimHashDeduplicator(Deduplicator):
             bucket_starts = change[:-1]
             bucket_ends = change[1:]
 
+            # Per-table bucket-size diagnostics. Tables vary in wall time by
+            # several x because the verify cost scales as Σ B_i²; logging max
+            # bucket + hot-bucket count separates "one mega-cluster" from
+            # "many merely-large buckets" and matches observed spread to
+            # theory. Cheap (one pass over an already-in-cache int array).
+            bucket_sizes = (bucket_ends - bucket_starts).astype(np.int64)
+            multi_mask = bucket_sizes >= 2
+            LOGGER.info(
+                f"SimHashDeduplicator: table {t + 1}/{self.n_tables}: "
+                f"buckets_with_2plus={int(multi_mask.sum())}, "
+                f"max_bucket={int(bucket_sizes.max())}, "
+                f"hot(>=100)={int((bucket_sizes >= 100).sum())}, "
+                f"sum_B2={float((bucket_sizes ** 2).sum()):.3e}"
+            )
+
             for start, end in zip(bucket_starts, bucket_ends):
                 bsz = end - start
                 if bsz < 2:
