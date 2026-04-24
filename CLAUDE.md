@@ -36,6 +36,74 @@ conda run -p .conda python batch_generator.py
 conda run -p .conda python batch_generator.py --config-name standard batch.num_gaps=5
 ```
 
+## Long-Running Jobs
+
+Multi-hour runs (snapshot ingest, full-corpus embedding, curriculum build,
+sweeps) go through `bookgap.jobs`, which launches the command in a named
+`systemd-run --user --scope` cgroup, writes a JSON manifest at
+`cache/.jobs/<job_id>.json`, and redirects stdout/stderr to
+`cache/.jobs/<job_id>.log`. The cgroup wrapping is what matters: a plain
+`kill <pid>` on a `conda run` wrapper leaves the inner Python process
+orphaned, but `systemctl --user stop` tears down the whole tree at once.
+
+```bash
+# Launch any command as a tracked job
+conda run -p .conda python -m bookgap.jobs run --prefix curriculum_qc -- \
+    conda run -p .conda python -m artifacts_scripts.curriculum.main ...
+
+# List jobs (running, complete, failed, crashed, interrupted)
+conda run -p .conda python -m bookgap.jobs list
+
+# Gracefully stop (SIGTERM → worker_lifecycle → 'interrupted' status)
+conda run -p .conda python -m bookgap.jobs stop <job_id>
+
+# Tail a job's log
+conda run -p .conda python -m bookgap.jobs log <job_id> --follow
+```
+
+A single CLI invocation is wrapped by `bookgap.jobs._exec`, which in turn
+wraps it in `jobs.worker_lifecycle(job_id)` — so normal exit marks the
+manifest `complete`, SIGTERM/SIGINT marks it `interrupted`, and any other
+exception marks it `failed` with the error message recorded.
+
+**Graceful stop semantics.** Python code inside a `worker_lifecycle` block
+can poll `bookgap.jobs.stop_requested()` in long inner loops (e.g.
+`_embed_sentence_transformer` in `cloud.py`) to exit at safe boundaries
+so partial state on disk stays consistent.
+
+**Where logs actually land.**
+
+- `cache/.jobs/<job_id>.log` — the subprocess's raw stdout/stderr. Note
+  that `conda run` buffers stdout, so this file may stay empty until the
+  child exits or crashes.
+- `outputs/<YYYY-MM-DD>/<HH-MM-SS>/main.log` — Hydra's own log; this is
+  the live source of truth for any Hydra-driven pipeline (curriculum,
+  batch_generator, etc.). Writes flush directly and bypass `conda run`'s
+  stdout buffer.
+- `artifacts/curriculum/<run_name>/pipeline.log` — the curriculum
+  pipeline's own LOGGER output, mirrored alongside its artifacts.
+
+**TUI.** `scope_manager` (`python scope_manager.py tui`) provides a
+Textual-based browser for the OpenAlex taxonomy and surfaces the same
+`cache/.jobs/*.json` manifests in a live jobs table — any job launched
+via `bookgap.jobs run` or `scope_manager`'s `fetch`/`snapshot`/`embed`
+actions shows up there.
+
+**Module layout.**
+
+- `bookgap/jobs.py` — generic systemd-run + manifest plumbing.
+- `bookgap/scope_ops.py` — taxonomy-scoped worker actions
+  (`fetch`/`snapshot`/`embed`), `launch_worker`, `run_worker`, and
+  `has_running_job(action, scope, model)`. Delegates all job-lifecycle
+  mechanics to `bookgap.jobs`.
+- `scope_manager.py` — Textual TUI + Typer CLI over `scope_ops`; imports
+  job-plumbing primitives (`discover_jobs`, `dismiss_finished_jobs`,
+  `log_path`) directly from `bookgap.jobs`.
+
+**Stale files.** Root-level `nohup.out`, `fetch.log`, `curriculum.log`,
+`survey_llm.log` are residue from earlier pre-`bookgap.jobs` runs and
+can be deleted.
+
 ## Architecture
 
 ### Pipeline Flow

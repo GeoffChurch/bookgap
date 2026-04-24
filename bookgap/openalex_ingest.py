@@ -616,74 +616,81 @@ def fetch_all_scopes(work_filter: Filter, snapshot_date: str) -> None:
 
 def embed_works(
     scope: ResolvedScope,
-    model_name: Embedder.ModelName,
+    embedder: Embedder,
 ):
-    LOGGER.info(f"Embedding {scope} works with model {str(model_name)}")
+    """Embed one scope's works using a caller-supplied Embedder.
+
+    The caller is responsible for Embedder lifecycle (construction and
+    CUDA cleanup) via ``with Embedder(...) as embedder:``. Lifting model
+    loading out of this function turns per-scope setup from ~4 s into a
+    one-time cost, which is the dominant overhead when iterating over
+    thousands of scopes.
+    """
+    LOGGER.info(f"Embedding {scope} works with model {embedder.model_name}")
     works = fetch_works(scope).to_table().to_pylist()
     n_works = len(works)
-    with Embedder(model_name=model_name) as embedder:
-        dim = embedder.embedding_dimension()
-        embeddings = np.empty(shape=(n_works, dim), dtype=embedder.embedding_dtype())
+    dim = embedder.embedding_dimension()
+    embeddings = np.empty(shape=(n_works, dim), dtype=embedder.embedding_dtype())
 
-        def validate_batch(batch_works: List[dict[str, Any]], expected_ids: List[str]):
-            actual_ids = [work["id"] for work in batch_works]
-            if len(actual_ids) != len(expected_ids):
-                msg = f"ID length mismatch in batch. Expected {len(expected_ids)} IDs, got {len(actual_ids)} IDs"
-                LOGGER.error(msg)
-                raise ValueError(msg)
-            try:
-                mismatch_idx = next(i for i, (a, b) in enumerate(zip(actual_ids, expected_ids)) if a != b)
-                msg = f"ID mismatch at index {mismatch_idx} in batch. Expected {expected_ids[mismatch_idx]}, got {actual_ids[mismatch_idx]}"
-                LOGGER.error(msg)
-                raise ValueError(msg)
-            except StopIteration:
-                return
+    def validate_batch(batch_works: List[dict[str, Any]], expected_ids: List[str]):
+        actual_ids = [work["id"] for work in batch_works]
+        if len(actual_ids) != len(expected_ids):
+            msg = f"ID length mismatch in batch. Expected {len(expected_ids)} IDs, got {len(actual_ids)} IDs"
+            LOGGER.error(msg)
+            raise ValueError(msg)
+        try:
+            mismatch_idx = next(i for i, (a, b) in enumerate(zip(actual_ids, expected_ids)) if a != b)
+            msg = f"ID mismatch at index {mismatch_idx} in batch. Expected {expected_ids[mismatch_idx]}, got {actual_ids[mismatch_idx]}"
+            LOGGER.error(msg)
+            raise ValueError(msg)
+        except StopIteration:
+            return
 
-        def scope_batches(scope_dir: Path, scope_works: List[dict[str, Any]]) -> Generator[NDArray, None, None]:
-            seen = 0
-            cache_exhausted = False
-            for i in itertools.count():
-                emb_path = scope_dir / f"batch_{i}_embeddings.npy"
-                ids_path = scope_dir / f"batch_{i}_ids.json"
+    def scope_batches(scope_dir: Path, scope_works: List[dict[str, Any]]) -> Generator[NDArray, None, None]:
+        seen = 0
+        cache_exhausted = False
+        for i in itertools.count():
+            emb_path = scope_dir / f"batch_{i}_embeddings.npy"
+            ids_path = scope_dir / f"batch_{i}_ids.json"
 
-                if emb_path.exists() or ids_path.exists():
-                    if cache_exhausted:
-                        raise ValueError(f"Cache exhausted but found unexpected cache files {emb_path} or {ids_path}.")
-                    with emb_path.open("rb") as f:
-                        batch_embeddings: NDArray = np.load(f)
-                    with ids_path.open("r") as f:
-                        validate_batch(scope_works[seen : seen + len(batch_embeddings)], json.load(f))
-                else:
-                    cache_exhausted = True
-                    BATCH_SIZE = 4096
-                    batch_works = scope_works[seen : seen + BATCH_SIZE]
-                    if len(batch_works) == 0:
-                        return
-                    batch_embeddings = embedder.embed_texts([(work["display_name"], work["abstract"]) for work in batch_works])
-                    # Save atomically
-                    tmp_emb_path = emb_path.with_name(emb_path.name + ".tmp")
-                    with tmp_emb_path.open("wb") as embeddings_f:
-                        np.save(embeddings_f, batch_embeddings)
-                    os.replace(tmp_emb_path, emb_path)
+            if emb_path.exists() or ids_path.exists():
+                if cache_exhausted:
+                    raise ValueError(f"Cache exhausted but found unexpected cache files {emb_path} or {ids_path}.")
+                with emb_path.open("rb") as f:
+                    batch_embeddings: NDArray = np.load(f)
+                with ids_path.open("r") as f:
+                    validate_batch(scope_works[seen : seen + len(batch_embeddings)], json.load(f))
+            else:
+                cache_exhausted = True
+                BATCH_SIZE = 4096
+                batch_works = scope_works[seen : seen + BATCH_SIZE]
+                if len(batch_works) == 0:
+                    return
+                batch_embeddings = embedder.embed_texts([(work["display_name"], work["abstract"]) for work in batch_works])
+                # Save atomically
+                tmp_emb_path = emb_path.with_name(emb_path.name + ".tmp")
+                with tmp_emb_path.open("wb") as embeddings_f:
+                    np.save(embeddings_f, batch_embeddings)
+                os.replace(tmp_emb_path, emb_path)
 
-                    tmp_ids_path = ids_path.with_name(ids_path.name + ".tmp")
-                    with tmp_ids_path.open("w") as ids_f:
-                        json.dump([work["id"] for work in batch_works], ids_f)
-                    os.replace(tmp_ids_path, ids_path)
+                tmp_ids_path = ids_path.with_name(ids_path.name + ".tmp")
+                with tmp_ids_path.open("w") as ids_f:
+                    json.dump([work["id"] for work in batch_works], ids_f)
+                os.replace(tmp_ids_path, ids_path)
 
-                seen += len(batch_embeddings)
-                yield batch_embeddings
+            seen += len(batch_embeddings)
+            yield batch_embeddings
 
-        scope_dir = CACHE_DIR / "embeddings" / embedder.model_name / scope.field / scope.subfield / scope.topic / scope.work_type
-        scope_dir.mkdir(parents=True, exist_ok=True)
+    scope_dir = CACHE_DIR / "embeddings" / embedder.model_name / scope.field / scope.subfield / scope.topic / scope.work_type
+    scope_dir.mkdir(parents=True, exist_ok=True)
 
-        scope_works: List[dict[str, Any]] = works
-        idx_cursor = 0
-        with tqdm.tqdm(total=n_works, desc=f"Embedding works for {scope}", mininterval=3, delay=3, smoothing=1) as pbar:
-            for batch in scope_batches(scope_dir, scope_works):
-                batch_len = len(batch)
-                embeddings[idx_cursor : idx_cursor + batch_len] = batch
-                idx_cursor += batch_len
-                pbar.update(batch_len)
+    scope_works: List[dict[str, Any]] = works
+    idx_cursor = 0
+    with tqdm.tqdm(total=n_works, desc=f"Embedding works for {scope}", mininterval=3, delay=3, smoothing=1) as pbar:
+        for batch in scope_batches(scope_dir, scope_works):
+            batch_len = len(batch)
+            embeddings[idx_cursor : idx_cursor + batch_len] = batch
+            idx_cursor += batch_len
+            pbar.update(batch_len)
 
-        return works, embeddings
+    return works, embeddings

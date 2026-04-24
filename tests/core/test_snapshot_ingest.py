@@ -929,8 +929,9 @@ def test_run_worker_snapshot_action_dispatches_correctly(tmp_path, monkeypatch):
     monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
 
     # Patch manifest IO so we don't touch disk
-    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
-    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    import bookgap.jobs
+    monkeypatch.setattr(bookgap.jobs, "read_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.jobs, "write_manifest", lambda *_: None)
 
     # Disable RLIMIT_AS — it's a process-wide side effect unsafe for pytest.
     monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
@@ -964,8 +965,9 @@ def test_run_worker_snapshot_3part_scope_builds_topic_filter(monkeypatch):
         called.update(kwargs)
 
     monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
-    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
-    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    import bookgap.jobs
+    monkeypatch.setattr(bookgap.jobs, "read_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.jobs, "write_manifest", lambda *_: None)
     monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
 
     bookgap.scope_ops.run_worker(
@@ -997,8 +999,9 @@ def test_run_worker_snapshot_2part_scope_builds_subfield_filter(monkeypatch):
         called.update(kwargs)
 
     monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
-    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
-    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    import bookgap.jobs
+    monkeypatch.setattr(bookgap.jobs, "read_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.jobs, "write_manifest", lambda *_: None)
     monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
 
     bookgap.scope_ops.run_worker(
@@ -1030,8 +1033,9 @@ def test_run_worker_snapshot_1part_domain_scope_builds_domain_filter(monkeypatch
         called.update(kwargs)
 
     monkeypatch.setattr(bookgap.snapshot_ingest, "run", fake_run)
-    monkeypatch.setattr(bookgap.scope_ops, "read_job_manifest", lambda _: {"pid": 0, "action": "snapshot"})
-    monkeypatch.setattr(bookgap.scope_ops, "write_job_manifest", lambda *_: None)
+    import bookgap.jobs
+    monkeypatch.setattr(bookgap.jobs, "read_manifest", lambda _: {"pid": 0, "action": "snapshot"})
+    monkeypatch.setattr(bookgap.jobs, "write_manifest", lambda *_: None)
     monkeypatch.setattr(resource, "setrlimit", lambda *a, **kw: None)
 
     bookgap.scope_ops.run_worker(

@@ -35,6 +35,7 @@ import pyarrow.parquet as pq
 
 from bookgap.dendrogram import DendrogramResult, get_cloud_dendrogram
 
+from bookgap import jobs
 from bookgap.openalex_ingest import (
     _resolve_filter_scopes,
     corpus_dataset,
@@ -283,41 +284,68 @@ def _embed_sentence_transformer(
     """Sentence-transformer path: per-scope batch caching via embed_works.
 
     Returns embeddings re-ordered to match *sorted_idxs*.
+
+    Loads the Embedder once around the whole scope loop (per-scope reload
+    dominates wall time otherwise). Polls :func:`bookgap.jobs.stop_requested`
+    between scopes so ``systemctl --user stop <scope>`` or Ctrl-C inside
+    a :func:`bookgap.jobs.worker_lifecycle` block triggers an orderly
+    shutdown after the current scope finishes; the per-scope cache stays
+    consistent and a subsequent run resumes from where it left off.
+    Outside a ``worker_lifecycle`` the poll is a no-op.
     """
     model_name = Embedder.ModelName(embedder_cfg.model_name)
 
-    # Collect per-scope works + embeddings in corpus-file order
-    all_works: list[dict[str, Any]] = []
+    # Collect per-scope IDs + embeddings in corpus-file order. We deliberately
+    # drop the full work dicts (with abstracts) as soon as embed_works
+    # returns; retaining them across all 6k+ scopes peaks at ~80 GB on a
+    # full-domain corpus and OOM-killed an earlier run on a 250 GB box.
+    all_ids: list[str] = []
     emb_chunks: list[NDArray] = []
 
-    with tqdm.tqdm(_resolve_filter_scopes(work_filter, snapshot_date), desc="Scopes", delay=3, mininterval=3) as scope_bar:
-        for scope in scope_bar:
-            scope_bar.set_postfix_str(str(scope))
-            scope_works, scope_embeddings = embed_works(scope, model_name)
-            all_works.extend(scope_works)
-            emb_chunks.append(scope_embeddings)
+    with Embedder(model_name=model_name) as embedder:
+        with tqdm.tqdm(_resolve_filter_scopes(work_filter, snapshot_date), desc="Scopes", delay=3, mininterval=3) as scope_bar:
+            for scope in scope_bar:
+                if jobs.stop_requested():
+                    raise KeyboardInterrupt(
+                        "Graceful stop requested between scopes; per-scope cache is consistent."
+                    )
+                scope_bar.set_postfix_str(str(scope))
+                scope_works, scope_embeddings = embed_works(scope, embedder)
+                all_ids.extend(w["id"] for w in scope_works)
+                emb_chunks.append(scope_embeddings)
+                del scope_works
 
     if emb_chunks:
         all_embeddings = np.concatenate(emb_chunks, axis=0)
     else:
         all_embeddings = np.empty((0, Embedder(model_name=model_name).embedding_dimension()), dtype=np.float32)
+    # The per-scope arrays each retain a refcount through emb_chunks; drop
+    # the list so concat's intermediate view + the scope arrays can both
+    # be reclaimed before we move on to ID verification.
+    del emb_chunks
 
-    # Verify row ordering matches corpus dataset
+    # Verify row ordering matches corpus dataset. Use pyarrow's vectorised
+    # equality on the chunked column rather than to_pylist() so we don't
+    # materialise a second 6 GB Python list of corpus IDs alongside all_ids.
     corpus = corpus_dataset(work_filter, snapshot_date)
-    corpus_ids = corpus.to_table(columns=["id"]).column("id").to_pylist()
-    concat_ids = [w["id"] for w in all_works]
-    if len(concat_ids) != len(corpus_ids):
+    corpus_id_col = corpus.to_table(columns=["id"]).column("id")
+    if len(all_ids) != len(corpus_id_col):
         raise RuntimeError(
-            f"Scope concatenation length ({len(concat_ids)}) != corpus dataset length ({len(corpus_ids)}). "
+            f"Scope concatenation length ({len(all_ids)}) != corpus dataset length ({len(corpus_id_col)}). "
             f"This indicates a scope resolution mismatch."
         )
-    mismatches = [(i, concat_ids[i], corpus_ids[i]) for i in range(len(concat_ids)) if concat_ids[i] != corpus_ids[i]]
-    if mismatches:
-        first = mismatches[0]
+    import pyarrow.compute as pc
+    all_ids_arr = pa.array(all_ids, type=pa.string())
+    eq_mask = pc.equal(all_ids_arr, corpus_id_col.combine_chunks())
+    mismatch_count = pc.sum(pc.cast(pc.invert(eq_mask), pa.int64())).as_py()
+    if mismatch_count:
+        first_idx = pc.index(eq_mask, False).as_py()
         raise RuntimeError(
-            f"Row ordering mismatch between scope concatenation and corpus dataset at row {first[0]}: "
-            f"concat={first[1]}, corpus={first[2]}. {len(mismatches)} total mismatches."
+            f"Row ordering mismatch between scope concatenation and corpus dataset at row {first_idx}: "
+            f"concat={all_ids[first_idx]}, corpus={corpus_id_col[first_idx].as_py()}. "
+            f"{mismatch_count} total mismatches."
         )
+    del all_ids, all_ids_arr, eq_mask, corpus_id_col
 
     # Select only the rows indicated by sorted_idxs
     return all_embeddings[sorted_idxs]

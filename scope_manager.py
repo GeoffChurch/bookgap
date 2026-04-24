@@ -6,20 +6,21 @@ from typing import Optional
 
 import typer
 
+from bookgap.jobs import (
+    discover_jobs,
+    dismiss_finished_jobs,
+    log_path as get_job_log_path,
+)
 from bookgap.scope_ops import (
     ALL_WORK_TYPES,
     KNOWN_DOMAINS,
     MODEL_PATHS,
-    discover_jobs,
-    dismiss_finished_jobs,
     get_domain_fields,
     get_fast_aggregate_status,
     get_field_subfields,
     get_scope_status,
     get_subfield_topics,
     get_system_resources,
-    has_running_job,
-    get_job_log_path,
     launch_worker,
     run_worker,
 )

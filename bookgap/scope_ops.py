@@ -1,11 +1,14 @@
 """Scope operations library — hierarchy queries, status checks, job management.
 
 Reusable by CLI, TUI, and other Python code. No presentation logic.
+
+Job plumbing (manifest I/O, systemd-run launch, worker lifecycle) lives
+in :mod:`bookgap.jobs`; this module keeps the scope_manager-specific
+action vocabulary (fetch / snapshot / embed) and re-exports the manifest
+helpers so existing callers keep working.
 """
 from __future__ import annotations
 
-import datetime
-import json
 import os
 import subprocess
 import sys
@@ -17,6 +20,7 @@ from bookgap.pyalex_client import pyalex
 import pyarrow.parquet as pq
 
 import bookgap.openalex_ingest as _ingest_mod
+from bookgap import jobs
 from bookgap.embedder import SentenceTransformerEmbedder as Embedder
 from bookgap.openalex_ingest import ResolvedScope, _scope_parquet_path
 from bookgap.util import WorkType
@@ -31,14 +35,10 @@ KNOWN_DOMAINS: list[tuple[str, str]] = [
 
 ALL_WORK_TYPES: list[str] = [wt.value for wt in WorkType]
 
-MAX_CONCURRENT_WORKERS = 3
-
 MODEL_PATHS = {
     "gist": Embedder.ModelName.GIST_SMALL.value,
     "gemma": Embedder.ModelName.GEMMA_300M.value,
 }
-
-JOBS_DIR = ".jobs"
 
 # ---------------------------------------------------------------------------
 # Hierarchy resolution (PyAlex queries)
@@ -278,86 +278,24 @@ def get_system_resources() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Job manifest management
+# Scope-manager-specific job predicate
 # ---------------------------------------------------------------------------
 
-def _jobs_path() -> Path:
-    cache_dir: Path = _ingest_mod.CACHE_DIR
-    d = cache_dir / JOBS_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def write_job_manifest(job_id: str, manifest: dict[str, Any]) -> None:
-    """Write a job manifest atomically (temp file + rename)."""
-    dest = _jobs_path() / f"{job_id}.json"
-    tmp = dest.with_suffix(".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, default=str))
-    os.replace(tmp, dest)
-
-
-def read_job_manifest(job_id: str) -> dict[str, Any]:
-    """Read a job manifest by ID."""
-    path = _jobs_path() / f"{job_id}.json"
-    return json.loads(path.read_text())
-
-
-def _is_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def discover_jobs() -> list[dict[str, Any]]:
-    """Scan job manifests, detect crashed workers, return all jobs with IDs."""
-    jobs_dir = _jobs_path()
-    results: list[dict[str, Any]] = []
-    for path in sorted(jobs_dir.glob("*.json")):
-        try:
-            manifest = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        manifest["_job_id"] = path.stem
-        if manifest.get("status") == "running" and not _is_pid_alive(manifest.get("pid", -1)):
-            manifest["status"] = "crashed"
-            write_job_manifest(path.stem, manifest)
-        results.append(manifest)
-    return results
-
-
 def has_running_job(action: str, scope_str: str, model: str | None = None) -> bool:
-    """Check if there's already a running job for this action+scope+model."""
-    for job in discover_jobs():
-        if (
-            job.get("status") == "running"
-            and job.get("action") == action
-            and job.get("scope") == scope_str
-            and job.get("model") == model
-        ):
-            return True
-    return False
+    """Is there already a running job matching this (action, scope, model)?
 
-
-def get_job_log_path(job_id: str) -> Path:
-    """Return the log file path for a job."""
-    return _jobs_path() / f"{job_id}.log"
-
-
-def dismiss_finished_jobs() -> int:
-    """Remove completed/failed/crashed job manifests. Returns count dismissed."""
-    jobs = discover_jobs()
-    dismissed = 0
-    for job in jobs:
-        if job.get("status") in ("complete", "failed", "crashed"):
-            job_id = job["_job_id"]
-            manifest_path = _jobs_path() / f"{job_id}.json"
-            log_path = _jobs_path() / f"{job_id}.log"
-            manifest_path.unlink(missing_ok=True)
-            log_path.unlink(missing_ok=True)
-            dismissed += 1
-    return dismissed
+    Scope_manager enforces at-most-one running job per taxonomy-scoped
+    action; the generic ``jobs.has_running_match`` takes a predicate so
+    scope_manager's rule stays expressible here without leaking into
+    the generic plumbing.
+    """
+    return jobs.has_running_match(
+        lambda j: (
+            j.get("action") == action
+            and j.get("scope") == scope_str
+            and j.get("model") == model
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -382,25 +320,18 @@ def launch_worker(
     action: str, scope_str: str, model: str | None = None, work_types: list[str] | None = None,
     snapshot_date: str | None = None,
 ) -> str | None:
-    """Launch a detached worker subprocess. Returns job_id or None if duplicate/at capacity."""
+    """Launch a taxonomy-scoped worker in a systemd user scope.
+
+    Returns the job_id on success, or ``None`` if a duplicate job is
+    already running or the concurrency cap is hit. The worker command
+    is ``python -m scope_manager worker ...``; the generic systemd
+    wrapping + manifest writing is delegated to :func:`bookgap.jobs.launch`.
+    """
     if has_running_job(action, scope_str, model):
-        return None
-    jobs = discover_jobs()
-    running_count = sum(1 for j in jobs if j.get("status") == "running")
-    if running_count >= MAX_CONCURRENT_WORKERS:
         return None
 
     job_id = _make_job_id(action, scope_str, model)
-    log_path = _jobs_path() / f"{job_id}.log"
-    scope_unit = f"bookgap-{job_id}.scope"
-
-    # systemd-run --user --scope places the worker in its own transient
-    # scope cgroup under user@.service, so it survives SSH logout. The
-    # old double-fork + setsid didn't, because setsid doesn't escape the
-    # session-N.scope cgroup that logind tears down on logout.
     cmd = [
-        "systemd-run", "--user", "--scope", "--quiet", "--collect",
-        f"--unit={scope_unit}",
         sys.executable, "-m", "scope_manager", "worker", action, scope_str,
     ]
     if model:
@@ -411,34 +342,19 @@ def launch_worker(
         cmd.extend(["--snapshot-date", snapshot_date])
     cmd.extend(["--job-id", job_id])
 
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log_fd,
-            stderr=log_fd,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
+        jobs.launch(
+            job_id=job_id,
+            command=cmd,
+            metadata={
+                "action": action,
+                "scope": scope_str,
+                "model": model,
+                "snapshot_date": snapshot_date,
+            },
         )
-    finally:
-        os.close(log_fd)
-
-    manifest = {
-        "pid": proc.pid,
-        "scope_unit": scope_unit,
-        "action": action,
-        "scope": scope_str,
-        "model": model,
-        "snapshot_date": snapshot_date,
-        "status": "running",
-        "started_at": datetime.datetime.now().isoformat(),
-        "finished_at": None,
-        "error": None,
-    }
-    write_job_manifest(job_id, manifest)
+    except jobs.JobCapacityError:
+        return None
     return job_id
 
 
@@ -446,10 +362,17 @@ def run_worker(
     action: str, scope_str: str, model: str | None, job_id: str, work_types: list[str] | None = None,
     snapshot_date: str | None = None,
 ) -> None:
-    """Worker entry point — called in the detached subprocess."""
+    """Worker entry point — called in the detached subprocess.
+
+    Wraps the action dispatch in :func:`bookgap.jobs.worker_lifecycle`
+    so SIGTERM/SIGINT yield an ``interrupted`` manifest status, normal
+    exit is ``complete``, and exceptions become ``failed``. Long inner
+    loops (e.g. per-scope embedding in ``_embed_sentence_transformer``)
+    can poll :func:`bookgap.jobs.stop_requested` to exit cleanly at
+    safe boundaries.
+    """
     import faulthandler
     import resource
-    import signal
 
     from bookgap.openalex_ingest import fetch_works, fetch_all_scopes, embed_works
     from bookgap.util import Filter
@@ -465,28 +388,13 @@ def run_worker(
 
     wt = tuple(work_types) if work_types else tuple(ALL_WORK_TYPES)
 
-    manifest = read_job_manifest(job_id)
-    manifest["pid"] = os.getpid()
-    write_job_manifest(job_id, manifest)
-
-    def _on_sigterm(signum: int, frame: Any) -> None:
-        print(f"\nWorker killed by signal {signum}", flush=True)
-        m = read_job_manifest(job_id)
-        m["status"] = "failed"
-        m["error"] = f"killed by signal {signum}"
-        m["finished_at"] = datetime.datetime.now().isoformat()
-        write_job_manifest(job_id, m)
-        sys.exit(1)
-
-    signal.signal(signal.SIGTERM, _on_sigterm)
-
     # Resolve the snapshot date for any action that needs taxonomy lookup
     # (fetch, snapshot). Falls back to the SnapshotConfig default when not
     # passed via --snapshot-date.
     from bookgap.configs.config import SnapshotConfig
     effective_snapshot_date = snapshot_date or SnapshotConfig().snapshot_date
 
-    try:
+    with jobs.worker_lifecycle(job_id):
         parts = scope_str.split("/")
         if action == "fetch":
             if len(parts) == 4:
@@ -510,10 +418,10 @@ def run_worker(
                 raise ValueError("Embed requires --model")
             scope = ResolvedScope(field=parts[0], subfield=parts[1], topic=parts[2], work_type=parts[3])
             model_enum = Embedder.ModelName(model)
-            embed_works(scope, model_enum)
+            with Embedder(model_name=model_enum) as embedder:
+                embed_works(scope, embedder)
         elif action == "snapshot":
             from bookgap.snapshot_ingest import run as snapshot_run
-            from bookgap.configs.config import SnapshotConfig
 
             if len(parts) == 4:
                 filt = Filter(field=parts[0], subfield=parts[1], topic=parts[2], work_types=(parts[3],))
@@ -529,10 +437,11 @@ def run_worker(
             else:
                 raise ValueError(f"Unexpected scope format for snapshot: {scope_str}")
 
-            # NOTE: We instantiate SnapshotConfig directly (not via Hydra compose) so
-            # scope_manager can be invoked without the full experiment config stack.
-            # Any Hydra YAML overrides for snapshot.* are ignored by this path — the
-            # only override is the --snapshot-date CLI flag.
+            # We instantiate SnapshotConfig directly (not via Hydra
+            # compose) so scope_manager can be invoked without the full
+            # experiment config stack. Any Hydra YAML overrides for
+            # snapshot.* are ignored by this path — the only override
+            # is the --snapshot-date CLI flag.
             cfg = SnapshotConfig()
             snapshot_run(
                 work_filter=filt,
@@ -545,16 +454,3 @@ def run_worker(
             )
         else:
             raise ValueError(f"Unknown action: {action}")
-
-        manifest = read_job_manifest(job_id)
-        manifest["status"] = "complete"
-        manifest["finished_at"] = datetime.datetime.now().isoformat()
-        write_job_manifest(job_id, manifest)
-
-    except Exception as e:
-        manifest = read_job_manifest(job_id)
-        manifest["status"] = "failed"
-        manifest["error"] = str(e)
-        manifest["finished_at"] = datetime.datetime.now().isoformat()
-        write_job_manifest(job_id, manifest)
-        raise
