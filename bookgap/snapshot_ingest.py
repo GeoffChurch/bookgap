@@ -884,6 +884,31 @@ def run(
     # records scopes whose parquets were actually written.
     _save_taxonomy(snapshot_date, taxonomy_acc)
 
+    # Scopes with zero matching rows (e.g. a topic with no books) never
+    # receive a spill shard and so are skipped by finalize_all. The taxonomy
+    # still records the topic because other work_types matched, so
+    # corpus_dataset resolves the (topic, work_type) pair and then errors on
+    # the missing file. Write empty parquets for those scopes so the
+    # snapshot is a complete source of truth for every filter it was asked
+    # to cover.
+    from bookgap.openalex_ingest import (
+        _resolve_filter_scopes,
+        _scope_parquet_path,
+        _write_scope_parquet,
+    )
+    empty_written = 0
+    for filt in filters:
+        for scope in _resolve_filter_scopes(filt, snapshot_date):
+            path = _scope_parquet_path(scope)
+            if not path.exists():
+                _write_scope_parquet(path, [])
+                empty_written += 1
+    if empty_written:
+        LOGGER.info(
+            "snapshot_ingest: wrote %d empty parquet(s) for zero-row scopes",
+            empty_written,
+        )
+
     state.finished_at = datetime.now(timezone.utc).isoformat()
     save_state(state_path, state)
     LOGGER.info("snapshot_ingest: done")

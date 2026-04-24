@@ -866,7 +866,7 @@ def test_run_accepts_list_of_filters_and_unions_scopes(tmp_path, monkeypatch):
         ],
     }
 
-    def fake_resolve(f):
+    def fake_resolve(f, snapshot_date):
         return resolved_by_field[f.field]
 
     monkeypatch.setattr(bookgap.openalex_ingest, "_resolve_filter_scopes", fake_resolve)
