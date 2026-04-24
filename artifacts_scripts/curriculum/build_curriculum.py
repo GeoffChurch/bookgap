@@ -1035,14 +1035,33 @@ def run_curriculum_building(
     LOGGER.info(f"Output directory: {output_dir}")
     LOGGER.info(f"Frontier topics: {len(frontier_nodes)}")
     
-    # Load titles for nice output (cached separately from full works)
+    # Load titles for the topic summary. We avoid cloud.work_titles() on the
+    # full retained corpus: at 41M works its combined display_name bytes
+    # exceed pyarrow's 32-bit StringArray offset limit (~2 GB) and table.take
+    # overflows. In rank_before_clustering mode the ~top_k titles fit
+    # comfortably; otherwise we fetch only the single sample title per topic.
     LOGGER.info("Loading titles for summary...")
-    all_titles = cloud.work_titles()
     if cfg.rank_before_clustering:
-        titles_for_clustering = [all_titles[i] for i in top_k_indices]
+        titles_for_clustering = cloud.work_titles_subset(top_k_indices.astype(np.uint64))
+        def _sample_title(point_idx: int) -> str:
+            return titles_for_clustering[point_idx]
     else:
-        titles_for_clustering = all_titles
-    
+        sample_point_idx_by_topic = {}
+        for topic_idx in linearization_order:
+            point_indices = np.where(point_to_cluster == topic_idx)[0]
+            if len(point_indices) > 0:
+                sample_point_idx_by_topic[topic_idx] = int(point_indices[0])
+        unique_point_idxs = sorted(set(sample_point_idx_by_topic.values()))
+        if unique_point_idxs:
+            unique_titles = cloud.work_titles_subset(
+                np.array(unique_point_idxs, dtype=np.uint64)
+            )
+            point_idx_to_title = dict(zip(unique_point_idxs, unique_titles))
+        else:
+            point_idx_to_title = {}
+        def _sample_title(point_idx: int) -> str:
+            return point_idx_to_title[point_idx]
+
     # Print topic summary
     LOGGER.info("")
     LOGGER.info("Topic Summary (in linearization order):")
@@ -1052,7 +1071,7 @@ def run_curriculum_building(
         size = cluster_sizes[topic_idx]
         # Get a sample work title from this topic
         point_indices = np.where(point_to_cluster == topic_idx)[0]
-        sample_title = titles_for_clustering[int(point_indices[0])][:60] if len(point_indices) > 0 else "N/A"
+        sample_title = _sample_title(int(point_indices[0]))[:60] if len(point_indices) > 0 else "N/A"
         LOGGER.info(
             f"  {rank + 1}. Topic {topic_idx} (node {node_idx}): "
             f"mass={mass:.4f}, size={size}, sample='{sample_title}...'"

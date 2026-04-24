@@ -249,7 +249,11 @@ class Cloud:
     
     def work_titles(self) -> List[str]:
         return get_cloud_work_titles(self)
-    
+
+    def work_titles_subset(self, subset_indices: NDArray[np.uint64]) -> List[str]:
+        return get_cloud_work_titles_subset(self, subset_indices)
+
+
     def work_abstracts(self) -> List[str]:
         return get_cloud_work_abstracts(self)
     
@@ -742,10 +746,33 @@ def get_cloud_citation_graph(cloud: Cloud, normalize: bool) -> sp.csr_matrix:
 @lru_cache(maxsize=1)
 @MEMORY.cache
 def get_cloud_work_titles(cloud: Cloud) -> List[str]:
-    """Get display names/titles for all works in the cloud."""
+    """Get display names/titles for all works in the cloud.
+
+    Memory-heavy at full-corpus scale: materialises every retained title as a
+    Python string, and the intermediate ``table.take()`` concatenation hits
+    pyarrow's 32-bit StringArray offset limit (~2 GB) once the combined
+    ``display_name`` bytes exceed it. Callers that only need a handful of
+    titles should use :func:`get_cloud_work_titles_subset` instead.
+    """
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
     corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     return _read_corpus_column(corpus, "display_name", sorted_idxs[retained_positions])
+
+
+def get_cloud_work_titles_subset(
+    cloud: Cloud, subset_indices: NDArray[np.uint64]
+) -> List[str]:
+    """Read display_name for an arbitrary subset of retained works.
+
+    ``subset_indices`` are positions in the same retained-subset space as
+    the result of :meth:`Cloud.work_titles` (i.e. 0..N_retained-1). Returns
+    titles in the order given. Not memoised — array-valued args don't cache
+    usefully and the selective read is fast.
+    """
+    _, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
+    global_positions = sorted_idxs[retained_positions[subset_indices]]
+    return _read_corpus_column(corpus, "display_name", global_positions)
 
 
 @lru_cache(maxsize=1)
