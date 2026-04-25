@@ -311,6 +311,51 @@ def _denoise_hierarchical(
     return basis_1 @ basis_2
 
 
+def _denoise_criteria_union(
+    ctx: _ProbeDenoiserContext, drop_k_class: int, drop_k_graph: int,
+) -> np.ndarray:
+    """Solve S_B v = λ S_T v and S_L v = λ S_T v separately; take the top-k
+    eigvecs of each; project out the union subspace.
+
+    Differs from hierarchical (sequential, residual-dependent) and from
+    rnojd (joint diagonalisation, approximate per-matrix diagonals): each
+    criterion gets its EXACT top-k directions. Overlap between the two
+    eigenbases is handled by QR: if S_B's top-k and S_L's top-k span
+    identical directions, the union is just k dims; if fully disjoint, 2k.
+    Returns a (d × n_keep) orthonormal basis for the complement of the
+    union subspace.
+    """
+    d = ctx.X().shape[1]
+    S_T = ctx.S_T()
+    ridge = 1e-6 * np.trace(S_T) / d
+    S_T_reg = S_T + ridge * np.eye(d)
+
+    import scipy.linalg
+    from scipy.linalg import null_space
+
+    cols: List[np.ndarray] = []
+    if drop_k_class > 0:
+        S_B = ctx.S_B_multi(list(range(ctx.num_subsets())))
+        _, V_B = scipy.linalg.eigh(S_B, S_T_reg)
+        cols.append(V_B[:, -drop_k_class:])
+    if drop_k_graph > 0:
+        S_L = ctx.S_L()
+        _, V_L = scipy.linalg.eigh(S_L, S_T_reg)
+        cols.append(V_L[:, -drop_k_graph:])
+    if not cols:
+        return np.eye(d, dtype=np.float64)
+    combined = np.hstack(cols)
+    Q, _ = np.linalg.qr(combined)
+    # Rank of the union: if the two top-k subspaces overlap, Q has fewer
+    # effective columns; null_space produces the correctly-sized complement.
+    complement = null_space(Q.T)
+    union_rank = d - complement.shape[1]
+    overlap = (drop_k_class + drop_k_graph) - union_rank
+    print(f"  criteria_union: projected out {union_rank}-dim union subspace "
+          f"({drop_k_class} + {drop_k_graph} requested, {overlap} shared between bases)")
+    return complement
+
+
 def _denoise_rnojd(
     ctx: _ProbeDenoiserContext, n_drop: int,
 ) -> np.ndarray:
@@ -476,7 +521,7 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
         cclip_alpha: Optional[float] = None) -> None:
     from fast_hdbscan import HDBSCAN
 
-    needs_graph = denoiser in {"lpp", "cclip", "hierarchical", "rnojd"}
+    needs_graph = denoiser in {"lpp", "cclip", "hierarchical", "criteria_union", "rnojd"}
     print(f"Loading scope {scope}...")
     emb, ids, types, titles, topic_ids, refs = load_scope(scope, with_refs=needs_graph)
     n, d = emb.shape
@@ -495,7 +540,7 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
             print(f"Denoiser multi_lda[{class_axis}]: projecting out top "
                   f"{drop_k} between-class directions ({n_classes} classes)...")
             emb = _drop_top_k_multi_lda(emb, labels, drop_k)
-    elif denoiser in {"lpp", "cclip", "hierarchical", "rnojd"}:
+    elif denoiser in {"lpp", "cclip", "hierarchical", "criteria_union", "rnojd"}:
         labels = _class_labels(topic_ids, types, class_axis)
         n_classes = len(set(labels))
         print(f"Building in-scope citation graph for {n:,} works...")
@@ -519,6 +564,11 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
                   f"then top {drop_k_graph} citation-incoherent in residual...")
             basis = _denoise_hierarchical(ctx, drop_k_class=drop_k, drop_k_graph=drop_k_graph)
             print(f"  final basis: {basis.shape[1]} kept dims out of {d}")
+            emb = _project_via_basis(emb, basis)
+        elif denoiser == "criteria_union":
+            print(f"Denoiser criteria_union[{class_axis}]: project out union of top "
+                  f"{drop_k} eigvecs of (S_B, S_T) and top {drop_k_graph} of (S_L, S_T)...")
+            basis = _denoise_criteria_union(ctx, drop_k_class=drop_k, drop_k_graph=drop_k_graph)
             emb = _project_via_basis(emb, basis)
         elif denoiser == "rnojd":
             print(f"Denoiser rnojd[{class_axis}]: jointly diagonalise {{S_B, S_L, S_T}}, "
@@ -620,7 +670,7 @@ def main():
                    help="project out top-k components before clustering")
     p.add_argument("--denoiser",
                    choices=["pca", "multi_lda", "lpp", "cclip",
-                            "hierarchical", "rnojd"],
+                            "hierarchical", "criteria_union", "rnojd"],
                    default="pca",
                    help="pca=variance-greedy; multi_lda=between-class GEP; "
                         "lpp/cclip/hierarchical/rnojd=citation-graph based")
