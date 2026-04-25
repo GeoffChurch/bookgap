@@ -79,14 +79,24 @@ def load_scope(scope_key: str, with_refs: bool = False):
     base = parquet_root.joinpath(*parts)
     emb_base = emb_root.joinpath(*parts)
 
-    if len(parts) == 2:
+    if len(parts) == 1:
+        # Field: aggregate every (subfield, topic) under it
+        topic_dirs = sorted(
+            t for sf in base.iterdir() if sf.is_dir()
+            for t in sf.iterdir() if t.is_dir()
+        )
+        emb_dirs = [
+            emb_base / t.relative_to(base).parts[0] / t.name
+            for t in topic_dirs
+        ]
+    elif len(parts) == 2:
         topic_dirs = sorted(d for d in base.iterdir() if d.is_dir())
         emb_dirs = [emb_base / d.name for d in topic_dirs]
     elif len(parts) == 3:
         topic_dirs = [base]
         emb_dirs = [emb_base]
     else:
-        raise ValueError(f"scope_key must be F/SF or F/SF/T, got {scope_key!r}")
+        raise ValueError(f"scope_key must be F, F/SF, or F/SF/T, got {scope_key!r}")
 
     all_emb: List[np.ndarray] = []
     all_ids: List[str] = []
