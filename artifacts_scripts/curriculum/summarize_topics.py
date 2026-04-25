@@ -153,6 +153,7 @@ def summarize_topics(
     bigrams_npmi_threshold: float = 0.4,
     bigrams_max: int = 5000,
     bigrams_weight_by_freq: bool = True,
+    bigram_iterations: int = 1,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
 
@@ -175,9 +176,15 @@ def summarize_topics(
             ``photon_counting`` that are far more informative than their
             individual components.
         bigrams_npmi_threshold: Minimum NPMI for bigram candidates.
-        bigrams_max: Cap on bigrams kept after ranking.
+        bigrams_max: Cap on bigrams kept after each iteration of ranking.
         bigrams_weight_by_freq: Rank bigrams by NPMI · count (default;
             obviates count floor) vs. raw NPMI.
+        bigram_iterations: Number of iterative phrase-mining passes. 1
+            (default) yields up to bigrams; 2 yields up to trigrams (a
+            second pass mines bigrams over the already-bigrammed
+            corpus, so ``einstein_podolsky`` + ``rosen`` becomes
+            ``einstein_podolsky_rosen``); 3 → up to 4-grams. Diminishing
+            returns past 2 because longer phrases are rare.
 
     Returns:
         Dictionary mapping topic index to list of (keyword, score) tuples.
@@ -229,34 +236,55 @@ def summarize_topics(
         topic_raw_tokens.append(raw_tokens_per_doc)
         topic_doc_relevances.append(relevances_per_doc)
 
-    # Mine bigrams over the union of sampled docs (corpus-wide phrase
-    # vocabulary), then apply the merge per-doc. Done once globally so
-    # phrases learnt from one topic still get merged in another.
-    bigram_set: set = set()
-    if bigrams_enabled:
-        all_raw = [doc for topic_docs in topic_raw_tokens for doc in topic_docs]
-        bigram_set = mine_bigrams(
-            all_raw,
-            npmi_threshold=bigrams_npmi_threshold,
-            max_bigrams=bigrams_max,
-            weight_by_freq=bigrams_weight_by_freq,
-        )
-        LOGGER.info(
-            f"Mined {len(bigram_set)} bigrams "
-            f"(npmi>={bigrams_npmi_threshold}, max={bigrams_max}, "
-            f"weight_by_freq={bigrams_weight_by_freq})"
-        )
+    # Iterative phrase mining: each pass mines bigrams over the corpus,
+    # applies them, and re-feeds the merged corpus to the next pass.
+    # After pass 2, "einstein_podolsky" + "rosen" can be merged into
+    # "einstein_podolsky_rosen" — i.e. trigrams form naturally as bigrams
+    # over the bigrammed corpus.
+    if bigrams_enabled and bigram_iterations >= 1:
+        # Flat list of all sampled docs' tokens, with parallel index back
+        # into (topic, doc-within-topic) so we can re-distribute after merging.
+        flat_tokens: List[List[str]] = [
+            doc for topic_docs in topic_raw_tokens for doc in topic_docs
+        ]
+        for it in range(bigram_iterations):
+            bigram_set = mine_bigrams(
+                flat_tokens,
+                npmi_threshold=bigrams_npmi_threshold,
+                max_bigrams=bigrams_max,
+                weight_by_freq=bigrams_weight_by_freq,
+            )
+            if not bigram_set:
+                LOGGER.info(
+                    f"Phrase mining iteration {it + 1}: no bigrams above "
+                    f"threshold; stopping."
+                )
+                break
+            LOGGER.info(
+                f"Phrase mining iteration {it + 1}: "
+                f"merged {len(bigram_set)} bigrams "
+                f"(npmi>={bigrams_npmi_threshold}, max={bigrams_max}, "
+                f"weight_by_freq={bigrams_weight_by_freq})"
+            )
+            flat_tokens = [apply_bigrams(doc, bigram_set) for doc in flat_tokens]
 
-    # Pass 2: apply bigrams (if any), filter stopwords, collect per-topic
-    # token lists for keyword extraction.
+        # Re-distribute the merged flat tokens back into per-topic structure.
+        merged_per_topic: List[List[List[str]]] = []
+        offset = 0
+        for topic_docs in topic_raw_tokens:
+            n = len(topic_docs)
+            merged_per_topic.append(flat_tokens[offset : offset + n])
+            offset += n
+        topic_raw_tokens = merged_per_topic
+
+    # Final pass: filter stopwords (bigrams use ``_`` join char so they survive),
+    # collect per-topic structures for keyword extraction.
     for topic_idx in range(n_topics):
         doc_tokens: List[List[str]] = []
         doc_weights: List[float] = []
         for tokens, relevance in zip(
             topic_raw_tokens[topic_idx], topic_doc_relevances[topic_idx],
         ):
-            if bigram_set:
-                tokens = apply_bigrams(tokens, bigram_set)
             tokens = filter_stopwords(tokens)
             if tokens:
                 doc_tokens.append(tokens)

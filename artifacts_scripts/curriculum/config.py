@@ -92,6 +92,14 @@ class KeywordConfig:
     contribution; obviates an explicit count floor) vs. raw NPMI alone.
     """
 
+    bigram_iterations: int = 2
+    """Number of iterative phrase-mining passes. 1 yields up to bigrams; 2
+    (default) yields up to trigrams (a second pass mines bigrams over the
+    already-bigrammed corpus, so ``einstein_podolsky`` + ``rosen`` becomes
+    ``einstein_podolsky_rosen``); 3 → up to 4-grams. Diminishing returns
+    past 2 because longer phrases are rare.
+    """
+
 
 @dataclass
 class UMAPConfig:

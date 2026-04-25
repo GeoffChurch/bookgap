@@ -98,7 +98,8 @@ def run_keyword_extraction(
     LOGGER.info(
         f"Bigrams: enabled={cfg.bigrams_enabled}, "
         f"npmi>={cfg.bigrams_npmi_threshold}, max={cfg.bigrams_max}, "
-        f"weight_by_freq={cfg.bigrams_weight_by_freq}"
+        f"weight_by_freq={cfg.bigrams_weight_by_freq}, "
+        f"iterations={cfg.bigram_iterations}"
     )
     
     all_texts = [f"{t}\n{a}" for t, a in zip(cloud.work_titles(), cloud.work_abstracts())]
@@ -121,6 +122,7 @@ def run_keyword_extraction(
         bigrams_npmi_threshold=cfg.bigrams_npmi_threshold,
         bigrams_max=cfg.bigrams_max,
         bigrams_weight_by_freq=cfg.bigrams_weight_by_freq,
+        bigram_iterations=cfg.bigram_iterations,
     )
     
     # Save keywords

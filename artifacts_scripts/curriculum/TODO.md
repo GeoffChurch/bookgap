@@ -8,7 +8,6 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 
 ## Keyword extraction
 
-- [ ] **Trigrams as a follow-up to bigrams.** With bigrams now in production, run a second NPMI pass on the bigrammed corpus to catch `einstein_podolsky_rosen`, `quantum_key_distribution`. Cheap on top of existing bigram infra; expect only a handful of trigrams to survive at sensible thresholds.
 - [ ] **Vocabulary count floor at the keyword level.** Drop words with global count below a small threshold (e.g. 5) before running FW. With `weight_by_freq=True` this is mostly redundant but cheap belt-and-suspenders for the singleton-noise tail.
 
 ## Data hygiene
@@ -36,6 +35,7 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 
 Done:
 - ~~NPMI bigram mining → production~~ — shipped 2026-04-25. Frequency-weighted NPMI ranking, no count floor needed. `mine_bigrams` and `apply_bigrams` in `keyword_extraction.py`; `KeywordConfig.bigrams_*` knobs; default ON.
+- ~~Iterative phrase mining (trigrams via 2 passes)~~ — shipped 2026-04-25. `bigram_iterations` parameter, default 2. On `__24` surfaces `einstein_podolsky_rosen`, `american_institute_physics`, `detection_photon_pairs` plus new iter-2 bigrams (`crystal_lattices`, `party_alice`, `party_bob`, `algebraic_alphabet` etc.).
 
 Removed (kept for context, do not pursue):
 - ~~Linearly-combined bidirectional PageRank (`combine="linear"`, θ=0.5)~~ — scrapped 2026-04-25 in favour of the existing `product` combine.
