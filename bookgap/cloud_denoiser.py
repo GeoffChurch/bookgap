@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import enum
-from typing import Any, Dict, List, Optional, Protocol, TypeVar, runtime_checkable
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Protocol, TypeVar, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse as sp
@@ -65,7 +65,18 @@ class CloudDenoiserContext(denoisers.DenoiserContext):
     
 @runtime_checkable
 class WorkDenoiser(Protocol):
-    """Protocol for denoising embeddings."""
+    """Protocol for denoising embeddings.
+
+    ``required_corpus_columns`` declares which parquet columns the
+    denoiser needs ``_read_corpus_dicts`` to load. ``None`` = load every
+    column (safe default; backwards-compatible). ``frozenset()`` = load
+    none (caller can skip ``_read_corpus_dicts`` entirely). A subset =
+    load only those columns. Lets ``get_cloud_projection`` skip the
+    abstract/title materialisation when a denoiser doesn't read the
+    works list — saves GBs at full-corpus scale.
+    """
+
+    required_corpus_columns: ClassVar[Optional[FrozenSet[str]]]
 
     def compute_projection_artifact(
         self,
@@ -79,6 +90,15 @@ class WorkDenoiser(Protocol):
 
 class NoneDenoiser:
     """No-op denoiser that returns original embeddings unchanged."""
+
+    # The work dicts are unused (compute_projection_artifact's `_works`
+    # parameter). Declaring the empty set lets get_cloud_projection skip
+    # _read_corpus_dicts entirely on the NONE path, which on the
+    # 40 M-retained-work domain=3 corpus saves ~40 GB of Python strings
+    # plus the ~30 GB transient pyarrow buffer that was OOM-killing the
+    # curriculum pipeline.
+    required_corpus_columns: ClassVar[Optional[FrozenSet[str]]] = frozenset()
+
     def compute_projection_artifact(
         self,
         drop_k: int,
@@ -118,7 +138,16 @@ def build_citation_graph(works: List[Dict[str, Any]]) -> sp.csr_matrix:
 
 class ProjectiveDenoiser:
     """Projective denoiser with full orchestration including plotting and analysis."""
-    
+
+    # ``None`` = load every column. The wrapped projective denoiser
+    # implementations (PCADenoiser, AntiLDADenoiser, LPP, CCLIP, RNOJD,
+    # etc.) consume the work dicts via :class:`CloudDenoiserContext`,
+    # which uses ``id`` + ``referenced_works`` to build the citation
+    # graph and ``primary_topic.{id, field, subfield}`` + ``type`` for
+    # subset filters. Declaring a tighter subset is a future
+    # optimisation: requires auditing every projector implementation.
+    required_corpus_columns: ClassVar[Optional[FrozenSet[str]]] = None
+
     def __init__(self, denoiser_impl, *filters: Filter):
         self.denoiser_impl = denoiser_impl
         self.filters = filters

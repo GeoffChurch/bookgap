@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 from bookgap.cloud_denoiser import ProjectiveDenoiserProjection, WorkDenoisers
-from typing import Any, Dict, List, Optional, TypeVar
+from typing import Any, Dict, Iterable, List, Optional, TypeVar
 import faiss
 import numpy as np
 from numpy.typing import NDArray
@@ -547,6 +547,10 @@ def _read_corpus_column(
     row_offset = 0
     pos_cursor = 0
     for batch in corpus.scanner(columns=[column], batch_size=chunk_size).to_batches():
+        if jobs.stop_requested():
+            raise KeyboardInterrupt(
+                "Stop requested mid _read_corpus_column; aborting cleanly."
+            )
         batch_end = row_offset + batch.num_rows
         while pos_cursor < n and sorted_positions[pos_cursor] < row_offset:
             pos_cursor += 1
@@ -571,10 +575,18 @@ def _read_corpus_column(
     return out
 
 
+_ALL_DICT_COLUMNS: tuple[str, ...] = (
+    "id", "display_name", "abstract", "type", "publication_date",
+    "created_date", "updated_date", "language", "topic_label",
+    "primary_topic_id", "primary_subfield_id", "referenced_works",
+)
+
+
 def _read_corpus_dicts(
     corpus: ds.Dataset,
     positions: NDArray[np.uint64],
     chunk_size: int = 500_000,
+    columns: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Read full work dicts from the corpus at the given positions.
 
@@ -582,14 +594,26 @@ def _read_corpus_dicts(
     :func:`_read_corpus_column`. The ``abstract`` column at ~1 KB/work × 40 M
     retained works (~40 GB) is well past pyarrow's single-chunk string
     concatenation limit; without chunking, ``take(all positions)`` crashes
-    with ``ArrowInvalid: offset overflow`` before any user code runs. Results
-    are returned in the order of ``positions``.
+    with ``ArrowInvalid: offset overflow`` before any user code runs.
+
+    ``columns`` selects which parquet columns to read (default: all 12).
+    Restricting to a subset lets callers that only need a few fields
+    (e.g., a denoiser that only consumes ``id`` + ``referenced_works``)
+    skip the expensive ``abstract``/``display_name`` materialisation —
+    the dominant memory cost of this function on a full-corpus call. The
+    output dict has whichever top-level keys the requested columns can
+    populate (e.g., ``"primary_topic"`` requires both
+    ``primary_topic_id`` and ``primary_subfield_id``).
+
+    Polls :func:`bookgap.jobs.stop_requested` between batches so a
+    SIGTERM mid-read aborts cleanly instead of waiting for the kernel
+    to escalate to SIGKILL after the chunked allocations have already
+    exceeded available memory.
+
+    Results are returned in the order of ``positions``.
     """
-    columns = [
-        "id", "display_name", "abstract", "type", "publication_date",
-        "created_date", "updated_date", "language", "topic_label",
-        "primary_topic_id", "primary_subfield_id", "referenced_works",
-    ]
+    cols = tuple(columns) if columns is not None else _ALL_DICT_COLUMNS
+    cols_set = frozenset(cols)
     n = len(positions)
     if n == 0:
         return []
@@ -601,7 +625,11 @@ def _read_corpus_dicts(
     works: List[Optional[Dict[str, Any]]] = [None] * n
     row_offset = 0
     pos_cursor = 0
-    for batch in corpus.scanner(columns=columns, batch_size=chunk_size).to_batches():
+    for batch in corpus.scanner(columns=list(cols), batch_size=chunk_size).to_batches():
+        if jobs.stop_requested():
+            raise KeyboardInterrupt(
+                "Stop requested mid _read_corpus_dicts; aborting cleanly."
+            )
         batch_end = row_offset + batch.num_rows
         while pos_cursor < n and sorted_positions[pos_cursor] < row_offset:
             pos_cursor += 1
@@ -611,33 +639,46 @@ def _read_corpus_dicts(
         if next_cursor > pos_cursor:
             local_idx = sorted_positions[pos_cursor:next_cursor] - row_offset
             sub = batch.take(pa.array(local_idx, type=pa.int64()))
-            col = {c: sub.column(c).to_pylist() for c in columns}
+            col = {c: sub.column(c).to_pylist() for c in cols}
             for k, caller_i in enumerate(order[pos_cursor:next_cursor]):
-                pub = col["publication_date"][k]
-                if isinstance(pub, (date, datetime)):
-                    pub = pub.isoformat()
-                created = col["created_date"][k]
-                if isinstance(created, (date, datetime)):
-                    created = created.isoformat()
-                updated = col["updated_date"][k]
-                if isinstance(updated, (date, datetime)):
-                    updated = updated.isoformat()
-                works[int(caller_i)] = {
-                    "id": col["id"][k],
-                    "display_name": col["display_name"][k] or "",
-                    "abstract": col["abstract"][k] or "",
-                    "type": col["type"][k] or "UNKNOWN",
-                    "publication_date": pub,
-                    "created_date": created,
-                    "updated_date": updated,
-                    "language": col["language"][k],
-                    "topic": col["topic_label"][k],
-                    "primary_topic": {
-                        "id": col["primary_topic_id"][k],
-                        "subfield": {"id": col["primary_subfield_id"][k]},
-                    },
-                    "referenced_works": col["referenced_works"][k] or [],
-                }
+                d: Dict[str, Any] = {}
+                if "id" in cols_set:
+                    d["id"] = col["id"][k]
+                if "display_name" in cols_set:
+                    d["display_name"] = col["display_name"][k] or ""
+                if "abstract" in cols_set:
+                    d["abstract"] = col["abstract"][k] or ""
+                if "type" in cols_set:
+                    d["type"] = col["type"][k] or "UNKNOWN"
+                if "publication_date" in cols_set:
+                    pub = col["publication_date"][k]
+                    if isinstance(pub, (date, datetime)):
+                        pub = pub.isoformat()
+                    d["publication_date"] = pub
+                if "created_date" in cols_set:
+                    created = col["created_date"][k]
+                    if isinstance(created, (date, datetime)):
+                        created = created.isoformat()
+                    d["created_date"] = created
+                if "updated_date" in cols_set:
+                    updated = col["updated_date"][k]
+                    if isinstance(updated, (date, datetime)):
+                        updated = updated.isoformat()
+                    d["updated_date"] = updated
+                if "language" in cols_set:
+                    d["language"] = col["language"][k]
+                if "topic_label" in cols_set:
+                    d["topic"] = col["topic_label"][k]
+                if "primary_topic_id" in cols_set or "primary_subfield_id" in cols_set:
+                    d["primary_topic"] = {
+                        "id": col["primary_topic_id"][k] if "primary_topic_id" in cols_set else None,
+                        "subfield": {
+                            "id": col["primary_subfield_id"][k] if "primary_subfield_id" in cols_set else None
+                        },
+                    }
+                if "referenced_works" in cols_set:
+                    d["referenced_works"] = col["referenced_works"][k] or []
+                works[int(caller_i)] = d
             pos_cursor = next_cursor
         row_offset = batch_end
 
@@ -901,7 +942,19 @@ def get_cloud_projection(cloud: Cloud) -> ProjectiveDenoiserProjection:
     corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
 
-    retained_works = _read_corpus_dicts(corpus, sorted_idxs[retained_positions])
+    # Honor the denoiser's declaration of which work-dict columns it
+    # actually consumes. NoneDenoiser declares the empty set → skip the
+    # whole _read_corpus_dicts materialisation (saves ~40 GB of Python
+    # strings + ~30 GB transient pyarrow buffers on a 40M-retained-work
+    # corpus). Other denoisers default to None = "all columns" until
+    # they're audited and tightened.
+    required_cols = getattr(denoiser_impl, "required_corpus_columns", None)
+    if required_cols is not None and len(required_cols) == 0:
+        retained_works: List[Dict[str, Any]] = []
+    else:
+        retained_works = _read_corpus_dicts(
+            corpus, sorted_idxs[retained_positions], columns=required_cols,
+        )
     retained_embeddings = read_embeddings_rows(emb_path, retained_positions)
 
     return denoiser_impl.compute_projection_artifact(cloud.drop_k, retained_works, retained_embeddings)
