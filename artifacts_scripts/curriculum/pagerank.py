@@ -189,6 +189,132 @@ class BidirectionalPageRankResult(NamedTuple):
     reverse_mass: NDArray[np.floating]
 
 
+class TwoDirectionPageRankResult(NamedTuple):
+    """Result of :func:`two_direction_pagerank`.
+
+    ``forward_mass`` / ``reverse_mass`` are ``None`` when the corresponding
+    seed vector summed to zero (no information for that direction);
+    callers feeding these into ``compute_frontier_adjacency``
+    (which already accepts ``Optional`` weights) get the right
+    no-op behaviour automatically.
+    """
+    relevance: NDArray[np.floating]
+    forward_mass: Optional[NDArray[np.floating]]
+    reverse_mass: Optional[NDArray[np.floating]]
+
+
+def two_direction_pagerank(
+    adj: sp.csr_matrix,
+    fwd_seeds: NDArray[np.floating],
+    rev_seeds: NDArray[np.floating],
+    alpha: float = 0.85,
+    tol: float = 1e-9,
+    max_iter: int = 100,
+    combine: str = "product",
+    linear_theta: float = 0.5,
+) -> TwoDirectionPageRankResult:
+    """Personalized PageRank with two seed vectors (one per edge direction).
+
+    Subsumes plain personalized PR and bidirectional PR by treating each
+    direction's seed vector as optional. An all-zero seed vector means
+    "no preference for that direction" — the corresponding pass is
+    skipped, and the relevance falls back to the surviving direction
+    alone. With both seeds zero, relevance is uniform.
+
+    Per-work weights live inside the seed vectors themselves (length-N
+    nonneg arrays); per-direction relative weighting is the
+    ``linear_theta`` knob under ``combine='linear'`` and is implicit (50/50)
+    in ``combine='product'`` (the existing bidirectional behaviour).
+
+    Linearity caveat: PPR is strictly linear in the seed vector — i.e.,
+    ``ppr(α·s_a + β·s_b) = α·ppr(s_a) + β·ppr(s_b)`` — only on graphs
+    without sink nodes. ``compute_pagerank`` redistributes mass at sinks
+    proportional to ``seeds`` itself, which makes the iteration bilinear
+    in (v, seeds) and breaks strict linearity in the presence of sinks.
+    At full citation-corpus scale sinks are a small fraction so the
+    deviation is negligible, but two seed vectors that *would* fold into
+    one weighted vector under perfect linearity may differ slightly from
+    the per-vector results when run on graphs with significant sinks.
+
+    The "missing seed → uniform fallback" behaviour eliminates the need
+    for a separate fallback branch in callers — the single function
+    expresses both ``RankMethod.PAGE_RANK`` (one seed populated) and
+    ``RankMethod.BIDIRECTIONAL_PAGE_RANK`` (both populated) without
+    branching at the call site.
+
+    Args:
+        adj: Sparse adjacency matrix; ``A[i, j] = 1`` means ``i`` cites ``j``.
+        fwd_seeds: Per-work weights for the forward pass — mass flows
+            along citations and accumulates on prerequisites of these
+            seeds. ``sum() == 0`` means skip.
+        rev_seeds: Per-work weights for the reverse pass — mass flows
+            against citations and accumulates on descendants of these
+            seeds. ``sum() == 0`` means skip.
+        alpha: Damping factor (probability of following a citation
+            vs teleporting back to seeds).
+        tol, max_iter: Power-iteration convergence parameters.
+        combine: ``'product'`` for ``v_fwd * v_rev`` (AND-semantics, source→
+            target paths; matches the prior bidirectional behaviour) or
+            ``'linear'`` for ``θ·v_fwd + (1−θ)·v_rev``.
+        linear_theta: Forward-pass weight in linear combination. Ignored
+            under ``combine='product'``.
+
+    Returns:
+        :class:`TwoDirectionPageRankResult`. ``relevance`` always sums to 1.
+        ``forward_mass`` / ``reverse_mass`` are ``None`` when their input
+        seed vector summed to zero.
+    """
+    n = adj.shape[0]
+    has_fwd = float(np.asarray(fwd_seeds).sum()) > 0
+    has_rev = float(np.asarray(rev_seeds).sum()) > 0
+
+    if not has_fwd and not has_rev:
+        # Neither side gave us a signal; uniform is the only sensible answer.
+        v = np.full(n, 1.0 / n, dtype=np.float64)
+        return TwoDirectionPageRankResult(relevance=v, forward_mass=None, reverse_mass=None)
+
+    # Pre-normalize once so the two passes share the same P (same as
+    # the prior compute_bidirectional_pagerank's optimisation).
+    P = sk_normalize(adj.astype(np.float64), norm="l1", axis=1, copy=False)
+
+    v_fwd: Optional[NDArray[np.floating]] = None
+    if has_fwd:
+        v_fwd = compute_pagerank(
+            P, fwd_seeds, alpha=alpha, tol=tol, max_iter=max_iter, normalize=False,
+        )
+
+    v_rev: Optional[NDArray[np.floating]] = None
+    if has_rev:
+        v_rev = compute_pagerank(
+            P.T, rev_seeds, alpha=alpha, tol=tol, max_iter=max_iter, normalize=False,
+        )
+
+    # Combine. With one direction empty, the combined relevance is
+    # whichever direction we did run — no choice of "what does uniform
+    # mean for v_*" is needed because the missing v_* was never multiplied
+    # in (which is the whole point of this formulation).
+    if v_fwd is None:
+        rel = v_rev  # type: ignore[assignment]
+    elif v_rev is None:
+        rel = v_fwd
+    elif combine == "product":
+        rel = v_fwd * v_rev
+    elif combine == "linear":
+        rel = linear_theta * v_fwd + (1.0 - linear_theta) * v_rev
+    else:
+        raise ValueError(f"combine must be 'product' or 'linear', got {combine!r}")
+
+    s = float(rel.sum())
+    if s > 0:
+        rel = rel / s
+
+    return TwoDirectionPageRankResult(
+        relevance=rel,
+        forward_mass=v_fwd,
+        reverse_mass=v_rev,
+    )
+
+
 def compute_bidirectional_pagerank(
     adj: sp.csr_matrix,
     source_seeds: NDArray[np.floating],

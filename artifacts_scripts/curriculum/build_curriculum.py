@@ -48,9 +48,8 @@ from .dendrogram_ops import (
     map_leaves_to_frontier_clusters,
 )
 from .pagerank import (
-    compute_bidirectional_pagerank,
     compute_frontier_adjacency,
-    compute_pagerank,
+    two_direction_pagerank,
 )
 from .circuitrank import (
     build_conductance_adjacency,
@@ -401,49 +400,58 @@ def run_curriculum_building(
     fwd_relevance: Optional[NDArray[np.floating]] = None
     rev_relevance: Optional[NDArray[np.floating]] = None
     
-    if cfg.method == RankMethod.PAGE_RANK:
-        LOGGER.info("Running Personalized PageRank from target topic...")
-        # Create seed vector for personalized PageRank
-        seeds = np.zeros(n_total, dtype=np.float64)
-        seeds[seed_indices] = 1.0 / len(seed_indices)
-        
-        full_point_masses = compute_pagerank(
-            adj_for_solver,
-            seeds,
-            alpha=cfg.pagerank.alpha,
-            tol=cfg.pagerank.tol,
-            max_iter=cfg.pagerank.max_iter,
-        )
-        fwd_relevance = full_point_masses
-        
-    elif cfg.method == RankMethod.BIDIRECTIONAL_PAGE_RANK:
-        LOGGER.info("Running Bidirectional Personalized PageRank...")
-        # Target seeds for forward pass (prerequisites)
+    if cfg.method in (RankMethod.PAGE_RANK, RankMethod.BIDIRECTIONAL_PAGE_RANK):
+        # Unified path: one personalised-PR call with two seed vectors
+        # (forward = targets → prerequisites, reverse = sources → descendants).
+        # Either seed vector may sum to zero; the corresponding pass is
+        # skipped and the relevance falls back to whichever direction has
+        # signal. This subsumes both:
+        #   PAGE_RANK = fwd_seeds populated, rev_seeds=0
+        #   BIDIRECTIONAL_PAGE_RANK = both populated; missing source_work_ids
+        #     no longer raises — it gracefully degrades to forward-only PR.
         target_seeds = np.zeros(n_total, dtype=np.float64)
         target_seeds[seed_indices] = 1.0 / len(seed_indices)
-        
-        # Source seeds for reverse pass (descendants)
-        source_indices = _find_work_indices(work_ids, cfg.source_work_ids)
-        if not source_indices:
-            raise ValueError(
-                "No source works found in cloud - bidirectional PageRank requires source_work_ids."
-            )
+
         source_seeds = np.zeros(n_total, dtype=np.float64)
-        source_seeds[source_indices] = 1.0 / len(source_indices)
-        
-        bidirectional_result = compute_bidirectional_pagerank(
+        if cfg.source_work_ids:
+            source_indices = _find_work_indices(work_ids, cfg.source_work_ids)
+            if source_indices:
+                source_seeds[source_indices] = 1.0 / len(source_indices)
+            else:
+                LOGGER.warning(
+                    "No source works found in cloud — running forward-only PR. "
+                    f"Requested: {cfg.source_work_ids}"
+                )
+
+        # When method=PAGE_RANK we deliberately ignore source_work_ids
+        # even if provided (preserves the historical contract that
+        # PAGE_RANK is a forward-only ranking).
+        if cfg.method == RankMethod.PAGE_RANK:
+            source_seeds = np.zeros(n_total, dtype=np.float64)
+            LOGGER.info("Running Personalized PageRank (forward only)...")
+        else:
+            n_src = int((source_seeds > 0).sum())
+            n_tgt = int((target_seeds > 0).sum())
+            LOGGER.info(
+                "Running two-direction PageRank: %d target seed(s), "
+                "%d source seed(s), combine=product",
+                n_tgt, n_src,
+            )
+
+        result = two_direction_pagerank(
             adj_for_solver,
-            source_seeds,
-            target_seeds,
+            fwd_seeds=target_seeds,
+            rev_seeds=source_seeds,
             alpha=cfg.pagerank.alpha,
             tol=cfg.pagerank.tol,
             max_iter=cfg.pagerank.max_iter,
-            return_components=True,
+            combine="product",
         )
-        full_point_masses = bidirectional_result.relevance
-        fwd_relevance = bidirectional_result.forward_mass
-        rev_relevance = bidirectional_result.reverse_mass
-        
+        full_point_masses = result.relevance
+        fwd_relevance = result.forward_mass
+        rev_relevance = result.reverse_mass
+
+
     elif cfg.method == RankMethod.CIRCUIT_RANK:
         if cfg.circuitrank.use_voltage_clamping:
             LOGGER.info("Running CircuitRank (Voltage Clamping)...")
