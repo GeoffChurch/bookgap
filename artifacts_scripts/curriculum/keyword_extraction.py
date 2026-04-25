@@ -7,6 +7,7 @@ Provides methods for extracting distinctive keywords from topic documents:
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from enum import Enum
@@ -236,17 +237,127 @@ def tokenize(text: str) -> List[str]:
 
 def filter_stopwords(tokens: List[str], stopwords: Optional[Set[str]] = None) -> List[str]:
     """Remove stopwords from token list.
-    
+
     Args:
         tokens: List of tokens.
         stopwords: Set of stopwords to remove (uses default if None).
-        
+
     Returns:
         Filtered token list.
     """
     if stopwords is None:
         stopwords = STOPWORDS
     return [t for t in tokens if t not in stopwords]
+
+
+# Bigram-merge join character. Underscore is in no stopword and gets through
+# the tokenizer's non-alphanumeric splitter unchanged, so merged bigrams
+# survive ``filter_stopwords`` cleanly.
+BIGRAM_JOIN = "_"
+
+
+def mine_bigrams(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    max_bigrams: int = 5000,
+    weight_by_freq: bool = True,
+    stopwords: Optional[Set[str]] = None,
+) -> Set[Tuple[str, str]]:
+    """Mine high-NPMI adjacent-token bigrams from a corpus.
+
+    NPMI(a,b) = log(P(a,b) / (P(a)P(b))) / -log(P(a,b)) is bounded in
+    [-1, 1] and rewards genuine collocations independent of frequency.
+    With ``weight_by_freq=True`` (default), bigrams are ranked by
+    NPMI · count — the per-bigram contribution to mutual information
+    in the unigram-pair sense — so low-count noise bigrams (which can
+    score NPMI≈1 if both members appear only once together) get
+    crushed without needing an explicit count floor.
+
+    Stopword-bearing bigrams (either side stopworded) are dropped:
+    keeps phrasing like "field theory" but drops "of the". Pass
+    ``stopwords`` explicitly to override the default set.
+
+    Args:
+        doc_tokens: Per-document tokens, after ``tokenize`` but BEFORE
+            ``filter_stopwords`` (so cross-stopword pairs aren't
+            silently merged into phantom bigrams).
+        npmi_threshold: Minimum NPMI to consider a candidate.
+        max_bigrams: Cap on bigrams returned.
+        weight_by_freq: Rank by NPMI · count (default; principled, no
+            count floor needed) vs. raw NPMI.
+        stopwords: Stopword set. ``None`` uses the module default.
+
+    Returns:
+        Set of ``(a, b)`` adjacent-token tuples to merge.
+    """
+    if stopwords is None:
+        stopwords = STOPWORDS
+
+    uni_counts: Counter[str] = Counter()
+    bi_counts: Counter[Tuple[str, str]] = Counter()
+    n_uni = 0
+    n_bi = 0
+    for doc in doc_tokens:
+        if not doc:
+            continue
+        for tok in doc:
+            uni_counts[tok] += 1
+            n_uni += 1
+        for a, b in zip(doc, doc[1:]):
+            bi_counts[(a, b)] += 1
+            n_bi += 1
+
+    if n_uni == 0 or n_bi == 0:
+        return set()
+
+    scored: List[Tuple[float, Tuple[str, str]]] = []
+    for (a, b), cab in bi_counts.items():
+        if a in stopwords or b in stopwords:
+            continue
+        p_ab = cab / n_bi
+        p_a = uni_counts[a] / n_uni
+        p_b = uni_counts[b] / n_uni
+        if p_a <= 0 or p_b <= 0 or p_ab <= 0:
+            continue
+        pmi = math.log(p_ab / (p_a * p_b))
+        denom = -math.log(p_ab)
+        if denom <= 0:
+            continue
+        npmi = pmi / denom
+        if npmi < npmi_threshold:
+            continue
+        score = npmi * cab if weight_by_freq else npmi
+        scored.append((score, (a, b)))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return {bigram for _, bigram in scored[:max_bigrams]}
+
+
+def apply_bigrams(
+    tokens: List[str],
+    bigrams: Set[Tuple[str, str]],
+) -> List[str]:
+    """Greedy left-to-right bigram merge in a single token sequence.
+
+    Adjacent token pairs in ``bigrams`` are joined with ``BIGRAM_JOIN``
+    (e.g. ``"bell theorem"`` -> ``"bell_theorem"``); the merged token
+    consumes both positions, so each token participates in at most one
+    bigram. Tokens not part of any merge are passed through untouched.
+    """
+    if not bigrams or not tokens:
+        return list(tokens)
+    out: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if i + 1 < n and (tokens[i], tokens[i + 1]) in bigrams:
+            out.append(f"{tokens[i]}{BIGRAM_JOIN}{tokens[i + 1]}")
+            i += 2
+        else:
+            out.append(tokens[i])
+            i += 1
+    return out
 
 
 def compute_tf(tokens: List[str]) -> Dict[str, float]:

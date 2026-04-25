@@ -29,8 +29,10 @@ from .keyword_extraction import (
     DocWeighting,
     KeywordMethod,
     TopicWeighting,
+    apply_bigrams,
     extract_topic_keywords,
     filter_stopwords,
+    mine_bigrams,
     tokenize,
 )
 from .sampling import sample_by_relevance
@@ -147,6 +149,10 @@ def summarize_topics(
     topic_weighting: TopicWeighting = TopicWeighting.EQUAL,
     background_mode: BackgroundMode = BackgroundMode.MARGINAL,
     weight_by_freq: bool = True,
+    bigrams_enabled: bool = True,
+    bigrams_npmi_threshold: float = 0.4,
+    bigrams_max: int = 5000,
+    bigrams_weight_by_freq: bool = True,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
 
@@ -163,6 +169,15 @@ def summarize_topics(
             SUBTRACTIVE (legacy "vs. all other topics").
         weight_by_freq: For log-odds, multiply z-scores by topic-internal
             count to rank by per-word MI contribution. Default True.
+        bigrams_enabled: Mine NPMI-thresholded bigrams from the sampled
+            corpus and merge them in-place before keyword extraction.
+            Surfaces phrases like ``bell_theorem``, ``single_photon``,
+            ``photon_counting`` that are far more informative than their
+            individual components.
+        bigrams_npmi_threshold: Minimum NPMI for bigram candidates.
+        bigrams_max: Cap on bigrams kept after ranking.
+        bigrams_weight_by_freq: Rank bigrams by NPMI · count (default;
+            obviates count floor) vs. raw NPMI.
 
     Returns:
         Dictionary mapping topic index to list of (keyword, score) tuples.
@@ -189,40 +204,67 @@ def summarize_topics(
         [] if doc_weighting == DocWeighting.RELEVANCE else None
     )
     
+    # Pass 1: sample + tokenize (no stopword filter yet — bigram mining needs
+    # raw token sequences to avoid merging across removed stopwords). Track
+    # per-(topic, doc) raw tokens and relevance weights for the second pass.
+    topic_raw_tokens: List[List[List[str]]] = []
+    topic_doc_relevances: List[List[float]] = []
     for topic_idx in tqdm(range(n_topics), desc="Sampling topics"):
-        # Get all works in this topic using point_to_cluster mapping
         topic_mask = outputs.point_to_cluster == topic_idx
         topic_work_indices = np.where(topic_mask)[0]
-        
-        # Select top works by PageRank relevance
         sampled_indices = sample_by_relevance(
             topic_work_indices,
             outputs.point_masses,
             samples_per_topic,
         )
-        
-        # Extract and tokenize text from sampled works (texts list already contains
-        # combined title+abstract strings at the same ordering as the cloud lists)
-        doc_tokens: List[List[str]] = []
-        doc_weights: List[float] = []
+
+        raw_tokens_per_doc: List[List[str]] = []
+        relevances_per_doc: List[float] = []
         for work_idx in sampled_indices:
             if work_idx < n_works:
-                text = texts[work_idx]
-                tokens = tokenize(text)
-                tokens = filter_stopwords(tokens)
+                tokens = tokenize(texts[work_idx])
                 if tokens:
-                    doc_tokens.append(tokens)
-                    # Collect relevance weight for this document
-                    if topic_doc_weights is not None:
-                        doc_weights.append(float(outputs.point_masses[work_idx]))
-        
+                    raw_tokens_per_doc.append(tokens)
+                    relevances_per_doc.append(float(outputs.point_masses[work_idx]))
+        topic_raw_tokens.append(raw_tokens_per_doc)
+        topic_doc_relevances.append(relevances_per_doc)
+
+    # Mine bigrams over the union of sampled docs (corpus-wide phrase
+    # vocabulary), then apply the merge per-doc. Done once globally so
+    # phrases learnt from one topic still get merged in another.
+    bigram_set: set = set()
+    if bigrams_enabled:
+        all_raw = [doc for topic_docs in topic_raw_tokens for doc in topic_docs]
+        bigram_set = mine_bigrams(
+            all_raw,
+            npmi_threshold=bigrams_npmi_threshold,
+            max_bigrams=bigrams_max,
+            weight_by_freq=bigrams_weight_by_freq,
+        )
+        LOGGER.info(
+            f"Mined {len(bigram_set)} bigrams "
+            f"(npmi>={bigrams_npmi_threshold}, max={bigrams_max}, "
+            f"weight_by_freq={bigrams_weight_by_freq})"
+        )
+
+    # Pass 2: apply bigrams (if any), filter stopwords, collect per-topic
+    # token lists for keyword extraction.
+    for topic_idx in range(n_topics):
+        doc_tokens: List[List[str]] = []
+        doc_weights: List[float] = []
+        for tokens, relevance in zip(
+            topic_raw_tokens[topic_idx], topic_doc_relevances[topic_idx],
+        ):
+            if bigram_set:
+                tokens = apply_bigrams(tokens, bigram_set)
+            tokens = filter_stopwords(tokens)
+            if tokens:
+                doc_tokens.append(tokens)
+                if topic_doc_weights is not None:
+                    doc_weights.append(relevance)
         topic_doc_tokens.append(doc_tokens)
         if topic_doc_weights is not None:
             topic_doc_weights.append(doc_weights)
-        # LOGGER.debug(
-        #     f"Topic {topic_idx}: sampled {len(sampled_indices)} works, "
-        #     f"{sum(len(t) for t in doc_tokens)} tokens"
-        # )
     
     # Extract keywords
     LOGGER.info(f"Extracting keywords using {method} method...")

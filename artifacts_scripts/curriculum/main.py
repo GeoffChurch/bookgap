@@ -95,6 +95,11 @@ def run_keyword_extraction(
     LOGGER.info(f"Topic weighting: {cfg.topic_weighting}")
     LOGGER.info(f"Background mode: {cfg.background_mode}")
     LOGGER.info(f"Weight by freq: {cfg.weight_by_freq}")
+    LOGGER.info(
+        f"Bigrams: enabled={cfg.bigrams_enabled}, "
+        f"npmi>={cfg.bigrams_npmi_threshold}, max={cfg.bigrams_max}, "
+        f"weight_by_freq={cfg.bigrams_weight_by_freq}"
+    )
     
     all_texts = [f"{t}\n{a}" for t, a in zip(cloud.work_titles(), cloud.work_abstracts())]
     if filtered_indices is not None:
@@ -112,6 +117,10 @@ def run_keyword_extraction(
         topic_weighting=cfg.topic_weighting,
         background_mode=cfg.background_mode,
         weight_by_freq=cfg.weight_by_freq,
+        bigrams_enabled=cfg.bigrams_enabled,
+        bigrams_npmi_threshold=cfg.bigrams_npmi_threshold,
+        bigrams_max=cfg.bigrams_max,
+        bigrams_weight_by_freq=cfg.bigrams_weight_by_freq,
     )
     
     # Save keywords

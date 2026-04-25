@@ -3,16 +3,19 @@
 import pytest
 
 from artifacts_scripts.curriculum.keyword_extraction import (
+    BIGRAM_JOIN,
     BackgroundMode,
     DocWeighting,
     KeywordMethod,
     TopicWeighting,
+    apply_bigrams,
     compute_log_odds_ratio,
     compute_log_odds_ratio_docs,
     compute_tf,
     compute_tfidf_scores,
     extract_topic_keywords,
     filter_stopwords,
+    mine_bigrams,
     tokenize,
 )
 
@@ -630,3 +633,109 @@ class TestBackgroundModeAndFreqWeighting:
                 topic_doc_tokens,
                 background_mode="not-a-mode",  # type: ignore
             )
+
+
+class TestBigramMining:
+    """``mine_bigrams`` + ``apply_bigrams``: NPMI-thresholded phrase mining
+    with frequency weighting (the principled drop-in for an explicit
+    count floor)."""
+
+    def test_mines_high_npmi_collocation(self):
+        """A phrase that always co-occurs (perfect collocation) should be
+        mined as a bigram; a chance co-occurrence should not."""
+        # "bell theorem" co-occurs in every doc; "bell" and "theorem"
+        # never appear separately. "data" and "noise" are independent.
+        docs = [
+            ["bell", "theorem", "result"],
+            ["bell", "theorem", "data"],
+            ["bell", "theorem", "noise"],
+            ["data", "table"],
+            ["noise", "filter"],
+            ["bell", "theorem"],
+        ] * 3  # repeat to clear count thresholds
+        bigrams = mine_bigrams(docs, npmi_threshold=0.4, max_bigrams=10)
+        assert ("bell", "theorem") in bigrams, (
+            f"perfect collocation should be mined, got {bigrams}"
+        )
+
+    def test_stopwords_excluded_as_members(self):
+        """Stopword-bearing bigrams (e.g. 'of the', 'in this') get dropped."""
+        docs = [
+            ["the", "model", "of", "the", "system"],
+            ["the", "model", "of", "the", "graph"],
+            ["the", "model", "of", "the", "tree"],
+        ] * 5
+        bigrams = mine_bigrams(docs, npmi_threshold=0.0, max_bigrams=20)
+        for a, b in bigrams:
+            assert a not in {"the", "of", "in", "this"}, (
+                f"stopword should not be bigram member: {(a, b)}"
+            )
+            assert b not in {"the", "of", "in", "this"}, (
+                f"stopword should not be bigram member: {(a, b)}"
+            )
+
+    def test_freq_weighting_promotes_high_count_bigrams(self):
+        """With weight_by_freq=True, a high-count moderate-NPMI bigram should
+        rank above a low-count high-NPMI one when only one slot remains."""
+        # "common phrase" appears 50 times; "rare term" appears once.
+        # Both are perfect collocations, so NPMI is identical (≈1).
+        # Without freq weighting they'd tie; with freq weighting "common
+        # phrase" wins by 50:1.
+        docs = (
+            [["common", "phrase", "filler"]] * 50
+            + [["rare", "term", "filler"]] * 1
+            + [["filler", "filler"]] * 100
+        )
+        # max_bigrams=1 forces a winner.
+        weighted = mine_bigrams(
+            docs, npmi_threshold=0.0, max_bigrams=1, weight_by_freq=True,
+        )
+        assert weighted == {("common", "phrase")}, (
+            f"freq-weighted should pick high-count bigram, got {weighted}"
+        )
+
+    def test_threshold_is_monotonic(self):
+        """Raising the NPMI threshold can only remove (never add) bigrams."""
+        docs = [
+            ["alpha", "beta", "filler"],
+            ["alpha", "gamma", "filler"],
+            ["delta", "beta", "filler"],
+            ["epsilon", "zeta"],
+        ] * 10
+        loose = mine_bigrams(docs, npmi_threshold=0.0, max_bigrams=100)
+        strict = mine_bigrams(docs, npmi_threshold=0.95, max_bigrams=100)
+        # Strict set is a (possibly equal) subset of loose
+        assert strict.issubset(loose), (
+            f"strict not subset of loose: strict={strict}, loose={loose}"
+        )
+
+    def test_apply_bigrams_greedy_left_to_right(self):
+        """``apply_bigrams`` consumes both positions of a merge — each token
+        participates in at most one bigram."""
+        bigrams = {("a", "b"), ("b", "c")}
+        # "a b c" greedy left-to-right: merge (a,b) → "a_b", then "c" stays
+        result = apply_bigrams(["a", "b", "c"], bigrams)
+        assert result == [f"a{BIGRAM_JOIN}b", "c"], result
+
+    def test_apply_bigrams_passes_through_when_empty(self):
+        """Empty bigram set returns input unchanged (copy)."""
+        tokens = ["alpha", "beta", "gamma"]
+        result = apply_bigrams(tokens, set())
+        assert result == tokens
+        # Should be a copy, not the same list
+        assert result is not tokens
+
+    def test_merged_bigram_survives_filter_stopwords(self):
+        """The BIGRAM_JOIN char ('_') is not in any stopword, so merged
+        bigrams pass through ``filter_stopwords`` even if their components
+        contained substring-matches to stopwords."""
+        # "the" is a stopword. After merging into "the_x", filter_stopwords
+        # should leave it alone (no exact match).
+        merged = [f"the{BIGRAM_JOIN}theorem", "the", "result"]
+        filtered = filter_stopwords(merged)
+        assert f"the{BIGRAM_JOIN}theorem" in filtered, filtered
+        assert "the" not in filtered
+
+    def test_no_bigrams_on_empty_corpus(self):
+        assert mine_bigrams([]) == set()
+        assert mine_bigrams([[]]) == set()

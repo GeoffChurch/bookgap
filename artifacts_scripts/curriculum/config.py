@@ -72,6 +72,26 @@ class KeywordConfig:
     topics. Set False to recover pure standardised z-scores.
     """
 
+    bigrams_enabled: bool = True
+    """Mine NPMI-thresholded bigrams from the sampled corpus and merge them
+    in-place before keyword extraction. Surfaces phrases like ``bell_theorem``,
+    ``single_photon``, ``photon_counting`` that are far more informative than
+    their individual components.
+    """
+
+    bigrams_npmi_threshold: float = 0.4
+    """Minimum NPMI for a candidate bigram. Higher = stricter (fewer, more
+    confident phrases); lower = more candidates including some noise.
+    """
+
+    bigrams_max: int = 5000
+    """Maximum number of bigrams kept after NPMI ranking."""
+
+    bigrams_weight_by_freq: bool = True
+    """Rank bigrams by NPMI · count (default; per-bigram mutual-information
+    contribution; obviates an explicit count floor) vs. raw NPMI alone.
+    """
+
 
 @dataclass
 class UMAPConfig:

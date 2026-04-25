@@ -8,8 +8,7 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 
 ## Keyword extraction
 
-- [ ] **NPMI bigram mining → production.** Wire `bigram_keywords_probe.py`'s NPMI-thresholded phrase mining into the production keyword path. Replace the count-floor with frequency-weighted NPMI ranking (score = NPMI · count): same MI-contribution principle as the just-shipped `weight_by_freq` for FW. Threading: add `KeywordConfig.bigram_*` knobs (`enabled`, `npmi_threshold`, `max_bigrams`), apply merge in `summarize_topics` between `tokenize` and `filter_stopwords`.
-- [ ] **Trigrams as a follow-up to bigrams.** Once bigrams are merged, run a second NPMI pass on the bigrammed corpus to catch `einstein_podolsky_rosen`, `quantum_key_distribution`. Cheap once bigram infra is in place; expect only a handful of trigrams to survive at sensible thresholds.
+- [ ] **Trigrams as a follow-up to bigrams.** With bigrams now in production, run a second NPMI pass on the bigrammed corpus to catch `einstein_podolsky_rosen`, `quantum_key_distribution`. Cheap on top of existing bigram infra; expect only a handful of trigrams to survive at sensible thresholds.
 - [ ] **Vocabulary count floor at the keyword level.** Drop words with global count below a small threshold (e.g. 5) before running FW. With `weight_by_freq=True` this is mostly redundant but cheap belt-and-suspenders for the singleton-noise tail.
 
 ## Data hygiene
@@ -34,6 +33,9 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 - [ ] **Pick a winner among denoisers.** The probe (`artifacts_scripts/hdbscan_gap_probe.py`) tested PCA, multi-class LDA, LPP, LIP, CCLIP, hierarchical, criteria_union, rNOJD. rNOJD and criteria_union looked promising but we never converged on a final choice. Resume by re-running with the binomial p / FDR / effect-size scoring on a held-out evaluation set.
 
 ---
+
+Done:
+- ~~NPMI bigram mining → production~~ — shipped 2026-04-25. Frequency-weighted NPMI ranking, no count floor needed. `mine_bigrams` and `apply_bigrams` in `keyword_extraction.py`; `KeywordConfig.bigrams_*` knobs; default ON.
 
 Removed (kept for context, do not pursue):
 - ~~Linearly-combined bidirectional PageRank (`combine="linear"`, θ=0.5)~~ — scrapped 2026-04-25 in favour of the existing `product` combine.
