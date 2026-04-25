@@ -517,64 +517,137 @@ def _embed_tf_gep(
     return embedder.transform(title_abstract_pairs)
 
 
-def _read_corpus_column(corpus: ds.Dataset, column: str, positions: NDArray[np.uint64]) -> List:
-    """Read a single column from the corpus at the given positions."""
-    table = corpus.to_table(columns=[column])
-    subset = table.take(pa.array(positions, type=pa.int64()))
-    return subset.column(column).to_pylist()
+def _read_corpus_column(
+    corpus: ds.Dataset,
+    column: str,
+    positions: NDArray[np.uint64],
+    chunk_size: int = 500_000,
+) -> List:
+    """Read a single column from the corpus at the given positions.
+
+    Streams the Dataset batch by batch so each ``take`` operates on at most
+    ``chunk_size`` rows. Each intermediate output stays well under pyarrow's
+    32-bit StringArray offset limit (~2 GB), regardless of how many
+    positions the caller requests — the non-chunked
+    ``to_table() + take(all positions)`` pattern blows that limit on
+    ~40 M × 1 KB-ish string columns (e.g. ``abstract``, ``display_name`` on
+    the domain=3 corpus). Results are returned in the order of ``positions``.
+    """
+    n = len(positions)
+    if n == 0:
+        return []
+
+    # Sort ascending for a single-pass row-group scan; inverse permutation
+    # restores caller order at write-time.
+    positions_arr = np.asarray(positions, dtype=np.int64)
+    order = np.argsort(positions_arr, kind="stable")
+    sorted_positions = positions_arr[order]
+
+    out: List[Any] = [None] * n
+    row_offset = 0
+    pos_cursor = 0
+    for batch in corpus.scanner(columns=[column], batch_size=chunk_size).to_batches():
+        batch_end = row_offset + batch.num_rows
+        while pos_cursor < n and sorted_positions[pos_cursor] < row_offset:
+            pos_cursor += 1
+        next_cursor = pos_cursor
+        while next_cursor < n and sorted_positions[next_cursor] < batch_end:
+            next_cursor += 1
+        if next_cursor > pos_cursor:
+            local_idx = sorted_positions[pos_cursor:next_cursor] - row_offset
+            picked = batch.column(column).take(
+                pa.array(local_idx, type=pa.int64())
+            ).to_pylist()
+            for k, caller_i in enumerate(order[pos_cursor:next_cursor]):
+                out[int(caller_i)] = picked[k]
+            pos_cursor = next_cursor
+        row_offset = batch_end
+
+    if pos_cursor < n:
+        raise IndexError(
+            f"position {int(sorted_positions[pos_cursor])} out of range for "
+            f"corpus with {row_offset} rows"
+        )
+    return out
 
 
-def _read_corpus_dicts(corpus: ds.Dataset, positions: NDArray[np.uint64]) -> List[Dict[str, Any]]:
-    """Read full work dicts from the corpus at the given positions."""
+def _read_corpus_dicts(
+    corpus: ds.Dataset,
+    positions: NDArray[np.uint64],
+    chunk_size: int = 500_000,
+) -> List[Dict[str, Any]]:
+    """Read full work dicts from the corpus at the given positions.
+
+    Chunked over Dataset batches for the same reason as
+    :func:`_read_corpus_column`. The ``abstract`` column at ~1 KB/work × 40 M
+    retained works (~40 GB) is well past pyarrow's single-chunk string
+    concatenation limit; without chunking, ``take(all positions)`` crashes
+    with ``ArrowInvalid: offset overflow`` before any user code runs. Results
+    are returned in the order of ``positions``.
+    """
     columns = [
         "id", "display_name", "abstract", "type", "publication_date",
         "created_date", "updated_date", "language", "topic_label",
         "primary_topic_id", "primary_subfield_id", "referenced_works",
     ]
-    full_table = corpus.to_table(columns=columns)
-    table = full_table.take(pa.array(positions, type=pa.int64()))
+    n = len(positions)
+    if n == 0:
+        return []
 
-    ids = table.column("id").to_pylist()
-    display_names = table.column("display_name").to_pylist()
-    abstracts = table.column("abstract").to_pylist()
-    types = table.column("type").to_pylist()
-    pub_dates = table.column("publication_date").to_pylist()
-    created_dates = table.column("created_date").to_pylist()
-    updated_dates = table.column("updated_date").to_pylist()
-    languages = table.column("language").to_pylist()
-    topic_labels = table.column("topic_label").to_pylist()
-    primary_topic_ids = table.column("primary_topic_id").to_pylist()
-    primary_subfield_ids = table.column("primary_subfield_id").to_pylist()
-    references = table.column("referenced_works").to_pylist()
+    positions_arr = np.asarray(positions, dtype=np.int64)
+    order = np.argsort(positions_arr, kind="stable")
+    sorted_positions = positions_arr[order]
 
-    works: List[Dict[str, Any]] = []
-    for i in range(len(ids)):
-        pub = pub_dates[i]
-        if isinstance(pub, (date, datetime)):
-            pub = pub.isoformat()
-        created = created_dates[i]
-        if isinstance(created, (date, datetime)):
-            created = created.isoformat()
-        updated = updated_dates[i]
-        if isinstance(updated, (date, datetime)):
-            updated = updated.isoformat()
-        works.append({
-            "id": ids[i],
-            "display_name": display_names[i] or "",
-            "abstract": abstracts[i] or "",
-            "type": types[i] or "UNKNOWN",
-            "publication_date": pub,
-            "created_date": created,
-            "updated_date": updated,
-            "language": languages[i],
-            "topic": topic_labels[i],
-            "primary_topic": {
-                "id": primary_topic_ids[i],
-                "subfield": {"id": primary_subfield_ids[i]},
-            },
-            "referenced_works": references[i] or [],
-        })
-    return works
+    works: List[Optional[Dict[str, Any]]] = [None] * n
+    row_offset = 0
+    pos_cursor = 0
+    for batch in corpus.scanner(columns=columns, batch_size=chunk_size).to_batches():
+        batch_end = row_offset + batch.num_rows
+        while pos_cursor < n and sorted_positions[pos_cursor] < row_offset:
+            pos_cursor += 1
+        next_cursor = pos_cursor
+        while next_cursor < n and sorted_positions[next_cursor] < batch_end:
+            next_cursor += 1
+        if next_cursor > pos_cursor:
+            local_idx = sorted_positions[pos_cursor:next_cursor] - row_offset
+            sub = batch.take(pa.array(local_idx, type=pa.int64()))
+            col = {c: sub.column(c).to_pylist() for c in columns}
+            for k, caller_i in enumerate(order[pos_cursor:next_cursor]):
+                pub = col["publication_date"][k]
+                if isinstance(pub, (date, datetime)):
+                    pub = pub.isoformat()
+                created = col["created_date"][k]
+                if isinstance(created, (date, datetime)):
+                    created = created.isoformat()
+                updated = col["updated_date"][k]
+                if isinstance(updated, (date, datetime)):
+                    updated = updated.isoformat()
+                works[int(caller_i)] = {
+                    "id": col["id"][k],
+                    "display_name": col["display_name"][k] or "",
+                    "abstract": col["abstract"][k] or "",
+                    "type": col["type"][k] or "UNKNOWN",
+                    "publication_date": pub,
+                    "created_date": created,
+                    "updated_date": updated,
+                    "language": col["language"][k],
+                    "topic": col["topic_label"][k],
+                    "primary_topic": {
+                        "id": col["primary_topic_id"][k],
+                        "subfield": {"id": col["primary_subfield_id"][k]},
+                    },
+                    "referenced_works": col["referenced_works"][k] or [],
+                }
+            pos_cursor = next_cursor
+        row_offset = batch_end
+
+    if pos_cursor < n:
+        raise IndexError(
+            f"position {int(sorted_positions[pos_cursor])} out of range for "
+            f"corpus with {row_offset} rows"
+        )
+    # After the scan every slot is filled; narrow the optional for callers.
+    return [w for w in works if w is not None]
 
 
 @lru_cache(maxsize=1)
