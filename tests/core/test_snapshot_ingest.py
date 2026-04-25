@@ -525,6 +525,47 @@ def _normalized_work(work_id: str, **overrides) -> dict:
     return base
 
 
+def test_works_to_table_round_trip_preserves_topic_id(tmp_path):
+    """Regression: snapshot_ingest spills via works_to_table → reads back
+    via to_pylist() → calls works_to_table again. The second call sees
+    the flat-shape dict (primary_topic_id, primary_subfield_id,
+    topic_label as columns), not the nested primary_topic dict. Without
+    a fallback in works_to_table, the second call wrote None for all
+    three topic columns; downstream Filter.check_work checks
+    work["primary_topic"]["id"], which then never matched any topic and
+    every snapshot-built parquet was effectively topic-stripped.
+    """
+    from bookgap.openalex_ingest import works_to_table
+
+    nested = _normalized_work(
+        "https://openalex.org/W12345",
+        primary_topic={
+            "id": "https://openalex.org/T10805",
+            "subfield": {"id": "https://openalex.org/subfields/3102"},
+        },
+        topic="T10805",
+    )
+    # First pass: nested shape → flat columns
+    first = works_to_table([nested])
+    spill_path = tmp_path / "spill.parquet"
+    pq.write_table(first, spill_path, compression="zstd")
+
+    # Round-trip: read back, to_pylist (flat-shape dict), re-table
+    flat_dict = pq.read_table(spill_path).to_pylist()[0]
+    assert "primary_topic" not in flat_dict
+    assert flat_dict["primary_topic_id"] == "https://openalex.org/T10805"
+    assert flat_dict["topic_label"] == "T10805"
+
+    second = works_to_table([flat_dict])
+    assert second.column("primary_topic_id").to_pylist() == [
+        "https://openalex.org/T10805"
+    ]
+    assert second.column("primary_subfield_id").to_pylist() == [
+        "https://openalex.org/subfields/3102"
+    ]
+    assert second.column("topic_label").to_pylist() == ["T10805"]
+
+
 def test_spill_sink_writes_one_file_per_scope(tmp_path):
     sink = SpillSink(tmp_path / "spill")
     key_a: ScopeKey = ("31", "3102", "T99999", "article")

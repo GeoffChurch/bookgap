@@ -501,6 +501,15 @@ def works_to_table(works: list[dict[str, Any]]) -> pa.Table:
             for name, field in zip(SCOPE_PARQUET_SCHEMA.names, SCOPE_PARQUET_SCHEMA)
         })
 
+    # Accept both the original nested shape (first ingest path, where
+    # ``primary_topic`` is the dict from the OpenAlex record) and the
+    # post-spill flat shape (snapshot_ingest's bucketer writes a spill
+    # parquet, then reads it back via ``to_pylist()`` — dict keys are the
+    # parquet column names, so ``primary_topic`` is gone and only
+    # ``primary_topic_id`` / ``primary_subfield_id`` survive). Without
+    # this fallback, every snapshot-written final parquet had None for
+    # primary_topic_id / primary_subfield_id / topic_label, breaking
+    # downstream callers that filter by topic.
     primary_topic_ids: list = []
     primary_subfield_ids: list = []
     for w in works:
@@ -510,13 +519,16 @@ def works_to_table(works: list[dict[str, Any]]) -> pa.Table:
             sf = pt.get("subfield")
             primary_subfield_ids.append(sf.get("id") if isinstance(sf, dict) else None)
         else:
-            primary_topic_ids.append(None)
-            primary_subfield_ids.append(None)
+            primary_topic_ids.append(w.get("primary_topic_id"))
+            primary_subfield_ids.append(w.get("primary_subfield_id"))
 
     refs: list = []
     for w in works:
         r = w.get("referenced_works")
         refs.append([str(x) for x in r] if isinstance(r, list) else [])
+
+    def _topic_label(w: dict[str, Any]) -> Any:
+        return w.get("topic") if w.get("topic") is not None else w.get("topic_label")
 
     return pa.table({
         "id": pa.array([w.get("id") for w in works], type=pa.string()),
@@ -527,7 +539,7 @@ def works_to_table(works: list[dict[str, Any]]) -> pa.Table:
         "created_date": _safe_date_array([w.get("created_date") for w in works]),
         "updated_date": _safe_date_array([w.get("updated_date") for w in works]),
         "language": pa.array([w.get("language") for w in works], type=pa.string()),
-        "topic_label": pa.array([w.get("topic") for w in works], type=pa.string()),
+        "topic_label": pa.array([_topic_label(w) for w in works], type=pa.string()),
         "primary_topic_id": pa.array(primary_topic_ids, type=pa.string()),
         "primary_subfield_id": pa.array(primary_subfield_ids, type=pa.string()),
         "referenced_works": pa.array(refs, type=pa.list_(pa.string())),
