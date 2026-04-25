@@ -93,6 +93,8 @@ def run_keyword_extraction(
     LOGGER.info(f"Samples per topic: {cfg.samples_per_topic}")
     LOGGER.info(f"Doc weighting: {cfg.doc_weighting}")
     LOGGER.info(f"Topic weighting: {cfg.topic_weighting}")
+    LOGGER.info(f"Background mode: {cfg.background_mode}")
+    LOGGER.info(f"Weight by freq: {cfg.weight_by_freq}")
     
     all_texts = [f"{t}\n{a}" for t, a in zip(cloud.work_titles(), cloud.work_abstracts())]
     if filtered_indices is not None:
@@ -108,6 +110,8 @@ def run_keyword_extraction(
         method=cfg.method,
         doc_weighting=cfg.doc_weighting,
         topic_weighting=cfg.topic_weighting,
+        background_mode=cfg.background_mode,
+        weight_by_freq=cfg.weight_by_freq,
     )
     
     # Save keywords

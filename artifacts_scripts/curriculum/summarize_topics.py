@@ -25,6 +25,7 @@ from tqdm import tqdm
 from bookgap.util import LOGGER
 
 from .keyword_extraction import (
+    BackgroundMode,
     DocWeighting,
     KeywordMethod,
     TopicWeighting,
@@ -144,9 +145,11 @@ def summarize_topics(
     method: KeywordMethod = KeywordMethod.LOG_ODDS,
     doc_weighting: DocWeighting = DocWeighting.EQUAL,
     topic_weighting: TopicWeighting = TopicWeighting.EQUAL,
+    background_mode: BackgroundMode = BackgroundMode.MARGINAL,
+    weight_by_freq: bool = True,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
-    
+
     Args:
         curriculum_dir: Path to directory containing curriculum outputs.
         texts: List of combined title+abstract strings (ordered to match cloud lists).
@@ -154,8 +157,13 @@ def summarize_topics(
         top_k_keywords: Number of top keywords to extract per topic.
         method: Keyword extraction method ('tfidf' or 'log_odds').
         doc_weighting: How to weight documents. If RELEVANCE, uses point_masses.
-        topic_weighting: How to weight topics in background construction.
-        
+        topic_weighting: How to weight topics in background construction
+            (only meaningful when background_mode=SUBTRACTIVE).
+        background_mode: For log-odds, MARGINAL (unary, default) or
+            SUBTRACTIVE (legacy "vs. all other topics").
+        weight_by_freq: For log-odds, multiply z-scores by topic-internal
+            count to rank by per-word MI contribution. Default True.
+
     Returns:
         Dictionary mapping topic index to list of (keyword, score) tuples.
     """
@@ -225,6 +233,8 @@ def summarize_topics(
         doc_weighting=doc_weighting,
         topic_weighting=topic_weighting,
         topic_doc_weights=topic_doc_weights,
+        background_mode=background_mode,
+        weight_by_freq=weight_by_freq,
     )
     
     # Convert to dictionary

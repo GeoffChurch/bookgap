@@ -37,6 +37,25 @@ STOPWORDS: Set[str] = {
     "model", "models", "data", "based", "using", "used", "show", "shows", "shown",
     "present", "presents", "presented", "propose", "proposes", "proposed", "work",
     "new", "novel", "et", "al", "fig", "figure", "table", "section", "chapter",
+    # Bibliographic / journal noise
+    "page", "pages", "vol", "volume", "issue", "pp", "journal", "monthly", "quarterly",
+    # XML / MathML / HTML markup residue. The pre-tokenization regexes strip
+    # most markup, but some tokens (xmlns attribute names, the "mml" inside
+    # `<mml:math xmlns:mml=...>` after tag stripping, URL fragments embedded
+    # in attributes) survive. These appear ONLY in markup-heavy abstracts
+    # (Phys Rev / APS / IEEE), so without explicit filtering they get
+    # disproportionately high z-scores.
+    "mml", "xmlns", "xlink", "xsi", "xsl", "xhtml", "dtd", "rng", "doctype",
+    "http", "https", "www", "org", "com", "html", "xml",
+    # LaTeX commands that survive pre-stripping (e.g. when authors omit the
+    # backslash or write `ensuremath` as a literal word). Belt-and-suspenders
+    # for whatever the strip regex misses. Greek letters are deliberately
+    # NOT listed: the LaTeX-strip regex removes \alpha/\beta/etc. wholesale,
+    # and in plain prose "alpha decay" / "beta version" carry real meaning.
+    "ensuremath", "mathrm", "mathbb", "mathcal", "mathit", "mathsf", "mathbf",
+    "textrm", "textit", "textbf", "frac", "sqrt", "infty", "cdot",
+    "langle", "rangle", "rightarrow", "leftarrow",
+    "xrightarrow", "xleftarrow",
 }
 
 
@@ -54,6 +73,30 @@ class DocWeighting(str, Enum):
 class TopicWeighting(str, Enum):
     POOLED = "pooled"
     EQUAL = "equal"
+
+
+class BackgroundMode(str, Enum):
+    """How to construct the comparison background for log-odds keyword extraction.
+
+    The choice answers the question "vs. what?" that Fightin' Words' two-sample
+    log-odds test poses for each topic.
+
+    - MARGINAL (default): background is the curriculum-wide marginal P(w),
+      built by pooling foreground counts across all topics (this topic
+      included). The test is unary: "is P(w|t) higher than the corpus-prior
+      P(w)?" Domain words common at similar rates in every topic naturally
+      get delta ≈ 0 and demote themselves; topic-unique words get delta
+      ≈ -log(P(t)). No "vs. what corpus" hyperparameter — the corpus
+      supplies its own prior.
+
+    - SUBTRACTIVE: legacy two-sample test of "this topic vs. all OTHER
+      topics" — per-topic background is EQUAL-weighted, then this topic's
+      contribution is subtracted from the global pool. Self-referential
+      when the curriculum is mono-domain (the "other topics" share most
+      domain vocabulary), which can boost domain words.
+    """
+    MARGINAL = "marginal"
+    SUBTRACTIVE = "subtractive"
 
 def _topic_docs_to_fractional_counts(
     topic_docs: List[List[str]],
@@ -145,19 +188,50 @@ def _topic_docs_to_fractional_counts(
     
     return counts, total_mass
 
+_XML_TAG_RE = re.compile(r'<[^>]+>')
+_LATEX_CMD_RE = re.compile(r'\\[a-zA-Z]+\*?')
+_URL_RE = re.compile(r'https?://\S+|www\.\S+\b')
+_NUMERIC_RE = re.compile(r'^\d+$')
+
+
+def _strip_markup(text: str) -> str:
+    """Remove XML/HTML tags, LaTeX commands, and URLs.
+
+    OpenAlex abstracts in physics journals (Phys Rev, APS, IEEE) ship with
+    embedded MathML (``<mml:math xmlns:mml="...">``), LaTeX commands
+    (``\\ensuremath{\\mu}``, ``\\mathrm{C}``), and URL fragments. The base
+    ``re.split(r'[^a-zA-Z0-9]+')`` tokenizer turns these into noise tokens
+    (``mml``, ``xmlns``, ``http``, ``ensuremath``, ``mathrm``) that
+    Fightin' Words then ranks highly because markup density genuinely
+    varies by topic. Strip them up-front so the ranking sees prose only.
+
+    Order matters: XML tags first, since attribute values often contain
+    URLs (``xmlns:mml="http://..."``) that the URL regex would otherwise
+    greedily consume — eating past the closing ``>`` and breaking tag
+    matching.
+    """
+    text = _XML_TAG_RE.sub(' ', text)
+    text = _URL_RE.sub(' ', text)
+    text = _LATEX_CMD_RE.sub(' ', text)
+    return text
+
+
 def tokenize(text: str) -> List[str]:
-    """Simple tokenization: lowercase, split on non-alphanumeric, filter short tokens.
-    
+    """Lowercase, strip markup, split on non-alphanumeric, filter junk.
+
+    Drops XML/HTML tags, LaTeX commands, and URLs before splitting (see
+    ``_strip_markup``), then filters tokens shorter than 3 chars and
+    pure-numeric tokens (page numbers, years, etc.).
+
     Args:
         text: Input text string.
-        
+
     Returns:
         List of lowercase tokens.
     """
-    # Lowercase and split on non-alphanumeric
+    text = _strip_markup(text)
     tokens = re.split(r'[^a-zA-Z0-9]+', text.lower())
-    # Filter empty and very short tokens
-    return [t for t in tokens if len(t) >= 3]
+    return [t for t in tokens if len(t) >= 3 and not _NUMERIC_RE.match(t)]
 
 
 def filter_stopwords(tokens: List[str], stopwords: Optional[Set[str]] = None) -> List[str]:
@@ -470,103 +544,144 @@ def compute_log_odds_ratio_docs(
     doc_weighting: DocWeighting = DocWeighting.EQUAL,
     topic_weighting: TopicWeighting = TopicWeighting.EQUAL,
     topic_doc_weights: Optional[List[List[float]]] = None,
+    background_mode: BackgroundMode = BackgroundMode.MARGINAL,
+    weight_by_freq: bool = True,
 ) -> List[List[Tuple[str, float]]]:
     """Compute Fightin' Words z-scores using per-document tokens.
 
     With doc_weighting="equal", each document contributes unit mass via normalized
     within-document frequencies, so longer documents do not dominate.
-    
+
     With doc_weighting="relevance", each document contributes mass proportional to
-    its relevance weight. The background is always computed with EQUAL weighting
-    (unweighted) to provide a neutral baseline.
-    
+    its relevance weight.
+
     Args:
         topic_doc_tokens: Topics -> documents -> tokens.
         top_k: Number of top keywords to return per topic.
         prior_weight: Symmetric Dirichlet prior (alpha).
         doc_weighting: How to weight documents within a topic.
-        topic_weighting: How to weight topics in background construction.
+        topic_weighting: How to weight topics in background construction
+            (only meaningful when ``background_mode == SUBTRACTIVE``).
         topic_doc_weights: Per-document weights for each topic. Required if
             doc_weighting=RELEVANCE. Shape: topics -> documents -> weight.
+        background_mode: How to build the comparison background. See the
+            ``BackgroundMode`` docstring. Default ``MARGINAL`` is the
+            unary "vs. corpus prior" formulation; legacy production used
+            ``SUBTRACTIVE``.
+        weight_by_freq: If True (default), post-multiply each word's z-score
+            by its topic-internal count ``y_in``. This is the per-word
+            contribution to the topic-keyword mutual information
+            (≈ P(w,t) · PMI(w,t)): standardised effect size scaled by
+            empirical mass. Crushes once-in-corpus tokens that pass the
+            variance filter on small (singleton) topics. Set False to
+            recover pure standardised z-scores.
     """
     n_topics = len(topic_doc_tokens)
 
     if topic_weighting not in {TopicWeighting.POOLED, TopicWeighting.EQUAL}:
         raise ValueError(f"Invalid topic_weighting: {topic_weighting}")
+    if background_mode not in {BackgroundMode.MARGINAL, BackgroundMode.SUBTRACTIVE}:
+        raise ValueError(f"Invalid background_mode: {background_mode}")
 
     if doc_weighting == DocWeighting.RELEVANCE and topic_doc_weights is None:
         raise ValueError("topic_doc_weights required for RELEVANCE doc_weighting")
 
-    # For RELEVANCE mode: foreground uses weights, background uses EQUAL (unweighted)
-    # This provides a neutral baseline distribution for comparison
-    foreground_weighting = doc_weighting
-    background_weighting = DocWeighting.EQUAL if doc_weighting == DocWeighting.RELEVANCE else doc_weighting
-
-    # Build foreground counts (used for topic-specific scores)
+    # Build foreground counts (used for topic-specific scores).
     foreground_counts: List[Dict[str, float]] = []
     foreground_totals: List[float] = []
-    
     for topic_idx, docs in enumerate(topic_doc_tokens):
-        if foreground_weighting == DocWeighting.RELEVANCE:
+        if doc_weighting == DocWeighting.RELEVANCE:
             weights = topic_doc_weights[topic_idx] if topic_doc_weights else None
             counts, total = _topic_docs_to_fractional_counts(
-                docs, doc_weighting=foreground_weighting, doc_weights=weights
+                docs, doc_weighting=doc_weighting, doc_weights=weights,
             )
         else:
             counts, total = _topic_docs_to_fractional_counts(
-                docs, doc_weighting=foreground_weighting
+                docs, doc_weighting=doc_weighting,
             )
         foreground_counts.append(counts)
         foreground_totals.append(float(total))
 
-    # Build background counts (always EQUAL for RELEVANCE mode)
-    background_counts: List[Dict[str, float]] = []
-    background_totals: List[float] = []
-    global_counts: Dict[str, float] = {}
     vocabulary: Set[str] = set()
+    for c in foreground_counts:
+        vocabulary.update(c.keys())
 
-    for docs in topic_doc_tokens:
-        counts, total = _topic_docs_to_fractional_counts(
-            docs, doc_weighting=background_weighting
+    # Build background counts.
+    if background_mode == BackgroundMode.MARGINAL:
+        # Marginal: pool the foreground counts directly. Same doc_weighting as
+        # foreground for self-consistency. ``topic_weighting=EQUAL`` rescales
+        # each topic to unit mass before pooling so large topics don't dominate.
+        global_counts: Dict[str, float] = {}
+        global_total = 0.0
+        for tidx in range(n_topics):
+            t_counts = foreground_counts[tidx]
+            t_total = foreground_totals[tidx]
+            if topic_weighting == TopicWeighting.EQUAL and t_total > 0:
+                scale = 1.0 / t_total
+                for w, c in t_counts.items():
+                    global_counts[w] = global_counts.get(w, 0.0) + c * scale
+                global_total += 1.0
+            else:
+                for w, c in t_counts.items():
+                    global_counts[w] = global_counts.get(w, 0.0) + c
+                global_total += t_total
+        # In MARGINAL mode there is no per-topic background array; every topic
+        # compares against the same pooled marginal.
+        background_counts_per_topic: Optional[List[Dict[str, float]]] = None
+        background_totals_per_topic: Optional[List[float]] = None
+    else:
+        # SUBTRACTIVE: per-topic background with EQUAL doc-weighting (legacy).
+        background_weighting = (
+            DocWeighting.EQUAL
+            if doc_weighting == DocWeighting.RELEVANCE
+            else doc_weighting
         )
+        background_counts_per_topic = []
+        background_totals_per_topic = []
+        global_counts = {}
+        global_total = 0.0
+        for docs in topic_doc_tokens:
+            counts, total = _topic_docs_to_fractional_counts(
+                docs, doc_weighting=background_weighting,
+            )
+            if topic_weighting == TopicWeighting.EQUAL and total > 0:
+                scale = 1.0 / float(total)
+                counts = {w: float(c) * scale for w, c in counts.items()}
+                total = 1.0
+            background_counts_per_topic.append(counts)
+            background_totals_per_topic.append(float(total))
+            for w, c in counts.items():
+                global_counts[w] = global_counts.get(w, 0.0) + float(c)
+            global_total += float(total)
+            vocabulary.update(counts.keys())
 
-        # Optional topic-level normalization: make each topic contribute equal total mass.
-        # This affects ONLY the background construction (ambient distribution).
-        if topic_weighting == TopicWeighting.EQUAL and total > 0:
-            scale = 1.0 / float(total)
-            counts = {w: float(c) * scale for w, c in counts.items()}
-            total = 1.0
-
-        background_counts.append(counts)
-        background_totals.append(float(total))
-        for w, c in counts.items():
-            global_counts[w] = global_counts.get(w, 0.0) + float(c)
-        vocabulary.update(counts.keys())
-
-    vocab_size = len(vocabulary)
-    if vocab_size == 0:
+    if not vocabulary:
         return [[] for _ in range(n_topics)]
 
-    global_total = float(sum(global_counts.values()))
-    alpha_0 = prior_weight * vocab_size
+    alpha_0 = prior_weight * len(vocabulary)
 
     results: List[List[Tuple[str, float]]] = []
     for topic_idx in range(n_topics):
-        # Foreground: use (possibly weighted) counts from this topic
         counts_in = foreground_counts[topic_idx]
         total_in = float(foreground_totals[topic_idx])
-        
-        # Background: use unweighted counts from all OTHER topics
-        # Subtract this topic's background (unweighted) contribution
-        counts_out_topic = background_counts[topic_idx]
-        total_out_topic = background_totals[topic_idx]
-        total_out = global_total - total_out_topic
+
+        if background_mode == BackgroundMode.MARGINAL:
+            total_out = global_total
+        else:
+            total_out_topic = background_totals_per_topic[topic_idx]
+            total_out = global_total - total_out_topic
 
         scores: Dict[str, float] = {}
         for word in vocabulary:
             y_in = float(counts_in.get(word, 0.0))
-            # Background: global (unweighted) minus this topic's unweighted contribution
-            y_out = float(global_counts.get(word, 0.0)) - float(counts_out_topic.get(word, 0.0))
+            if background_mode == BackgroundMode.MARGINAL:
+                y_out = float(global_counts.get(word, 0.0))
+            else:
+                counts_out_topic = background_counts_per_topic[topic_idx]
+                y_out = (
+                    float(global_counts.get(word, 0.0))
+                    - float(counts_out_topic.get(word, 0.0))
+                )
 
             y_in_smooth = y_in + prior_weight
             y_out_smooth = y_out + prior_weight
@@ -574,7 +689,6 @@ def compute_log_odds_ratio_docs(
             n_in_smooth = total_in + alpha_0
             n_out_smooth = total_out + alpha_0
 
-            # Guard against numerical edge cases when totals are tiny
             denom_in = max(n_in_smooth - y_in_smooth, 1e-12)
             denom_out = max(n_out_smooth - y_out_smooth, 1e-12)
 
@@ -584,6 +698,13 @@ def compute_log_odds_ratio_docs(
 
             variance = 1.0 / y_in_smooth + 1.0 / y_out_smooth
             z_score = delta / np.sqrt(variance)
+
+            if weight_by_freq:
+                # Per-word contribution to topic-keyword mutual information:
+                # standardised effect size scaled by empirical mass. Low-count
+                # words get crushed even when their per-occurrence z is high.
+                z_score = z_score * y_in
+
             scores[word] = float(z_score)
 
         sorted_words = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -601,9 +722,11 @@ def extract_topic_keywords(
     prior_weight: float = 0.01,
     topic_weighting: TopicWeighting = TopicWeighting.POOLED,
     topic_doc_weights: Optional[List[List[float]]] = None,
+    background_mode: BackgroundMode = BackgroundMode.MARGINAL,
+    weight_by_freq: bool = True,
 ) -> List[List[Tuple[str, float]]]:
     """Extract distinctive keywords for each topic.
-    
+
     Args:
         topic_doc_tokens: Topics -> documents -> tokens.
         method: Extraction method.
@@ -614,7 +737,12 @@ def extract_topic_keywords(
         topic_weighting: For log-odds, how to weight topics in background construction.
         topic_doc_weights: Per-document relevance weights for each topic. Required if
             doc_weighting=RELEVANCE. Shape: topics -> documents -> weight.
-        
+        background_mode: For log-odds, how to construct the background.
+            See ``BackgroundMode``. Default ``MARGINAL`` (unary "vs. corpus
+            prior" formulation).
+        weight_by_freq: For log-odds, multiply z-scores by topic-internal
+            count to rank by per-word MI contribution. Default True.
+
     Returns:
         List of lists of (word, score) tuples for each topic.
     """
@@ -636,5 +764,7 @@ def extract_topic_keywords(
             doc_weighting=doc_weighting,
             topic_weighting=topic_weighting,
             topic_doc_weights=topic_doc_weights,
+            background_mode=background_mode,
+            weight_by_freq=weight_by_freq,
         )
     raise ValueError(f"Unknown keyword extraction method: {method}")

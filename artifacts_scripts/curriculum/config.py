@@ -16,21 +16,21 @@ from bookgap.configs.cloud.cloud_config import CloudConfig
 from bookgap.util import ARTIFACTS_DIR, create_unicode_safe_filename
 
 from .dimensionality_reduction import DimensionalityReductionMethod
-from .keyword_extraction import DocWeighting, KeywordMethod, TopicWeighting
+from .keyword_extraction import BackgroundMode, DocWeighting, KeywordMethod, TopicWeighting
 
 @dataclass
 class KeywordConfig:
     """Configuration for keyword extraction."""
-    
+
     enabled: bool = True
     """Whether to run keyword extraction after curriculum building."""
-    
+
     method: KeywordMethod = KeywordMethod.LOG_ODDS
     """Keyword extraction method."""
-    
+
     top_k: int = 20
     """Number of top keywords per topic."""
-    
+
     samples_per_topic: int = 5000
     """Number of works to sample per topic for keyword extraction."""
 
@@ -39,7 +39,6 @@ class KeywordConfig:
 
     - DocWeighting.RELEVANCE: each sampled work contributes mass proportional to its
       CircuitRank/PageRank relevance score. High-relevance papers dominate keywords.
-      Background distribution is unweighted (EQUAL) for neutral comparison.
     - DocWeighting.EQUAL: each sampled work contributes equal mass (document-length invariant)
     - DocWeighting.TOKEN: longer texts contribute proportionally more (bag-of-tokens)
     """
@@ -47,10 +46,30 @@ class KeywordConfig:
     topic_weighting: TopicWeighting = TopicWeighting.EQUAL
     """How to weight topics when constructing the log-odds background distribution.
 
-    - TopicWeighting.POOLED: background is pooled across all other topics (larger topics contribute more)
+    - TopicWeighting.POOLED: larger topics contribute more
     - TopicWeighting.EQUAL: each topic contributes equal total mass to the background
 
     Note: currently applies to keywords.method="log_odds".
+    """
+
+    background_mode: BackgroundMode = BackgroundMode.MARGINAL
+    """For log-odds: how to construct the comparison background.
+
+    - BackgroundMode.MARGINAL (default): unary test against the curriculum-
+      wide marginal P(w). No "vs. what corpus" hyperparameter; domain words
+      common across topics demote themselves automatically. Pairs naturally
+      with weight_by_freq=True.
+    - BackgroundMode.SUBTRACTIVE: legacy two-sample test, "this topic vs.
+      all OTHER topics" (Monroe et al. style). Self-referential when the
+      curriculum lives in one domain.
+    """
+
+    weight_by_freq: bool = True
+    """For log-odds: post-multiply each word's z-score by its topic-internal
+    relevance-weighted count. This ranks words by their per-word contribution
+    to topic-keyword mutual information (≈ P(w,t) · PMI(w,t)). Crushes
+    once-in-corpus tokens that pass the variance filter on small (singleton)
+    topics. Set False to recover pure standardised z-scores.
     """
 
 

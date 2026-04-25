@@ -3,10 +3,12 @@
 import pytest
 
 from artifacts_scripts.curriculum.keyword_extraction import (
+    BackgroundMode,
     DocWeighting,
     KeywordMethod,
     TopicWeighting,
     compute_log_odds_ratio,
+    compute_log_odds_ratio_docs,
     compute_tf,
     compute_tfidf_scores,
     extract_topic_keywords,
@@ -40,13 +42,55 @@ class TestTokenize:
         assert "abcd" in tokens
     
     def test_handles_numbers(self):
-        """Test handling of numbers."""
-        text = "year 2024 model v2"
+        """Pure-numeric tokens are filtered (page/year/volume noise);
+        alphanumeric tokens like 'co2' or '2d' survive."""
+        text = "year 2024 model v2 co2"
         tokens = tokenize(text)
-        
+
         assert "year" in tokens
-        assert "2024" in tokens
         assert "model" in tokens
+        # Pure-numeric tokens dropped
+        assert "2024" not in tokens
+        # Alphanumeric retained ("co2" is an alphanumeric mix)
+        assert "co2" in tokens
+        # 'v2' is alphanumeric (length 2 → still dropped by length filter)
+
+    def test_strips_xml_tags(self):
+        """MathML / HTML tags are removed before tokenizing."""
+        text = "Generation of <mml:math xmlns:mml='http://w3.org/1998'>x</mml:math> in cavity"
+        tokens = tokenize(text)
+        # Markup tokens must NOT appear
+        assert "mml" not in tokens
+        assert "xmlns" not in tokens
+        assert "math" not in tokens
+        # Real-prose tokens must survive
+        assert "generation" in tokens
+        assert "cavity" in tokens
+
+    def test_strips_latex_commands(self):
+        """LaTeX commands like \\ensuremath, \\mathrm survive only as
+        whatever non-command text remains."""
+        text = r"Below \ensuremath{\sim}30K, the \mathrm{Cr}_{11}\mathrm{Ge}_{19} compound"
+        tokens = tokenize(text)
+        assert "ensuremath" not in tokens
+        assert "mathrm" not in tokens
+        # Plain-prose words must survive
+        assert "below" in tokens
+        assert "compound" in tokens
+
+    def test_strips_urls(self):
+        """URLs (http(s):// and www.) are removed before tokenizing."""
+        text = "See https://example.org/papers/foo and www.openalex.org for details"
+        tokens = tokenize(text)
+        # URL-fragment tokens must NOT appear
+        assert "http" not in tokens
+        assert "https" not in tokens
+        assert "www" not in tokens
+        assert "example" not in tokens   # comes from inside URL
+        assert "openalex" not in tokens  # comes from inside URL
+        # Surrounding prose survives
+        assert "see" in tokens
+        assert "details" in tokens
     
     def test_empty_string(self):
         """Test empty string returns empty list."""
@@ -447,3 +491,142 @@ class TestSummarizeTopics:
         # Each topic should have up to top_k keywords
         assert all(isinstance(kw, list) for kw in keywords.values())
         assert all(len(kw) <= 3 for kw in keywords.values())
+
+
+class TestBackgroundModeAndFreqWeighting:
+    """``compute_log_odds_ratio_docs`` MARGINAL background + freq-weighting."""
+
+    def _toy_corpus(self):
+        """Three topics with varying levels of word overlap."""
+        # All three share "common"; topic 0 has unique "neural", "network";
+        # topic 1 has unique "bayesian", "posterior"; topic 2 has unique
+        # "compiler", "optimization".
+        return [
+            [["common", "neural", "network", "deep"]] * 3 + [["common", "neural"]] * 2,
+            [["common", "bayesian", "posterior", "inference"]] * 3 + [["common", "bayesian"]] * 2,
+            [["common", "compiler", "optimization", "register"]] * 3 + [["common", "compiler"]] * 2,
+        ]
+
+    def test_marginal_default_demotes_shared_words(self):
+        """A word common to every topic should rank low under marginal mode."""
+        topic_doc_tokens = self._toy_corpus()
+        results = compute_log_odds_ratio_docs(
+            topic_doc_tokens,
+            top_k=3,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=True,
+        )
+        # "common" appears in every topic → marginal P(w) high → demoted everywhere.
+        for tidx, kws in enumerate(results):
+            top_words = [w for w, _ in kws]
+            assert "common" not in top_words, (
+                f"topic {tidx}: 'common' should not be a top keyword under "
+                f"MARGINAL+freq, got {top_words}"
+            )
+
+    def test_marginal_promotes_topic_unique_words(self):
+        """Words unique to a topic should populate that topic's top-K."""
+        topic_doc_tokens = self._toy_corpus()
+        results = compute_log_odds_ratio_docs(
+            topic_doc_tokens,
+            top_k=3,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=True,
+        )
+        topic0_words = {w for w, _ in results[0]}
+        topic1_words = {w for w, _ in results[1]}
+        topic2_words = {w for w, _ in results[2]}
+        # Topic-unique words must reach top-3
+        assert topic0_words & {"neural", "network", "deep"}, topic0_words
+        assert topic1_words & {"bayesian", "posterior", "inference"}, topic1_words
+        assert topic2_words & {"compiler", "optimization", "register"}, topic2_words
+
+    def test_freq_weighting_multiplies_score_by_count(self):
+        """``weight_by_freq=True`` post-multiplies the unweighted z-score by
+        ``y_in`` (the topic-internal foreground count). Verify the ratio."""
+        # Single-token docs → each doc contributes y_in=1 under EQUAL weighting,
+        # so y_in["alpha"] in topic 0 = 30 (one per doc).
+        topic_doc_tokens = [
+            [["alpha"]] * 30,
+            [["beta"]] * 10,
+        ]
+        no_weight = compute_log_odds_ratio_docs(
+            topic_doc_tokens, top_k=5,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=False,
+        )
+        weighted = compute_log_odds_ratio_docs(
+            topic_doc_tokens, top_k=5,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=True,
+        )
+        nw_t0 = dict(no_weight[0])
+        w_t0 = dict(weighted[0])
+        # weighted = unweighted * y_in ≈ unweighted * 30 for "alpha" in topic 0
+        ratio = w_t0["alpha"] / nw_t0["alpha"]
+        assert 25 < ratio < 35, (
+            f"weighted/unweighted ratio for alpha should be ~30 (= y_in), got {ratio}"
+        )
+
+    def test_freq_weighting_widens_gap_between_high_and_low_count(self):
+        """Two equally-distinctive words in the same topic, one with 10x more
+        count: freq-weighting should widen their score gap."""
+        topic_doc_tokens = [
+            # Topic 0 has both "high_count" (30 docs) and "low_count" (3 docs).
+            # Both are unique to topic 0.
+            [["high_count"]] * 30 + [["low_count"]] * 3,
+            [["topic1_word"]] * 20,
+        ]
+        no_weight = compute_log_odds_ratio_docs(
+            topic_doc_tokens, top_k=10,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=False,
+        )
+        weighted = compute_log_odds_ratio_docs(
+            topic_doc_tokens, top_k=10,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=True,
+        )
+        nw = dict(no_weight[0])
+        wt = dict(weighted[0])
+        nw_ratio = nw["high_count"] / nw["low_count"]
+        wt_ratio = wt["high_count"] / wt["low_count"]
+        # Without weighting, the standardised z-scores are similar (both are
+        # topic-unique). With freq weighting, the gap widens by ~10x (the
+        # count ratio).
+        assert wt_ratio > 5 * nw_ratio, (
+            f"freq-weighting should widen score gap: "
+            f"unweighted ratio={nw_ratio:.2f}, weighted ratio={wt_ratio:.2f}"
+        )
+
+    def test_subtractive_mode_still_works(self):
+        """Legacy SUBTRACTIVE path still works (backwards-compat)."""
+        topic_doc_tokens = self._toy_corpus()
+        results = compute_log_odds_ratio_docs(
+            topic_doc_tokens,
+            top_k=3,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.SUBTRACTIVE,
+            weight_by_freq=False,
+        )
+        assert len(results) == 3
+        for kws in results:
+            assert len(kws) <= 3
+            # Each entry is (word, score) tuple
+            for w, s in kws:
+                assert isinstance(w, str)
+                assert isinstance(s, float)
+
+    def test_invalid_background_mode_rejected(self):
+        topic_doc_tokens = self._toy_corpus()
+        with pytest.raises(ValueError, match="background_mode"):
+            compute_log_odds_ratio_docs(
+                topic_doc_tokens,
+                background_mode="not-a-mode",  # type: ignore
+            )
