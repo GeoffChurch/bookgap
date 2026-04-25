@@ -343,15 +343,103 @@ class TestMinClusterSize:
         """Test when entire dataset is smaller than min_cluster_size."""
         n = 50
         embeddings = np.random.randn(n, 10)
-        
+
         result = bisecting_kmeans_linkage(
-            embeddings, 
-            min_cluster_size=100,  # Larger than n 
+            embeddings,
+            min_cluster_size=100,  # Larger than n
             verbose=False
         )
-        
+
         # Should have no merges - entire dataset is one leaf cluster
         assert result.linkage.shape == (0, 4)
         assert result.n_leaf_clusters == 1
         # All points in cluster 0
         assert np.all(result.leaf_cluster_assignments == 0)
+
+
+class TestWeightedBisectingKmeans:
+    """``sample_weights`` support: weighted KMeans for centroid placement,
+    weighted Ward-distance for merge cost. Used by the curriculum to anchor
+    clusters around high-relevance works instead of letting them get peeled
+    off as singletons by relevance-blind geometry."""
+
+    def test_uniform_weights_match_unweighted(self):
+        """All-ones weights should produce essentially identical output to
+        the unweighted call (modulo floating-point in centroid math)."""
+        rng = np.random.default_rng(7)
+        embeddings = rng.standard_normal((80, 5))
+        weights = np.ones(80)
+
+        unweighted = bisecting_kmeans_linkage(
+            embeddings, min_cluster_size=2, verbose=False, random_state=42,
+        )
+        weighted = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=2,
+            verbose=False, random_state=42,
+        )
+        # Same number of leaves and merges
+        assert weighted.n_leaf_clusters == unweighted.n_leaf_clusters
+        assert weighted.linkage.shape == unweighted.linkage.shape
+        # Distances should match closely (uniform weights → same centroids)
+        np.testing.assert_allclose(
+            weighted.linkage[:, 2], unweighted.linkage[:, 2], atol=1e-10,
+        )
+
+    def test_concentrated_weight_pulls_centroid(self):
+        """A single dominant-weight point should pull its cluster's centroid
+        toward itself, observably changing the merge tree compared to
+        uniform weights."""
+        rng = np.random.default_rng(11)
+        cloud_a = rng.standard_normal((20, 3))
+        cloud_b = rng.standard_normal((20, 3)) + 10.0
+        embeddings = np.vstack([cloud_a, cloud_b])
+        weights = np.ones(40)
+        weights[0] = 1000.0   # heavy weight in cloud_a
+
+        weighted = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=2,
+            verbose=False, random_state=42,
+        )
+        unweighted = bisecting_kmeans_linkage(
+            embeddings, min_cluster_size=2, verbose=False, random_state=42,
+        )
+        # The weighted centroid of cloud_a is dragged toward the
+        # heavy-weight point, so the bisection at that cluster places
+        # differently and the resulting tree differs from the unweighted
+        # version. We don't insist on the exact same shape — weighted
+        # and unweighted bisecting trees can legitimately have different
+        # numbers of merges depending on how the splits cascade. We just
+        # verify they're not identical.
+        same_shape = weighted.linkage.shape == unweighted.linkage.shape
+        if same_shape:
+            assert not np.allclose(weighted.linkage[:, 2], unweighted.linkage[:, 2])
+        else:
+            assert weighted.linkage.shape != unweighted.linkage.shape  # already differs
+
+    def test_negative_weights_rejected(self):
+        embeddings = np.random.randn(20, 3)
+        weights = np.full(20, 1.0)
+        weights[5] = -0.1
+        with pytest.raises(ValueError, match="non-negative"):
+            bisecting_kmeans_linkage(embeddings, sample_weights=weights, verbose=False)
+
+    def test_wrong_shape_rejected(self):
+        embeddings = np.random.randn(20, 3)
+        weights = np.ones(19)
+        with pytest.raises(ValueError, match="shape"):
+            bisecting_kmeans_linkage(embeddings, sample_weights=weights, verbose=False)
+
+    def test_zero_weight_side_falls_back_to_unit(self):
+        """If all of one side's points have zero weight, fall back to unit
+        weighting on that side (avoids /0 in weighted centroid)."""
+        rng = np.random.default_rng(13)
+        cloud_a = rng.standard_normal((10, 3))
+        cloud_b = rng.standard_normal((10, 3)) + 5.0
+        embeddings = np.vstack([cloud_a, cloud_b])
+        weights = np.concatenate([np.ones(10), np.zeros(10)])
+        result = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=2,
+            verbose=False, random_state=42,
+        )
+        assert result.linkage.shape[0] > 0
+        assert not np.isnan(result.linkage).any()

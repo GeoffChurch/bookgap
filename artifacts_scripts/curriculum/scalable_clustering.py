@@ -34,6 +34,7 @@ class BisectingKMeansResult:
 def bisecting_kmeans_linkage(
     embeddings: NDArray[np.floating],
     *,
+    sample_weights: Optional[NDArray[np.floating]] = None,
     min_cluster_size: int = 1,
     max_depth: Optional[int] = None,
     random_state: Optional[int] = 42,
@@ -42,12 +43,22 @@ def bisecting_kmeans_linkage(
     verbose: bool = True,
 ) -> BisectingKMeansResult:
     """Build a hierarchical clustering via recursive bisecting K-Means.
-    
+
     This produces a scipy-compatible linkage matrix with O(n) memory,
     suitable for datasets with millions of points.
-    
+
     Args:
         embeddings: Array of shape (n_samples, embedding_dim).
+        sample_weights: Optional per-point weights of shape (n_samples,).
+            When provided, ``KMeans``/``MiniBatchKMeans`` are called with
+            ``sample_weight=`` so centroid placement and the bisection
+            choice both respect the weights, and the Ward-like distance
+            uses weighted centroids and weighted sizes. Useful for
+            curriculum building, where post-PageRank relevance weights
+            let high-relevance works act as cluster anchors instead of
+            getting peeled off as singletons by relevance-blind
+            geometry. ``None`` (default) is unweighted (backwards-
+            compatible behaviour).
         min_cluster_size: Stop splitting clusters smaller than this size.
             Larger values = faster but coarser hierarchy.
             Default 1 means split down to individual points.
@@ -57,7 +68,7 @@ def bisecting_kmeans_linkage(
         use_minibatch: Use MiniBatchKMeans for speed (recommended for large n).
         batch_size: Batch size for MiniBatchKMeans.
         verbose: Log progress.
-        
+
     Returns:
         BisectingKMeansResult containing:
         - linkage: Linkage matrix compatible with scipy.cluster.hierarchy.
@@ -66,13 +77,22 @@ def bisecting_kmeans_linkage(
           Columns are: [left_child, right_child, distance, n_points_in_cluster].
         - leaf_cluster_assignments: Array mapping each point to its leaf cluster.
         - n_leaf_clusters: Number of leaf clusters in the tree.
-        
+
     Note:
         When min_cluster_size > 1 or max_depth is set, the "leaves" of the tree
         may contain multiple points. Use leaf_cluster_assignments to map points
         to leaf cluster IDs, then aggregate masses before using dendrogram_ops.
     """
     n_samples = len(embeddings)
+    if sample_weights is not None:
+        sample_weights = np.asarray(sample_weights, dtype=np.float64)
+        if sample_weights.shape != (n_samples,):
+            raise ValueError(
+                f"sample_weights shape {sample_weights.shape} must match "
+                f"embeddings n_samples ({n_samples},)"
+            )
+        if (sample_weights < 0).any():
+            raise ValueError("sample_weights must be non-negative")
     if n_samples <= 1:
         # Single point or empty - one leaf cluster containing all points
         assignments = np.zeros(n_samples, dtype=np.intp)
@@ -89,9 +109,10 @@ def bisecting_kmeans_linkage(
             leaf_cluster_assignments=assignments,
             n_leaf_clusters=1,
         )
-    
+
     if verbose:
-        LOGGER.info(f"Bisecting K-Means: {n_samples} points, min_cluster_size={min_cluster_size}, max_depth={max_depth}")
+        weight_note = "" if sample_weights is None else " (weighted)"
+        LOGGER.info(f"Bisecting K-Means: {n_samples} points, min_cluster_size={min_cluster_size}, max_depth={max_depth}{weight_note}")
     
     # Increase recursion limit for deep trees
     old_limit = sys.getrecursionlimit()
@@ -102,6 +123,7 @@ def bisecting_kmeans_linkage(
     try:
         return _bisecting_kmeans_impl(
             embeddings,
+            sample_weights=sample_weights,
             n_samples=n_samples,
             min_cluster_size=min_cluster_size,
             max_depth=max_depth,
@@ -118,6 +140,7 @@ def bisecting_kmeans_linkage(
 def _bisecting_kmeans_impl(
     embeddings: NDArray[np.floating],
     *,
+    sample_weights: Optional[NDArray[np.floating]],
     n_samples: int,
     min_cluster_size: int,
     max_depth: Optional[int],
@@ -165,9 +188,18 @@ def _bisecting_kmeans_impl(
                     ('leaf', int(indices[1])),
                     dist, 2)
         
-        # Split using K-Means
+        # Split using K-Means (optionally weighted: high-relevance points
+        # pull the centroid harder, so the bisection respects importance).
         cluster_embeddings = embeddings[indices]
-        
+        cluster_weights = sample_weights[indices] if sample_weights is not None else None
+
+        # sklearn's KMeans crashes on all-zero sample weights (divides
+        # by sample_weight.sum() during seeding). Drop to unweighted
+        # for that subset; the post-split weighted-centroid path already
+        # falls back to unit weights when a side's mass is zero.
+        if cluster_weights is not None and float(cluster_weights.sum()) == 0:
+            cluster_weights = None
+
         if use_minibatch and size > batch_size:
             kmeans = MiniBatchKMeans(
                 n_clusters=2,
@@ -184,23 +216,44 @@ def _bisecting_kmeans_impl(
                 algorithm="lloyd",
                 random_state=random_state,
             )
-        
-        labels = kmeans.fit_predict(cluster_embeddings)
-        
+
+        labels = kmeans.fit_predict(cluster_embeddings, sample_weight=cluster_weights)
+
         left_indices = indices[labels == 0]
         right_indices = indices[labels == 1]
-        
+
         # Handle degenerate case (all points in one cluster)
         if len(left_indices) == 0 or len(right_indices) == 0:
             mid = size // 2
             left_indices = indices[:mid]
             right_indices = indices[mid:]
-        
-        # Compute Ward-like distance
-        left_centroid = embeddings[left_indices].mean(axis=0)
-        right_centroid = embeddings[right_indices].mean(axis=0)
-        n_left, n_right = len(left_indices), len(right_indices)
-        dist = float(np.sqrt(2 * n_left * n_right / (n_left + n_right)) * 
+
+        # Compute Ward-like distance. With weights, use weighted centroids
+        # and weighted "size" so the merge cost reflects the relevance mass
+        # being unified at this dendrogram height.
+        if sample_weights is not None:
+            w_left = sample_weights[left_indices]
+            w_right = sample_weights[right_indices]
+            wsum_left = float(w_left.sum())
+            wsum_right = float(w_right.sum())
+            # Fall back to unit weights if a side's mass is zero (avoid /0).
+            if wsum_left > 0:
+                left_centroid = (embeddings[left_indices] * w_left[:, None]).sum(axis=0) / wsum_left
+            else:
+                left_centroid = embeddings[left_indices].mean(axis=0)
+                wsum_left = float(len(left_indices))
+            if wsum_right > 0:
+                right_centroid = (embeddings[right_indices] * w_right[:, None]).sum(axis=0) / wsum_right
+            else:
+                right_centroid = embeddings[right_indices].mean(axis=0)
+                wsum_right = float(len(right_indices))
+            n_left = wsum_left
+            n_right = wsum_right
+        else:
+            left_centroid = embeddings[left_indices].mean(axis=0)
+            right_centroid = embeddings[right_indices].mean(axis=0)
+            n_left, n_right = len(left_indices), len(right_indices)
+        dist = float(np.sqrt(2 * n_left * n_right / (n_left + n_right)) *
                      np.linalg.norm(left_centroid - right_centroid))
         
         # Progress logging

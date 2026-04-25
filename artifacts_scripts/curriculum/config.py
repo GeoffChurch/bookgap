@@ -397,12 +397,16 @@ class CurriculumConfig:
     
     linkage_method: str = "bisecting_kmeans"
     """Linkage method for hierarchical clustering.
-    
+
     Options:
     - 'ward', 'average', 'complete', 'single': scipy agglomerative clustering
       (requires O(n²) memory, suitable for n < 100k)
     - 'bisecting_kmeans': recursive bisecting K-Means
       (O(n) memory, suitable for n > 100k)
+    - 'weighted_bisecting_kmeans': bisecting_kmeans with sample_weight from
+      the post-PageRank relevance vector. High-relevance works anchor
+      cluster centers; the bisection criterion respects relevance mass.
+      Requires ``rank_before_clustering=True`` so a per-work weight exists.
     """
     
     min_cluster_size: int = 1

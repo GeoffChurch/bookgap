@@ -123,22 +123,30 @@ def _build_dendrogram(
     method: str = "ward",
     min_cluster_size: int = 1,
     max_depth: Optional[int] = None,
+    sample_weights: Optional[NDArray[np.floating]] = None,
 ) -> DendrogramResult:
     """Build dendrogram via hierarchical clustering on embeddings.
-    
+
     Args:
         embeddings: Array of shape (n_samples, embedding_dim).
         method: Clustering method:
             - 'ward', 'average', 'complete', 'single': scipy agglomerative (O(n²) memory)
-            - 'bisecting_kmeans': recursive bisecting K-Means (O(n) memory)
+            - 'bisecting_kmeans': recursive bisecting K-Means (O(n) memory, unweighted)
+            - 'weighted_bisecting_kmeans': recursive bisecting K-Means with
+              ``sample_weights`` plumbed through KMeans + the Ward-like merge
+              distance. Use for relevance-weighted clustering of a top-k
+              subset where high-relevance works should anchor clusters.
         min_cluster_size: For bisecting_kmeans, stop splitting clusters smaller than this.
         max_depth: For bisecting_kmeans, maximum tree depth (None = no limit).
-        
+        sample_weights: Optional per-point weights, only used by
+            'weighted_bisecting_kmeans'. Must be shape (n_samples,) and
+            non-negative.
+
     Returns:
         DendrogramResult containing linkage matrix and leaf cluster mappings.
     """
     n_samples = len(embeddings)
-    
+
     if method in SCIPY_LINKAGE_METHODS:
         LOGGER.info(f"Building dendrogram with {method} linkage on {len(embeddings)} embeddings...")
         linked = linkage(embeddings, method=method)
@@ -149,10 +157,20 @@ def _build_dendrogram(
             leaf_cluster_assignments=np.arange(n_samples, dtype=np.intp),
             n_leaf_clusters=n_samples,
         )
-    elif method == "bisecting_kmeans":
-        LOGGER.info(f"Building dendrogram with bisecting K-Means on {len(embeddings)} embeddings...")
+    elif method in ("bisecting_kmeans", "weighted_bisecting_kmeans"):
+        weighted = method == "weighted_bisecting_kmeans"
+        LOGGER.info(
+            f"Building dendrogram with {'weighted ' if weighted else ''}"
+            f"bisecting K-Means on {len(embeddings)} embeddings..."
+        )
+        if weighted and sample_weights is None:
+            raise ValueError(
+                "weighted_bisecting_kmeans requires sample_weights; "
+                "got None"
+            )
         result = bisecting_kmeans_linkage(
             embeddings,
+            sample_weights=sample_weights if weighted else None,
             min_cluster_size=min_cluster_size,
             max_depth=max_depth,
             verbose=True,
@@ -165,7 +183,7 @@ def _build_dendrogram(
         )
     else:
         raise ValueError(f"Unknown linkage method: {method}. "
-                        f"Options: {SCIPY_LINKAGE_METHODS | {'bisecting_kmeans'}}")
+                        f"Options: {SCIPY_LINKAGE_METHODS | {'bisecting_kmeans', 'weighted_bisecting_kmeans'}}")
 
 
 def _compute_linearization_order_from_adjacency(adj_matrix: NDArray[np.floating]) -> NDArray[np.int64]:
@@ -777,6 +795,11 @@ def run_curriculum_building(
     
     # Build dendrogram on (possibly filtered) embeddings
     LOGGER.info("Building dendrogram...")
+    # Weights are only meaningful for the rank_before_clustering path
+    # (where ``point_masses`` is the relevance over the top-k subset).
+    # The full-cloud cached path uses uniform weights — appropriate
+    # because no PR step has produced a per-work mass yet at that point.
+    weighted = cfg.linkage_method == "weighted_bisecting_kmeans"
     if (not cfg.rank_before_clustering) and cfg.linkage_method == "bisecting_kmeans":
         # Full-cloud + bisecting_kmeans is expensive: leverage Cloud-level caching/subsumption.
         dendrogram_result = cloud.dendrogram(
@@ -785,11 +808,17 @@ def run_curriculum_building(
             max_depth=cfg.max_cluster_depth,
         )
     else:
+        if weighted and not cfg.rank_before_clustering:
+            raise ValueError(
+                "weighted_bisecting_kmeans requires rank_before_clustering=True "
+                "(weights come from the PageRank pass on the top-k subset)."
+            )
         dendrogram_result = _build_dendrogram(
             embeddings_for_clustering,
             method=cfg.linkage_method,
             min_cluster_size=cfg.min_cluster_size,
             max_depth=cfg.max_cluster_depth,
+            sample_weights=point_masses if weighted else None,
         )
     linked = dendrogram_result.linkage
     leaf_cluster_assignments = dendrogram_result.leaf_cluster_assignments
