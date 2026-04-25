@@ -627,6 +627,175 @@ def _cmd_log(args: Any) -> int:
         os.execvp("tail", ["tail", "-n", str(args.tail), str(path)])
 
 
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def _fmt_age_seconds(secs: float) -> str:
+    if secs < 60:
+        return f"{int(secs)}s"
+    if secs < 3600:
+        return f"{int(secs // 60)}m{int(secs % 60):02d}s"
+    return f"{int(secs // 3600)}h{int((secs % 3600) // 60):02d}m"
+
+
+def _systemd_show(scope_unit: str) -> dict[str, str]:
+    """Read selected systemd properties for a transient scope unit."""
+    try:
+        out = subprocess.check_output(
+            ["systemctl", "--user", "show", scope_unit,
+             "--property=MemoryCurrent",
+             "--property=MemoryPeak",
+             "--property=CPUUsageNSec",
+             "--property=ActiveEnterTimestamp",
+             "--property=SubState"],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return {}
+    result: dict[str, str] = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            result[k] = v
+    return result
+
+
+def _find_recent_log(glob_root: Path, pattern: str, started_at: datetime.datetime,
+                    window_min: float = 5.0) -> Optional[Path]:
+    """Find the most recent file under ``glob_root`` matching ``pattern``
+    whose mtime falls within the job's window (started_at − window_min,
+    now). Heuristic: assumes Hydra/curriculum-style logs that are written
+    while the job runs, and that no other process touches them around
+    the same time. Returns None if no candidate is found."""
+    if not glob_root.exists():
+        return None
+    earliest = (started_at - datetime.timedelta(minutes=window_min)).timestamp()
+    candidates = []
+    for p in glob_root.rglob(pattern):
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        if m >= earliest:
+            candidates.append((m, p))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][1]
+
+
+def _tail_lines(path: Path, n: int) -> list[str]:
+    """Return the last ``n`` lines of ``path``. Best-effort; returns []
+    on any error so the status display degrades gracefully."""
+    try:
+        with path.open("r", errors="replace") as f:
+            lines = f.readlines()
+        return [ln.rstrip() for ln in lines[-n:]]
+    except OSError:
+        return []
+
+
+def _cmd_status(args: Any) -> int:
+    """One-stop-shop status display for a single job.
+
+    Combines: manifest (status, error, started/finished), wall-time age,
+    systemd resource snapshot (memory, CPU), worker-log tail with stall
+    detection, and best-effort auto-discovery of the Hydra/curriculum
+    log files associated with the run.
+    """
+    job_id = args.job_id
+    try:
+        manifest = read_manifest(job_id)
+    except FileNotFoundError:
+        print(f"error: no manifest for job_id={job_id!r}", file=sys.stderr)
+        return 1
+
+    print(f"job_id:       {job_id}")
+    status = manifest.get("status", "?")
+    print(f"status:       {status}")
+    started_str = manifest.get("started_at")
+    started_dt: Optional[datetime.datetime] = None
+    if started_str:
+        try:
+            started_dt = datetime.datetime.fromisoformat(started_str)
+        except Exception:
+            pass
+    age = _fmt_duration(started_str, manifest.get("finished_at"))
+    print(f"started:      {started_str or '?'}  ({age} ago)")
+    if manifest.get("finished_at"):
+        print(f"finished:     {manifest['finished_at']}")
+    if manifest.get("error"):
+        print(f"error:        {manifest['error']}")
+    print(f"pid:          {manifest.get('pid', '?')}")
+    scope_unit = manifest.get("scope_unit") or scope_unit_name(job_id)
+    print(f"scope unit:   {scope_unit}")
+
+    # Resource snapshot via systemd
+    sysd = _systemd_show(scope_unit)
+    sub_state = sysd.get("SubState", "")
+    if sysd:
+        mem_cur = sysd.get("MemoryCurrent", "")
+        mem_peak = sysd.get("MemoryPeak", "")
+        cpu_ns = sysd.get("CPUUsageNSec", "")
+        print()
+        print("resources:")
+        if sub_state:
+            print(f"  unit state:   {sub_state}")
+        if mem_cur and mem_cur.isdigit():
+            print(f"  memory cur:   {_fmt_bytes(int(mem_cur))}")
+        if mem_peak and mem_peak.isdigit():
+            print(f"  memory peak:  {_fmt_bytes(int(mem_peak))}")
+        if cpu_ns and cpu_ns.isdigit():
+            cpu_secs = int(cpu_ns) / 1e9
+            print(f"  cpu time:     {_fmt_age_seconds(cpu_secs)}")
+
+    # Worker log + stall detection
+    wlog = log_path(job_id)
+    print()
+    print(f"worker log ({wlog}):")
+    if wlog.exists():
+        try:
+            mtime = wlog.stat().st_mtime
+            age_log = (datetime.datetime.now().timestamp() - mtime)
+            tail = _tail_lines(wlog, args.tail_n)
+            if tail:
+                for ln in tail:
+                    print(f"  {ln[:160]}")
+            else:
+                print("  (empty — likely buffered by `conda run`; see auto-discovered logs below)")
+            print(f"  mtime: {_fmt_age_seconds(age_log)} ago")
+        except OSError as exc:
+            print(f"  (read error: {exc})")
+    else:
+        print("  (no log file)")
+
+    # Auto-discover Hydra + curriculum logs by mtime-within-job-window
+    if started_dt is not None:
+        from bookgap.util import CACHE_DIR
+        repo_root = CACHE_DIR.parent
+        for label, root, pattern in [
+            ("hydra log", repo_root / "outputs", "main.log"),
+            ("curriculum pipeline log",
+             repo_root / "artifacts" / "curriculum", "pipeline.log"),
+        ]:
+            found = _find_recent_log(root, pattern, started_dt)
+            if found is None:
+                continue
+            print()
+            print(f"{label} ({found}):")
+            mtime = found.stat().st_mtime
+            age_log = (datetime.datetime.now().timestamp() - mtime)
+            for ln in _tail_lines(found, args.tail_n):
+                print(f"  {ln[:160]}")
+            print(f"  mtime: {_fmt_age_seconds(age_log)} ago")
+    return 0
+
+
 def _main(argv: Optional[list[str]] = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="bookgap.jobs", description=__doc__.splitlines()[0])
@@ -657,6 +826,15 @@ def _main(argv: Optional[list[str]] = None) -> int:
     p_log.add_argument("-f", "--follow", action="store_true")
     p_log.add_argument("-n", "--tail", type=int, default=200)
     p_log.set_defaults(func=_cmd_log)
+
+    p_status = sub.add_parser(
+        "status",
+        help="one-stop-shop view: manifest + resources + log tails (auto-discovered)",
+    )
+    p_status.add_argument("job_id")
+    p_status.add_argument("-n", "--tail-n", type=int, default=10,
+                          help="how many lines from each log to show")
+    p_status.set_defaults(func=_cmd_status)
 
     args = parser.parse_args(argv)
     # argparse.REMAINDER sometimes keeps the separating "--" as the first
