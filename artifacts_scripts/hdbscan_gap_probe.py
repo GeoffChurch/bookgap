@@ -705,11 +705,12 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
     print(f"\n=== Cluster book-fraction analysis (size >= {size_floor}, "
           f"corpus book rate = {corpus_book_rate:.3%}) ===")
 
-    # For each qualifying cluster compute (id, size, books, binomial p-value).
-    # p-value = P(X <= k | n, p) under H0 that the cluster is a uniform random
-    # sample from the corpus. Low p = cluster is significantly book-depleted
-    # relative to its size. Neutralises the base-rate dominance critique
-    # ("many book-free clusters" trivially hold at small sizes and low p).
+    # Per-cluster (id, size, books, expected_books, p_value, effect_size).
+    # p_value = P(X <= k | n, p) under H0 (cluster uniform-random from corpus).
+    # effect_size = (expected - observed) / expected ∈ (-∞, 1]
+    #   = 1.0 means perfectly depleted (observed = 0)
+    #   = 0.0 means observed at base-rate
+    #   < 0  means cluster is book-ENRICHED, not a gap
     from scipy.stats import binom
     rows = []
     for c in unique_labels:
@@ -718,35 +719,69 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
         if sz < size_floor:
             continue
         books = int(is_book[mask].sum())
+        expected = sz * corpus_book_rate
         p_value = float(binom.cdf(books, sz, corpus_book_rate))
-        rows.append((int(c), sz, books, p_value))
-    # Sort by ascending p-value (most-significantly-depleted first); tiebreak
-    # by descending size so ties prefer larger clusters.
-    rows.sort(key=lambda r: (r[3], -r[1]))
+        effect = (expected - books) / expected if expected > 0 else 0.0
+        rows.append((int(c), sz, books, expected, p_value, effect))
+    rows.sort(key=lambda r: (r[4], -r[1]))  # ascending p, ties → larger first
 
-    n_strictly = sum(1 for _, _, b, _ in rows if b == 0)
-    n_sig_001 = sum(1 for _, _, _, p in rows if p < 1e-3)
-    n_sig_0001 = sum(1 for _, _, _, p in rows if p < 1e-4)
-    n_sig_000001 = sum(1 for _, _, _, p in rows if p < 1e-6)
+    n_strictly = sum(1 for _, _, b, _, _, _ in rows if b == 0)
+    n_sig_001 = sum(1 for _, _, _, _, p, _ in rows if p < 1e-3)
+    n_sig_0001 = sum(1 for _, _, _, _, p, _ in rows if p < 1e-4)
+    n_sig_000001 = sum(1 for _, _, _, _, p, _ in rows if p < 1e-6)
+
+    # Benjamini-Hochberg FDR: rank p-values ascending; find largest i where
+    # p_(i) <= (i / N_tests) * alpha. Declare ranks 1..i discoveries.
+    # Return number of discoveries at each FDR threshold.
+    def _bh_count(alpha: float) -> int:
+        N_tests = len(rows)
+        if N_tests == 0:
+            return 0
+        ps = np.array([r[4] for r in rows])  # already sorted ascending
+        thresholds = (np.arange(1, N_tests + 1) / N_tests) * alpha
+        passes = ps <= thresholds
+        if not passes.any():
+            return 0
+        # largest i where passes[i] is True; everything up to i is discovery
+        return int(np.where(passes)[0].max() + 1)
+
     print(f"  qualifying clusters:              {len(rows)}")
     print(f"  strictly book-free (books==0):    {n_strictly}  [raw count]")
     print(f"  significantly depleted (p<1e-3):  {n_sig_001}")
     print(f"  significantly depleted (p<1e-4):  {n_sig_0001}")
     print(f"  very significantly dep (p<1e-6):  {n_sig_000001}")
+    print(f"  FDR-discoveries at α=0.05:        {_bh_count(0.05)}")
+    print(f"  FDR-discoveries at α=0.10:        {_bh_count(0.10)}")
+    print(f"  FDR-discoveries at α=0.20:        {_bh_count(0.20)}")
 
     titles_arr = np.array(titles, dtype=object)
 
     print(f"\n=== Top {top_clusters} clusters by binomial significance "
-          f"(lowest p-value, size-tiebreak) ===")
-    shown = 0
-    for c, sz, books, p in rows[:top_clusters]:
+          f"(lowest p, size-tiebreak) ===")
+    if not rows:
+        print("  (none found — no qualifying clusters at this threshold)")
+    for c, sz, books, expected, p, effect in rows[:top_clusters]:
         mask = labels == c
-        print(f"\n  Cluster {c} (size {sz:,}, books={books}, p={p:.2e}):")
+        print(f"\n  Cluster {c} (size {sz:,}, books={books}, expected={expected:.1f}, "
+              f"p={p:.2e}, effect={effect:.3f}):")
         for t in titles_arr[mask][:5]:
             print(f"    - {(t or '(no title)')[:90]}")
-        shown += 1
-    if shown == 0:
-        print("  (none found — no qualifying clusters at this threshold)")
+
+    # Also show top by effect size, restricted to those with non-trivial
+    # significance — avoids elevating small clusters where effect=1.0 is
+    # cheap (size 100, expected 0.76, observed 0 → effect=1, p=0.46).
+    sig_rows = [r for r in rows if r[4] < 0.05]
+    sig_rows.sort(key=lambda r: -r[5])  # descending effect size
+    print(f"\n=== Top {top_clusters} clusters by effect size "
+          f"among p<0.05 (largest depletion) ===")
+    if not sig_rows:
+        print("  (none found — no clusters with p<0.05)")
+    for c, sz, books, expected, p, effect in sig_rows[:top_clusters]:
+        mask = labels == c
+        print(f"\n  Cluster {c} (size {sz:,}, books={books}, expected={expected:.1f}, "
+              f"p={p:.2e}, effect={effect:.3f}):")
+        for t in titles_arr[mask][:5]:
+            print(f"    - {(t or '(no title)')[:90]}")
 
 
 def main():
