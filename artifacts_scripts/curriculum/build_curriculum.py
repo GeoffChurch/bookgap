@@ -122,6 +122,7 @@ def _build_dendrogram(
     embeddings: NDArray[np.floating],
     method: str = "ward",
     min_cluster_size: int = 1,
+    min_cluster_weight: float = 0.0,
     max_depth: Optional[int] = None,
     sample_weights: Optional[NDArray[np.floating]] = None,
 ) -> DendrogramResult:
@@ -137,6 +138,9 @@ def _build_dendrogram(
               distance. Use for relevance-weighted clustering of a top-k
               subset where high-relevance works should anchor clusters.
         min_cluster_size: For bisecting_kmeans, stop splitting clusters smaller than this.
+        min_cluster_weight: For weighted_bisecting_kmeans, stop splitting
+            clusters whose total ``sample_weights`` sum is at or below this
+            threshold. Acts in addition to ``min_cluster_size``.
         max_depth: For bisecting_kmeans, maximum tree depth (None = no limit).
         sample_weights: Optional per-point weights, only used by
             'weighted_bisecting_kmeans'. Must be shape (n_samples,) and
@@ -168,10 +172,16 @@ def _build_dendrogram(
                 "weighted_bisecting_kmeans requires sample_weights; "
                 "got None"
             )
+        if min_cluster_weight > 0 and not weighted:
+            raise ValueError(
+                "min_cluster_weight > 0 requires weighted_bisecting_kmeans; "
+                f"got method={method!r}"
+            )
         result = bisecting_kmeans_linkage(
             embeddings,
             sample_weights=sample_weights if weighted else None,
             min_cluster_size=min_cluster_size,
+            min_cluster_weight=min_cluster_weight if weighted else 0.0,
             max_depth=max_depth,
             verbose=True,
         )
@@ -817,6 +827,7 @@ def run_curriculum_building(
             embeddings_for_clustering,
             method=cfg.linkage_method,
             min_cluster_size=cfg.min_cluster_size,
+            min_cluster_weight=cfg.min_cluster_weight,
             max_depth=cfg.max_cluster_depth,
             sample_weights=point_masses if weighted else None,
         )

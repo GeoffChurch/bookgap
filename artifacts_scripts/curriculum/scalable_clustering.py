@@ -36,6 +36,7 @@ def bisecting_kmeans_linkage(
     *,
     sample_weights: Optional[NDArray[np.floating]] = None,
     min_cluster_size: int = 1,
+    min_cluster_weight: float = 0.0,
     max_depth: Optional[int] = None,
     random_state: Optional[int] = 42,
     use_minibatch: bool = True,
@@ -62,6 +63,15 @@ def bisecting_kmeans_linkage(
         min_cluster_size: Stop splitting clusters smaller than this size.
             Larger values = faster but coarser hierarchy.
             Default 1 means split down to individual points.
+        min_cluster_weight: Stop splitting clusters whose total
+            ``sample_weights`` sum is at or below this threshold. Acts
+            *in addition to* ``min_cluster_size``: whichever stop
+            condition fires first wins, so a single high-relevance work
+            can earn singleton status by exceeding the weight threshold,
+            while a glob of low-relevance neighbours stays merged even
+            when their count would normally trigger a split. Requires
+            ``sample_weights``; raises ValueError otherwise. Default
+            0.0 disables the weight threshold.
         max_depth: Maximum tree depth. None means no limit.
             Useful for very large datasets to limit recursion.
         random_state: Random seed for reproducibility.
@@ -83,6 +93,13 @@ def bisecting_kmeans_linkage(
         may contain multiple points. Use leaf_cluster_assignments to map points
         to leaf cluster IDs, then aggregate masses before using dendrogram_ops.
     """
+    if min_cluster_weight < 0:
+        raise ValueError("min_cluster_weight must be >= 0")
+    if min_cluster_weight > 0 and sample_weights is None:
+        raise ValueError(
+            "min_cluster_weight > 0 requires sample_weights "
+            "(weight-based threshold is undefined without per-point weights)"
+        )
     n_samples = len(embeddings)
     if sample_weights is not None:
         sample_weights = np.asarray(sample_weights, dtype=np.float64)
@@ -101,7 +118,11 @@ def bisecting_kmeans_linkage(
             leaf_cluster_assignments=assignments,
             n_leaf_clusters=max(1, n_samples),
         )
-    if n_samples <= min_cluster_size:
+    if n_samples <= min_cluster_size or (
+        sample_weights is not None
+        and min_cluster_weight > 0
+        and float(sample_weights.sum()) <= min_cluster_weight
+    ):
         # Entire dataset is one leaf cluster - no merges needed
         assignments = np.zeros(n_samples, dtype=np.intp)
         return BisectingKMeansResult(
@@ -112,7 +133,15 @@ def bisecting_kmeans_linkage(
 
     if verbose:
         weight_note = "" if sample_weights is None else " (weighted)"
-        LOGGER.info(f"Bisecting K-Means: {n_samples} points, min_cluster_size={min_cluster_size}, max_depth={max_depth}{weight_note}")
+        weight_thresh_note = (
+            f", min_cluster_weight={min_cluster_weight}"
+            if min_cluster_weight > 0 else ""
+        )
+        LOGGER.info(
+            f"Bisecting K-Means: {n_samples} points, "
+            f"min_cluster_size={min_cluster_size}{weight_thresh_note}, "
+            f"max_depth={max_depth}{weight_note}"
+        )
     
     # Increase recursion limit for deep trees
     old_limit = sys.getrecursionlimit()
@@ -126,6 +155,7 @@ def bisecting_kmeans_linkage(
             sample_weights=sample_weights,
             n_samples=n_samples,
             min_cluster_size=min_cluster_size,
+            min_cluster_weight=min_cluster_weight,
             max_depth=max_depth,
             random_state=random_state,
             use_minibatch=use_minibatch,
@@ -143,6 +173,7 @@ def _bisecting_kmeans_impl(
     sample_weights: Optional[NDArray[np.floating]],
     n_samples: int,
     min_cluster_size: int,
+    min_cluster_weight: float,
     max_depth: Optional[int],
     random_state: Optional[int],
     use_minibatch: bool,
@@ -169,14 +200,25 @@ def _bisecting_kmeans_impl(
             ('internal', left_subtree, right_subtree, dist, size) for internal node
         """
         size = len(indices)
-        
+
         # Stop conditions
         if size == 1:
             return ('leaf', int(indices[0]))
-        
+
         if size <= min_cluster_size:
             return ('leaf_cluster', indices)
-        
+
+        # Weight-based threshold: cluster's total relevance mass is at or
+        # below the floor. Acts independently of min_cluster_size — either
+        # condition firing stops the recursion. A lone high-relevance work
+        # whose weight exceeds the threshold still escapes via size==1.
+        if (
+            sample_weights is not None
+            and min_cluster_weight > 0
+            and float(sample_weights[indices].sum()) <= min_cluster_weight
+        ):
+            return ('leaf_cluster', indices)
+
         if max_depth is not None and depth >= max_depth:
             return ('leaf_cluster', indices)
         

@@ -411,13 +411,24 @@ class CurriculumConfig:
     
     min_cluster_size: int = 1
     """For bisecting_kmeans: stop splitting clusters smaller than this.
-    
+
     Larger values make clustering faster but coarser.
     - 1: Split to individual points (slowest, finest)
     - 100: Stop at ~100-point clusters (faster)
     - 1000: Stop at ~1000-point clusters (much faster for large datasets)
     """
-    
+
+    min_cluster_weight: float = 0.0
+    """For weighted_bisecting_kmeans: stop splitting clusters whose total
+    sample_weight sum is at or below this floor.
+
+    Acts in addition to min_cluster_size — whichever stop condition fires
+    first wins. Lets a single high-relevance work earn singleton status by
+    exceeding the weight threshold while a glob of low-relevance neighbours
+    stays merged. Default 0.0 disables the weight threshold (count-only
+    behaviour).
+    """
+
     max_cluster_depth: Optional[int] = None
     """For bisecting_kmeans: maximum tree depth. None means no limit.
     

@@ -443,3 +443,142 @@ class TestWeightedBisectingKmeans:
         )
         assert result.linkage.shape[0] > 0
         assert not np.isnan(result.linkage).any()
+
+
+class TestMinClusterWeight:
+    """``min_cluster_weight`` stops bisection once a cluster's total weight
+    drops to/below the floor, in addition to the existing count-based
+    ``min_cluster_size``. This is the natural threshold under weighted
+    clustering: a single high-relevance work can earn singleton status
+    while a glob of low-relevance neighbours stays merged."""
+
+    def test_default_zero_no_effect(self):
+        """min_cluster_weight=0 (default) should match the no-arg path."""
+        rng = np.random.default_rng(17)
+        embeddings = rng.standard_normal((60, 4))
+        weights = rng.uniform(0.1, 1.0, size=60)
+
+        baseline = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=2,
+            verbose=False, random_state=42,
+        )
+        with_zero = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=2,
+            min_cluster_weight=0.0, verbose=False, random_state=42,
+        )
+        assert with_zero.n_leaf_clusters == baseline.n_leaf_clusters
+        np.testing.assert_array_equal(
+            with_zero.leaf_cluster_assignments, baseline.leaf_cluster_assignments,
+        )
+
+    def test_high_threshold_collapses_to_one_cluster(self):
+        """If the threshold exceeds the total weight, the whole dataset
+        should be returned as a single leaf cluster (early-out path)."""
+        rng = np.random.default_rng(19)
+        embeddings = rng.standard_normal((40, 3))
+        weights = np.full(40, 0.5)  # total = 20
+        result = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=1,
+            min_cluster_weight=100.0, verbose=False, random_state=42,
+        )
+        assert result.n_leaf_clusters == 1
+        assert result.linkage.shape == (0, 4)
+        assert np.all(result.leaf_cluster_assignments == 0)
+
+    def test_high_weight_singleton_preserved(self):
+        """A single point whose weight exceeds the threshold should still
+        end up as its own leaf (size==1 takes precedence over weight)."""
+        rng = np.random.default_rng(23)
+        embeddings = np.vstack([
+            rng.standard_normal((30, 3)),
+            np.array([[10.0, 10.0, 10.0]]),  # outlier point
+        ])
+        weights = np.concatenate([np.full(30, 0.01), np.array([1000.0])])
+        # Threshold is well above any sub-cluster's bulk weight (30 * 0.01 =
+        # 0.3) but below the outlier alone (1000), so the outlier survives
+        # as a singleton while other clusters get collapsed.
+        result = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=1,
+            min_cluster_weight=1.0, verbose=False, random_state=42,
+        )
+        # The outlier index (30) must map to a leaf cluster of size exactly 1.
+        outlier_leaf = result.leaf_cluster_assignments[30]
+        n_in_outlier_leaf = int(
+            (result.leaf_cluster_assignments == outlier_leaf).sum()
+        )
+        assert n_in_outlier_leaf == 1, (
+            f"outlier should be a singleton leaf, found {n_in_outlier_leaf} "
+            f"points in its leaf"
+        )
+
+    def test_low_weight_cluster_kept_intact(self):
+        """A cluster with many points but low total weight should not get
+        further split — the recursion stops at the weight threshold."""
+        rng = np.random.default_rng(29)
+        # 100 low-weight points and 10 high-weight points well-separated.
+        low_cluster = rng.standard_normal((100, 3))
+        high_cluster = rng.standard_normal((10, 3)) + 20.0
+        embeddings = np.vstack([low_cluster, high_cluster])
+        weights = np.concatenate([np.full(100, 0.001), np.full(10, 10.0)])
+        # Total low-cluster weight = 0.1; threshold of 0.5 keeps it intact,
+        # high cluster weight = 100 should still get subdivided.
+        result = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=1,
+            min_cluster_weight=0.5, verbose=False, random_state=42,
+        )
+        # Find the leaf containing the low-weight point at index 0; all 100
+        # low-weight points should share this leaf.
+        low_leaf = result.leaf_cluster_assignments[0]
+        low_leaf_count = int((result.leaf_cluster_assignments[:100] == low_leaf).sum())
+        assert low_leaf_count == 100, (
+            f"all 100 low-weight points should be in the same leaf, got "
+            f"{low_leaf_count}"
+        )
+        # And the high-weight cluster should produce more than one leaf.
+        high_leaf_ids = set(result.leaf_cluster_assignments[100:])
+        assert len(high_leaf_ids) > 1, (
+            f"high-weight cluster should subdivide further, got "
+            f"{len(high_leaf_ids)} leaf(s)"
+        )
+
+    def test_requires_sample_weights(self):
+        """min_cluster_weight > 0 without sample_weights is undefined."""
+        embeddings = np.random.randn(20, 3)
+        with pytest.raises(ValueError, match="requires sample_weights"):
+            bisecting_kmeans_linkage(
+                embeddings, min_cluster_weight=1.0, verbose=False,
+            )
+
+    def test_negative_threshold_rejected(self):
+        embeddings = np.random.randn(20, 3)
+        weights = np.ones(20)
+        with pytest.raises(ValueError, match=">= 0"):
+            bisecting_kmeans_linkage(
+                embeddings, sample_weights=weights,
+                min_cluster_weight=-0.1, verbose=False,
+            )
+
+    def test_combined_with_min_cluster_size(self):
+        """When both thresholds are set, whichever fires first stops the
+        recursion. Use a size threshold that fires well before the weight
+        threshold and check we don't see singleton-driven results."""
+        rng = np.random.default_rng(31)
+        embeddings = rng.standard_normal((100, 3))
+        weights = np.full(100, 1.0)  # uniform weights, total = 100
+        # min_cluster_size=20 fires before weight threshold of 0.1 (which
+        # alone would allow singletons since each point's weight = 1 > 0.1).
+        result = bisecting_kmeans_linkage(
+            embeddings, sample_weights=weights, min_cluster_size=20,
+            min_cluster_weight=0.1, verbose=False, random_state=42,
+        )
+        cluster_sizes = np.bincount(result.leaf_cluster_assignments)
+        # Weight threshold of 0.1 alone would let any cluster down to a
+        # single point through (point weight = 1 > 0.1); the size threshold
+        # must keep clusters substantially larger than 1. Allow K-Means
+        # variance: leaves can dip below 20 due to uneven splits, but they
+        # should be far from 1.
+        assert cluster_sizes.min() >= 5, (
+            f"min cluster size = {cluster_sizes.min()} suggests size "
+            f"threshold did not dominate (weight-only would allow "
+            f"singletons)"
+        )
