@@ -372,19 +372,15 @@ def run_worker(
     safe boundaries.
     """
     import faulthandler
-    import resource
-
     from bookgap.openalex_ingest import fetch_works, fetch_all_scopes, embed_works
     from bookgap.util import Filter
 
     faulthandler.enable()
 
-    # Cap virtual memory at 80% of physical RAM so we get a catchable
-    # MemoryError instead of an uncatchable SIGKILL from the OOM killer.
-    import psutil
-    total_ram = psutil.virtual_memory().total
-    mem_limit = int(total_ram * 0.8)
-    resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
+    # RLIMIT_AS + the disk/RSS watchdog are now centralised in
+    # ``jobs.worker_lifecycle`` so every job (curriculum, batch_generator,
+    # scope-manager workers, future bookgap.jobs run invocations) gets
+    # them automatically.
 
     wt = tuple(work_types) if work_types else tuple(ALL_WORK_TYPES)
 

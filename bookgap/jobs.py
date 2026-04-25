@@ -19,9 +19,11 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -35,6 +37,10 @@ import bookgap.openalex_ingest as _ingest_mod
 
 JOBS_DIR_NAME = ".jobs"
 MAX_CONCURRENT_WORKERS = 3
+
+# Serialise manifest writes within a process so the watchdog thread and
+# the main worker thread can't collide on the shared ``<id>.tmp`` rename.
+_manifest_lock = threading.Lock()
 
 STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
@@ -69,11 +75,17 @@ def log_path(job_id: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def write_manifest(job_id: str, manifest: dict[str, Any]) -> None:
-    """Atomically write a job manifest to disk (temp file + os.replace)."""
+    """Atomically write a job manifest to disk (temp file + os.replace).
+
+    Held under ``_manifest_lock`` so the watchdog thread can update
+    the manifest concurrently with the main worker thread without
+    racing on the shared ``<id>.tmp`` filename.
+    """
     dest = manifest_path(job_id)
     tmp = dest.with_suffix(".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, default=str))
-    os.replace(tmp, dest)
+    with _manifest_lock:
+        tmp.write_text(json.dumps(manifest, indent=2, default=str))
+        os.replace(tmp, dest)
 
 
 def read_manifest(job_id: str) -> dict[str, Any]:
@@ -272,48 +284,151 @@ def stop(job_id: str, *, timeout: float = 10.0) -> None:
 # ---------------------------------------------------------------------------
 
 _STOP_REQUESTED = False
+# First reason captured when ``_STOP_REQUESTED`` flipped to True. Subsequent
+# attempts to set it preserve the original cause (e.g., a watchdog disk-abort
+# that triggered a Ctrl-C cascade should keep "disk 91.2%" as the reason,
+# not the SIGINT that followed). Reset on entry to ``worker_lifecycle``.
+_STOP_REASON: Optional[str] = None
 
 
 def stop_requested() -> bool:
-    """Poll whether SIGTERM/SIGINT has been received in the current worker.
+    """Poll whether a stop has been requested in the current worker.
 
-    Only meaningful inside a :func:`worker_lifecycle` context; returns
+    Sources include SIGTERM/SIGINT signal delivery and the
+    ``worker_lifecycle`` watchdog (disk-usage / RSS thresholds). Only
+    meaningful inside a :func:`worker_lifecycle` context; returns
     ``False`` outside one. Long inner loops (e.g., per-scope embedding,
-    per-shard ingest) should poll this between iterations and exit
-    cleanly when it flips, so on-disk state stays consistent.
+    per-shard ingest, chunked corpus reads) should poll this between
+    iterations and exit cleanly when it flips, so on-disk state stays
+    consistent and the lifecycle records the cause.
     """
     return _STOP_REQUESTED
 
 
+def stop_reason() -> Optional[str]:
+    """The first cause recorded when ``_STOP_REQUESTED`` was set.
+
+    Captured by the signal handler or the watchdog thread; consumed by
+    ``worker_lifecycle`` when writing the manifest's error field.
+    """
+    return _STOP_REASON
+
+
+def _request_stop(reason: str) -> None:
+    """Idempotent stop-request helper. Sets the flag + first-cause reason."""
+    global _STOP_REQUESTED, _STOP_REASON
+    _STOP_REQUESTED = True
+    if _STOP_REASON is None:
+        _STOP_REASON = reason
+
+
 def _make_stop_handler(job_id: str) -> Callable[[int, Any], None]:
     def _handler(signum: int, frame: Any) -> None:
-        global _STOP_REQUESTED
-        _STOP_REQUESTED = True
+        _request_stop(f"stop requested via signal {signum}")
         # Best-effort manifest status update so external observers
         # see "interrupted" immediately, even before the worker's
         # main body notices the flag. If this fails (e.g., disk
         # issue), we still let the flag do its job.
         try:
-            update_manifest(
-                job_id,
-                status=STATUS_INTERRUPTED,
-                error=f"stop requested via signal {signum}",
-            )
+            update_manifest(job_id, status=STATUS_INTERRUPTED, error=_STOP_REASON)
         except Exception:
             pass
     return _handler
 
 
+def _start_watchdog(
+    job_id: str,
+    *,
+    mem_limit_pct: Optional[float],
+    disk_abort_pct: Optional[float],
+    interval: float,
+) -> tuple[Optional[threading.Thread], threading.Event]:
+    """Start a daemon watchdog that polls disk + RSS and requests stop on
+    threshold crossings. Returns (thread, stop_event); caller must
+    ``stop_event.set()`` and join the thread on lifecycle exit.
+
+    Either threshold can be disabled by passing ``None`` / 0.
+    """
+    stop_event = threading.Event()
+    if interval <= 0 or (not mem_limit_pct and not disk_abort_pct):
+        return None, stop_event
+
+    try:
+        import psutil
+    except ImportError:
+        return None, stop_event
+
+    cache_dir = _ingest_mod.CACHE_DIR
+    rss_warn_pct = (mem_limit_pct * 100 * 0.95) if mem_limit_pct else None
+    proc = psutil.Process()
+
+    def _watchdog() -> None:
+        # Run until the lifecycle wakes us or we trip a threshold.
+        while not stop_event.wait(interval):
+            try:
+                if disk_abort_pct:
+                    d = shutil.disk_usage(cache_dir)
+                    used_pct = 100.0 * d.used / d.total
+                    if used_pct >= disk_abort_pct:
+                        reason = f"watchdog: disk {used_pct:.1f}% >= {disk_abort_pct:.1f}%"
+                        _request_stop(reason)
+                        try:
+                            update_manifest(job_id, error=reason)
+                        except Exception:
+                            pass
+                        return
+                if rss_warn_pct:
+                    rss = proc.memory_info().rss
+                    rss_pct = 100.0 * rss / psutil.virtual_memory().total
+                    if rss_pct >= rss_warn_pct:
+                        reason = f"watchdog: rss {rss_pct:.1f}% >= {rss_warn_pct:.1f}% (95% of RLIMIT_AS)"
+                        _request_stop(reason)
+                        try:
+                            update_manifest(job_id, error=reason)
+                        except Exception:
+                            pass
+                        return
+            except Exception:
+                # Don't kill a long-running job because of a transient
+                # /proc read or disk-usage stat error in the watchdog.
+                continue
+
+    t = threading.Thread(target=_watchdog, daemon=True, name=f"jobs-watchdog-{job_id}")
+    t.start()
+    return t, stop_event
+
+
 @contextmanager
-def worker_lifecycle(job_id: str) -> Iterator[None]:
+def worker_lifecycle(
+    job_id: str,
+    *,
+    mem_limit_pct: Optional[float] = 0.80,
+    disk_abort_pct: Optional[float] = 90.0,
+    watchdog_interval: float = 10.0,
+) -> Iterator[None]:
     """Wrap a worker's main() body to get manifest-driven lifecycle.
 
-    On entry, records the current pid in the manifest and installs
-    SIGTERM/SIGINT handlers that set :func:`stop_requested` and mark the
-    manifest ``interrupted``. On normal exit the manifest becomes
-    ``complete``; on ``KeyboardInterrupt`` (from either signal or a
-    manual Ctrl-C) it stays ``interrupted``; any other exception yields
-    ``failed`` with the exception message recorded.
+    On entry, records the current pid in the manifest, installs
+    SIGTERM/SIGINT handlers that set :func:`stop_requested`, sets
+    ``RLIMIT_AS`` to ``mem_limit_pct`` of total RAM (so OOM conditions
+    raise a catchable ``MemoryError`` rather than getting an
+    uncatchable kernel SIGKILL), and starts a daemon watchdog thread
+    that polls disk usage + process RSS every ``watchdog_interval``
+    seconds and requests a graceful stop if either crosses
+    ``disk_abort_pct`` or 95% of the RLIMIT_AS ceiling.
+
+    Inner loops should poll :func:`stop_requested` between iterations
+    so the soft-abort actually fires before the kernel ceiling does.
+
+    Lifecycle outcomes:
+        - normal return → manifest ``complete``
+        - ``KeyboardInterrupt`` (signal or watchdog) → ``interrupted``,
+          error = the first :func:`stop_reason` captured
+        - any other exception → ``failed``, error = type+message
+
+    Pass ``mem_limit_pct=None`` or ``disk_abort_pct=None`` to disable
+    either threshold; pass ``watchdog_interval<=0`` to disable the
+    watchdog entirely (useful in tests).
 
     Usage::
 
@@ -321,10 +436,31 @@ def worker_lifecycle(job_id: str) -> Iterator[None]:
             with worker_lifecycle(job_id):
                 do_work()  # may poll jobs.stop_requested() in inner loops
     """
-    global _STOP_REQUESTED
+    global _STOP_REQUESTED, _STOP_REASON
     _STOP_REQUESTED = False
+    _STOP_REASON = None
 
     update_manifest(job_id, pid=os.getpid())
+
+    if mem_limit_pct:
+        try:
+            import resource
+            import psutil  # type: ignore[import-untyped]
+            total_ram = psutil.virtual_memory().total
+            mem_limit = int(total_ram * mem_limit_pct)
+            resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
+        except (ImportError, ValueError, OSError):
+            # resource is Unix-only; psutil may be missing; setrlimit can
+            # fail under some sandboxed environments. None of these
+            # should kill the run — we just lose the RLIMIT_AS backstop.
+            pass
+
+    watchdog_thread, stop_event = _start_watchdog(
+        job_id,
+        mem_limit_pct=mem_limit_pct,
+        disk_abort_pct=disk_abort_pct,
+        interval=watchdog_interval,
+    )
 
     handler = _make_stop_handler(job_id)
     old_term = signal.signal(signal.SIGTERM, handler)
@@ -334,16 +470,19 @@ def worker_lifecycle(job_id: str) -> Iterator[None]:
         try:
             yield
         except BaseException as exc:
-            # A stop signal can race with other downstream exceptions
-            # (e.g. a subprocess exiting non-zero after receiving the
-            # cgroup-wide SIGTERM). Whatever exception surfaces, treat
-            # the exit as 'interrupted' when a stop was requested so
-            # the manifest reflects user intent rather than the
-            # propagated symptom.
+            # A stop signal/watchdog-trip can race with other downstream
+            # exceptions (e.g. a subprocess exiting non-zero after
+            # receiving the cgroup-wide SIGTERM). Whatever exception
+            # surfaces, treat the exit as 'interrupted' when a stop was
+            # requested so the manifest reflects the actual cause
+            # (signal vs disk vs memory) rather than the propagated
+            # symptom.
             if _STOP_REQUESTED:
-                status, error = STATUS_INTERRUPTED, str(exc) or "interrupted"
+                status = STATUS_INTERRUPTED
+                error = _STOP_REASON or str(exc) or "interrupted"
             else:
-                status, error = STATUS_FAILED, f"{type(exc).__name__}: {exc}"
+                status = STATUS_FAILED
+                error = f"{type(exc).__name__}: {exc}"
             update_manifest(job_id, status=status, error=error, finished_at=now())
             raise
         else:
@@ -351,6 +490,9 @@ def worker_lifecycle(job_id: str) -> Iterator[None]:
     finally:
         signal.signal(signal.SIGTERM, old_term)
         signal.signal(signal.SIGINT, old_int)
+        stop_event.set()
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=5)
 
 
 __all__ = [
@@ -383,6 +525,7 @@ __all__ = [
     "launch",
     "stop",
     # Worker-side
+    "stop_reason",
     "stop_requested",
     "worker_lifecycle",
 ]
