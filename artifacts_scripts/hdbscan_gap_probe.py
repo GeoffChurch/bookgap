@@ -39,9 +39,10 @@ def _load_scope_shard(
     """Return (embeddings, ids, titles, refs_or_None) for one shard.
 
     Aligns embeddings to parquet row order via the per-batch id manifests.
-    The primary_topic_id column is present in the parquet schema but was
-    not populated by snapshot_ingest; the caller derives topic identity
-    from the parquet path instead (``<field>/<subfield>/<topic>/<type>``).
+    Topic identity is derived from the parquet path
+    (``<field>/<subfield>/<topic>/<type>``) by the caller — the path is
+    the canonical source of truth for the per-scope layout, so we don't
+    bother reading the parquet's primary_topic_id column.
     """
     columns = ["id", "display_name"]
     if with_refs:

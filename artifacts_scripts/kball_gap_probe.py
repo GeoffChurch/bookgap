@@ -17,28 +17,24 @@ Usage::
 Builds a Cloud at the project's standard defaults (SimHash dedup, GIST
 embedder, NONE denoiser, etc.) — same defaults as the HDBSCAN probe
 — then iterates topics in scope and runs gap detection per topic via
-``bookgap.gaps._compute_gaps_for_topic``.
+``bookgap.gaps._compute_gaps_for_topic``, which is joblib-cached so
+repeated runs over the same (cloud, topic, radius, num_gaps) hit cache.
 """
 from __future__ import annotations
 
 import argparse
 from typing import List
 
-import numpy as np
-
-from itertools import islice
-
 from bookgap.cloud import Cloud
 from bookgap.configs.cloud.cloud_config import CloudConfig
 from bookgap.configs.util.filter_config import FilterConfig, FilterPairConfig
-from bookgap.gaps import compute_gap_statistics
+from bookgap.gaps import _compute_gaps_for_topic
 from bookgap.openalex_scopes import (
     get_field_topics, get_subfield_topics,
 )
 from bookgap.snapshot_ingest import load_taxonomy
-from bookgap.subcloud import SubCloud
 from bookgap.types import CellType
-from bookgap.util import Filter, LOGGER, WorkType
+from bookgap.util import WorkType
 from hydra.utils import instantiate
 
 
@@ -106,41 +102,26 @@ def main():
         topic_rec = pinned_tax.topics.get(topic_id, {})
         topic_name = topic_rec.get("display_name", topic_id)
         print(f"\n[{i}/{len(topics)}] Topic {topic_id} — {topic_name}")
-
-        # Split by work_type only — primary_topic_id isn't populated in
-        # our parquets (would need a snapshot-ingest fix), but the parent
-        # Cloud's pre-filter already restricts to this topic, so a
-        # work_type-only post-filter gives us the books/articles split
-        # the gap algorithm wants.
-        books = SubCloud(parent=cloud, post_filter=Filter(work_types=("book",)))
-        articles = SubCloud(parent=cloud, post_filter=Filter(work_types=("article",)))
-        n_books = len(books.embeddings())
-        n_articles = len(articles.embeddings())
-        print(f"  {n_books} books, {n_articles} articles")
-        if n_articles == 0:
-            print(f"  (no articles)"); continue
-
-        # Per-book gap sizes (used for percentile/z-score statistics)
-        book_gap_sizes = cell_type.value.compute_gap_sizes_for_embeddings(
-            ambient=articles, landmark=books,
-            embeddings=books.embeddings(),
-            radius_fraction=args.radius_fraction, k=1, is_intra_cloud=True,
+        gaps = _compute_gaps_for_topic(
+            cloud=cloud,
+            topic_id=topic_id,
+            topic_name=topic_name,
+            radius_fraction=args.radius_fraction,
+            cell_type=cell_type,
+            num_gaps=args.num_gaps,
         )
-
-        # Article-query gaps
-        gen = cell_type.value.find_gaps(
-            ambient=articles, landmark=books, query=articles,
-            radius_fraction=args.radius_fraction, k=1, is_intra_cloud=False,
-        )
-        article_titles = articles.work_titles()
-        for gap_idx, gap in enumerate(islice(gen, args.num_gaps)):
-            idxs = gap.get_dists_idxs().idxs
-            gap_size = len(idxs)
-            pctile, zscore, shapiro = compute_gap_statistics(gap_size, book_gap_sizes)
-            all_gaps.append(gap)
-            print(f"  Gap {gap_idx}: size={gap_size}, pctile={pctile:.1f}, "
-                  f"z={zscore:.2f}, shapiro_log10p={shapiro:.2f}")
-            for ii in list(idxs[:args.top_titles]):
+        all_gaps.extend(gaps)
+        if not gaps:
+            print(f"  (no gaps found)")
+            continue
+        for g in gaps:
+            print(f"  Gap {g.gap_idx}: size={g.gap_size}, "
+                  f"pctile={g.gap_size_percentile:.1f}, "
+                  f"z={g.gap_zscore:.2f}, "
+                  f"shapiro_log10p={g.shapiro_log10_pval:.2f}")
+            idxs = list(g.gap.get_dists_idxs().idxs[:args.top_titles])
+            article_titles = g.articles.work_titles()
+            for ii in idxs:
                 t = article_titles[int(ii)]
                 print(f"    - {(t or '(no title)')[:90]}")
 
