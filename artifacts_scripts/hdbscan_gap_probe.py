@@ -249,16 +249,26 @@ def _project_via_basis(emb: np.ndarray, basis: np.ndarray) -> np.ndarray:
 
 
 def _solve_keep_smallest_gep(A: np.ndarray, B: np.ndarray, n_keep: int) -> np.ndarray:
-    """Solve A v = λ B v, return the n_keep smallest-eigenvalue eigvecs as columns."""
+    """Solve A v = λ B v, return the n_keep smallest-eigenvalue eigvecs as columns.
+
+    Uses an adaptive Tikhonov ridge on B: if the unregularised call fails
+    (B too rank-deficient), retries with progressively larger ridges.
+    """
     import scipy.linalg
     A = 0.5 * (A + A.T)
     B = 0.5 * (B + B.T)
-    # Tikhonov ridge in case B is rank-deficient.
-    ridge = 1e-6 * np.trace(B) / B.shape[0]
-    B_reg = B + ridge * np.eye(B.shape[0])
-    eigvals, eigvecs = scipy.linalg.eigh(A, B_reg)
-    # eigh ascending; smallest are first n_keep columns
-    return eigvecs[:, :n_keep]
+    trace_B = float(np.trace(B))
+    base_ridge = max(trace_B, 1.0) / B.shape[0]
+    for ridge_scale in (1e-6, 1e-3, 1e-1, 1.0):
+        try:
+            B_reg = B + ridge_scale * base_ridge * np.eye(B.shape[0])
+            eigvals, eigvecs = scipy.linalg.eigh(A, B_reg)
+            return eigvecs[:, :n_keep]
+        except np.linalg.LinAlgError:
+            continue
+    raise np.linalg.LinAlgError(
+        f"GEP failed at all ridge scales up to {1.0 * base_ridge:.3e}"
+    )
 
 
 def _denoise_lpp(ctx: _ProbeDenoiserContext, n_keep: int) -> np.ndarray:
@@ -270,22 +280,80 @@ def _denoise_lpp(ctx: _ProbeDenoiserContext, n_keep: int) -> np.ndarray:
     return _solve_keep_smallest_gep(A_num, A_den, n_keep)
 
 
+def _denoise_lip(ctx: _ProbeDenoiserContext, n_keep: int) -> np.ndarray:
+    """Laplacian-Inducing Projection — keep n_keep smallest eigvecs of
+    S_L v = λ S_T v. Differs from LPP by the denominator (total scatter vs
+    degree-weighted scatter). Mass-uniform rather than degree-weighted."""
+    return _solve_keep_smallest_gep(ctx.S_L(), ctx.S_T(), n_keep)
+
+
+def _denoise_lip_eigen_only(ctx: _ProbeDenoiserContext, n_keep: int) -> np.ndarray:
+    """Minimise v^T S_L v without a GEP denominator: plain eigendecomp of
+    S_L, keep smallest eigvecs. Unlike LIP/LPP this has no variance-
+    preservation constraint — low-variance directions with tiny Laplacian
+    scatter can dominate, which may or may not be desirable."""
+    import scipy.linalg
+    S_L = ctx.S_L()
+    S_L = 0.5 * (S_L + S_L.T)
+    _, eigvecs = scipy.linalg.eigh(S_L)
+    return eigvecs[:, :n_keep]
+
+
+def _denoise_lip_diff(ctx: _ProbeDenoiserContext, n_keep: int) -> np.ndarray:
+    """S_L_norm v = λ (S_T − S_L_norm) v, using the *normalized* Laplacian
+    (eigenvalues in [0, 2]) to keep the denominator positive-definite.
+
+    The unnormalized-Laplacian version doesn't make sense: L can have
+    eigenvalues up to 2·max_degree (often >> 2), so S_L can exceed S_T
+    along most directions and S_T − S_L is negative definite. With the
+    symmetric normalized Laplacian L_sym = I − D^(−1/2) A D^(−1/2),
+    S_L_norm = Xc^T L_sym Xc is bounded, and
+        S_T − S_L_norm = Xc^T (I − L_sym) Xc = Xc^T (D^(−1/2) A D^(−1/2)) Xc
+    is positive semi-definite — it's a *similarity-weighted scatter*
+    rewarding directions where citation-linked works covary.
+
+    Minimising S_L_norm / (S_T − S_L_norm) is then: "find directions where
+    graph-incoherence is low relative to graph-coherence." Equivalent to
+    LPP with a specifically-chosen denominator, but stated in a way that
+    makes the signal/noise interpretation direct.
+    """
+    import scipy.sparse as sp
+    X_c = ctx.X_centered()
+    B = ctx.A_sym()
+    degrees = np.asarray(B.sum(axis=1)).ravel()
+    safe = degrees > 0
+    inv_sqrt = np.zeros_like(degrees, dtype=float)
+    inv_sqrt[safe] = np.power(degrees[safe], -0.5)
+    D_inv_sqrt = sp.diags(inv_sqrt)
+    # Symmetric normalised Laplacian L_sym = I - D^{-1/2} A D^{-1/2}
+    sim = D_inv_sqrt @ B @ D_inv_sqrt  # = I - L_sym
+    S_L_norm = X_c.T @ ((sp.eye(B.shape[0]) - sim) @ X_c)
+    S_coherent = X_c.T @ (sim @ X_c)  # = S_T - S_L_norm (PSD by construction)
+    return _solve_keep_smallest_gep(S_L_norm, S_coherent, n_keep)
+
+
 def _denoise_cclip(
-    ctx: _ProbeDenoiserContext, n_keep: int, alpha: Optional[float] = None,
+    ctx: _ProbeDenoiserContext, n_keep: int, alpha: float = 0.5,
 ) -> Tuple[np.ndarray, float]:
-    """CCLIP: minimise ((1-α) S_B + α S_L) / S_T. If α is None, auto-pick
-    via trace normalisation: α = tr(S_L) / (tr(S_B) + tr(S_L)).
+    """CCLIP: minimise ((1-α) S_B + α S_L) / S_T.
+
+    S_B and S_L have incommensurate magnitudes (tr(S_L) can be 10^7× tr(S_B)
+    at scale), so we pre-normalise both to trace=d before the convex
+    combination. Then α has its natural interpretation:
+      α=0 → pure class-conflation (S_B only)
+      α=1 → pure locality-inducing (S_L only)
+      α=0.5 → balanced contribution
     """
     S_B = ctx.S_B_multi(list(range(ctx.num_subsets())))
     S_L = ctx.S_L()
     S_T = ctx.S_T()
-    if alpha is None:
-        tr_B = float(np.trace(S_B))
-        tr_L = float(np.trace(S_L))
-        alpha = tr_B / (tr_B + tr_L) if (tr_B + tr_L) > 0 else 0.5
-        # The above gives alpha that *equalises* the two trace contributions
-        # in the numerator since (1-α) tr_B = α tr_L when α = tr_B/(tr_B+tr_L).
-    A = (1 - alpha) * S_B + alpha * S_L
+    d = S_T.shape[0]
+    tr_B = float(np.trace(S_B))
+    tr_L = float(np.trace(S_L))
+    print(f"  raw: trace(S_B)={tr_B:.3e}, trace(S_L)={tr_L:.3e}")
+    S_B_norm = S_B * (d / tr_B) if tr_B > 0 else S_B
+    S_L_norm = S_L * (d / tr_L) if tr_L > 0 else S_L
+    A = (1 - alpha) * S_B_norm + alpha * S_L_norm
     return _solve_keep_smallest_gep(A, S_T, n_keep), alpha
 
 
@@ -521,7 +589,8 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
         cclip_alpha: Optional[float] = None) -> None:
     from fast_hdbscan import HDBSCAN
 
-    needs_graph = denoiser in {"lpp", "cclip", "hierarchical", "criteria_union", "rnojd"}
+    needs_graph = denoiser in {"lpp", "lip", "lip_eigen", "lip_diff",
+                               "cclip", "hierarchical", "criteria_union", "rnojd"}
     print(f"Loading scope {scope}...")
     emb, ids, types, titles, topic_ids, refs = load_scope(scope, with_refs=needs_graph)
     n, d = emb.shape
@@ -540,7 +609,8 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
             print(f"Denoiser multi_lda[{class_axis}]: projecting out top "
                   f"{drop_k} between-class directions ({n_classes} classes)...")
             emb = _drop_top_k_multi_lda(emb, labels, drop_k)
-    elif denoiser in {"lpp", "cclip", "hierarchical", "criteria_union", "rnojd"}:
+    elif denoiser in {"lpp", "lip", "lip_eigen", "lip_diff",
+                      "cclip", "hierarchical", "criteria_union", "rnojd"}:
         labels = _class_labels(topic_ids, types, class_axis)
         n_classes = len(set(labels))
         print(f"Building in-scope citation graph for {n:,} works...")
@@ -553,11 +623,25 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
             print(f"Denoiser lpp: keeping {n_keep} smallest eigvecs of Xc^T L Xc / Xc^T D Xc...")
             basis = _denoise_lpp(ctx, n_keep)
             emb = _project_via_basis(emb, basis)
+        elif denoiser == "lip":
+            print(f"Denoiser lip: keeping {n_keep} smallest eigvecs of S_L / S_T...")
+            basis = _denoise_lip(ctx, n_keep)
+            emb = _project_via_basis(emb, basis)
+        elif denoiser == "lip_eigen":
+            print(f"Denoiser lip_eigen: keeping {n_keep} smallest eigvecs of S_L alone (no GEP)...")
+            basis = _denoise_lip_eigen_only(ctx, n_keep)
+            emb = _project_via_basis(emb, basis)
+        elif denoiser == "lip_diff":
+            print(f"Denoiser lip_diff: keeping {n_keep} smallest eigvecs of S_L / (S_T − S_L)...")
+            basis = _denoise_lip_diff(ctx, n_keep)
+            emb = _project_via_basis(emb, basis)
         elif denoiser == "cclip":
-            print(f"Denoiser cclip[{class_axis}]: keeping {n_keep} smallest "
-                  f"eigvecs of ((1-α) S_B + α S_L) / S_T ({n_classes} classes)...")
-            basis, alpha_used = _denoise_cclip(ctx, n_keep, cclip_alpha)
-            print(f"  α = {alpha_used:.4f} ({'auto' if cclip_alpha is None else 'user'})")
+            alpha_used = 0.5 if cclip_alpha is None else cclip_alpha
+            print(f"Denoiser cclip[{class_axis}]: α={alpha_used:.3f}, "
+                  f"keeping {n_keep} smallest eigvecs of "
+                  f"((1-α) Ŝ_B + α Ŝ_L) / S_T, pre-trace-normalised "
+                  f"({n_classes} classes)...")
+            basis, _ = _denoise_cclip(ctx, n_keep, alpha_used)
             emb = _project_via_basis(emb, basis)
         elif denoiser == "hierarchical":
             print(f"Denoiser hierarchical[{class_axis}]: project out top {drop_k} class-disc, "
@@ -616,9 +700,17 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
     types_arr = np.array(types)
     is_book = types_arr == "book"
     n_books_total = int(is_book.sum())
+    corpus_book_rate = n_books_total / n
 
-    print(f"\n=== Book fraction for clusters of size >= {size_floor} "
-          f"(total books in corpus: {n_books_total:,}) ===")
+    print(f"\n=== Cluster book-fraction analysis (size >= {size_floor}, "
+          f"corpus book rate = {corpus_book_rate:.3%}) ===")
+
+    # For each qualifying cluster compute (id, size, books, binomial p-value).
+    # p-value = P(X <= k | n, p) under H0 that the cluster is a uniform random
+    # sample from the corpus. Low p = cluster is significantly book-depleted
+    # relative to its size. Neutralises the base-rate dominance critique
+    # ("many book-free clusters" trivially hold at small sizes and low p).
+    from scipy.stats import binom
     rows = []
     for c in unique_labels:
         mask = labels == c
@@ -626,34 +718,35 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
         if sz < size_floor:
             continue
         books = int(is_book[mask].sum())
-        rows.append((int(c), sz, books / sz))
-    # Populous book-free first; then by descending size.
-    rows.sort(key=lambda r: (r[2], -r[1]))
+        p_value = float(binom.cdf(books, sz, corpus_book_rate))
+        rows.append((int(c), sz, books, p_value))
+    # Sort by ascending p-value (most-significantly-depleted first); tiebreak
+    # by descending size so ties prefer larger clusters.
+    rows.sort(key=lambda r: (r[3], -r[1]))
 
-    n_book_free = sum(1 for _, _, f in rows if f == 0.0)
-    print(f"  qualifying clusters: {len(rows)}")
-    print(f"  strictly book-free:  {n_book_free}")
-
-    if rows:
-        fracs = np.array([f for _, _, f in rows])
-        for lo, hi in [(0.0, 0.001), (0.001, 0.01), (0.01, 0.05),
-                       (0.05, 0.1), (0.1, 0.25), (0.25, 1.01)]:
-            h = int(((fracs >= lo) & (fracs < hi)).sum())
-            print(f"  book_frac in [{lo:.3f}, {hi:.3f}): {h}")
+    n_strictly = sum(1 for _, _, b, _ in rows if b == 0)
+    n_sig_001 = sum(1 for _, _, _, p in rows if p < 1e-3)
+    n_sig_0001 = sum(1 for _, _, _, p in rows if p < 1e-4)
+    n_sig_000001 = sum(1 for _, _, _, p in rows if p < 1e-6)
+    print(f"  qualifying clusters:              {len(rows)}")
+    print(f"  strictly book-free (books==0):    {n_strictly}  [raw count]")
+    print(f"  significantly depleted (p<1e-3):  {n_sig_001}")
+    print(f"  significantly depleted (p<1e-4):  {n_sig_0001}")
+    print(f"  very significantly dep (p<1e-6):  {n_sig_000001}")
 
     titles_arr = np.array(titles, dtype=object)
-    # rows are already sorted book-free-first, then by descending size.
-    book_free_rows = [r for r in rows if r[2] == 0.0][:top_clusters]
-    book_free_rows.sort(key=lambda r: -r[1])  # largest first for display
 
-    print(f"\n=== Top {len(book_free_rows)} most-populous book-free clusters ===")
-    if not book_free_rows:
-        print("  (none found — no populous book-free clusters at this threshold)")
-    for c, sz, _ in book_free_rows:
+    print(f"\n=== Top {top_clusters} clusters by binomial significance "
+          f"(lowest p-value, size-tiebreak) ===")
+    shown = 0
+    for c, sz, books, p in rows[:top_clusters]:
         mask = labels == c
-        print(f"\n  Cluster {c} (size {sz:,}, books=0):")
+        print(f"\n  Cluster {c} (size {sz:,}, books={books}, p={p:.2e}):")
         for t in titles_arr[mask][:5]:
             print(f"    - {(t or '(no title)')[:90]}")
+        shown += 1
+    if shown == 0:
+        print("  (none found — no qualifying clusters at this threshold)")
 
 
 def main():
@@ -669,8 +762,9 @@ def main():
     p.add_argument("--drop-k", type=int, default=0,
                    help="project out top-k components before clustering")
     p.add_argument("--denoiser",
-                   choices=["pca", "multi_lda", "lpp", "cclip",
-                            "hierarchical", "criteria_union", "rnojd"],
+                   choices=["pca", "multi_lda", "lpp", "lip", "lip_eigen",
+                            "lip_diff", "cclip", "hierarchical",
+                            "criteria_union", "rnojd"],
                    default="pca",
                    help="pca=variance-greedy; multi_lda=between-class GEP; "
                         "lpp/cclip/hierarchical/rnojd=citation-graph based")
