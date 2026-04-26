@@ -79,6 +79,118 @@ cs = ConfigStore.instance()
 cs.store(name="curriculum", node=CurriculumConfig())
 
 
+def _cluster_with_graph_bisect(
+    adj: sp.spmatrix,
+    *,
+    n_clusters: int,
+    seed: int = 42,
+) -> NDArray[np.intp]:
+    """Recursive Fiedler-based spectral bisection on a sparse graph.
+
+    At each step, picks the largest current cluster, computes the
+    Fiedler vector (second-smallest eigenvector) of its induced
+    subgraph's normalised Laplacian, and splits by the median of that
+    vector for balance. Recurses until ``n_clusters`` clusters exist.
+
+    Different bias from global spectral clustering: each bisection
+    adapts to the local subgraph structure rather than relying on a
+    single global eigenvector decomposition. Produces a clean
+    recursive hierarchy (you could read off a binary tree from the
+    bisection sequence). The pick-largest heuristic mirrors bisecting
+    K-means; an alternative is pick-by-Fiedler-value (bisect the
+    cluster with the clearest cut next).
+
+    Returns ``membership`` of length ``adj.shape[0]``, values in
+    ``[0, n_clusters)``.
+    """
+    import heapq
+    from scipy.sparse.linalg import eigsh
+
+    n = adj.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.intp)
+    if n_clusters <= 1:
+        return np.zeros(n, dtype=np.intp)
+    if n_clusters >= n:
+        return np.arange(n, dtype=np.intp)
+
+    sym = ((adj + adj.T) * 0.5).tocsr()
+
+    cluster_ids = np.zeros(n, dtype=np.intp)
+    # heap entries: (-size, tiebreak, cluster_id, indices)
+    # The tiebreak counter prevents heapq from comparing numpy arrays.
+    heap: list = []
+    counter = 0
+    heapq.heappush(heap, (-n, counter, 0, np.arange(n, dtype=np.intp)))
+    counter += 1
+    next_cid = 1
+    rng = np.random.RandomState(seed)
+
+    def _fiedler_split(sub: sp.spmatrix, size: int) -> np.ndarray:
+        """Return a boolean mask splitting ``sub`` via its Fiedler vector
+        (median split). Falls back to a random 50/50 split on degenerate
+        cases (no edges, eigsh failure, all-equal eigenvector)."""
+        deg = np.asarray(sub.sum(axis=1)).flatten()
+        if deg.max() <= 0:
+            return rng.rand(size) >= 0.5
+        with np.errstate(divide="ignore"):
+            deg_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
+        D_inv_sqrt = sp.diags(deg_inv_sqrt)
+        L_norm = sp.eye(size) - D_inv_sqrt @ sub @ D_inv_sqrt
+        try:
+            if size <= 200:
+                # Dense path for small subgraphs — more reliable.
+                eigvals, eigvecs = np.linalg.eigh(L_norm.toarray())
+            else:
+                k = 3  # ask for 3, take the second-smallest non-zero
+                eigvals, eigvecs = eigsh(
+                    L_norm, k=k, sigma=0, which="LM",
+                )
+            order = np.argsort(eigvals)
+            eigvecs = eigvecs[:, order]
+            # Skip the trivial all-constant eigenvector (eigval ~ 0);
+            # prefer the next non-degenerate one as Fiedler. If a
+            # subgraph has multiple connected components the second
+            # eigenvalue is also ~0 and we use the corresponding
+            # eigenvector as a (still-meaningful) component indicator.
+            fiedler = eigvecs[:, 1]
+        except Exception:
+            return rng.rand(size) >= 0.5
+        # Sign split (threshold at 0) — respects natural community
+        # boundaries rather than forcing balance. Falls back to median
+        # split if sign split is fully one-sided (the eigenvector's
+        # sign is uniform, common for short eigenvectors with numeric
+        # bias), and to random if even median is degenerate.
+        mask = fiedler > 0
+        if mask.all() or (~mask).all():
+            med = float(np.median(fiedler))
+            mask = fiedler > med
+        if mask.all() or (~mask).all():
+            return rng.rand(size) >= 0.5
+        return mask
+
+    while heap and next_cid < n_clusters:
+        neg_size, _t, cid, indices = heapq.heappop(heap)
+        size = -neg_size
+        if size <= 1:
+            heapq.heappush(heap, (neg_size, _t, cid, indices))
+            break
+        sub = sym[indices][:, indices]
+        split_mask = _fiedler_split(sub, size)
+        idx_a = indices[split_mask]
+        idx_b = indices[~split_mask]
+        new_cid = next_cid
+        next_cid += 1
+        cluster_ids[idx_b] = new_cid
+        # idx_a keeps cid
+        heapq.heappush(heap, (-len(idx_a), counter, cid, idx_a))
+        counter += 1
+        heapq.heappush(heap, (-len(idx_b), counter, new_cid, idx_b))
+        counter += 1
+
+    return cluster_ids
+
+
 def _cluster_with_spectral(
     adj: sp.spmatrix,
     *,
@@ -915,29 +1027,39 @@ def run_curriculum_building(
     #      directly serve as frontier topics, no mass-threshold cut needed.
     #   2. all other ``linkage_method``s: embedding-based hierarchical
     #      clustering, then mass-threshold cut to find frontier topics.
-    if cfg.linkage_method == "spectral":
+    if cfg.linkage_method in ("spectral", "graph_bisect"):
         if not cfg.rank_before_clustering:
             raise ValueError(
-                "spectral requires rank_before_clustering=True so the "
+                f"{cfg.linkage_method} requires rank_before_clustering=True so the "
                 "citation subgraph is restricted to the top-k filtered works"
             )
-        LOGGER.info(
-            f"Running spectral clustering on citation subgraph of "
-            f"top-{n_samples} works (n_clusters={cfg.desired_n_topics})..."
-        )
         sub_adj = adj_citation[top_k_indices][:, top_k_indices]
-        membership = _cluster_with_spectral(
-            sub_adj, n_clusters=cfg.desired_n_topics,
-        )
+        if cfg.linkage_method == "spectral":
+            LOGGER.info(
+                f"Running spectral clustering on citation subgraph of "
+                f"top-{n_samples} works (n_clusters={cfg.desired_n_topics})..."
+            )
+            membership = _cluster_with_spectral(
+                sub_adj, n_clusters=cfg.desired_n_topics,
+            )
+            method_label = "Spectral"
+        else:
+            LOGGER.info(
+                f"Running recursive Fiedler bisection on citation subgraph "
+                f"of top-{n_samples} works (n_clusters={cfg.desired_n_topics})..."
+            )
+            membership = _cluster_with_graph_bisect(
+                sub_adj, n_clusters=cfg.desired_n_topics,
+            )
+            method_label = "Graph-bisect"
         n_communities = int(membership.max()) + 1 if len(membership) > 0 else 0
         LOGGER.info(
-            f"Spectral produced {n_communities} communities. "
+            f"{method_label} produced {n_communities} communities. "
             f"Top-10 sizes: "
             f"{sorted(np.bincount(membership).tolist(), reverse=True)[:10]}"
         )
-        # Spectral always produces exactly n_clusters communities (unless
-        # n_samples < n_clusters, in which case _cluster_with_spectral
-        # returns one-per-node), so no truncation step.
+        # Both methods always produce exactly n_clusters communities (unless
+        # n_samples < n_clusters), so no truncation step.
         leaf_cluster_assignments = membership
         n_leaf_clusters = n_communities
         linked = np.zeros((0, 4), dtype=np.float64)

@@ -530,6 +530,15 @@ class CurriculumConfig:
       subgraphs is generally close to Leiden's; on weakly-connected
       graphs Leiden tends to be more robust. Requires
       ``rank_before_clustering=True``.
+    - 'graph_bisect': recursive Fiedler-based bisection on the citation
+      subgraph. At each step picks the largest current cluster and
+      splits it via the second-smallest eigenvector of its induced
+      subgraph's normalised Laplacian (median split). Recurses until
+      *K* clusters exist. Different bias from 'spectral': each
+      bisection adapts to the local subgraph structure rather than
+      relying on a single global eigenvector decomposition; produces
+      a clean recursive hierarchy. Direct *K* control. Requires
+      ``rank_before_clustering=True``.
     """
     
     min_cluster_size: int = 1
