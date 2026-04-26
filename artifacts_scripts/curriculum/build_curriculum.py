@@ -79,6 +79,62 @@ cs = ConfigStore.instance()
 cs.store(name="curriculum", node=CurriculumConfig())
 
 
+def _cluster_with_leiden(
+    adj: sp.spmatrix,
+    *,
+    resolution: float = 1.0,
+    seed: int = 42,
+) -> Tuple[NDArray[np.intp], int]:
+    """Run Leiden community detection on a (possibly directed) sparse graph.
+
+    Used when ``cfg.linkage_method == 'leiden'``. The graph is symmetrised
+    (Leiden expects undirected), and the Reichardt-Bornholdt
+    configuration null model is used with ``resolution`` as the
+    resolution parameter — higher values yield more, smaller communities.
+
+    Citations are the semantic relation curricula *means* (one paper
+    cites another because it builds on it), so community detection on
+    the citation subgraph of the top-k relevance-filtered works produces
+    a topic structure based on the underlying relation rather than on
+    embedding distance. See ``CLUSTERING_NOTES.md`` for context on why
+    embedding-based clustering can produce singleton-blob failure modes
+    on heterogeneous corpora.
+
+    Returns: ``(membership, n_communities)``.
+    """
+    import igraph  # type: ignore[import-untyped]
+    import leidenalg  # type: ignore[import-untyped]
+
+    n = adj.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.intp), 0
+    # Symmetrise — Leiden treats edges as undirected.
+    sym = (adj + adj.T) * 0.5
+    sym_coo = sym.tocoo()
+    edges = list(zip(sym_coo.row.tolist(), sym_coo.col.tolist()))
+    weights = sym_coo.data.tolist()
+    g = igraph.Graph(n=n, edges=edges, directed=False)
+    if weights:
+        g.es["weight"] = weights
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.RBConfigurationVertexPartition,
+            resolution_parameter=resolution,
+            weights="weight",
+            seed=seed,
+        )
+    else:
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.RBConfigurationVertexPartition,
+            resolution_parameter=resolution,
+            seed=seed,
+        )
+    membership = np.array(partition.membership, dtype=np.intp)
+    n_communities = int(membership.max()) + 1 if len(membership) > 0 else 0
+    return membership, n_communities
+
+
 def _find_work_indices(
     work_ids: List[str],
     target_ids: List[str],
@@ -803,61 +859,101 @@ def run_curriculum_building(
         embeddings_for_clustering = embeddings
         top_k_indices = np.arange(n_total)  # Identity mapping
     
-    # Build dendrogram on (possibly filtered) embeddings
-    LOGGER.info("Building dendrogram...")
-    # Weights are only meaningful for the rank_before_clustering path
-    # (where ``point_masses`` is the relevance over the top-k subset).
-    # The full-cloud cached path uses uniform weights — appropriate
-    # because no PR step has produced a per-work mass yet at that point.
-    weighted = cfg.linkage_method == "weighted_bisecting_kmeans"
-    if (not cfg.rank_before_clustering) and cfg.linkage_method == "bisecting_kmeans":
-        # Full-cloud + bisecting_kmeans is expensive: leverage Cloud-level caching/subsumption.
-        dendrogram_result = cloud.dendrogram(
-            "bisecting_kmeans",
-            min_cluster_size=cfg.min_cluster_size,
-            max_depth=cfg.max_cluster_depth,
-        )
-    else:
-        if weighted and not cfg.rank_before_clustering:
+    # Cluster the (possibly filtered) works. Two paths:
+    #   1. ``leiden``: community detection on the citation subgraph of the
+    #      top-k filtered works (no embedding-based dendrogram). Citations
+    #      are the semantic relation curricula *mean*; Leiden communities
+    #      directly serve as frontier topics, no mass-threshold cut needed.
+    #   2. all other ``linkage_method``s: embedding-based hierarchical
+    #      clustering, then mass-threshold cut to find frontier topics.
+    if cfg.linkage_method == "leiden":
+        if not cfg.rank_before_clustering:
             raise ValueError(
-                "weighted_bisecting_kmeans requires rank_before_clustering=True "
-                "(weights come from the PageRank pass on the top-k subset)."
+                "leiden requires rank_before_clustering=True so the "
+                "citation subgraph is restricted to the top-k filtered works"
             )
-        dendrogram_result = _build_dendrogram(
-            embeddings_for_clustering,
-            method=cfg.linkage_method,
-            min_cluster_size=cfg.min_cluster_size,
-            min_cluster_weight=cfg.min_cluster_weight,
-            max_depth=cfg.max_cluster_depth,
-            sample_weights=point_masses if weighted else None,
+        LOGGER.info(
+            f"Running Leiden on citation subgraph of top-{n_samples} works "
+            f"(resolution={cfg.leiden_resolution})..."
         )
-    linked = dendrogram_result.linkage
-    leaf_cluster_assignments = dendrogram_result.leaf_cluster_assignments
-    n_leaf_clusters = dendrogram_result.n_leaf_clusters
-    
-    # Aggregate point masses to leaf cluster masses
-    # When n_leaf_clusters < n_samples, multiple points belong to each leaf cluster
-    LOGGER.info(f"Aggregating masses: {n_samples} points -> {n_leaf_clusters} leaf clusters")
-    leaf_masses = np.zeros(n_leaf_clusters, dtype=np.float64)
-    np.add.at(leaf_masses, leaf_cluster_assignments, point_masses)
-    
-    # Propagate masses up dendrogram
-    LOGGER.info("Propagating masses up dendrogram...")
-    node_masses = compute_dendrogram_masses(linked, leaf_masses)
-    
-    # Find frontier set
-    LOGGER.info(f"Finding frontier with ~{cfg.desired_n_topics} topics...")
-    threshold = find_mass_threshold_for_n_topics(linked, node_masses, cfg.desired_n_topics)
-    frontier_nodes = get_frontier_nodes(linked, node_masses, threshold)
-    
-    LOGGER.info(f"Found {len(frontier_nodes)} frontier topics")
-    
-    # Map dendrogram leaves to frontier clusters
-    # Note: frontier_nodes are indices into the node_masses array (0..n_leaf_clusters-1 for leaves)
-    leaf_to_frontier = map_leaves_to_frontier_clusters(linked, frontier_nodes, n_leaf_clusters)
-    
-    # Map original points to frontier clusters via the leaf cluster assignments
-    point_to_cluster = leaf_to_frontier[leaf_cluster_assignments]
+        sub_adj = adj_citation[top_k_indices][:, top_k_indices]
+        membership, n_communities = _cluster_with_leiden(
+            sub_adj, resolution=cfg.leiden_resolution,
+        )
+        LOGGER.info(
+            f"Leiden produced {n_communities} communities on a "
+            f"{n_samples}-node subgraph (desired ~{cfg.desired_n_topics}; "
+            f"adjust ``leiden_resolution`` to tune count)."
+        )
+        # Communities are leaf clusters AND frontier topics — no
+        # hierarchical merging or mass-threshold cut. Trivial linkage
+        # so saved outputs stay schema-compatible with other methods.
+        leaf_cluster_assignments = membership
+        n_leaf_clusters = n_communities
+        linked = np.zeros((0, 4), dtype=np.float64)
+        leaf_masses = np.zeros(n_leaf_clusters, dtype=np.float64)
+        np.add.at(leaf_masses, leaf_cluster_assignments, point_masses)
+        # No dendrogram → no internal-node mass propagation. Save the
+        # leaf masses themselves as ``node_masses`` for output schema.
+        node_masses = leaf_masses.copy()
+        threshold = 0.0
+        frontier_nodes = np.arange(n_communities, dtype=np.int64)
+        point_to_cluster = leaf_cluster_assignments.copy()
+    else:
+        LOGGER.info("Building dendrogram...")
+        # Weights are only meaningful for the rank_before_clustering path
+        # (where ``point_masses`` is the relevance over the top-k subset).
+        # The full-cloud cached path uses uniform weights — appropriate
+        # because no PR step has produced a per-work mass yet at that point.
+        weighted = cfg.linkage_method == "weighted_bisecting_kmeans"
+        if (not cfg.rank_before_clustering) and cfg.linkage_method == "bisecting_kmeans":
+            # Full-cloud + bisecting_kmeans is expensive: leverage Cloud-level caching/subsumption.
+            dendrogram_result = cloud.dendrogram(
+                "bisecting_kmeans",
+                min_cluster_size=cfg.min_cluster_size,
+                max_depth=cfg.max_cluster_depth,
+            )
+        else:
+            if weighted and not cfg.rank_before_clustering:
+                raise ValueError(
+                    "weighted_bisecting_kmeans requires rank_before_clustering=True "
+                    "(weights come from the PageRank pass on the top-k subset)."
+                )
+            dendrogram_result = _build_dendrogram(
+                embeddings_for_clustering,
+                method=cfg.linkage_method,
+                min_cluster_size=cfg.min_cluster_size,
+                min_cluster_weight=cfg.min_cluster_weight,
+                max_depth=cfg.max_cluster_depth,
+                sample_weights=point_masses if weighted else None,
+            )
+        linked = dendrogram_result.linkage
+        leaf_cluster_assignments = dendrogram_result.leaf_cluster_assignments
+        n_leaf_clusters = dendrogram_result.n_leaf_clusters
+
+        # Aggregate point masses to leaf cluster masses
+        # When n_leaf_clusters < n_samples, multiple points belong to each leaf cluster
+        LOGGER.info(f"Aggregating masses: {n_samples} points -> {n_leaf_clusters} leaf clusters")
+        leaf_masses = np.zeros(n_leaf_clusters, dtype=np.float64)
+        np.add.at(leaf_masses, leaf_cluster_assignments, point_masses)
+
+        # Propagate masses up dendrogram
+        LOGGER.info("Propagating masses up dendrogram...")
+        node_masses = compute_dendrogram_masses(linked, leaf_masses)
+
+        # Find frontier set
+        LOGGER.info(f"Finding frontier with ~{cfg.desired_n_topics} topics...")
+        threshold = find_mass_threshold_for_n_topics(linked, node_masses, cfg.desired_n_topics)
+        frontier_nodes = get_frontier_nodes(linked, node_masses, threshold)
+
+        LOGGER.info(f"Found {len(frontier_nodes)} frontier topics")
+
+        # Map dendrogram leaves to frontier clusters
+        # Note: frontier_nodes are indices into the node_masses array (0..n_leaf_clusters-1 for leaves)
+        leaf_to_frontier = map_leaves_to_frontier_clusters(linked, frontier_nodes, n_leaf_clusters)
+
+        # Map original points to frontier clusters via the leaf cluster assignments
+        point_to_cluster = leaf_to_frontier[leaf_cluster_assignments]
     
     # Log cluster sizes (counting original points, not leaf clusters)
     cluster_sizes = [

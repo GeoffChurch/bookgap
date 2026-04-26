@@ -497,7 +497,7 @@ class CurriculumConfig:
     """Configuration for CircuitRank."""
     
     linkage_method: str = "bisecting_kmeans"
-    """Linkage method for hierarchical clustering.
+    """Clustering method for the curriculum.
 
     Options:
     - 'ward', 'average', 'complete', 'single': scipy agglomerative clustering
@@ -508,6 +508,16 @@ class CurriculumConfig:
       the post-PageRank relevance vector. High-relevance works anchor
       cluster centers; the bisection criterion respects relevance mass.
       Requires ``rank_before_clustering=True`` so a per-work weight exists.
+    - 'leiden': Leiden community detection on the *citation subgraph* of
+      the top-k relevance-filtered works. Citations are the semantic
+      relation curricula *means* (one paper cites another because it
+      builds on it), so community detection on the citation graph
+      produces a topic structure based on the underlying relation
+      rather than on embedding distance. Communities directly serve as
+      frontier topics — no embedding-based hierarchical merging or
+      mass-threshold cut. Tune ``leiden_resolution`` to control the
+      community count (higher → more, smaller communities). Requires
+      ``rank_before_clustering=True``.
     """
     
     min_cluster_size: int = 1
@@ -528,6 +538,17 @@ class CurriculumConfig:
     exceeding the weight threshold while a glob of low-relevance neighbours
     stays merged. Default 0.0 disables the weight threshold (count-only
     behaviour).
+    """
+
+    leiden_resolution: float = 1.0
+    """For ``linkage_method='leiden'``: resolution parameter of the
+    Reichardt-Bornholdt configuration null model. Higher values produce
+    more, smaller communities; lower values fewer, larger ones.
+
+    Tune to match ``desired_n_topics``: try 1.0 first, then bump up if
+    too few communities, down if too many. There's no exact mapping —
+    Leiden picks the count that best optimises modularity at the given
+    resolution. Reasonable range: 0.5 to 3.0.
     """
 
     max_cluster_depth: Optional[int] = None

@@ -41,8 +41,8 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
 (See `CLUSTERING_NOTES.md` for the singleton-blob diagnosis and weighted-bisecting-kmeans solution that's already shipped.)
 
 - [ ] **`min_cluster_weight` at scale.** We shipped the parameter but haven't run a full curriculum with it. Natural successor to the `min_cluster_size=10` experiment — singletons that "earn it" by relevance mass survive, low-relevance globs get merged. Pick a threshold from the topic mass distribution (e.g. 0.5× mean topic mass).
-- [ ] **Leiden on the top-5000 citation subgraph.** Citations are the semantic relation curriculum *means*, not embedding distance. Should be the highest-quality topic structure. Needs `igraph` + `leidenalg` (~30–50 lines).
-- [ ] **Average-linkage agglomerative.** Different shape bias than bisecting K-means — control experiment. Tractable on top-5000 (n² fits in memory).
+- [ ] **Leiden on the top-5000 citation subgraph.** *(Wired up 2026-04-25; first run pending — see `_cluster_with_leiden` in `build_curriculum.py`, `linkage_method='leiden'`, `leiden_resolution`.)* Citations are the semantic relation curricula mean (one paper cites another because it builds on it), so community detection on the citation subgraph of the top-k filtered works produces topic structure based on the underlying relation rather than on embedding distance. Communities serve directly as frontier topics; no embedding-based hierarchical merging or mass-threshold cut. Tune `leiden_resolution` to control the community count.
+- [ ] **Average-linkage agglomerative.** *(Running as `curriculum_avg_1777173973`; ETA ~18:06 local 2026-04-25.)* Different shape bias than bisecting K-means — control experiment. Tractable on top-5000 (n² fits in memory).
 - [ ] **HDBSCAN on top-5000 with relevance-weighted point replication.** Density-based, naturally variable cluster sizes, no forced cluster count. Replicate each work proportional to relevance to fold weighting into HDBSCAN's unweighted core.
 
 ## PageRank variants
