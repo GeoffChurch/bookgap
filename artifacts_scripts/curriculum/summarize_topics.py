@@ -154,6 +154,7 @@ def summarize_topics(
     bigrams_max: int = 5000,
     bigrams_min_boundary_be: float = 0.5,
     bigrams_be_quantile: float = 0.0,
+    bigrams_normalize_be: bool = False,
     bigrams_count_floor: int = 3,
     bigram_iterations: int = 6,
 ) -> Dict[int, List[tuple[str, float]]]:
@@ -190,6 +191,10 @@ def summarize_topics(
             of the candidate BE distribution). Combined with
             ``bigrams_min_boundary_be`` via ``max``: a candidate must
             clear both. Default 0.0 disables the quantile filter.
+        bigrams_normalize_be: If True, score uses BE / log2(count+1)
+            (count-normalised, intrinsically iteration-stable) rather
+            than absolute BE. Threshold filters still apply to the
+            un-normalised BE.
         bigrams_count_floor: Minimum count per candidate.
         bigram_iterations: Maximum iterative phrase-mining passes. The
             loop self-terminates when a pass adds no new phrases. Default
@@ -271,6 +276,7 @@ def summarize_topics(
                 npmi_threshold=bigrams_npmi_threshold,
                 min_boundary_be=bigrams_min_boundary_be,
                 be_quantile=bigrams_be_quantile,
+                normalize_be=bigrams_normalize_be,
                 count_floor=bigrams_count_floor,
                 max_phrases=bigrams_max,
             )

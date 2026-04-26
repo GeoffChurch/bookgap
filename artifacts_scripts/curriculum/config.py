@@ -122,6 +122,17 @@ class KeywordConfig:
     upper quartile — when the absolute floor isn't tight enough.
     """
 
+    bigrams_normalize_be: bool = False
+    """If True, the BE factor in the phrase score becomes
+    ``BE / log2(count + 1)`` (count-normalised, bounded roughly in
+    ``[0, 1]``) rather than absolute BE in bits. Each candidate is
+    scaled by its own count, which is intrinsically iteration-stable —
+    a candidate's normalised score doesn't depend on the population
+    distribution shifting between iterations. Threshold filters
+    (``bigrams_min_boundary_be`` and ``bigrams_be_quantile``) still
+    apply to the un-normalised BE.
+    """
+
     bigrams_count_floor: int = 3
     """Minimum count per candidate. Small floor is unavoidable for stable
     boundary-entropy estimates (a 1-occurrence bigram has entropy 0 by

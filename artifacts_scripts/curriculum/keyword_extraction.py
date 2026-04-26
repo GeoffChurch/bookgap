@@ -421,6 +421,7 @@ def mine_phrases_lattice(
     npmi_threshold: float = 0.4,
     min_boundary_be: float = 0.5,
     be_quantile: float = 0.0,
+    normalize_be: bool = False,
     count_floor: int = 3,
     max_phrases: int = 5000,
     stopwords: Optional[Set[str]] = None,
@@ -446,6 +447,15 @@ def mine_phrases_lattice(
       shifts each pass — quantile alone tends to admit boilerplate
       mega-grams in iters 2+ where the median BE drops. Combine with
       ``min_boundary_be`` as a hard floor.
+    - ``normalize_be=True`` (default False) replaces the BE factor in
+      the score with ``BE / log2(count + 1)`` — bounded in roughly
+      ``[0, 1]``, the entropy analogue of NPMI's ``PMI / -log P(w)``
+      normalisation. Each candidate is scaled by its own count rather
+      than against the population, which is intrinsically iteration-
+      stable: a candidate's normalised score doesn't depend on the
+      overall distribution shifting between iterations. The threshold
+      filters still apply to the *un-normalised* BE; this flag changes
+      only the score function used for ranking.
 
     The combined score crushes both (i) chance pairs (low NPMI) and (ii)
     fixed-sequence boilerplate (low boundary entropy), even when each
@@ -524,7 +534,15 @@ def mine_phrases_lattice(
     for (a, b), cab, npmi, be in candidates:
         if be < be_threshold:
             continue
-        score = npmi * cab * be
+        if normalize_be:
+            # F-recipe: ``BE / log2(count + 1)`` ∈ [0, 1] roughly. The
+            # per-candidate normalisation is intrinsically iteration-
+            # stable — each candidate's score depends only on its own
+            # count, not on the population distribution.
+            be_factor = be / math.log2(cab + 1)
+        else:
+            be_factor = be
+        score = npmi * cab * be_factor
         # Joining ``a`` and ``b`` with BIGRAM_JOIN produces the merged
         # surface form. If ``a`` or ``b`` is itself an already-merged
         # phrase (an underscore-joined string from a prior iteration),

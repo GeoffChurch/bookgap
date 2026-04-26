@@ -99,6 +99,7 @@ def run_keyword_extraction(
         f"Phrase mining: enabled={cfg.bigrams_enabled}, "
         f"npmi>={cfg.bigrams_npmi_threshold}, "
         f"be>={cfg.bigrams_min_boundary_be} bits / q={cfg.bigrams_be_quantile}, "
+        f"normalize_be={cfg.bigrams_normalize_be}, "
         f"count>={cfg.bigrams_count_floor}, "
         f"max_per_iter={cfg.bigrams_max}, "
         f"iterations<={cfg.bigram_iterations}"
@@ -125,6 +126,7 @@ def run_keyword_extraction(
         bigrams_max=cfg.bigrams_max,
         bigrams_min_boundary_be=cfg.bigrams_min_boundary_be,
         bigrams_be_quantile=cfg.bigrams_be_quantile,
+        bigrams_normalize_be=cfg.bigrams_normalize_be,
         bigrams_count_floor=cfg.bigrams_count_floor,
         bigram_iterations=cfg.bigram_iterations,
     )
