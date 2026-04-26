@@ -92,12 +92,13 @@ class KeywordConfig:
     contribution; obviates an explicit count floor) vs. raw NPMI alone.
     """
 
-    bigram_iterations: int = 2
-    """Number of iterative phrase-mining passes. 1 yields up to bigrams; 2
-    (default) yields up to trigrams (a second pass mines bigrams over the
-    already-bigrammed corpus, so ``einstein_podolsky`` + ``rosen`` becomes
-    ``einstein_podolsky_rosen``); 3 → up to 4-grams. Diminishing returns
-    past 2 because longer phrases are rare.
+    bigram_iterations: int = 6
+    """Maximum iterative phrase-mining passes. Each pass mines bigrams over
+    the already-merged corpus, growing the longest possible phrase by one
+    word: iter 1 → bigrams, iter 2 → trigrams, ..., iter N → (N+1)-grams.
+    The mining loop self-terminates when an iteration yields no bigrams
+    above threshold, so the default 6 is a generous cap rather than a
+    forced count — typical corpora exit after 2–3 passes.
     """
 
 
