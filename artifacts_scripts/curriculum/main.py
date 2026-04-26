@@ -96,10 +96,12 @@ def run_keyword_extraction(
     LOGGER.info(f"Background mode: {cfg.background_mode}")
     LOGGER.info(f"Weight by freq: {cfg.weight_by_freq}")
     LOGGER.info(
-        f"Bigrams: enabled={cfg.bigrams_enabled}, "
-        f"npmi>={cfg.bigrams_npmi_threshold}, max={cfg.bigrams_max}, "
-        f"weight_by_freq={cfg.bigrams_weight_by_freq}, "
-        f"iterations={cfg.bigram_iterations}"
+        f"Phrase mining: enabled={cfg.bigrams_enabled}, "
+        f"npmi>={cfg.bigrams_npmi_threshold}, "
+        f"be>={cfg.bigrams_min_boundary_be} bits / q={cfg.bigrams_be_quantile}, "
+        f"count>={cfg.bigrams_count_floor}, "
+        f"max_per_iter={cfg.bigrams_max}, "
+        f"iterations<={cfg.bigram_iterations}"
     )
     
     all_texts = [f"{t}\n{a}" for t, a in zip(cloud.work_titles(), cloud.work_abstracts())]
@@ -121,7 +123,9 @@ def run_keyword_extraction(
         bigrams_enabled=cfg.bigrams_enabled,
         bigrams_npmi_threshold=cfg.bigrams_npmi_threshold,
         bigrams_max=cfg.bigrams_max,
-        bigrams_weight_by_freq=cfg.bigrams_weight_by_freq,
+        bigrams_min_boundary_be=cfg.bigrams_min_boundary_be,
+        bigrams_be_quantile=cfg.bigrams_be_quantile,
+        bigrams_count_floor=cfg.bigrams_count_floor,
         bigram_iterations=cfg.bigram_iterations,
     )
     

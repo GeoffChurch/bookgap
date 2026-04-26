@@ -73,10 +73,13 @@ class KeywordConfig:
     """
 
     bigrams_enabled: bool = True
-    """Mine NPMI-thresholded bigrams from the sampled corpus and merge them
-    in-place before keyword extraction. Surfaces phrases like ``bell_theorem``,
-    ``single_photon``, ``photon_counting`` that are far more informative than
-    their individual components.
+    """Mine adjacent-token phrases via the lattice + combined-score recipe
+    in ``keyword_extraction.mine_phrases_lattice``: each candidate is scored
+    by ``NPMI(a,b) · count(a,b) · min(left_be, right_be)`` and must clear
+    all three thresholds. Surfaces phrases like ``bell_theorem``,
+    ``single_photon``, ``photon_counting``, ``einstein_podolsky_rosen``
+    while rejecting boilerplate aggregates (``articles_citing``,
+    ``manager_easybib``) that NPMI alone admits.
     """
 
     bigrams_npmi_threshold: float = 0.4
@@ -85,20 +88,59 @@ class KeywordConfig:
     """
 
     bigrams_max: int = 5000
-    """Maximum number of bigrams kept after NPMI ranking."""
+    """Maximum number of phrases kept *per iteration* (the cumulative phrase
+    vocabulary across iterations can be larger).
+    """
 
-    bigrams_weight_by_freq: bool = True
-    """Rank bigrams by NPMI · count (default; per-bigram mutual-information
-    contribution; obviates an explicit count floor) vs. raw NPMI alone.
+    bigrams_min_boundary_be: float = 0.5
+    """Absolute boundary-entropy floor in bits. The boundary-entropy
+    filter rejects fixed-sequence boilerplate (``articles citing this
+    article``: low entropy on both sides because the surrounding
+    context is always the same) while keeping genuine phrases
+    (``bell theorem``: high boundary entropy because lots of different
+    things precede and follow it). 0.5 is empirically the floor that
+    rejects ~13/14 known boilerplate items in the `__24` probe while
+    retaining 7/11 known good phrases.
+
+    Use *together with* ``bigrams_be_quantile`` (combined via ``max``).
+    The absolute floor stabilises behaviour across iterations of the
+    lattice loop, where the BE distribution shifts as merges consume
+    candidates.
+    """
+
+    bigrams_be_quantile: float = 0.0
+    """Optional data-driven BE threshold expressed as a quantile of the
+    candidate BE distribution. ``0.0`` (default) disables it; any
+    positive value ``q`` requires candidates to clear both the absolute
+    ``bigrams_min_boundary_be`` floor *and* the ``q``-th percentile of
+    candidate BEs.
+
+    The quantile alone shifts unpredictably across iterations (median
+    BE drops as merges consume varied candidates, admitting boilerplate
+    aggregates in iter 2+ that the absolute floor catches). Mostly
+    useful as a stricter top-up — e.g. ``q=0.75`` to keep only the
+    upper quartile — when the absolute floor isn't tight enough.
+    """
+
+    bigrams_count_floor: int = 3
+    """Minimum count per candidate. Small floor is unavoidable for stable
+    boundary-entropy estimates (a 1-occurrence bigram has entropy 0 by
+    construction).
     """
 
     bigram_iterations: int = 6
-    """Maximum iterative phrase-mining passes. Each pass mines bigrams over
-    the already-merged corpus, growing the longest possible phrase by one
-    word: iter 1 → bigrams, iter 2 → trigrams, ..., iter N → (N+1)-grams.
-    The mining loop self-terminates when an iteration yields no bigrams
-    above threshold, so the default 6 is a generous cap rather than a
-    forced count — typical corpora exit after 2–3 passes.
+    """Maximum iterative phrase-mining passes. Each pass scores bigrams over
+    the *current parse*, adds new ones to the cumulative phrase vocab, and
+    re-parses the raw corpus with longest-match against the updated vocab.
+    Self-terminates when an iteration adds no new phrases. iter 1 → up to
+    bigrams, iter 2 → up to trigrams (e.g. ``einstein_podolsky_rosen``
+    forms when iter 1's ``einstein_podolsky`` + ``rosen`` is mined as a
+    bigram in iter 2 over the iter-1 parse), iter N → up to (N+1)-grams.
+    Default 6 is a generous cap; typical corpora exit after 2–3 passes.
+    Re-parsing each iteration implements the semtok-style "exclusive
+    entropy" effect: counts attributable to longer phrases never appear
+    in shorter-phrase context distributions, because the longest-match
+    parser consumes those positions on every pass.
     """
 
 

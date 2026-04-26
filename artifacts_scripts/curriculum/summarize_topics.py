@@ -29,10 +29,10 @@ from .keyword_extraction import (
     DocWeighting,
     KeywordMethod,
     TopicWeighting,
-    apply_bigrams,
     extract_topic_keywords,
     filter_stopwords,
-    mine_bigrams,
+    mine_phrases_lattice,
+    parse_with_phrases,
     tokenize,
 )
 from .sampling import sample_by_relevance
@@ -152,8 +152,10 @@ def summarize_topics(
     bigrams_enabled: bool = True,
     bigrams_npmi_threshold: float = 0.4,
     bigrams_max: int = 5000,
-    bigrams_weight_by_freq: bool = True,
-    bigram_iterations: int = 1,
+    bigrams_min_boundary_be: float = 0.5,
+    bigrams_be_quantile: float = 0.0,
+    bigrams_count_floor: int = 3,
+    bigram_iterations: int = 6,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
 
@@ -170,21 +172,34 @@ def summarize_topics(
             SUBTRACTIVE (legacy "vs. all other topics").
         weight_by_freq: For log-odds, multiply z-scores by topic-internal
             count to rank by per-word MI contribution. Default True.
-        bigrams_enabled: Mine NPMI-thresholded bigrams from the sampled
-            corpus and merge them in-place before keyword extraction.
-            Surfaces phrases like ``bell_theorem``, ``single_photon``,
-            ``photon_counting`` that are far more informative than their
-            individual components.
+        bigrams_enabled: Mine adjacent-token phrases from the sampled
+            corpus using ``mine_phrases_lattice`` (combined NPMI · count
+            · boundary-entropy criterion), apply them via longest-match
+            ``parse_with_phrases`` before keyword extraction. Surfaces
+            phrases like ``bell_theorem``, ``single_photon``,
+            ``photon_counting`` while rejecting boilerplate aggregates
+            (``articles_citing``, ``advertisement_return``) that NPMI
+            alone admits.
         bigrams_npmi_threshold: Minimum NPMI for bigram candidates.
-        bigrams_max: Cap on bigrams kept after each iteration of ranking.
-        bigrams_weight_by_freq: Rank bigrams by NPMI · count (default;
-            obviates count floor) vs. raw NPMI.
-        bigram_iterations: Number of iterative phrase-mining passes. 1
-            (default) yields up to bigrams; 2 yields up to trigrams (a
-            second pass mines bigrams over the already-bigrammed
-            corpus, so ``einstein_podolsky`` + ``rosen`` becomes
-            ``einstein_podolsky_rosen``); 3 → up to 4-grams. Diminishing
-            returns past 2 because longer phrases are rare.
+        bigrams_max: Cap on phrases kept *per iteration*; the cumulative
+            phrase vocabulary across iterations can be larger.
+        bigrams_min_boundary_be: Absolute boundary-entropy floor in bits
+            (default 0.5). Stable across the iterative loop's BE
+            distribution shifts.
+        bigrams_be_quantile: Optional data-driven BE threshold (quantile
+            of the candidate BE distribution). Combined with
+            ``bigrams_min_boundary_be`` via ``max``: a candidate must
+            clear both. Default 0.0 disables the quantile filter.
+        bigrams_count_floor: Minimum count per candidate.
+        bigram_iterations: Maximum iterative phrase-mining passes. The
+            loop self-terminates when a pass adds no new phrases. Default
+            6 is a generous cap — typical corpora exit after 2–3 passes.
+            Each iteration re-parses the *raw* token stream against the
+            cumulative phrase vocabulary using longest-match, so already-
+            merged phrases consume their constituent positions and don't
+            appear as separate adjacencies in subsequent passes (the
+            semtok-style "exclusive entropy" effect, achieved by
+            re-parsing rather than explicit count subtraction).
 
     Returns:
         Dictionary mapping topic index to list of (keyword, score) tuples.
@@ -236,44 +251,54 @@ def summarize_topics(
         topic_raw_tokens.append(raw_tokens_per_doc)
         topic_doc_relevances.append(relevances_per_doc)
 
-    # Iterative phrase mining: each pass mines bigrams over the corpus,
-    # applies them, and re-feeds the merged corpus to the next pass.
-    # After pass 2, "einstein_podolsky" + "rosen" can be merged into
-    # "einstein_podolsky_rosen" — i.e. trigrams form naturally as bigrams
-    # over the bigrammed corpus.
+    # Iterative lattice phrase mining (semtok-style exclusive entropy via
+    # re-parse): each pass scores adjacent-token bigrams over the *current
+    # parse* of the raw corpus, adds new ones to the cumulative phrase
+    # vocabulary, and re-parses the raw corpus from scratch with
+    # longest-match against the updated vocab. Already-merged phrases
+    # consume their constituent positions on every pass, so subsequent
+    # boundary-entropy and NPMI computations naturally exclude counts
+    # that belong to longer phrases.
     if bigrams_enabled and bigram_iterations >= 1:
-        # Flat list of all sampled docs' tokens, with parallel index back
-        # into (topic, doc-within-topic) so we can re-distribute after merging.
-        flat_tokens: List[List[str]] = [
+        flat_raw: List[List[str]] = [
             doc for topic_docs in topic_raw_tokens for doc in topic_docs
         ]
+        phrase_vocab: set = set()
+        parsed = flat_raw  # iter 0 parse = raw
         for it in range(bigram_iterations):
-            bigram_set = mine_bigrams(
-                flat_tokens,
+            new_phrases = mine_phrases_lattice(
+                parsed,
                 npmi_threshold=bigrams_npmi_threshold,
-                max_bigrams=bigrams_max,
-                weight_by_freq=bigrams_weight_by_freq,
+                min_boundary_be=bigrams_min_boundary_be,
+                be_quantile=bigrams_be_quantile,
+                count_floor=bigrams_count_floor,
+                max_phrases=bigrams_max,
             )
-            if not bigram_set:
+            new_phrases -= phrase_vocab  # only newly added this iteration
+            if not new_phrases:
                 LOGGER.info(
-                    f"Phrase mining iteration {it + 1}: no bigrams above "
-                    f"threshold; stopping."
+                    f"Phrase mining iter {it + 1}: no new phrases "
+                    f"above threshold; stopping."
                 )
                 break
+            phrase_vocab |= new_phrases
             LOGGER.info(
-                f"Phrase mining iteration {it + 1}: "
-                f"merged {len(bigram_set)} bigrams "
-                f"(npmi>={bigrams_npmi_threshold}, max={bigrams_max}, "
-                f"weight_by_freq={bigrams_weight_by_freq})"
+                f"Phrase mining iter {it + 1}: "
+                f"+{len(new_phrases)} new phrases (vocab={len(phrase_vocab)}; "
+                f"npmi>={bigrams_npmi_threshold}, "
+                f"be>={bigrams_min_boundary_be} bits / q={bigrams_be_quantile}, "
+                f"count>={bigrams_count_floor})"
             )
-            flat_tokens = [apply_bigrams(doc, bigram_set) for doc in flat_tokens]
+            # Re-parse raw with cumulative phrase vocab for next iteration's
+            # mining (and the final downstream parse).
+            parsed = [parse_with_phrases(doc, phrase_vocab) for doc in flat_raw]
 
-        # Re-distribute the merged flat tokens back into per-topic structure.
+        # Distribute final parse back into per-topic structure.
         merged_per_topic: List[List[List[str]]] = []
         offset = 0
         for topic_docs in topic_raw_tokens:
             n = len(topic_docs)
-            merged_per_topic.append(flat_tokens[offset : offset + n])
+            merged_per_topic.append(parsed[offset : offset + n])
             offset += n
         topic_raw_tokens = merged_per_topic
 

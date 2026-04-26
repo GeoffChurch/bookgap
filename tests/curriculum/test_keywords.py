@@ -16,6 +16,8 @@ from artifacts_scripts.curriculum.keyword_extraction import (
     extract_topic_keywords,
     filter_stopwords,
     mine_bigrams,
+    mine_phrases_lattice,
+    parse_with_phrases,
     tokenize,
 )
 
@@ -739,3 +741,134 @@ class TestBigramMining:
     def test_no_bigrams_on_empty_corpus(self):
         assert mine_bigrams([]) == set()
         assert mine_bigrams([[]]) == set()
+
+
+class TestLatticePhraseMining:
+    """``mine_phrases_lattice`` (combined NPMI · count · BE) and
+    ``parse_with_phrases`` (longest-match parser).
+
+    The lattice approach is what bookgap's production keyword extraction
+    uses; the boundary-entropy factor in the score rejects boilerplate
+    aggregates that NPMI alone admits."""
+
+    def test_lattice_mines_real_phrase(self):
+        """A high-NPMI phrase with varied *immediate* neighbours (the
+        canonical real-phrase signature: high boundary entropy on both
+        sides) should be mined."""
+        # "alpha beta" co-occurs everywhere it appears, but the tokens
+        # immediately preceding and following vary across documents.
+        wrappers = [
+            ("preamble", "tail"), ("intro", "epilogue"),
+            ("before", "after"), ("zero", "end"),
+            ("first", "last"), ("hello", "goodbye"),
+            ("setup", "teardown"), ("alpha2", "omega"),
+        ]
+        docs = []
+        for w_l, w_r in wrappers:
+            docs.extend([[w_l, "alpha", "beta", w_r]] * 4)
+
+        phrases = mine_phrases_lattice(
+            docs, npmi_threshold=0.3, min_boundary_be=0.5,
+            count_floor=3, max_phrases=20,
+        )
+        assert "alpha_beta" in phrases, (
+            f"varied-context phrase should be mined, got {phrases}"
+        )
+
+    def test_lattice_score_prefers_varied_context(self):
+        """Given two co-occurring bigrams with the same NPMI / count,
+        the one with more varied surrounding context (higher boundary
+        entropy) should be preferred. This is the recipe's core
+        behaviour: the BE factor in the score breaks ties in favour of
+        non-boilerplate."""
+        # Both ``alpha beta`` and ``fixed seq`` always co-occur (perfect
+        # NPMI) and appear the same number of times. ``alpha beta`` has
+        # varied wrappers; ``fixed seq`` is always inside ``frame ... tail``.
+        wrappers = [
+            ("intro", "tail"), ("preamble", "epilogue"),
+            ("setup", "teardown"), ("hello", "goodbye"),
+            ("zero", "end"), ("first", "last"),
+        ]
+        docs = []
+        for wl, wr in wrappers:
+            docs.extend([[wl, "alpha", "beta", wr]] * 5)
+        docs.extend([["frame", "fixed", "seq", "tail"]] * 30)
+        # Disable both BE filters so both candidates pass; we test
+        # that the score itself ranks the high-BE one higher.
+        phrases = mine_phrases_lattice(
+            docs, npmi_threshold=0.3, min_boundary_be=0.0, be_quantile=0.0,
+            count_floor=3, max_phrases=10,
+        )
+        # ``alpha_beta`` (varied context, BE > 0) should rank above
+        # ``fixed_seq`` (uniform context, BE = 0 → score 0). With
+        # max_phrases=10 and many candidates, only the top survive.
+        assert "alpha_beta" in phrases, (
+            f"varied-context bigram should be top-ranked, got {phrases}"
+        )
+
+    def test_lattice_drops_stopword_candidates(self):
+        docs = [["the", "model", "of", "the", "graph"]] * 30
+        phrases = mine_phrases_lattice(
+            docs, npmi_threshold=0.0, min_boundary_be=0.0, be_quantile=0.0,
+            count_floor=3, max_phrases=50,
+        )
+        for p in phrases:
+            for piece in p.split(BIGRAM_JOIN):
+                assert piece not in {"the", "of"}, (
+                    f"stopword should not be a phrase member: {p}"
+                )
+
+    def test_lattice_empty_corpus_returns_empty(self):
+        assert mine_phrases_lattice([]) == set()
+        assert mine_phrases_lattice([[]]) == set()
+
+    def test_parse_with_phrases_longest_match(self):
+        """When phrases overlap, longest-match wins. ``a_b_c`` should
+        consume all three positions even when ``a_b`` is also in vocab."""
+        tokens = ["x", "a", "b", "c", "y"]
+        phrases = {"a_b", "a_b_c"}
+        result = parse_with_phrases(tokens, phrases)
+        assert result == ["x", "a_b_c", "y"], result
+
+    def test_parse_with_phrases_left_to_right(self):
+        """Without overlap, the parser progresses left-to-right and
+        consumes each phrase's positions."""
+        tokens = ["a", "b", "c", "d"]
+        phrases = {"a_b", "c_d"}
+        result = parse_with_phrases(tokens, phrases)
+        assert result == ["a_b", "c_d"], result
+
+    def test_parse_with_phrases_no_match_passes_through(self):
+        tokens = ["alpha", "beta", "gamma"]
+        result = parse_with_phrases(tokens, {"unrelated_phrase"})
+        assert result == ["alpha", "beta", "gamma"], result
+
+    def test_parse_with_phrases_empty_inputs(self):
+        assert parse_with_phrases([], {"a_b"}) == []
+        # Empty phrase vocab is a copy, not a reference
+        tokens = ["a", "b"]
+        result = parse_with_phrases(tokens, set())
+        assert result == tokens
+        assert result is not tokens
+
+    def test_parse_grows_trigram_from_bigram_then_extension(self):
+        """Demonstrate the iterative-vocab growth pattern: pass-1 mines a
+        bigram (added to vocab), parse-with-vocab merges it; pass-2 mines
+        the (bigram, neighbour) extension, adding the resulting trigram
+        to vocab; the next parse promotes the whole sequence to the
+        trigram. This is the data-flow shape of the production loop;
+        we test the parser semantics without trying to hit synthetic
+        entropy thresholds in a small toy corpus."""
+        tokens = ["x", "a", "b", "c", "y"]
+        # Iter 1 vocab (bigram only) → bigram merges, trailing token alone.
+        v1 = {"a_b"}
+        parsed1 = parse_with_phrases(tokens, v1)
+        assert parsed1 == ["x", "a_b", "c", "y"], parsed1
+
+        # Iter 2 vocab adds the trigram (what mining over the iter-1
+        # parsed corpus would yield: bigram (a_b, c) → "a_b_c"). Re-parsing
+        # the *raw* tokens with the cumulative vocab promotes the whole
+        # sequence — longest-match prefers the trigram.
+        v_cumulative = {"a_b", "a_b_c"}
+        parsed2 = parse_with_phrases(tokens, v_cumulative)
+        assert parsed2 == ["x", "a_b_c", "y"], parsed2

@@ -11,7 +11,7 @@ import math
 import re
 from collections import Counter
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -354,6 +354,238 @@ def apply_bigrams(
         if i + 1 < n and (tokens[i], tokens[i + 1]) in bigrams:
             out.append(f"{tokens[i]}{BIGRAM_JOIN}{tokens[i + 1]}")
             i += 2
+        else:
+            out.append(tokens[i])
+            i += 1
+    return out
+
+
+def _shannon_entropy_bits(counts: Counter) -> float:
+    """Shannon entropy in bits of a Counter's relative frequencies."""
+    total = sum(counts.values())
+    if total <= 0:
+        return 0.0
+    H = 0.0
+    for c in counts.values():
+        if c > 0:
+            p = c / total
+            H -= p * math.log2(p)
+    return H
+
+
+_BOS = "<BOS>"
+_EOS = "<EOS>"
+
+
+def _bigram_boundary_entropy(
+    doc_tokens: List[List[str]],
+) -> Dict[Tuple[str, str], Tuple[float, float, int]]:
+    """For each adjacent bigram (a, b) in the corpus, compute ``(left_be,
+    right_be, count)``: Shannon entropy in bits over the *neighbouring*
+    tokens around each occurrence of ``a b``.
+
+    A real phrase like ``bell theorem`` has HIGH boundary entropy on both
+    sides (varied surrounding context); a boilerplate sequence like
+    ``articles citing`` (always part of "Reuse...articles citing this
+    article") has LOW boundary entropy on both sides. The two signals
+    distinguish genuine phrases from fixed-sequence aggregates that
+    NPMI alone can't tell apart.
+
+    BOS / EOS are tracked with sentinel tokens so phrases that frequently
+    appear at sentence-edge get entropy credit for that variability.
+    """
+    left_ctx: Dict[Tuple[str, str], Counter] = {}
+    right_ctx: Dict[Tuple[str, str], Counter] = {}
+    for doc in doc_tokens:
+        n = len(doc)
+        for i in range(n - 1):
+            bg = (doc[i], doc[i + 1])
+            if bg not in left_ctx:
+                left_ctx[bg] = Counter()
+                right_ctx[bg] = Counter()
+            left_ctx[bg][doc[i - 1] if i > 0 else _BOS] += 1
+            right_ctx[bg][doc[i + 2] if i + 2 < n else _EOS] += 1
+    out: Dict[Tuple[str, str], Tuple[float, float, int]] = {}
+    for bg in left_ctx:
+        out[bg] = (
+            _shannon_entropy_bits(left_ctx[bg]),
+            _shannon_entropy_bits(right_ctx[bg]),
+            sum(left_ctx[bg].values()),
+        )
+    return out
+
+
+def mine_phrases_lattice(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    min_boundary_be: float = 0.5,
+    be_quantile: float = 0.0,
+    count_floor: int = 3,
+    max_phrases: int = 5000,
+    stopwords: Optional[Set[str]] = None,
+) -> Set[str]:
+    """Mine adjacent-token bigrams using the combined-score recipe:
+
+        score = NPMI(a,b) · count(a,b) · min(left_be, right_be)
+
+    Each signal must clear its threshold (NPMI ≥ ``npmi_threshold``,
+    count ≥ ``count_floor``, BE ≥ both ``min_boundary_be`` *and* the
+    ``be_quantile``-th percentile of the candidate BE distribution).
+    Stopword-bearing candidates rejected. Returns a set of joined
+    strings (``"a_b"``) suitable for use with ``parse_with_phrases``.
+
+    BE thresholds:
+    - ``min_boundary_be`` is an absolute bit-count floor (default 0.5).
+      Stable across iterations of the lattice loop, where the BE
+      distribution shifts as more candidates get consumed by merges.
+    - ``be_quantile`` is a data-driven complementary filter (default
+      0.0 = disabled): the ``q``-th percentile of the candidate BE
+      values. Useful as a *softer* per-corpus knob (e.g. 0.5 = keep
+      the upper half), but in the iterative loop the distribution
+      shifts each pass — quantile alone tends to admit boilerplate
+      mega-grams in iters 2+ where the median BE drops. Combine with
+      ``min_boundary_be`` as a hard floor.
+
+    The combined score crushes both (i) chance pairs (low NPMI) and (ii)
+    fixed-sequence boilerplate (low boundary entropy), even when each
+    looks plausible under one signal alone. Probe data on the curriculum
+    corpus shows it admits roughly 1/14 known boilerplate items in the
+    top-200 versus 9/14 for NPMI · count alone. See
+    ``artifacts_scripts/curriculum/be_phrase_probe.py``.
+
+    For iterative use: pair with ``parse_with_phrases`` and re-parse the
+    raw token sequences on each iteration with the *cumulative* phrase
+    vocabulary. Re-parsing implements the semtok-style "exclusive
+    entropy" effect — counts attributable to longer phrases never appear
+    in shorter-phrase context distributions, because the longest-match
+    parser consumes those positions on every iteration.
+    """
+    if stopwords is None:
+        stopwords = STOPWORDS
+
+    uni: Counter[str] = Counter()
+    bi: Counter[Tuple[str, str]] = Counter()
+    n_uni = 0
+    n_bi = 0
+    for doc in doc_tokens:
+        if not doc:
+            continue
+        for tok in doc:
+            uni[tok] += 1
+            n_uni += 1
+        for a, b in zip(doc, doc[1:]):
+            bi[(a, b)] += 1
+            n_bi += 1
+    if n_uni == 0 or n_bi == 0:
+        return set()
+
+    bg_be = _bigram_boundary_entropy(doc_tokens)
+
+    # Pass 1: collect all candidates that pass NPMI / count / stopword
+    # filters; record their BE values for the quantile computation.
+    candidates: List[Tuple[Tuple[str, str], int, float, float]] = []
+    for (a, b), cab in bi.items():
+        if cab < count_floor:
+            continue
+        if a in stopwords or b in stopwords:
+            continue
+        p_ab = cab / n_bi
+        p_a = uni[a] / n_uni
+        p_b = uni[b] / n_uni
+        if p_a <= 0 or p_b <= 0 or p_ab <= 0:
+            continue
+        pmi = math.log(p_ab / (p_a * p_b))
+        denom = -math.log(p_ab)
+        if denom <= 0:
+            continue
+        npmi = pmi / denom
+        if npmi < npmi_threshold:
+            continue
+        l_be, r_be, _ = bg_be.get((a, b), (0.0, 0.0, 0))
+        be = min(l_be, r_be)
+        candidates.append(((a, b), cab, npmi, be))
+
+    if not candidates:
+        return set()
+
+    # BE threshold: maximum of the absolute floor (``min_boundary_be``)
+    # and the data-driven quantile (``be_quantile`` percentile of the
+    # candidate BE distribution). The absolute floor stabilises behaviour
+    # across iterations of the lattice loop; the quantile lets callers
+    # opt into a stricter data-driven cut.
+    quantile_floor = 0.0
+    if be_quantile > 0.0:
+        be_values = [be for _, _, _, be in candidates]
+        quantile_floor = float(np.quantile(be_values, be_quantile))
+    be_threshold = max(min_boundary_be, quantile_floor)
+
+    scored: List[Tuple[float, str]] = []
+    for (a, b), cab, npmi, be in candidates:
+        if be < be_threshold:
+            continue
+        score = npmi * cab * be
+        # Joining ``a`` and ``b`` with BIGRAM_JOIN produces the merged
+        # surface form. If ``a`` or ``b`` is itself an already-merged
+        # phrase (an underscore-joined string from a prior iteration),
+        # the join correctly produces the longer-phrase string —
+        # ``"einstein_podolsky"`` + ``"_"`` + ``"rosen"`` ==
+        # ``"einstein_podolsky_rosen"``.
+        merged = f"{a}{BIGRAM_JOIN}{b}"
+        scored.append((score, merged))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return {merged for _, merged in scored[:max_phrases]}
+
+
+def parse_with_phrases(
+    tokens: List[str],
+    phrases: Iterable[str],
+) -> List[str]:
+    """Longest-match tokenisation of ``tokens`` against a phrase vocabulary.
+
+    Each phrase is a joined string (``"bell_theorem"``,
+    ``"einstein_podolsky_rosen"``); ``parse_with_phrases`` recovers the
+    underlying-token tuple by splitting on ``BIGRAM_JOIN``, then matches
+    the longest available phrase at each scan position. Each merged
+    phrase consumes its constituent positions, so iterating mining +
+    parsing produces a strict superset of the previous iteration's
+    vocabulary — and computes boundary entropy on a corpus where
+    already-merged phrases do not appear as separate adjacencies
+    (the semtok-style "exclusive entropy" effect, achieved by re-parsing
+    rather than explicit count subtraction).
+    """
+    phrase_set = set(phrases) if not isinstance(phrases, set) else phrases
+    if not phrase_set or not tokens:
+        return list(tokens)
+
+    # Build trie keyed on underlying tokens. Sentinel ``__END__`` marks
+    # nodes where a complete phrase ends.
+    trie: Dict[str, Any] = {}
+    for phrase_str in phrase_set:
+        node = trie
+        for tok in phrase_str.split(BIGRAM_JOIN):
+            node = node.setdefault(tok, {})
+        node["__END__"] = phrase_str
+
+    out: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        node = trie
+        longest_match: Optional[str] = None
+        longest_len = 0
+        for j in range(i, n):
+            nxt = node.get(tokens[j])
+            if nxt is None:
+                break
+            node = nxt
+            end = node.get("__END__")
+            if end is not None:
+                longest_match = end
+                longest_len = j - i + 1
+        if longest_match is not None:
+            out.append(longest_match)
+            i += longest_len
         else:
             out.append(tokens[i])
             i += 1

@@ -78,6 +78,358 @@ def _load_texts_for_filtered_ids(
     return id_to_text
 
 
+def _shannon_entropy(counts: Counter) -> float:
+    """Shannon entropy in bits of a Counter's relative frequencies. 0 if empty."""
+    total = sum(counts.values())
+    if total <= 0:
+        return 0.0
+    H = 0.0
+    for c in counts.values():
+        p = c / total
+        if p > 0:
+            H -= p * math.log2(p)
+    return H
+
+
+def _compute_bigram_boundary_entropy(
+    doc_tokens: List[List[str]],
+) -> Dict[Tuple[str, str], Tuple[float, float, int, int]]:
+    """For each adjacent bigram (a,b) in the corpus, compute left/right boundary
+    entropy: the Shannon entropy (bits) over the *neighboring* tokens that
+    surround occurrences of "a b".
+
+    - left_be((a,b))  = entropy of P(W | "_ a b") — what *precedes* the bigram
+    - right_be((a,b)) = entropy of P(W | "a b _") — what *follows* the bigram
+
+    Boundary BOS/EOS contributions are counted with a sentinel symbol so a
+    phrase that's frequently sentence-initial / -final still gets entropy
+    credit for that variability.
+
+    A phrase like "bell theorem" should have HIGH boundary entropy on both
+    sides (varied surrounding context), while a boilerplate sequence like
+    "articles citing" (always part of "Reuse ... articles citing this article")
+    has LOW boundary entropy on both sides.
+
+    Returns: dict mapping (a, b) -> (left_be, right_be, n_left_obs, n_right_obs).
+    """
+    BOS = "<BOS>"
+    EOS = "<EOS>"
+    left_ctx: Dict[Tuple[str, str], Counter] = {}
+    right_ctx: Dict[Tuple[str, str], Counter] = {}
+    for doc in doc_tokens:
+        n = len(doc)
+        for i in range(n - 1):
+            bg = (doc[i], doc[i + 1])
+            if bg not in left_ctx:
+                left_ctx[bg] = Counter()
+                right_ctx[bg] = Counter()
+            left_ctx[bg][doc[i - 1] if i > 0 else BOS] += 1
+            right_ctx[bg][doc[i + 2] if i + 2 < n else EOS] += 1
+
+    out: Dict[Tuple[str, str], Tuple[float, float, int, int]] = {}
+    for bg in left_ctx:
+        l = _shannon_entropy(left_ctx[bg])
+        r = _shannon_entropy(right_ctx[bg])
+        out[bg] = (l, r, sum(left_ctx[bg].values()), sum(right_ctx[bg].values()))
+    return out
+
+
+def _mine_bigrams_be_only(
+    doc_tokens: List[List[str]],
+    *,
+    min_boundary_be: float = 1.5,
+    min_count: int = 3,
+    max_bigrams: int = 5000,
+    stopwords: Set[str] = STOPWORDS,
+) -> List[Tuple[float, str, str, int]]:
+    """Mine bigrams using ONLY branching entropy of the surrounding context
+    (option 1 of the design space): a real phrase has clean boundaries on
+    both sides, regardless of its internal stickiness.
+
+    Score = ``min(left_be, right_be)`` — the harder boundary is the limiting
+    one. Bigrams below ``min_boundary_be`` on either side, or with global
+    count below ``min_count``, are dropped. Stopword-bearing candidates
+    rejected as in NPMI mining.
+
+    A small count floor is unavoidable here — a once-only bigram has
+    boundary entropy 0 by construction (only one observation), so the
+    threshold alone can't distinguish noise from low-count signal. NPMI's
+    ``score = NPMI · count`` recipe is unavailable here because there's
+    no well-defined "frequency-weighted entropy"; the score is intrinsic
+    to the boundary distribution.
+
+    Returns: list of (score, a, b, count) sorted high-to-low.
+    """
+    bg_be = _compute_bigram_boundary_entropy(doc_tokens)
+    scored: List[Tuple[float, str, str, int]] = []
+    for (a, b), (l, r, n_left, _n_right) in bg_be.items():
+        if a in stopwords or b in stopwords:
+            continue
+        if n_left < min_count:
+            continue
+        score = min(l, r)
+        if score < min_boundary_be:
+            continue
+        scored.append((score, a, b, n_left))
+    scored.sort(reverse=True)
+    return scored[:max_bigrams]
+
+
+def _bigram_npmi_be_records(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    min_count: int = 3,
+    stopwords: Set[str] = STOPWORDS,
+) -> Tuple[
+    List[Tuple[Tuple[str, str], int, float, float, float]],
+    float,
+]:
+    """Build per-candidate records (bigram, count, npmi, l_be, r_be).
+
+    Also returns the corpus marginal unigram entropy ``H_W`` in bits,
+    used by the alpha · H_W threshold strategy. Lifted out of the
+    individual mining functions so the threshold-strategy recipes can
+    share the heavy lifting.
+    """
+    uni: Counter[str] = Counter()
+    bi: Counter[Tuple[str, str]] = Counter()
+    n_uni = 0
+    n_bi = 0
+    for doc in doc_tokens:
+        if not doc:
+            continue
+        for tok in doc:
+            uni[tok] += 1
+            n_uni += 1
+        for a, b in zip(doc, doc[1:]):
+            bi[(a, b)] += 1
+            n_bi += 1
+    if n_uni == 0:
+        return [], 0.0
+    # H_W: marginal context entropy = entropy of unigram distribution in bits
+    H_W = 0.0
+    for c in uni.values():
+        if c > 0:
+            p = c / n_uni
+            H_W -= p * math.log2(p)
+    if n_bi == 0:
+        return [], H_W
+    bg_be = _compute_bigram_boundary_entropy(doc_tokens)
+    records: List[Tuple[Tuple[str, str], int, float, float, float]] = []
+    for (a, b), cab in bi.items():
+        if cab < min_count:
+            continue
+        if a in stopwords or b in stopwords:
+            continue
+        p_ab = cab / n_bi
+        p_a = uni[a] / n_uni
+        p_b = uni[b] / n_uni
+        if p_a <= 0 or p_b <= 0 or p_ab <= 0:
+            continue
+        pmi = math.log(p_ab / (p_a * p_b))
+        denom = -math.log(p_ab)
+        if denom <= 0:
+            continue
+        npmi = pmi / denom
+        if npmi < npmi_threshold:
+            continue
+        l_be, r_be, _, _ = bg_be.get((a, b), (0.0, 0.0, 0, 0))
+        records.append(((a, b), cab, npmi, l_be, r_be))
+    return records, H_W
+
+
+def _mine_quantile_be(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    be_quantile: float = 0.5,
+    min_count: int = 3,
+    max_bigrams: int = 5000,
+    stopwords: Set[str] = STOPWORDS,
+) -> List[Tuple[float, str, str, int]]:
+    """Recipe D: quantile-based BE threshold.
+
+    Compute ``min(left_be, right_be)`` for every candidate; threshold at
+    the ``be_quantile`` percentile of the *candidate-distribution* BE
+    values. Candidates above the quantile pass; below fail.
+
+    The threshold is data-driven: it adapts to whatever BE distribution
+    the corpus produces. ``be_quantile=0.5`` keeps the upper-half of
+    candidates by BE; ``0.25`` keeps the upper three-quarters.
+
+    Returns list of (score = NPMI · count · BE, a, b, count).
+    """
+    records, _ = _bigram_npmi_be_records(
+        doc_tokens, npmi_threshold=npmi_threshold,
+        min_count=min_count, stopwords=stopwords,
+    )
+    if not records:
+        return []
+    be_values = [min(l, r) for _, _, _, l, r in records]
+    threshold = float(np.quantile(be_values, be_quantile))
+    scored: List[Tuple[float, str, str, int]] = []
+    for (a, b), cab, npmi, l, r in records:
+        be = min(l, r)
+        if be < threshold:
+            continue
+        score = npmi * cab * be
+        scored.append((score, a, b, cab))
+    scored.sort(reverse=True)
+    return scored[:max_bigrams]
+
+
+def _mine_marginal_be(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    alpha: float = 0.4,
+    min_count: int = 3,
+    max_bigrams: int = 5000,
+    stopwords: Set[str] = STOPWORDS,
+) -> List[Tuple[float, str, str, int]]:
+    """Recipe E: marginal-entropy reference threshold.
+
+    Threshold BE at ``alpha · H_W`` where H_W is the corpus-marginal
+    unigram entropy. Intuition: "the bigram's surrounding context is at
+    least ``alpha``-as-varied as the corpus's typical context distribution."
+
+    H_W is computed from the same corpus and adapts to corpus size /
+    vocabulary diversity automatically; ``alpha`` is the only hand-set
+    parameter and has a clean interpretation.
+
+    Returns list of (score = NPMI · count · BE, a, b, count).
+    """
+    records, H_W = _bigram_npmi_be_records(
+        doc_tokens, npmi_threshold=npmi_threshold,
+        min_count=min_count, stopwords=stopwords,
+    )
+    if not records:
+        return []
+    threshold = alpha * H_W
+    scored: List[Tuple[float, str, str, int]] = []
+    for (a, b), cab, npmi, l, r in records:
+        be = min(l, r)
+        if be < threshold:
+            continue
+        score = npmi * cab * be
+        scored.append((score, a, b, cab))
+    scored.sort(reverse=True)
+    return scored[:max_bigrams]
+
+
+def _mine_normalized_be(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    min_norm_be: float = 0.5,
+    min_count: int = 3,
+    max_bigrams: int = 5000,
+    stopwords: Set[str] = STOPWORDS,
+) -> List[Tuple[float, str, str, int]]:
+    """Recipe F: count-normalised BE.
+
+    Normalise BE by ``log2(count + 1)`` so it lies in roughly ``[0, 1]``:
+    1 = "every observation has a distinct neighbour" (maximally varied),
+    0 = "all observations share one neighbour" (fixed sequence). This
+    handles the asymmetry that low-count bigrams are mechanically capped
+    at low absolute BE — a 5-occurrence bigram has max BE ≈ 2.3 bits
+    even with perfectly uniform context. The normalisation is the
+    entropy analogue of NPMI's ``PMI / -log P(w)`` trick.
+
+    Threshold ``min_norm_be`` is in ``[0, 1]`` and has a clean
+    interpretation: 0.5 means "at least sqrt(count) distinct neighbours."
+
+    Returns list of (score = NPMI · count · normalized_BE, a, b, count).
+    """
+    records, _ = _bigram_npmi_be_records(
+        doc_tokens, npmi_threshold=npmi_threshold,
+        min_count=min_count, stopwords=stopwords,
+    )
+    if not records:
+        return []
+    scored: List[Tuple[float, str, str, int]] = []
+    for (a, b), cab, npmi, l, r in records:
+        be = min(l, r)
+        denom = math.log2(cab + 1)
+        if denom <= 0:
+            continue
+        norm_be = be / denom
+        if norm_be < min_norm_be:
+            continue
+        score = npmi * cab * norm_be
+        scored.append((score, a, b, cab))
+    scored.sort(reverse=True)
+    return scored[:max_bigrams]
+
+
+def _mine_bigrams_npmi_be(
+    doc_tokens: List[List[str]],
+    *,
+    npmi_threshold: float = 0.4,
+    min_boundary_be: float = 0.5,
+    min_count: int = 3,
+    max_bigrams: int = 5000,
+    stopwords: Set[str] = STOPWORDS,
+) -> List[Tuple[float, str, str, int]]:
+    """Mine bigrams using NPMI · count · min(left_be, right_be) (option 2).
+
+    Combines all three signals multiplicatively: a candidate must (i) stick
+    together more than chance (NPMI), (ii) appear often enough to matter
+    (count), and (iii) have varied surrounding context (boundary entropy)
+    — clearing all three to score highly. Boilerplate aggregates clear
+    NPMI · count but fail boundary entropy; chance pairs clear boundary
+    entropy but fail NPMI.
+
+    Returns: list of (score, a, b, count) sorted high-to-low.
+    """
+    # Compute NPMI counts in one pass (mirrors _mine_bigrams).
+    uni: Counter[str] = Counter()
+    bi: Counter[Tuple[str, str]] = Counter()
+    n_uni = 0
+    n_bi = 0
+    for doc in doc_tokens:
+        if not doc:
+            continue
+        for tok in doc:
+            uni[tok] += 1
+            n_uni += 1
+        for a, b in zip(doc, doc[1:]):
+            bi[(a, b)] += 1
+            n_bi += 1
+    bg_be = _compute_bigram_boundary_entropy(doc_tokens)
+
+    if n_uni == 0 or n_bi == 0:
+        return []
+
+    scored: List[Tuple[float, str, str, int]] = []
+    for (a, b), cab in bi.items():
+        if cab < min_count:
+            continue
+        if a in stopwords or b in stopwords:
+            continue
+        p_ab = cab / n_bi
+        p_a = uni[a] / n_uni
+        p_b = uni[b] / n_uni
+        if p_a <= 0 or p_b <= 0 or p_ab <= 0:
+            continue
+        pmi = math.log(p_ab / (p_a * p_b))
+        denom = -math.log(p_ab)
+        if denom <= 0:
+            continue
+        npmi = pmi / denom
+        if npmi < npmi_threshold:
+            continue
+        l_be, r_be, _, _ = bg_be.get((a, b), (0.0, 0.0, 0, 0))
+        be_score = min(l_be, r_be)
+        if be_score < min_boundary_be:
+            continue
+        score = npmi * cab * be_score
+        scored.append((score, a, b, cab))
+    scored.sort(reverse=True)
+    return scored[:max_bigrams]
+
+
 def _mine_bigrams(
     doc_tokens: List[List[str]],
     *,
