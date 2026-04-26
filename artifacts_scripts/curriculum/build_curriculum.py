@@ -79,6 +79,45 @@ cs = ConfigStore.instance()
 cs.store(name="curriculum", node=CurriculumConfig())
 
 
+def _citation_jaccard_distance_matrix(
+    sub_adj: sp.spmatrix,
+) -> NDArray[np.floating]:
+    """Pairwise Jaccard distance between citation neighbourhoods.
+
+    For each work in the (top-k) subgraph, treat its in+out neighbourhood
+    (the works it cites and the works that cite it, restricted to the
+    subgraph) as a set. Pairwise Jaccard distance =
+    1 - |N(i) ∩ N(j)| / |N(i) ∪ N(j)|. Works that share many neighbours
+    are "close"; works with disjoint neighbourhoods are "far."
+
+    This gives a similarity-from-citations that's drop-in compatible
+    with scipy's hierarchical-clustering machinery: we can produce a
+    dendrogram via ``linkage(condensed_dist, method='average')`` and
+    apply the existing mass-threshold cut. High-mass works with
+    distinctive citation neighbourhoods (no near-Jaccard-neighbours
+    in the subgraph) naturally end up as earned singletons, the same
+    way they do under embedding-distance avg-linkage.
+    """
+    n = sub_adj.shape[0]
+    sym = (sub_adj + sub_adj.T) > 0  # union of cited + citer relationships
+    sym = sym.astype(np.uint8).tocsr()
+    # Each row's nonzero pattern = the neighbourhood set.
+    # Jaccard(i, j) = |N(i) ∩ N(j)| / |N(i) ∪ N(j)|.
+    # |N(i) ∩ N(j)| = (sym @ sym.T)[i, j] when both are 0/1 indicators.
+    # |N(i)| = row sum.
+    intersections = (sym @ sym.T).toarray().astype(np.float64)
+    sizes = np.asarray(sym.sum(axis=1)).flatten().astype(np.float64)
+    unions = sizes[:, None] + sizes[None, :] - intersections
+    # Avoid 0/0 for empty-neighbourhood rows: define Jaccard = 0 there
+    # (-> max distance = 1).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sim = np.where(unions > 0, intersections / unions, 0.0)
+    dist = 1.0 - sim
+    # Squash diagonal to 0 (distance to self).
+    np.fill_diagonal(dist, 0.0)
+    return dist
+
+
 def _cluster_with_graph_bisect(
     adj: sp.spmatrix,
     *,
@@ -1027,7 +1066,45 @@ def run_curriculum_building(
     #      directly serve as frontier topics, no mass-threshold cut needed.
     #   2. all other ``linkage_method``s: embedding-based hierarchical
     #      clustering, then mass-threshold cut to find frontier topics.
-    if cfg.linkage_method in ("spectral", "graph_bisect"):
+    if cfg.linkage_method == "citation_avg_linkage":
+        if not cfg.rank_before_clustering:
+            raise ValueError(
+                "citation_avg_linkage requires rank_before_clustering=True so the "
+                "citation subgraph is restricted to the top-k filtered works"
+            )
+        LOGGER.info(
+            f"Building citation-Jaccard distance matrix on top-{n_samples}..."
+        )
+        sub_adj = adj_citation[top_k_indices][:, top_k_indices]
+        dist = _citation_jaccard_distance_matrix(sub_adj)
+        LOGGER.info("Running scipy avg-linkage on the citation distance matrix...")
+        # ``linkage`` takes a condensed (upper-triangular flattened) form
+        # of the distance matrix.
+        from scipy.spatial.distance import squareform
+        condensed = squareform(dist, checks=False)
+        linked = linkage(condensed, method="average")
+        # Standard scipy linkage: each point is its own leaf cluster.
+        leaf_cluster_assignments = np.arange(n_samples, dtype=np.intp)
+        n_leaf_clusters = n_samples
+        LOGGER.info(
+            f"Citation avg-linkage built: linkage shape {linked.shape}; "
+            f"applying mass-threshold cut for ~{cfg.desired_n_topics} topics..."
+        )
+
+        # Aggregate masses to leaves (1:1 here since each work is a leaf).
+        leaf_masses = np.zeros(n_leaf_clusters, dtype=np.float64)
+        np.add.at(leaf_masses, leaf_cluster_assignments, point_masses)
+        node_masses = compute_dendrogram_masses(linked, leaf_masses)
+        threshold = find_mass_threshold_for_n_topics(
+            linked, node_masses, cfg.desired_n_topics,
+        )
+        frontier_nodes = get_frontier_nodes(linked, node_masses, threshold)
+        LOGGER.info(f"Found {len(frontier_nodes)} frontier topics")
+        leaf_to_frontier = map_leaves_to_frontier_clusters(
+            linked, frontier_nodes, n_leaf_clusters,
+        )
+        point_to_cluster = leaf_to_frontier[leaf_cluster_assignments]
+    elif cfg.linkage_method in ("spectral", "graph_bisect"):
         if not cfg.rank_before_clustering:
             raise ValueError(
                 f"{cfg.linkage_method} requires rank_before_clustering=True so the "

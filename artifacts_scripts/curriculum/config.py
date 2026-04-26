@@ -496,7 +496,7 @@ class CurriculumConfig:
     circuitrank: CircuitRankConfig = field(default_factory=CircuitRankConfig)
     """Configuration for CircuitRank."""
     
-    linkage_method: str = "spectral"
+    linkage_method: str = "weighted_bisecting_kmeans"
     """Clustering method for the curriculum.
 
     Options:
@@ -539,6 +539,16 @@ class CurriculumConfig:
       relying on a single global eigenvector decomposition; produces
       a clean recursive hierarchy. Direct *K* control. Requires
       ``rank_before_clustering=True``.
+    - 'citation_avg_linkage': agglomerative average-linkage on a
+      Jaccard distance between citation neighbourhoods, with the
+      existing mass-threshold cut producing the frontier. Citation-
+      based (like 'leiden'/'spectral'/'graph_bisect') *and* allows
+      earned singletons (like 'weighted_bisecting_kmeans'/'average'),
+      because the mass-threshold cut promotes high-mass works whose
+      neighbourhood is distinctive enough that no merge brings them
+      under the threshold. The closest direct analogue of
+      'weighted_bisecting_kmeans' on the citation graph instead of
+      the embedding space. Requires ``rank_before_clustering=True``.
     """
     
     min_cluster_size: int = 1

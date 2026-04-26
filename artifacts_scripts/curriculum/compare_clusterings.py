@@ -136,6 +136,54 @@ def average_conductance(
     return float(np.mean(conductances))
 
 
+def cluster_size_gini(sizes: List[int]) -> float:
+    """Gini coefficient of the cluster-size distribution.
+
+    0 = perfectly uniform sizes; ~1 = one cluster has all the mass.
+    Computed only over non-empty clusters.
+
+    The mega-cluster pathology spectral exhibits on QC (one cluster of
+    2847 + smaller fragments) shows up as Gini ≈ 0.7+, while a balanced
+    Leiden/graph_bisect run is ~0.3-0.4. None of the existing
+    metrics (Q, conductance, flow capture) catch this directly.
+    """
+    nz = [s for s in sizes if s > 0]
+    n = len(nz)
+    if n <= 1:
+        return 0.0
+    arr = np.sort(np.asarray(nz, dtype=np.float64))
+    cum = np.cumsum(arr)
+    total = cum[-1]
+    if total <= 0:
+        return 0.0
+    # Gini = (2 * sum_i(i * x_i) - (n+1) * sum(x_i)) / (n * sum(x_i))
+    indices = np.arange(1, n + 1)
+    return float((2.0 * np.sum(indices * arr) - (n + 1) * total) / (n * total))
+
+
+def max_cluster_fraction(sizes: List[int], total: int = 5000) -> float:
+    """Fraction of the corpus held by the largest cluster.
+
+    Spectral on QC: 0.57 (mega-cluster). Leiden on QC: 0.15 (balanced).
+    Higher = more mega-cluster-shaped.
+    """
+    if not sizes or total <= 0:
+        return 0.0
+    return float(max(sizes) / total)
+
+
+def fragment_cluster_count(sizes: List[int], threshold: int = 20) -> int:
+    """Count of clusters at or below the fragment threshold.
+
+    Default threshold of 20 (small enough to be a "fragment" in a
+    5000-doc corpus, large enough to admit genuine niche subtopics).
+
+    Spectral on QC: 5 clusters of size ≤16 (4 of size ≤16, includes
+    a size-2). graph_bisect: 0. Leiden: 0.
+    """
+    return sum(1 for s in sizes if 0 < s <= threshold)
+
+
 def citation_flow_capture(
     sub_adj: sp.spmatrix,
     membership: np.ndarray,
@@ -303,6 +351,10 @@ def evaluate_run(run_dir: Path) -> Dict:
     if not sizes:
         sizes = sorted(np.bincount(p2c[p2c >= 0]).tolist(), reverse=True)
     n_substantial = sum(1 for s in sizes if s >= 50)
+    gini = cluster_size_gini(sizes)
+    max_frac = max_cluster_fraction(sizes, total=int((p2c >= 0).sum()) or 5000)
+    n_fragments = fragment_cluster_count(sizes, threshold=20)
+    n_singletons = sum(1 for s in sizes if s == 1)
 
     # Keywords
     keywords_raw = json.loads((run_dir / "topic_keywords.json").read_text())
@@ -324,6 +376,10 @@ def evaluate_run(run_dir: Path) -> Dict:
         "citation_flow_capture": flow,
         "cluster_sizes": sizes,
         "n_substantial_topics": n_substantial,
+        "gini": gini,
+        "max_frac": max_frac,
+        "n_fragments": n_fragments,
+        "n_singletons": n_singletons,
         "avg_topics_per_kw": avg_topics_per_kw,
         "n_kws_in_3plus_topics": n_crowded,
         "avg_jaccard_dist": avg_jaccard_dist,
@@ -362,10 +418,12 @@ def main() -> None:
             target_summary += f" + {len(targets)-1} more"
         print(f"\n=== Corpus {corpus_idx + 1}: targets={target_summary}, "
               f"{len(sources)} sources, {len(corpus_rows)} runs ===")
-        print(f"{'method':<22}  {'Q':>6}  {'cond':>6}  "
-              f"{'flow':>6}  {'#≥50':>5}  {'topics/kw':>10}  "
-              f"{'#in≥3':>6}  {'jacc':>6}")
-        # Sort by Q descending for display
+        print(
+            f"{'method':<22}  "
+            f"{'Q':>6}  {'cond':>6}  {'flow':>6}  "
+            f"{'gini':>5}  {'max%':>5}  {'#frag':>5}  {'#sing':>5}  "
+            f"{'#≥50':>4}  {'tpc/kw':>6}  {'#≥3':>4}  {'jacc':>5}"
+        )
         corpus_rows.sort(key=lambda r: -r["modularity_Q"])
         for row in corpus_rows:
             print(
@@ -373,10 +431,14 @@ def main() -> None:
                 f"{row['modularity_Q']:>6.3f}  "
                 f"{row['avg_conductance']:>6.3f}  "
                 f"{row['citation_flow_capture']:>6.3f}  "
-                f"{row['n_substantial_topics']:>5}  "
-                f"{row['avg_topics_per_kw']:>10.3f}  "
-                f"{row['n_kws_in_3plus_topics']:>6}  "
-                f"{row['avg_jaccard_dist']:>6.3f}"
+                f"{row['gini']:>5.2f}  "
+                f"{row['max_frac']*100:>4.0f}%  "
+                f"{row['n_fragments']:>5}  "
+                f"{row['n_singletons']:>5}  "
+                f"{row['n_substantial_topics']:>4}  "
+                f"{row['avg_topics_per_kw']:>6.2f}  "
+                f"{row['n_kws_in_3plus_topics']:>4}  "
+                f"{row['avg_jaccard_dist']:>5.2f}"
             )
 
 
