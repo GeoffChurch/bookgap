@@ -47,7 +47,11 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
 
 ## PageRank variants
 
-- [ ] **Multi-source bidirectional run.** Exercise the now-unified two-direction PR with a non-empty `source_work_ids` (textbook foundations the user already knows). Quality test for the bidirectional path beyond the forward-only fallback.
+- [x] **Multi-source bidirectional run.** *(Done 2026-04-26 as `curriculum_robotic_vision_1777207239` — vision→robotics curriculum with 4 source vision textbooks (Hartley, Forsyth, Horn, Haralick) and 3 target frontier robotics works (autonomous driving HD maps, context-aware navigation, semantic environment models). Leiden produced only 9 communities at resolution=0.5 because the citation neighborhood between sources and targets is much more tightly knit than the quantum-crypto run's. The 9 substantive topics form a coherent vision→robotics progression: general CV intro → projective geometry/Hartley → Haralick book → CV textbook → object recognition → semantic perception → embedded vision → DIBR → autonomous driving.)*
+
+## Bugs surfaced by the bidirectional run
+
+- [ ] **Skip / mark empty topics in keyword extraction.** When Leiden produces fewer real communities than `desired_n_topics`, the truncation pads with empty (size-0) topics. The FW marginal+freq keyword extractor on empty-topic counts produces meaningless garbage tokens that look identical across all empty topics (`untextured, envircmmait, dry, affinely, submits, chronically, set_candidate, vxworks` etc. on `__2`'s topics 4–9). Fix: detect empty topics in `summarize_topics` (no docs sampled) and either skip them entirely or emit a sentinel `[empty]` keyword list. Also relevant for any clustering method that produces fewer-than-desired topics.
 
 ## HDBSCAN gap detection (paused thread)
 
