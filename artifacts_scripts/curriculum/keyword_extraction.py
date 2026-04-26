@@ -1026,6 +1026,15 @@ def compute_log_odds_ratio_docs(
         counts_in = foreground_counts[topic_idx]
         total_in = float(foreground_totals[topic_idx])
 
+        # Empty topic (no docs sampled — e.g. when clustering produces fewer
+        # real communities than ``desired_n_topics`` and the truncation pads
+        # with size-0 placeholders): return an empty keyword list rather
+        # than the deterministic-garbage tokens that fall out of FW
+        # scoring against zero foreground mass.
+        if total_in <= 0:
+            results.append([])
+            continue
+
         if background_mode == BackgroundMode.MARGINAL:
             total_out = global_total
         else:

@@ -636,6 +636,34 @@ class TestBackgroundModeAndFreqWeighting:
                 background_mode="not-a-mode",  # type: ignore
             )
 
+    def test_empty_topic_returns_empty_keywords(self):
+        """Empty topics (no docs) should return an empty keyword list,
+        not the deterministic-garbage tokens that fall out of FW scoring
+        against zero foreground mass. Triggered in production when a
+        clustering method produces fewer real clusters than
+        ``desired_n_topics`` and the truncation pads with size-0
+        placeholders (e.g. Leiden on a tightly-knit corpus)."""
+        topic_doc_tokens = [
+            [["alpha", "beta", "gamma"]] * 5,
+            [],  # empty topic
+            [["delta", "epsilon", "zeta"]] * 5,
+            [],  # another empty topic
+        ]
+        results = compute_log_odds_ratio_docs(
+            topic_doc_tokens,
+            top_k=5,
+            doc_weighting=DocWeighting.EQUAL,
+            background_mode=BackgroundMode.MARGINAL,
+            weight_by_freq=True,
+        )
+        assert len(results) == 4
+        # Non-empty topics should produce non-empty keyword lists
+        assert len(results[0]) > 0, results[0]
+        assert len(results[2]) > 0, results[2]
+        # Empty topics should return empty lists
+        assert results[1] == [], results[1]
+        assert results[3] == [], results[3]
+
 
 class TestBigramMining:
     """``mine_bigrams`` + ``apply_bigrams``: NPMI-thresholded phrase mining
