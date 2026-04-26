@@ -516,7 +516,19 @@ class CurriculumConfig:
       rather than on embedding distance. Communities directly serve as
       frontier topics — no embedding-based hierarchical merging or
       mass-threshold cut. Tune ``leiden_resolution`` to control the
-      community count (higher → more, smaller communities). Requires
+      community count (higher → more, smaller communities). On
+      tightly-knit corpora the count is hard to tune precisely;
+      consider 'spectral' if exact-N control matters. Requires
+      ``rank_before_clustering=True``.
+    - 'spectral': spectral clustering on the citation subgraph of the
+      top-k filtered works. Symmetrises adjacency, computes the
+      *K* smallest eigenvectors of the normalised Laplacian (where
+      *K* = ``desired_n_topics``), and runs K-means in the embedding.
+      Same citation-graph signal as 'leiden' but with *K* as a direct
+      parameter (Leiden's ``resolution`` is data-dependent and often
+      hard to tune precisely). Quality on tightly-knit citation
+      subgraphs is generally close to Leiden's; on weakly-connected
+      graphs Leiden tends to be more robust. Requires
       ``rank_before_clustering=True``.
     """
     

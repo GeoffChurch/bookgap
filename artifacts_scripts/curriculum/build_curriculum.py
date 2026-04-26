@@ -79,6 +79,55 @@ cs = ConfigStore.instance()
 cs.store(name="curriculum", node=CurriculumConfig())
 
 
+def _cluster_with_spectral(
+    adj: sp.spmatrix,
+    *,
+    n_clusters: int,
+    seed: int = 42,
+) -> NDArray[np.intp]:
+    """Run spectral clustering on a (possibly directed) sparse graph.
+
+    Symmetrises the adjacency, treats it as a precomputed affinity
+    matrix, computes the *K* smallest eigenvectors of the normalised
+    Laplacian, and runs K-means in that embedding to assign each node
+    to one of *K* communities. Used when ``cfg.linkage_method == 'spectral'``.
+
+    Unlike Leiden's resolution-driven count (which is data-dependent and
+    hard to control on tightly-knit corpora), spectral clustering takes
+    *K* as a direct parameter — exactly *K* clusters by construction.
+    Plays well with citation subgraphs where the underlying community
+    structure is well-defined; quality on noisy / weakly-connected
+    graphs is generally close to Leiden's but not strictly better.
+
+    Returns: ``membership`` of length ``adj.shape[0]``, values in
+    ``[0, n_clusters)``.
+    """
+    from sklearn.cluster import SpectralClustering  # type: ignore
+
+    n = adj.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.intp)
+    if n_clusters >= n:
+        # Each node gets its own cluster.
+        return np.arange(n, dtype=np.intp)
+
+    # Symmetrise — spectral clustering needs an undirected affinity.
+    sym = (adj + adj.T) * 0.5
+    # Add small self-loops so isolated nodes don't break Laplacian
+    # normalisation (avoids divide-by-zero in degree matrix inverse).
+    sym = sym + sp.eye(n, dtype=sym.dtype, format="csr") * 1e-9
+
+    sc = SpectralClustering(
+        n_clusters=n_clusters,
+        affinity="precomputed",
+        random_state=seed,
+        assign_labels="kmeans",
+        n_init=10,
+    )
+    membership = sc.fit_predict(sym).astype(np.intp)
+    return membership
+
+
 def _cluster_with_leiden(
     adj: sp.spmatrix,
     *,
@@ -866,7 +915,39 @@ def run_curriculum_building(
     #      directly serve as frontier topics, no mass-threshold cut needed.
     #   2. all other ``linkage_method``s: embedding-based hierarchical
     #      clustering, then mass-threshold cut to find frontier topics.
-    if cfg.linkage_method == "leiden":
+    if cfg.linkage_method == "spectral":
+        if not cfg.rank_before_clustering:
+            raise ValueError(
+                "spectral requires rank_before_clustering=True so the "
+                "citation subgraph is restricted to the top-k filtered works"
+            )
+        LOGGER.info(
+            f"Running spectral clustering on citation subgraph of "
+            f"top-{n_samples} works (n_clusters={cfg.desired_n_topics})..."
+        )
+        sub_adj = adj_citation[top_k_indices][:, top_k_indices]
+        membership = _cluster_with_spectral(
+            sub_adj, n_clusters=cfg.desired_n_topics,
+        )
+        n_communities = int(membership.max()) + 1 if len(membership) > 0 else 0
+        LOGGER.info(
+            f"Spectral produced {n_communities} communities. "
+            f"Top-10 sizes: "
+            f"{sorted(np.bincount(membership).tolist(), reverse=True)[:10]}"
+        )
+        # Spectral always produces exactly n_clusters communities (unless
+        # n_samples < n_clusters, in which case _cluster_with_spectral
+        # returns one-per-node), so no truncation step.
+        leaf_cluster_assignments = membership
+        n_leaf_clusters = n_communities
+        linked = np.zeros((0, 4), dtype=np.float64)
+        leaf_masses = np.zeros(n_leaf_clusters, dtype=np.float64)
+        np.add.at(leaf_masses, leaf_cluster_assignments, point_masses)
+        node_masses = leaf_masses.copy()
+        threshold = 0.0
+        frontier_nodes = np.arange(n_communities, dtype=np.int64)
+        point_to_cluster = leaf_cluster_assignments.copy()
+    elif cfg.linkage_method == "leiden":
         if not cfg.rank_before_clustering:
             raise ValueError(
                 "leiden requires rank_before_clustering=True so the "
