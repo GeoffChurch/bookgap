@@ -496,7 +496,7 @@ class CurriculumConfig:
     circuitrank: CircuitRankConfig = field(default_factory=CircuitRankConfig)
     """Configuration for CircuitRank."""
     
-    linkage_method: str = "bisecting_kmeans"
+    linkage_method: str = "spectral"
     """Clustering method for the curriculum.
 
     Options:
