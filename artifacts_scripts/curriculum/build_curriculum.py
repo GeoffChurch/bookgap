@@ -877,28 +877,52 @@ def run_curriculum_building(
             f"(resolution={cfg.leiden_resolution})..."
         )
         sub_adj = adj_citation[top_k_indices][:, top_k_indices]
-        membership, n_communities = _cluster_with_leiden(
+        raw_membership, n_raw = _cluster_with_leiden(
             sub_adj, resolution=cfg.leiden_resolution,
         )
+        # Leiden typically produces *many* communities (one giant +
+        # hundreds of singletons / tiny tail) regardless of resolution,
+        # because the citation subgraph has lots of weakly-connected
+        # nodes. Truncate to the top ``desired_n_topics`` by size and
+        # mark all other works as unassigned (-1) — matches the
+        # rank_before_clustering convention where works outside top-k
+        # are also -1.
+        sizes = np.bincount(raw_membership, minlength=n_raw)
+        N = cfg.desired_n_topics
+        # argsort gives ascending; reverse and take first N to get the
+        # largest N by size. Stable so ties break on community-ID order.
+        top_n_old_ids = np.argsort(-sizes, kind="stable")[:N]
+        remap = np.full(n_raw, -1, dtype=np.intp)
+        for new_id, old_id in enumerate(top_n_old_ids):
+            remap[old_id] = new_id
+        membership = remap[raw_membership]
+        n_communities = N
         LOGGER.info(
-            f"Leiden produced {n_communities} communities on a "
-            f"{n_samples}-node subgraph (desired ~{cfg.desired_n_topics}; "
-            f"adjust ``leiden_resolution`` to tune count)."
+            f"Leiden produced {n_raw} raw communities; truncated to "
+            f"top-{N} by size (covering {(membership >= 0).sum()} of "
+            f"{n_samples} top-k works; rest unassigned). "
+            f"Top-{min(10, N)} sizes: "
+            f"{sorted(sizes.tolist(), reverse=True)[:min(10, N)]}"
         )
+
         # Communities are leaf clusters AND frontier topics — no
         # hierarchical merging or mass-threshold cut. Trivial linkage
         # so saved outputs stay schema-compatible with other methods.
-        leaf_cluster_assignments = membership
+        leaf_cluster_assignments = membership  # may contain -1s for unassigned
         n_leaf_clusters = n_communities
         linked = np.zeros((0, 4), dtype=np.float64)
+        # Aggregate masses only over assigned works.
         leaf_masses = np.zeros(n_leaf_clusters, dtype=np.float64)
-        np.add.at(leaf_masses, leaf_cluster_assignments, point_masses)
+        assigned = membership >= 0
+        np.add.at(
+            leaf_masses, membership[assigned], point_masses[assigned],
+        )
         # No dendrogram → no internal-node mass propagation. Save the
         # leaf masses themselves as ``node_masses`` for output schema.
         node_masses = leaf_masses.copy()
         threshold = 0.0
         frontier_nodes = np.arange(n_communities, dtype=np.int64)
-        point_to_cluster = leaf_cluster_assignments.copy()
+        point_to_cluster = membership.copy()
     else:
         LOGGER.info("Building dendrogram...")
         # Weights are only meaningful for the rank_before_clustering path
@@ -1041,7 +1065,18 @@ def run_curriculum_building(
     frontier_nodes = frontier_nodes[perm]
     adj_frontier = adj_frontier[np.ix_(perm, perm)]
     cluster_sizes = [cluster_sizes[i] for i in perm]
-    point_to_cluster = inverse_perm[point_to_cluster]
+    # Apply the inverse permutation to assigned (>=0) entries only.
+    # ``leiden`` may produce -1 entries for works in dropped communities;
+    # naive ``inverse_perm[point_to_cluster]`` would wrap those -1s to
+    # the last permutation entry. Other linkage methods produce no -1s
+    # and the masked branch is a no-op for them.
+    assigned_mask = point_to_cluster >= 0
+    if assigned_mask.all():
+        point_to_cluster = inverse_perm[point_to_cluster]
+    else:
+        new_pc = np.full_like(point_to_cluster, -1)
+        new_pc[assigned_mask] = inverse_perm[point_to_cluster[assigned_mask]]
+        point_to_cluster = new_pc
 
     # The canonical linearization is now 0..n_topics-1
     linearization_order = np.arange(n_topics, dtype=np.int64)
