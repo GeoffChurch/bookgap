@@ -292,3 +292,21 @@ class TestClusterWithMultiViewSpectral:
             cluster_with_multi_view_spectral(
                 W1, W2, n_clusters=2, co_reg_lambda=0.5,
             )
+
+
+class TestConfigFields:
+    def test_clustering_config_has_multi_view_fields(self):
+        from artifacts_scripts.curriculum.config import CurriculumConfig
+
+        cfg = CurriculumConfig()
+        # Defaults exist and have sensible values.
+        assert hasattr(cfg, "multi_view_spectral_co_reg_lambda")
+        assert cfg.multi_view_spectral_co_reg_lambda == pytest.approx(0.5)
+        assert hasattr(cfg, "multi_view_spectral_csls_k")
+        assert cfg.multi_view_spectral_csls_k == 10
+        assert hasattr(cfg, "multi_view_spectral_citation_mode")
+        assert cfg.multi_view_spectral_citation_mode == "weighted_unified"
+        assert hasattr(cfg, "multi_view_spectral_max_iters")
+        assert cfg.multi_view_spectral_max_iters == 30
+        assert hasattr(cfg, "multi_view_spectral_tol")
+        assert cfg.multi_view_spectral_tol == pytest.approx(1e-5)

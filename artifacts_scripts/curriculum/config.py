@@ -600,6 +600,49 @@ class CurriculumConfig:
       Decouples out-degree noise from in-degree noise.
     """
 
+    multi_view_spectral_co_reg_lambda: float = 0.5
+    """For ``linkage_method='multi_view_spectral'``: the co-regularisation
+    coupling strength λ between the two views (embedding and citation).
+
+    ``0.0`` ≈ per-view independent spectral (recovers ``linkage_method=
+    'spectral'`` if only the citation view contributed). Larger values
+    force the two views' embeddings into stronger agreement; very large
+    values are degenerate (forced collapse onto one view's structure).
+
+    Reasonable range: 0.1 - 1.0. Sweet spot is corpus-dependent. See
+    Kumar, Rai, Daumé (2011) for the theoretical formulation.
+    """
+
+    multi_view_spectral_csls_k: int = 10
+    """For ``linkage_method='multi_view_spectral'``: the K used in CSLS
+    hubness correction's mean-of-top-K-neighbours computation, applied
+    to each view before forming its Laplacian.
+
+    Larger K averages over more neighbours and produces smoother
+    correction; smaller K is more sensitive to immediate hubness.
+    Reasonable range: 5 - 30 for n ~ thousand-scale.
+    """
+
+    multi_view_spectral_citation_mode: str = "weighted_unified"
+    """For ``linkage_method='multi_view_spectral'``: which citation
+    Jaccard mode to use for the citation view. Defaults to
+    ``weighted_unified`` because its row-normalisation already de-hubs
+    the out-direction; CSLS then complements with in-direction
+    de-hubbing. See ``citation_jaccard_mode`` for the full set.
+    """
+
+    multi_view_spectral_max_iters: int = 30
+    """For ``linkage_method='multi_view_spectral'``: maximum alternating-
+    eigendecomposition iterations. Convergence is usually reached in
+    fewer than 10 iterations on well-conditioned data.
+    """
+
+    multi_view_spectral_tol: float = 1e-5
+    """For ``linkage_method='multi_view_spectral'``: subspace-distance
+    convergence tolerance (Frobenius norm of the change in projector
+    ``U_v U_vᵀ`` between iterations).
+    """
+
     max_cluster_depth: Optional[int] = None
     """For bisecting_kmeans: maximum tree depth. None means no limit.
     
