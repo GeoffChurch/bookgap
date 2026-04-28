@@ -214,3 +214,81 @@ class TestSubspaceDistance:
         B = np.array([[0.0], [1.0], [0.0]])
         d = _subspace_distance(A, B)
         assert d > 0.5
+
+
+from sklearn.metrics import adjusted_rand_score
+
+from artifacts_scripts.curriculum.multi_view_spectral import (
+    cluster_with_multi_view_spectral,
+)
+
+
+class TestClusterWithMultiViewSpectral:
+    def _two_block_views(self, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # 8 nodes: two clear blocks of 4 in BOTH views.
+        rng = np.random.default_rng(seed)
+        block_size = 4
+        n = 2 * block_size
+        # Both views agree: dense within-block, sparse between.
+        W1 = np.full((n, n), 0.05) + rng.uniform(0, 0.01, size=(n, n))
+        W2 = np.full((n, n), 0.05) + rng.uniform(0, 0.01, size=(n, n))
+        for i in range(block_size):
+            for j in range(block_size):
+                if i != j:
+                    W1[i, j] = 0.9 + rng.uniform(0, 0.05)
+                    W2[i, j] = 0.9 + rng.uniform(0, 0.05)
+        for i in range(block_size, n):
+            for j in range(block_size, n):
+                if i != j:
+                    W1[i, j] = 0.9 + rng.uniform(0, 0.05)
+                    W2[i, j] = 0.9 + rng.uniform(0, 0.05)
+        np.fill_diagonal(W1, 1.0)
+        np.fill_diagonal(W2, 1.0)
+        W1 = (W1 + W1.T) / 2
+        W2 = (W2 + W2.T) / 2
+        truth = np.array([0] * block_size + [1] * block_size, dtype=np.intp)
+        return W1, W2, truth
+
+    def test_recovers_two_blocks_when_views_agree(self):
+        W1, W2, truth = self._two_block_views(seed=0)
+        labels = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=2, co_reg_lambda=0.5, seed=0,
+        )
+        assert labels.shape == (8,)
+        ari = adjusted_rand_score(truth, labels)
+        assert ari > 0.95
+
+    def test_lambda_zero_independent_views(self):
+        # λ=0 → views don't influence each other; should still recover the
+        # ground-truth blocks since both views agree on them.
+        W1, W2, truth = self._two_block_views(seed=1)
+        labels = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=2, co_reg_lambda=0.0, seed=0,
+        )
+        ari = adjusted_rand_score(truth, labels)
+        assert ari > 0.95
+
+    def test_returns_intp(self):
+        W1, W2, _ = self._two_block_views(seed=2)
+        labels = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=2, co_reg_lambda=0.5, seed=0,
+        )
+        assert labels.dtype == np.intp
+
+    def test_n_clusters_bounded_by_n(self):
+        # Asking for n_clusters >= n returns identity assignment.
+        W1, W2, _ = self._two_block_views(seed=3)
+        n = W1.shape[0]
+        labels = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=n + 5, co_reg_lambda=0.5, seed=0,
+        )
+        assert labels.shape == (n,)
+        assert len(np.unique(labels)) == n
+
+    def test_shape_mismatch_raises(self):
+        W1 = np.eye(5)
+        W2 = np.eye(6)
+        with pytest.raises(ValueError, match="must match"):
+            cluster_with_multi_view_spectral(
+                W1, W2, n_clusters=2, co_reg_lambda=0.5,
+            )

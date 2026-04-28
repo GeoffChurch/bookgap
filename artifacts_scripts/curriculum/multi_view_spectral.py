@@ -127,3 +127,98 @@ def _subspace_distance(
     PA = A @ A.T
     PB = B @ B.T
     return float(np.linalg.norm(PA - PB, ord="fro"))
+
+
+def _bottom_k_eigvecs(M: NDArray[np.floating], k: int) -> NDArray[np.floating]:
+    """Return the k eigenvectors of M with the smallest eigenvalues.
+
+    Uses dense ``numpy.linalg.eigh`` (assumes M is symmetric and n is
+    moderate, n ≤ ~10k). Symmetrises numerically before decomposing.
+    """
+    M_sym = 0.5 * (M + M.T)
+    eigvals, eigvecs = np.linalg.eigh(M_sym)
+    # eigh returns ascending; first k are the smallest.
+    return eigvecs[:, :k]
+
+
+def cluster_with_multi_view_spectral(
+    W1: NDArray[np.floating],
+    W2: NDArray[np.floating],
+    *,
+    n_clusters: int,
+    co_reg_lambda: float = 0.5,
+    max_iters: int = 30,
+    tol: float = 1e-5,
+    seed: int = 42,
+) -> NDArray[np.intp]:
+    """Co-regularized multi-view spectral clustering (Kumar-Rai-Daumé 2011).
+
+    Solves for embeddings ``U_1, U_2`` of shape ``(n, K)`` that each
+    minimise their own view's normalised-Laplacian quadratic form *and*
+    maximise mutual agreement::
+
+        min  tr(U_1ᵀ L_1 U_1) + tr(U_2ᵀ L_2 U_2)
+             - λ tr(U_1 U_1ᵀ U_2 U_2ᵀ)
+        s.t. U_vᵀ U_v = I
+
+    Solved by alternation: with ``U_w`` fixed, ``U_v`` is the bottom-K
+    eigenvectors of ``L_v - λ U_w U_wᵀ``. Iterates until subspace
+    convergence (``||U_v U_vᵀ - U_v_prev U_v_prevᵀ||_F < tol``).
+
+    K-means on the row-normalised concatenation ``[U_1 | U_2]`` produces
+    the final clustering.
+
+    ``λ=0`` recovers per-view independent spectral; large ``λ`` forces
+    full agreement (degenerate). Sweet spot in between.
+
+    Reference: Kumar, Rai, Daumé (2011), "Co-regularized Multi-view
+    Spectral Clustering", NeurIPS.
+
+    Parameters
+    ----------
+    W1, W2 : (n, n) symmetric similarity matrices, one per view.
+    n_clusters : Number of clusters K.
+    co_reg_lambda : Co-regularisation strength λ. ``0.0`` ≈ independent
+        views; reasonable starting values are ``0.1``-``1.0``.
+    max_iters : Maximum alternations.
+    tol : Subspace-distance tolerance for convergence.
+    seed : Random seed for K-means.
+    """
+    from sklearn.cluster import KMeans
+
+    n = W1.shape[0]
+    if W2.shape != (n, n):
+        raise ValueError(
+            f"W1 ({W1.shape}) and W2 ({W2.shape}) must match (n, n)."
+        )
+    if n_clusters >= n:
+        return np.arange(n, dtype=np.intp)
+
+    K = n_clusters
+    L1 = _normalized_laplacian(W1)
+    L2 = _normalized_laplacian(W2)
+
+    # Initialise per-view spectral.
+    U1 = _bottom_k_eigvecs(L1, K)
+    U2 = _bottom_k_eigvecs(L2, K)
+
+    for _ in range(max_iters):
+        U1_new = _bottom_k_eigvecs(L1 - co_reg_lambda * (U2 @ U2.T), K)
+        U2_new = _bottom_k_eigvecs(L2 - co_reg_lambda * (U1_new @ U1_new.T), K)
+        change = max(
+            _subspace_distance(U1_new, U1),
+            _subspace_distance(U2_new, U2),
+        )
+        U1, U2 = U1_new, U2_new
+        if change < tol:
+            break
+
+    U_joint = np.concatenate([U1, U2], axis=1)
+    # Row-normalise (Ng-Jordan-Weiss spectral pre-processing).
+    norms = np.linalg.norm(U_joint, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-12)
+    U_joint = U_joint / norms
+
+    km = KMeans(n_clusters=K, random_state=seed, n_init=10)
+    labels = km.fit_predict(U_joint)
+    return labels.astype(np.intp)
