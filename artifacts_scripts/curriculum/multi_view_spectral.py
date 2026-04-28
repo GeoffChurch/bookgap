@@ -96,3 +96,34 @@ def build_citation_similarity_view(
     sim = 1.0 - dist
     np.fill_diagonal(sim, 1.0)
     return csls_correct(sim, k=csls_k, clip=True)
+
+
+def _normalized_laplacian(W: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Symmetric normalised Laplacian L = I - D^{-1/2} W D^{-1/2}.
+
+    Floors degrees to a tiny positive value so isolated nodes don't break
+    the inverse; the resulting row/column for an isolated node is zero
+    off-diagonal and 1 on the diagonal.
+    """
+    deg = W.sum(axis=1)
+    deg = np.maximum(deg, 1e-12)
+    d_inv_sqrt = 1.0 / np.sqrt(deg)
+    L = np.eye(W.shape[0]) - d_inv_sqrt[:, None] * W * d_inv_sqrt[None, :]
+    L = 0.5 * (L + L.T)  # numerical symmetrisation
+    return L
+
+
+def _subspace_distance(
+    A: NDArray[np.floating],
+    B: NDArray[np.floating],
+) -> float:
+    """Frobenius distance between subspaces spanned by columns of A and B.
+
+    Computes ``||A Aᵀ - B Bᵀ||_F``, which is invariant to column
+    reorderings and sign flips since the projector ``A Aᵀ`` depends only
+    on the column space of A. Used as the convergence metric for the
+    co-regularized iteration.
+    """
+    PA = A @ A.T
+    PB = B @ B.T
+    return float(np.linalg.norm(PA - PB, ord="fro"))

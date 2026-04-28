@@ -14,6 +14,8 @@ from artifacts_scripts.curriculum.multi_view_spectral import (
     build_embedding_similarity_view,
     build_citation_similarity_view,
     csls_correct,
+    _normalized_laplacian,
+    _subspace_distance,
 )
 
 
@@ -156,3 +158,59 @@ class TestBuildCitationSimilarityView:
             W = build_citation_similarity_view(adj, csls_k=1, mode=mode)
             assert W.shape == (2, 2)
             assert np.isfinite(W).all()
+
+
+class TestNormalizedLaplacian:
+    def test_shape_and_symmetry(self):
+        rng = np.random.default_rng(0)
+        n = 6
+        W = rng.uniform(0, 1, size=(n, n))
+        W = (W + W.T) / 2
+        np.fill_diagonal(W, 0.0)
+        L = _normalized_laplacian(W)
+        assert L.shape == (n, n)
+        assert np.allclose(L, L.T, atol=1e-9)
+
+    def test_zero_eigenvalue_for_connected_graph(self):
+        # Normalised Laplacian of a connected graph has smallest eigenvalue 0.
+        n = 5
+        W = np.ones((n, n)) - np.eye(n)
+        L = _normalized_laplacian(W)
+        eigvals = np.linalg.eigvalsh(L)
+        assert eigvals[0] == pytest.approx(0.0, abs=1e-9)
+
+    def test_isolated_node_handled(self):
+        # An all-zero row would div-by-zero without floor.
+        W = np.array([
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],  # isolated
+        ])
+        L = _normalized_laplacian(W)
+        assert np.isfinite(L).all()
+
+
+class TestSubspaceDistance:
+    def test_identical_subspace_zero(self):
+        rng = np.random.default_rng(0)
+        A = rng.normal(size=(6, 3))
+        # Orthonormalise so column space is well-defined.
+        Q, _ = np.linalg.qr(A)
+        d = _subspace_distance(Q, Q)
+        assert d == pytest.approx(0.0, abs=1e-9)
+
+    def test_sign_flip_invariant(self):
+        # Flipping a column's sign doesn't change the column space.
+        rng = np.random.default_rng(0)
+        A, _ = np.linalg.qr(rng.normal(size=(6, 3)))
+        B = A.copy()
+        B[:, 0] *= -1
+        d = _subspace_distance(A, B)
+        assert d == pytest.approx(0.0, abs=1e-9)
+
+    def test_orthogonal_subspaces_nonzero(self):
+        # Two non-overlapping rank-1 subspaces in R^3 → positive distance.
+        A = np.array([[1.0], [0.0], [0.0]])
+        B = np.array([[0.0], [1.0], [0.0]])
+        d = _subspace_distance(A, B)
+        assert d > 0.5
