@@ -549,6 +549,16 @@ class CurriculumConfig:
       under the threshold. The closest direct analogue of
       'weighted_bisecting_kmeans' on the citation graph instead of
       the embedding space. Requires ``rank_before_clustering=True``.
+    - 'multi_view_spectral': co-regularized multi-view spectral
+      clustering combining an embedding-similarity view (cosine on
+      denoised embeddings) and a citation-similarity view (Ruzicka on
+      WU-mode neighbourhoods). CSLS hubness correction is applied to
+      each view before forming its Laplacian. Iterates eigendecomposition
+      of ``L_v - λ U_w U_wᵀ`` until subspace convergence; K-means on the
+      row-normalised concatenated joint embedding produces the labels.
+      ``λ=0`` recovers per-view independent spectral. Reference:
+      Kumar-Rai-Daumé (2011), Conneau et al. (2017). Requires
+      ``rank_before_clustering=True``.
     """
     
     min_cluster_size: int = 1

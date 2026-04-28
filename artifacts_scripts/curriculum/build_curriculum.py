@@ -1166,7 +1166,7 @@ def run_curriculum_building(
             linked, frontier_nodes, n_leaf_clusters,
         )
         point_to_cluster = leaf_to_frontier[leaf_cluster_assignments]
-    elif cfg.linkage_method in ("spectral", "graph_bisect"):
+    elif cfg.linkage_method in ("spectral", "graph_bisect", "multi_view_spectral"):
         if not cfg.rank_before_clustering:
             raise ValueError(
                 f"{cfg.linkage_method} requires rank_before_clustering=True so the "
@@ -1182,7 +1182,7 @@ def run_curriculum_building(
                 sub_adj, n_clusters=cfg.desired_n_topics,
             )
             method_label = "Spectral"
-        else:
+        elif cfg.linkage_method == "graph_bisect":
             LOGGER.info(
                 f"Running recursive Fiedler bisection on citation subgraph "
                 f"of top-{n_samples} works (n_clusters={cfg.desired_n_topics})..."
@@ -1191,6 +1191,36 @@ def run_curriculum_building(
                 sub_adj, n_clusters=cfg.desired_n_topics,
             )
             method_label = "Graph-bisect"
+        else:  # multi_view_spectral
+            from artifacts_scripts.curriculum.multi_view_spectral import (
+                build_citation_similarity_view,
+                build_embedding_similarity_view,
+                cluster_with_multi_view_spectral,
+            )
+            LOGGER.info(
+                f"Running multi-view spectral on top-{n_samples} works "
+                f"(n_clusters={cfg.desired_n_topics}, "
+                f"λ={cfg.multi_view_spectral_co_reg_lambda}, "
+                f"csls_k={cfg.multi_view_spectral_csls_k}, "
+                f"citation_mode={cfg.multi_view_spectral_citation_mode})..."
+            )
+            W_emb = build_embedding_similarity_view(
+                embeddings_for_clustering,
+                csls_k=cfg.multi_view_spectral_csls_k,
+            )
+            W_cite = build_citation_similarity_view(
+                sub_adj,
+                csls_k=cfg.multi_view_spectral_csls_k,
+                mode=cfg.multi_view_spectral_citation_mode,
+            )
+            membership = cluster_with_multi_view_spectral(
+                W_emb, W_cite,
+                n_clusters=cfg.desired_n_topics,
+                co_reg_lambda=cfg.multi_view_spectral_co_reg_lambda,
+                max_iters=cfg.multi_view_spectral_max_iters,
+                tol=cfg.multi_view_spectral_tol,
+            )
+            method_label = "Multi-view-spectral"
         n_communities = int(membership.max()) + 1 if len(membership) > 0 else 0
         LOGGER.info(
             f"{method_label} produced {n_communities} communities. "
@@ -1605,3 +1635,32 @@ def run_curriculum_building(
     # Return cloud, embeddings, and filtered indices for downstream use
     filtered_indices_out = top_k_indices if cfg.rank_before_clustering else None
     return cloud, embeddings_for_clustering, filtered_indices_out
+
+
+def _run_clustering_for_test(
+    *,
+    sub_adj: sp.spmatrix,
+    embeddings: NDArray[np.floating],
+    n_clusters: int,
+    co_reg_lambda: float = 0.5,
+    csls_k: int = 10,
+    citation_mode: str = "weighted_unified",
+) -> NDArray[np.intp]:
+    """Test entry point: run multi-view spectral on raw inputs.
+
+    Bypasses the Hydra/Cloud machinery so unit tests can exercise the
+    clustering kernel without standing up a full curriculum config.
+    """
+    from artifacts_scripts.curriculum.multi_view_spectral import (
+        build_citation_similarity_view,
+        build_embedding_similarity_view,
+        cluster_with_multi_view_spectral,
+    )
+
+    W_emb = build_embedding_similarity_view(embeddings, csls_k=csls_k)
+    W_cite = build_citation_similarity_view(sub_adj, csls_k=csls_k, mode=citation_mode)
+    return cluster_with_multi_view_spectral(
+        W_emb, W_cite,
+        n_clusters=n_clusters,
+        co_reg_lambda=co_reg_lambda,
+    )

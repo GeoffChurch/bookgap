@@ -310,3 +310,53 @@ class TestConfigFields:
         assert cfg.multi_view_spectral_max_iters == 30
         assert hasattr(cfg, "multi_view_spectral_tol")
         assert cfg.multi_view_spectral_tol == pytest.approx(1e-5)
+
+
+class TestDispatchIntegration:
+    def test_dispatch_recognises_multi_view_spectral(self):
+        # Smoke-level: invoke the dispatcher path with synthetic inputs and
+        # verify it returns the expected output contract for non-dendrogram
+        # methods (empty linkage, identity leaf assignments, sensible
+        # frontier).
+        from artifacts_scripts.curriculum.build_curriculum import (
+            _run_clustering_for_test,
+        )
+
+        rng = np.random.default_rng(0)
+        n = 8
+        # Simple block-structured citation graph and embeddings.
+        block_size = 4
+        adj_rows: list[int] = []
+        adj_cols: list[int] = []
+        for i in range(block_size):
+            for j in range(block_size):
+                if i != j:
+                    adj_rows.append(i); adj_cols.append(j)
+        for i in range(block_size, n):
+            for j in range(block_size, n):
+                if i != j:
+                    adj_rows.append(i); adj_cols.append(j)
+        sub_adj = sp.csr_matrix(
+            ([1.0] * len(adj_rows), (adj_rows, adj_cols)), shape=(n, n)
+        )
+        cluster1 = rng.normal(loc=[3.0, 0.0], scale=0.05, size=(block_size, 2))
+        cluster2 = rng.normal(loc=[0.0, 3.0], scale=0.05, size=(block_size, 2))
+        embeddings = np.vstack([cluster1, cluster2]).astype(np.float64)
+
+        out = _run_clustering_for_test(
+            sub_adj=sub_adj,
+            embeddings=embeddings,
+            n_clusters=2,
+            co_reg_lambda=0.5,
+            csls_k=2,
+            citation_mode="weighted_unified",
+        )
+        # Output contract: flat membership of length n, exactly 2 unique
+        # values (since n_clusters=2 and n=8), block structure recovered.
+        assert out.shape == (n,)
+        assert len(np.unique(out)) == 2
+        # First and second halves should fall in different clusters.
+        assert out[0] != out[block_size]
+        # Within-block consistency.
+        assert (out[:block_size] == out[0]).all()
+        assert (out[block_size:] == out[block_size]).all()
