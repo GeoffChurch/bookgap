@@ -1645,11 +1645,15 @@ def _run_clustering_for_test(
     co_reg_lambda: float = 0.5,
     csls_k: int = 10,
     citation_mode: str = "weighted_unified",
+    max_iters: int = 30,
+    tol: float = 1e-5,
 ) -> NDArray[np.intp]:
     """Test entry point: run multi-view spectral on raw inputs.
 
     Bypasses the Hydra/Cloud machinery so unit tests can exercise the
     clustering kernel without standing up a full curriculum config.
+    Defaults match the corresponding ``CurriculumConfig`` fields so the
+    entry point is suitable for convergence regression tests.
     """
     from artifacts_scripts.curriculum.multi_view_spectral import (
         build_citation_similarity_view,
@@ -1663,4 +1667,6 @@ def _run_clustering_for_test(
         W_emb, W_cite,
         n_clusters=n_clusters,
         co_reg_lambda=co_reg_lambda,
+        max_iters=max_iters,
+        tol=tol,
     )
