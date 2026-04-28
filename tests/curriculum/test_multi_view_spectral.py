@@ -82,10 +82,13 @@ class TestCSLSCorrect:
 
 class TestBuildEmbeddingSimilarityView:
     def test_two_clusters_separated(self):
-        # Two tight clusters in 2D; CSLS-corrected within > between.
-        rng = np.random.default_rng(2)
-        cluster1 = rng.normal(loc=[0.0, 0.0], scale=0.05, size=(4, 2))
-        cluster2 = rng.normal(loc=[5.0, 5.0], scale=0.05, size=(4, 2))
+        # Two tight clusters along distinct rays from the origin so that
+        # L2 normalisation preserves direction. (Centring a cluster at the
+        # origin would normalise small-noise points to random unit-circle
+        # directions, defeating the test.)
+        rng = np.random.default_rng(0)
+        cluster1 = rng.normal(loc=[3.0, 0.0], scale=0.05, size=(4, 2))
+        cluster2 = rng.normal(loc=[0.0, 3.0], scale=0.05, size=(4, 2))
         embeddings = np.vstack([cluster1, cluster2])
         W = build_embedding_similarity_view(embeddings, csls_k=2)
         assert W.shape == (8, 8)
