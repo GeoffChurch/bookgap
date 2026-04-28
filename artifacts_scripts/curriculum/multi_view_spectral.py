@@ -68,3 +68,31 @@ def build_embedding_similarity_view(
     emb_norm = embeddings / norms
     sim = emb_norm @ emb_norm.T
     return csls_correct(sim, k=csls_k, clip=True)
+
+
+def build_citation_similarity_view(
+    sub_adj: sp.spmatrix,
+    csls_k: int = 10,
+    mode: str = "weighted_unified",
+) -> NDArray[np.floating]:
+    """Build a CSLS-corrected dense citation-similarity view.
+
+    Uses ``_citation_jaccard_distance_matrix`` to produce a Ruzicka
+    distance matrix (one of three modes: ``binary``, ``weighted_unified``,
+    ``weighted_per_direction``); converts to similarity; applies CSLS
+    hubness correction.
+
+    Default mode is ``weighted_unified`` because its row-normalisation
+    already de-hubs the citation graph along the out-direction; CSLS
+    then complements with in-direction de-hubbing.
+    """
+    # Lazy import to avoid circular dependency: build_curriculum imports
+    # this module after we add the dispatch branch (Task 7).
+    from artifacts_scripts.curriculum.build_curriculum import (
+        _citation_jaccard_distance_matrix,
+    )
+
+    dist = _citation_jaccard_distance_matrix(sub_adj, mode=mode)
+    sim = 1.0 - dist
+    np.fill_diagonal(sim, 1.0)
+    return csls_correct(sim, k=csls_k, clip=True)

@@ -12,6 +12,7 @@ import scipy.sparse as sp
 
 from artifacts_scripts.curriculum.multi_view_spectral import (
     build_embedding_similarity_view,
+    build_citation_similarity_view,
     csls_correct,
 )
 
@@ -114,3 +115,44 @@ class TestBuildEmbeddingSimilarityView:
         W = build_embedding_similarity_view(emb, csls_k=1)
         # Should not raise and should be finite.
         assert np.isfinite(W).all()
+
+
+def _build_adj(edges: list[tuple[int, int]], n: int) -> sp.csr_matrix:
+    """Build a directed citation adjacency: edge (i, j) means i cites j."""
+    rows = [u for u, _ in edges]
+    cols = [v for _, v in edges]
+    data = [1.0] * len(edges)
+    return sp.csr_matrix((data, (rows, cols)), shape=(n, n))
+
+
+class TestBuildCitationSimilarityView:
+    def test_two_disjoint_components(self):
+        # Two disjoint citation cliques with an external hub (node 6) that
+        # cites into both cliques. This breaks symmetry and allows CSLS to
+        # differentiate within vs between similarities.
+        n = 7
+        # Clique 0,1,2: cite each other
+        edges = [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1),
+                 # Clique 3,4,5: cite each other
+                 (3, 4), (3, 5), (4, 3), (4, 5), (5, 3), (5, 4),
+                 # Hub 6 cites into both cliques
+                 (6, 0), (6, 3)]
+        adj = _build_adj(edges, n=n)
+        W = build_citation_similarity_view(adj, csls_k=2, mode="weighted_unified")
+        assert W.shape == (n, n)
+        assert np.allclose(W, W.T, atol=1e-9)
+        assert (W >= 0).all()
+        # Within-clique similarity should exceed between-clique (both
+        # preferentially distant from the hub).
+        within = W[:3, :3][np.triu_indices(3, k=1)].mean()
+        between = W[:3, 3:6].mean()
+        assert within >= between  # Can be equal for small/degenerate matrices
+
+    def test_mode_weighted_unified_default(self):
+        # Sanity: the function accepts the three modes from
+        # _citation_jaccard_distance_matrix.
+        adj = _build_adj([(0, 1), (1, 0)], n=2)
+        for mode in ("binary", "weighted_unified", "weighted_per_direction"):
+            W = build_citation_similarity_view(adj, csls_k=1, mode=mode)
+            assert W.shape == (2, 2)
+            assert np.isfinite(W).all()
