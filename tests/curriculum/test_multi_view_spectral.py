@@ -10,7 +10,10 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from artifacts_scripts.curriculum.multi_view_spectral import csls_correct
+from artifacts_scripts.curriculum.multi_view_spectral import (
+    build_embedding_similarity_view,
+    csls_correct,
+)
 
 
 class TestCSLSCorrect:
@@ -75,3 +78,36 @@ class TestCSLSCorrect:
         W = np.eye(3)
         with pytest.raises(ValueError, match="k=3 must be less than n=3"):
             csls_correct(W, k=3)
+
+
+class TestBuildEmbeddingSimilarityView:
+    def test_two_clusters_separated(self):
+        # Two tight clusters in 2D; CSLS-corrected within > between.
+        rng = np.random.default_rng(2)
+        cluster1 = rng.normal(loc=[0.0, 0.0], scale=0.05, size=(4, 2))
+        cluster2 = rng.normal(loc=[5.0, 5.0], scale=0.05, size=(4, 2))
+        embeddings = np.vstack([cluster1, cluster2])
+        W = build_embedding_similarity_view(embeddings, csls_k=2)
+        assert W.shape == (8, 8)
+        assert np.allclose(W, W.T, atol=1e-9)
+        assert (W >= 0).all()
+        within = W[:4, :4][np.triu_indices(4, k=1)].mean()
+        between = W[:4, 4:].mean()
+        assert within > between
+
+    def test_normalization_invariance(self):
+        # Pre-normalised embeddings should give the same result as raw —
+        # we L2-normalise internally.
+        rng = np.random.default_rng(1)
+        emb = rng.normal(size=(6, 4))
+        emb_norm = emb / np.linalg.norm(emb, axis=1, keepdims=True)
+        W_raw = build_embedding_similarity_view(emb, csls_k=2)
+        W_norm = build_embedding_similarity_view(emb_norm, csls_k=2)
+        assert np.allclose(W_raw, W_norm, atol=1e-9)
+
+    def test_zero_embedding_handled(self):
+        # An all-zero row would div-by-zero without protection.
+        emb = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+        W = build_embedding_similarity_view(emb, csls_k=1)
+        # Should not raise and should be finite.
+        assert np.isfinite(W).all()

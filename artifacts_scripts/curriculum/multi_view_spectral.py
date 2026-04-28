@@ -51,3 +51,20 @@ def csls_correct(
     if clip:
         csls = np.maximum(csls, 0.0)
     return csls
+
+
+def build_embedding_similarity_view(
+    embeddings: NDArray[np.floating],
+    csls_k: int = 10,
+) -> NDArray[np.floating]:
+    """Build a CSLS-corrected dense embedding-similarity view.
+
+    Embeddings are L2-normalised; pairwise similarity is cosine; CSLS
+    hubness correction is applied with the given k. Result is symmetric,
+    non-negative, shape (n, n).
+    """
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-12)  # guard zero-norm rows
+    emb_norm = embeddings / norms
+    sim = emb_norm @ emb_norm.T
+    return csls_correct(sim, k=csls_k, clip=True)
