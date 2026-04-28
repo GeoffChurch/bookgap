@@ -81,37 +81,96 @@ cs.store(name="curriculum", node=CurriculumConfig())
 
 def _citation_jaccard_distance_matrix(
     sub_adj: sp.spmatrix,
+    *,
+    mode: str = "binary",
 ) -> NDArray[np.floating]:
-    """Pairwise Jaccard distance between citation neighbourhoods.
+    """Pairwise Jaccard / Ruzicka distance between citation neighbourhoods.
 
-    For each work in the (top-k) subgraph, treat its in+out neighbourhood
-    (the works it cites and the works that cite it, restricted to the
-    subgraph) as a set. Pairwise Jaccard distance =
-    1 - |N(i) ∩ N(j)| / |N(i) ∪ N(j)|. Works that share many neighbours
-    are "close"; works with disjoint neighbourhoods are "far."
+    Three modes selectable via ``mode``:
 
-    This gives a similarity-from-citations that's drop-in compatible
-    with scipy's hierarchical-clustering machinery: we can produce a
-    dendrogram via ``linkage(condensed_dist, method='average')`` and
-    apply the existing mass-threshold cut. High-mass works with
-    distinctive citation neighbourhoods (no near-Jaccard-neighbours
-    in the subgraph) naturally end up as earned singletons, the same
-    way they do under embedding-distance avg-linkage.
+    - ``"binary"`` (default; original behaviour): treat each work's
+      in+out neighbourhood (cited + citer set) as an unweighted set.
+      ``J = |N(i) ∩ N(j)| / |N(i) ∪ N(j)|``.
+
+    - ``"weighted_unified"``: weight each neighbour by its edge weight
+      in the row-normalised random-walk transition matrix
+      ``P[i, j] = A[i, j] / out_deg(i)``. Each work's neighbourhood
+      vector is the elementwise max of its row in P and its column in
+      P (i.e. ``W = max(P, P^T)``), so an out-edge ``u → k`` contributes
+      ``1/out_deg(u)`` and an in-edge ``v → u`` contributes
+      ``1/out_deg(v)``. Down-weights citation-promiscuous reviewers
+      (their per-edge contribution is diluted across their large
+      reference list). Generalised Jaccard (a.k.a. Ruzicka):
+      ``J = Σ min(w_u, w_v) / Σ max(w_u, w_v)``. Reduces to ``"binary"``
+      when all degrees are equal.
+
+    - ``"weighted_per_direction"``: same idea, but separately
+      ℓ1-normalise the out-distribution and the in-distribution per
+      node (out-distribution = row-normalised P; in-distribution =
+      column-normalised A so each citee's column sums to 1). Concatenate
+      the two as a single 2n-feature vector per node and apply the same
+      Ruzicka similarity. Decouples out-degree noise from in-degree
+      noise — the two directions can't drown each other out.
+
+    For both weighted modes we exploit the identity
+      ``Σ min(a, b) = (‖a‖_1 + ‖b‖_1 − ‖a − b‖_1) / 2``,
+    so Ruzicka similarity is computable from row ℓ1-norms plus a
+    pairwise L1 (cityblock) distance matrix:
+      ``J = (R_u + R_v − L1) / (R_u + R_v + L1)``.
     """
     n = sub_adj.shape[0]
-    sym = (sub_adj + sub_adj.T) > 0  # union of cited + citer relationships
-    sym = sym.astype(np.uint8).tocsr()
-    # Each row's nonzero pattern = the neighbourhood set.
-    # Jaccard(i, j) = |N(i) ∩ N(j)| / |N(i) ∪ N(j)|.
-    # |N(i) ∩ N(j)| = (sym @ sym.T)[i, j] when both are 0/1 indicators.
-    # |N(i)| = row sum.
-    intersections = (sym @ sym.T).toarray().astype(np.float64)
-    sizes = np.asarray(sym.sum(axis=1)).flatten().astype(np.float64)
-    unions = sizes[:, None] + sizes[None, :] - intersections
-    # Avoid 0/0 for empty-neighbourhood rows: define Jaccard = 0 there
-    # (-> max distance = 1).
-    with np.errstate(divide="ignore", invalid="ignore"):
-        sim = np.where(unions > 0, intersections / unions, 0.0)
+    if n == 0:
+        return np.zeros((0, 0), dtype=np.float64)
+
+    if mode == "binary":
+        sym = (sub_adj + sub_adj.T) > 0  # union of cited + citer relationships
+        sym = sym.astype(np.uint8).tocsr()
+        # Each row's nonzero pattern = the neighbourhood set.
+        # Jaccard(i, j) = |N(i) ∩ N(j)| / |N(i) ∪ N(j)|.
+        # |N(i) ∩ N(j)| = (sym @ sym.T)[i, j] when both are 0/1 indicators.
+        # |N(i)| = row sum.
+        intersections = (sym @ sym.T).toarray().astype(np.float64)
+        sizes = np.asarray(sym.sum(axis=1)).flatten().astype(np.float64)
+        unions = sizes[:, None] + sizes[None, :] - intersections
+        # Avoid 0/0 for empty-neighbourhood rows: define Jaccard = 0 there
+        # (-> max distance = 1).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sim = np.where(unions > 0, intersections / unions, 0.0)
+    elif mode in ("weighted_unified", "weighted_per_direction"):
+        from scipy.spatial.distance import cdist
+
+        sub_csr = sub_adj.tocsr().astype(np.float64)
+        out_deg = np.asarray(sub_csr.sum(axis=1)).flatten()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            inv_out = np.where(out_deg > 0, 1.0 / out_deg, 0.0)
+        # P[i, j] = A[i, j] / out_deg(i): random-walk transition matrix.
+        P = sp.diags(inv_out) @ sub_csr
+
+        if mode == "weighted_unified":
+            # Weighted union neighbourhood: W[u, k] = max(P[u, k], P[k, u]).
+            W = P.maximum(P.T).toarray()
+        else:  # weighted_per_direction
+            # In-distribution: column-normalise A so each citee's column
+            # sums to 1; column k of Q is then citers(k)'s distribution.
+            in_deg = np.asarray(sub_csr.sum(axis=0)).flatten()
+            with np.errstate(divide="ignore", invalid="ignore"):
+                inv_in = np.where(in_deg > 0, 1.0 / in_deg, 0.0)
+            Q = sub_csr @ sp.diags(inv_in)
+            # Each row of W is [P[u, :] ; Q^T[u, :]] — out then in.
+            W = sp.hstack([P, Q.T], format="csr").toarray()
+
+        row_l1 = W.sum(axis=1)
+        L1 = cdist(W, W, metric="cityblock")
+        sums = row_l1[:, None] + row_l1[None, :]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            denom = sums + L1
+            sim = np.where(denom > 0, (sums - L1) / denom, 0.0)
+    else:
+        raise ValueError(
+            f"Unknown citation_jaccard_mode: {mode!r}. "
+            f"Expected 'binary', 'weighted_unified', or 'weighted_per_direction'."
+        )
+
     dist = 1.0 - sim
     # Squash diagonal to 0 (distance to self).
     np.fill_diagonal(dist, 0.0)
@@ -1073,10 +1132,13 @@ def run_curriculum_building(
                 "citation subgraph is restricted to the top-k filtered works"
             )
         LOGGER.info(
-            f"Building citation-Jaccard distance matrix on top-{n_samples}..."
+            f"Building citation-Jaccard distance matrix on top-{n_samples} "
+            f"(mode={cfg.citation_jaccard_mode})..."
         )
         sub_adj = adj_citation[top_k_indices][:, top_k_indices]
-        dist = _citation_jaccard_distance_matrix(sub_adj)
+        dist = _citation_jaccard_distance_matrix(
+            sub_adj, mode=cfg.citation_jaccard_mode,
+        )
         LOGGER.info("Running scipy avg-linkage on the citation distance matrix...")
         # ``linkage`` takes a condensed (upper-triangular flattened) form
         # of the distance matrix.
@@ -1386,6 +1448,10 @@ def run_curriculum_building(
         "pagerank_alpha": cfg.pagerank.alpha if cfg.method == RankMethod.PAGE_RANK else None,
         "circuitrank_leakage": cfg.circuitrank.leakage if cfg.method == RankMethod.CIRCUIT_RANK else None,
         "linkage_method": cfg.linkage_method,
+        "citation_jaccard_mode": (
+            cfg.citation_jaccard_mode
+            if cfg.linkage_method == "citation_avg_linkage" else None
+        ),
         "mass_threshold": float(threshold),
         "frontier_topic_ids": frontier_nodes.tolist(),
         "cluster_sizes": cluster_sizes,

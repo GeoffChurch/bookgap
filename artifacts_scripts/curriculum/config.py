@@ -582,6 +582,24 @@ class CurriculumConfig:
     resolution. Reasonable range: 0.5 to 3.0.
     """
 
+    citation_jaccard_mode: str = "binary"
+    """For ``linkage_method='citation_avg_linkage'``: how to weight the
+    citation neighbourhood before computing pairwise similarity.
+
+    Options:
+    - 'binary' (default, original): unweighted in+out neighbourhood,
+      ordinary Jaccard.
+    - 'weighted_unified': weight each neighbour by its edge weight in
+      the row-normalised random-walk transition matrix
+      ``P[i, j] = A[i, j] / out_deg(i)``; neighbourhood is
+      ``max(P, P^T)``. Generalised Jaccard (Ruzicka). Down-weights
+      promiscuous citers (literature reviews) automatically.
+    - 'weighted_per_direction': separately ℓ1-normalise the
+      out-distribution (row-normalised P) and the in-distribution
+      (column-normalised A) per node, concatenate, then Ruzicka.
+      Decouples out-degree noise from in-degree noise.
+    """
+
     max_cluster_depth: Optional[int] = None
     """For bisecting_kmeans: maximum tree depth. None means no limit.
     
