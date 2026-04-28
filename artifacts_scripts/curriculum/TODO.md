@@ -6,9 +6,38 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 
 ---
 
+## Current verdict on clustering methods (2026-04-28)
+
+**Reframe**: seeds (target/source works) are *fair game* — they don't need to remain as singletons; getting clustered with related works is fine, getting dropped to -1 is fine. What matters is: cluster topical coherence, keyword distinctness, mass distribution, and whether earned non-seed landmarks (Shannon-MTC-class works) emerge.
+
+**Cross-corpus rankings** from `compare_clusterings.py` (QC: quantum-crypto, 0 sources; Robotics: vision→robotics, 4 sources):
+
+| Method | QC Q | Rob Q | QC tpc/kw | Rob tpc/kw | Singletons | Notes |
+|---|---|---|---|---|---|---|
+| leiden | **0.759** | **0.638** | 1.41 | 1.80 | **0** (refuses) | Citation-graph champion, no landmarks. |
+| **weighted_bisecting_kmeans** | 0.384 | **0.309** | **1.54** | **1.32** | 0–4 (knob) | **Best singleton-allowing method cross-corpus.** Best keyword distinctness on both corpora. |
+| WU (citation_avg_linkage, weighted_unified) | 0.320 | 0.287 | 1.18 | 1.27 | 5 | Close to wbk on QC; behind on robotics. |
+| binary (citation_avg_linkage) | 0.258 | 0.169 | 1.09 | 1.15 | 5–7 | Dominated by WU on QC, by wbk on robotics. |
+| WPD (citation_avg_linkage, weighted_per_direction) | 0.248 | 0.176 | 1.18 | 1.12 | 5–8 | Most singletons but lowest Q among citation_avg variants. |
+| average (avg-linkage on embeddings) | 0.378 | 0.131 | 1.24 | 1.09 | 5–8 | Cross-corpus unstable — worst Q on robotics. |
+| spectral | 0.548 | 0.547 | 1.18 | 1.21 | 0 | Mega-cluster pathology on QC (max%=57%). |
+| graph_bisect | 0.215 | 0.569 | 1.88 | 1.67 | 0 | Cross-corpus unstable — slices through real communities on QC. |
+
+**Default**: `linkage_method = "weighted_bisecting_kmeans"` (`config.py:499`). Cross-corpus rationale confirmed by full sweep on 2026-04-28.
+
+**When to deviate from wbk**:
+- **leiden** if you want pure citation-driven communities and don't care about earned landmarks.
+- **WU** if you specifically want citation-graph-driven clustering *with* the chance of earned non-seed singletons (it found 3 such on QC: EPR, Algebraic Alphabet, Bell-theorem QKD).
+
+**Avoid**: average (cross-corpus instability), graph_bisect (cross-corpus instability + slicing real communities), WPD (no consistent advantage over WU), spectral (mega-cluster pathology).
+
+**Next** (in progress): Multi-view spectral with CSLS-corrected views (see "Multi-view clustering" section below) targets the cross-corpus split structurally. wbk wins robotics, WU wins QC; rather than pick a per-corpus default, combine both views via a single tunable coupling that recovers each endpoint as a degenerate case.
+
+---
+
 ## Keyword extraction
 
-- [ ] **Vocabulary count floor at the keyword level.** Drop words with global count below a small threshold (e.g. 5) before running FW. With `weight_by_freq=True` this is mostly redundant but cheap belt-and-suspenders for the singleton-noise tail.
+- [x] **Vocabulary count floor at the keyword level.** *(Skipped 2026-04-28.)* Superseded by `weight_by_freq=True`: the FW score smoothly demotes low-count words proportional to count, so a hard binary floor is a degraded version of what the smooth weight already does. Reconsider only if a count-1/2 phrase ever sneaks into top-K with anomalously high NPMI — not observed to date.
 
 ## Cross-pollination from mycooc
 
@@ -48,8 +77,38 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
 
 - [x] **Objective clustering quality comparison.** *(Shipped 2026-04-26 as `compare_clusterings.py`.)* Computes modularity Q, average conductance, citation flow capture, Gini of cluster sizes, max-cluster fraction, fragment count, singleton count, and keyword distinctness across all curriculum runs found under `artifacts/curriculum/`. Groups by (target_work_ids, source_work_ids) so within-corpus comparisons are fair. The Gini + max-fraction + fragment metrics directly catch the mega-cluster pathology that the original metrics (Q, conductance, flow) couldn't see — spectral on QC has gini=0.77, max=57% (one cluster swallowed 2847/5000 works); Leiden has gini=0.37, max=16%. **Method ranking is corpus-dependent and depends on whether earned singletons matter:** community-detection methods (Leiden) win the citation-graph metrics by structural design but cannot produce earned singletons (modularity Q penalises them by definition); mass-threshold-cut methods (citation_avg_linkage, weighted_bisecting, average) recover landmark singletons but at lower coverage.
 
-- [x] **citation_avg_linkage = citation analog of weighted_bisecting.** *(Shipped 2026-04-26.)* Pairwise Jaccard distance between (in+out) citation neighbourhoods → scipy avg-linkage → mass-threshold cut. Citation-based AND singleton-friendly (the mass cut promotes high-mass works whose neighbourhood is distinctive enough that no merge brings them under threshold). On QC: recovers all 5 earned singletons (EPR, Algebraic Alphabet, Bell theorem, QC review, Alice/Bob protocol) plus 10 distinct community topics. Best keyword distinctness on QC (tpc/kw=1.09, jacc=0.99). Coverage 25% (typical for mass-threshold cuts; intentional, not a flaw — the threshold picks high-relevance focus over corpus partitioning).
-- [x] **Average-linkage agglomerative.** *(Run 2026-04-25; control completed.)* Tighter clusters than weighted_bisecting (cleaner keywords like `bell_inequality`, `gedankenexperiment`, `experimental_test_local_hidden_variable_theories`, `optical_parametric_noise`) but only 37% coverage of the top-5000 — most works went to a 3207-work residual cluster excluded from the frontier. Useful as a baseline; superseded by Leiden which has better coverage and topic distinctness.
+- [x] **citation_avg_linkage = citation analog of weighted_bisecting.** *(Shipped 2026-04-26 (binary mode); weighted modes shipped 2026-04-27.)* Pairwise Jaccard / Ruzicka distance between (in+out) citation neighbourhoods → scipy avg-linkage → mass-threshold cut. Three modes selectable via `citation_jaccard_mode`:
+  - `"binary"` (default): unweighted in+out neighbourhood, ordinary Jaccard.
+  - `"weighted_unified"` (WU): row-normalised random-walk transition matrix `P[i,j] = A[i,j]/out_deg(i)`; neighbourhood is `max(P, P^T)`. Generalised Jaccard (Ruzicka). Down-weights citation-promiscuous reviewers automatically.
+  - `"weighted_per_direction"` (WPD): separately ℓ1-normalise out-distribution (row-normalised P) and in-distribution (column-normalised A) per node, concatenate, then Ruzicka. Decouples out-degree noise from in-degree noise.
+  Implementation uses the L1-distance identity `Ruzicka = (R_u + R_v − L1) / (R_u + R_v + L1)` (cdist with cityblock), so all three modes share a fast path. Tests: `tests/curriculum/test_citation_jaccard_modes.py`.
+  
+  **Cross-corpus results** (see top-of-file verdict table for the full ranking):
+  - **QC**: WU > binary > WPD on Q (0.320 / 0.258 / 0.248). WU promoted Bell-theorem QKD to its own earned landmark singleton (binary kept it in a 4-cluster). WPD's directional separation didn't pay off here.
+  - **Robotics**: WU > WPD > binary on Q (0.287 / 0.176 / 0.169), but **wbk beats all three on Q** (0.309) AND on keyword distinctness (1.32 vs 1.27/1.12/1.15). WU drops 1 source (Haralick) to -1; binary anchors a 52-work Haralick-citer cluster; WPD preserves all 7 seeds as singletons + 1 earned. Per the reframe, dropping seeds isn't bad in itself.
+  
+  **Net**: WU is the strongest citation_avg_linkage variant cross-corpus, but wbk dominates it on robotics. Default remains wbk.
+
+## Multi-view clustering (in progress)
+
+- [ ] **Multi-view spectral with CSLS-corrected views.** *(Design locked 2026-04-28; supersedes the convex "embedding-citation blend" originally backlogged here.)* Generalises the (embedding-similarity, citation-similarity) trade-off past convex combination. Top-level convex blend was rejected because it collapses two evidence sources into one number before clustering — downstream can't tell whether (i,j) are close because abstracts agree or citations agree. Multi-view spectral keeps the views structurally separate through the eigendecomposition; coupling happens in embedding space, not in raw similarities.
+
+  **Design (locked 2026-04-28):**
+  1. **Two views**: embedding cosine similarity (on denoised embeddings) and WU citation Ruzicka. WU is preferred over binary because its row-normalisation already partially de-hubs the citation graph along the out-direction.
+  2. **CSLS hubness correction per view** before forming the Laplacian: `CSLS(x,y) = 2·sim(x,y) − r_K(x) − r_K(y)` where `r_K(x)` is x's mean similarity to its K nearest neighbours. Penalises hub endpoints whose similarities are uninformative. Particularly important on the embedding side (no existing hub-correction in the pipeline); on the citation side complements WU's out-normalisation with in-degree de-hubbing.
+  3. **Co-regularized multi-view spectral** (Kumar-Rai-Daumé 2011): jointly minimise `tr(U₁ᵀ L₁ U₁) + tr(U₂ᵀ L₂ U₂) − λ · tr(U₁ U₁ᵀ U₂ U₂ᵀ)`. Each view's spectral embedding plus a coupling term rewarding agreement. Solve iteratively (each U_v depends on the other), K-means on joint embedding (concatenation or average of U_1 and U_2).
+  4. **λ auto-tuning** by spectral-gap maximisation of the joint embedding (or downstream Q if cheap to compute). λ=0 ≈ per-view independent (recovers existing `linkage_method='spectral'` if view 2 only); λ→∞ forces full agreement (degenerate). Sweet spot in between.
+
+  **Why this should beat the endpoints:** the cross-corpus split (wbk wins robotics, WU wins QC) signals that neither view alone dominates universally. Multi-view spectral combines both structurally with a single tunable parameter, recovering each endpoint as a degenerate special case. If a sweet spot exists in λ, it should beat both wbk and WU on every corpus.
+
+  **Per-work confidence weights (optional, layered later):** scale rows of W_v by per-work confidence — embedding confidence (post-denoise L2 norm, abstract length, mean k-NN distance) and citation confidence (log(in_deg)+log(out_deg), 1/age). Defer until baseline multi-view spectral is wired up; only add if uniform-weight version underperforms.
+
+  **Skipped/superseded approaches** (kept for context):
+  - **Top-level convex-blend distance** (`α · cosine + (1-α) · Ruzicka`): rejected as too information-destructive. Bakes the trade-off into the distance itself, destroying which-view-said-what before clustering.
+  - **Per-edge α via min/max/harmonic of per-work confidences**: subsumed by CSLS. "Non-hubness = informativeness" maps to confidence; CSLS is the operational version with hubness as the noise model.
+  - **Kernel product** (`K_emb · K_cite`, "AND-like"): worth as a fallback if multi-view spectral underperforms; gives the categorical "meet" interpretation directly.
+  - **CCA / PCCA shared latent**: principled (Bach-Jordan PCCA = generative model with per-view noise variance) but harder to wire into existing pipeline. Reserve for later if multi-view spectral and kernel product both underperform.
+- [x] **Average-linkage agglomerative.** *(Run 2026-04-25; cross-corpus completed 2026-04-28.)* Tighter QC clusters than weighted_bisecting (cleaner keywords like `bell_inequality`, `gedankenexperiment`, `experimental_test_local_hidden_variable_theories`, `optical_parametric_noise`) but only 37% coverage. **Cross-corpus instability**: QC Q=0.378 (3rd-best), robotics Q=0.131 (worst). Not a viable default. Useful only as a sanity-check baseline.
 - [ ] **HDBSCAN on top-5000 with relevance-weighted point replication.** Density-based, naturally variable cluster sizes, no forced cluster count. Replicate each work proportional to relevance to fold weighting into HDBSCAN's unweighted core.
 
 ## PageRank variants
@@ -60,13 +119,33 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
 
 - [x] **Skip / mark empty topics in keyword extraction.** *(Shipped 2026-04-26 as `1226894` — empty topics now return `[]` keyword list instead of FW-on-zero-mass garbage.)* When Leiden produces fewer real communities than `desired_n_topics`, the truncation pads with empty (size-0) topics. The FW marginal+freq keyword extractor on empty-topic counts produces meaningless garbage tokens that look identical across all empty topics (`untextured, envircmmait, dry, affinely, submits, chronically, set_candidate, vxworks` etc. on `__2`'s topics 4–9). Fix: detect empty topics in `summarize_topics` (no docs sampled) and either skip them entirely or emit a sentinel `[empty]` keyword list. Also relevant for any clustering method that produces fewer-than-desired topics.
 
-## HDBSCAN gap detection (paused thread)
+## Gap detection — state of the evidence
 
-- [ ] **Pick a winner among denoisers.** The probe (`artifacts_scripts/hdbscan_gap_probe.py`) tested PCA, multi-class LDA, LPP, LIP, CCLIP, hierarchical, criteria_union, rNOJD. rNOJD and criteria_union looked promising but we never converged on a final choice. Resume by re-running with the binomial p / FDR / effect-size scoring on a held-out evaluation set.
+Three gap-detection algorithms in play:
+- **K-ball** (`bookgap/llm/gap_algorithms/kball_algorithm.py`) — radius-based NN, in production via `batch_generator.py`.
+- **Voronoi** (`bookgap/llm/gap_algorithms/voronoi_algorithm.py`) — Voronoi tessellation, also in production. Selectable via `CellType` enum.
+- **HDBSCAN** (`artifacts_scripts/hdbscan_gap_probe.py`) — exploratory, paused.
+
+**What we have quantitatively:**
+- `artifacts/denoiser_analysis/denoiser_analysis_drop{1,2,5,10,20,50,100,374}_GIST_SMALL.csv` — 29 denoisers × 8 drop_k levels with intrinsic metrics (SNR, variance retention, scatter components). **WC_CCLIP family wins on SNR consistently** (drop_k=50/100/374 — all WC_CCLIP variants tie at top), then LPP family, then CCLIP/LIP family. Caveat: SNR is general embedding quality, not gap-detection performance directly.
+- `artifacts/plots/{GIST_SMALL,GEMMA_300M}/{kball,avgref}_*_by_denoiser_*.png` — K-ball-specific gap-detection comparisons across denoisers and drop_k. Numbers exist behind the plots but not in tabular form (would need to re-run producing script to dump CSV).
+
+**What we don't have (next-session focus):**
+- Quantitative HDBSCAN denoiser comparison under a held-out metric. **Scoring decided 2026-04-28**: rNOJD-style binomial-p / FDR / effect-size on sphere occupancy.
+- K-ball vs HDBSCAN side-by-side numbers under that same statistical scoring on the same scope.
+- (K-ball-vs-Voronoi comparison **deprioritised 2026-04-28** — focus is K-ball-vs-HDBSCAN.)
+
+**WC_CCLIP** (`bookgap/denoisers.py:865`, `WithinClassCCLIPDenoiser`) is worth knowing about: same numerator as CCLIP (`(1-α) S_B + α S_L`) but denominator is `S_W` (within-class scatter) instead of `S_T` (total scatter). Avoids the `S_T = S_B + S_W` objective conflict where the optimiser is implicitly rewarded for the very class separation it's trying to suppress. Equivalent to "Laplacian-regularised Anti-LDA." Variants: WC_CCLIP (α=0.5), WC_CCLIP_1 (α=1), WC_CCLIP_01 (α=0.1), WC_LIP (α=1, no S_B in numerator).
+
+- [ ] **K-ball vs HDBSCAN under statistical scoring.** *(Voronoi comparison deprioritised 2026-04-28 — focus is K-ball vs HDBSCAN.)* Run both algorithms on the same scope with rNOJD-style binomial-p / FDR / effect-size scoring on sphere occupancy (the framework that motivates rNOJD itself). Resume HDBSCAN probe (`artifacts_scripts/hdbscan_gap_probe.py`) with the statistical scoring layer; mirror it on K-ball (`kball_gap_probe.py`). Same denoiser sweep on both: PCA, multi-class LDA, LPP, LIP, LIP_eigen, LIP_diff, CCLIP, hierarchical, criteria_union, rNOJD, **plus WC_CCLIP** (dominates SNR ranking; missing from previous probes). Dump CSV. Resolves both the "pick a winner among HDBSCAN denoisers" and "K-ball vs algorithm-X" questions in one comparison.
+- [ ] **Dump CSVs from the K-ball denoiser plots.** The producing script exists somewhere (whatever generated `artifacts/plots/*/kball_*_by_denoiser_*.png`); rerun with CSV output so denoiser ranking is in tabular form for direct comparison. Useful sidecar for the K-ball-vs-HDBSCAN comparison above.
 
 ---
 
 Done:
+- ~~Citation_avg_linkage weighted modes (WU, WPD)~~ — shipped 2026-04-27. Three modes via `citation_jaccard_mode` config: `binary` (default), `weighted_unified`, `weighted_per_direction`. Tests at `tests/curriculum/test_citation_jaccard_modes.py`.
+- ~~Cross-corpus method comparison with full coverage~~ — completed 2026-04-28. wbk and average filled in for robotics; `compare_clusterings.py` re-run gives complete table. Verdict at top of this file.
+- ~~Default linkage_method = wbk~~ — confirmed 2026-04-28 with quantitative cross-corpus rationale (best Q + best keyword distinctness on both corpora among singleton-allowing methods). No change to config — it was already there.
 - ~~NPMI bigram mining → production~~ — shipped 2026-04-25. Frequency-weighted NPMI ranking, no count floor needed. `mine_bigrams` and `apply_bigrams` in `keyword_extraction.py`; `KeywordConfig.bigrams_*` knobs; default ON.
 - ~~Iterative phrase mining (trigrams via 2 passes)~~ — shipped 2026-04-25. `bigram_iterations` parameter, default 2. On `__24` surfaces `einstein_podolsky_rosen`, `american_institute_physics`, `detection_photon_pairs` plus new iter-2 bigrams (`crystal_lattices`, `party_alice`, `party_bob`, `algebraic_alphabet` etc.).
 
