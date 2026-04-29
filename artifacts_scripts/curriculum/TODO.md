@@ -181,6 +181,14 @@ Three gap-detection algorithms in play:
 
 - [ ] **Run the actual probe sweeps.** Code on both probes is ready. Run `hdbscan_gap_probe.py` and `kball_gap_probe.py` across the same denoiser×drop_k matrix on a representative scope, aggregate the CSVs, build the comparison table. Each probe invocation is ~5-30 min depending on scope size; full sweep is multi-hour.
 
+- [ ] **Evaluate USearch as a FAISS replacement for K-ball indices.** [USearch](https://github.com/unum-cloud/usearch) (Unum, ~2023) is a modern HNSW implementation that claims 10-100× speedup over FAISS HNSW in benchmarks via compact memory layout and SIMD-tuned distances. Crucially for us, it keeps **range search as a first-class API** (most RAG-popular vector DBs are kNN-only). Has Python bindings, GPU support, streaming index updates. Refactor scope: `bookgap/index.py` is a thin FAISS wrapper — switching backends would be a contained change. **When**: if FAISS performance becomes a bottleneck OR after faiss-gpu is in place (so we have a fair benchmark baseline). Not urgent.
+
+- [ ] **Evaluate `cuml.HDBSCAN` (RAPIDS) + PyNNDescent for HDBSCAN speedup.** Currently `hdbscan_gap_probe.py` uses `fast_hdbscan` (CPU-only); the BallTree mutual-reachability phase dominates wall-clock on subfield-scale clustering. Two GPU/faster-CPU options:
+  - **`cuml.HDBSCAN`** (RAPIDS, GPU): claims 10-100× speedup. Install is large (CUDA version dependencies often clash with existing envs); main risk is dependency conflicts with the project's conda env. Worth testing in an isolated env first.
+  - **PyNNDescent** (CPU): builds approximate NN graph faster than exact BallTree; ~5× speedup on large datasets without GPU. `fast_hdbscan` may already use it under the hood — worth checking.
+  
+  Investigation: profile a representative HDBSCAN probe run, identify whether tree-build or hierarchy-extraction is the bottleneck, then pick the right intervention. **When**: if probe-sweep wall-clock becomes a real obstacle for iteration.
+
 - [ ] **(Architectural debt) Port HDBSCAN probe + K-ball denoiser bypass to the Cloud denoiser path.** *(Defer until probe sweeps identify production-worthy denoisers.)* `hdbscan_gap_probe.py` and `kball_gap_probe.py --denoiser X` currently use a `load_scope`+numpy bypass instead of `Cloud(filter_pair=scope, denoiser_config=...)`. The bypass was chosen for software-engineering reasons (per-call flexibility for `--cclip-alpha` / `--drop-k-graph` / `--class-axis`; reusing one canonical denoiser dispatch implementation; less Cloud-cache pressure during a 10×8 sweep), but creates real technical debt:
   - Two parallel "load embeddings for scope X" code paths (Cloud vs `load_scope`).
   - Two storage formats kept in sync (legacy per-shard `cache/embeddings/{model}/.../batch_*.npy` vs the new embeddings-parquet store).
