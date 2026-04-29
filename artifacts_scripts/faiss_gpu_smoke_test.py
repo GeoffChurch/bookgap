@@ -136,6 +136,82 @@ def main() -> None:
     _bench("GPU FlatL2 add 200K", lambda: gpu_flat.add(data_large))
     _bench("GPU FlatL2 search 1000q × k=10", lambda: gpu_flat.search(query_large, 10))
 
+    # ------------------------------------------------------------------
+    # K-ball workload simulation: the real comparison we care about.
+    # Mirrors what kballs_with does per topic: kNN k=1 on landmark to
+    # get per-query radius, then range_search on ambient at that radius.
+    # CPU baseline is HNSW range_search (current production); GPU
+    # candidate is FlatL2 kNN-with-large-K + post-filter.
+    # ------------------------------------------------------------------
+    print("\n=== K-ball workload simulation ===")
+    print("    (50K articles ambient, 1K books landmark, 5K query articles)")
+    n_amb = 50_000     # articles in topic
+    n_lm = 1_000       # books in topic
+    n_q = 5_000        # query articles (= ambient queries)
+    radius_fraction = 0.75
+    k_max_for_filter = 500   # GPU emulation: search this many, filter by radius
+
+    ambient = rng.standard_normal((n_amb, d), dtype=np.float32)
+    landmark = rng.standard_normal((n_lm, d), dtype=np.float32)
+    queries_kball = rng.standard_normal((n_q, d), dtype=np.float32)
+
+    # 1. CPU HNSW pipeline (current K-ball implementation)
+    print("\n  --- CPU HNSW pipeline (current) ---")
+    cpu_amb = faiss.IndexHNSWFlat(d, 32)
+    cpu_amb.hnsw.efConstruction = 64
+    _bench("CPU HNSW build ambient (50K)", lambda: cpu_amb.add(ambient))
+    cpu_lm = faiss.IndexHNSWFlat(d, 32)
+    cpu_lm.hnsw.efConstruction = 64
+    _bench("CPU HNSW build landmark (1K)", lambda: cpu_lm.add(landmark))
+
+    def _cpu_kball_pipeline():
+        # Step 1: nearest book per query
+        D_lm, _ = cpu_lm.search(queries_kball, 1)
+        radii = (radius_fraction ** 2) * D_lm[:, 0]  # squared L2 → squared radius
+        # Step 2: range search per query (variable radii)
+        # FAISS doesn't support per-query radius in batch, so iterate.
+        total_found = 0
+        for i in range(n_q):
+            lims, dists, ids = cpu_amb.range_search(queries_kball[i:i+1], float(radii[i]))
+            total_found += len(ids)
+        return total_found
+
+    cpu_elapsed, cpu_total = _bench("CPU HNSW: full K-ball pipeline", _cpu_kball_pipeline)
+
+    # 2. GPU FlatL2 pipeline (proposed refactor)
+    print("\n  --- GPU FlatL2 pipeline (proposed) ---")
+    gpu_amb = faiss.index_cpu_to_gpu(res, 0, faiss.IndexFlatL2(d))
+    gpu_lm = faiss.index_cpu_to_gpu(res, 0, faiss.IndexFlatL2(d))
+    _bench("GPU FlatL2 build ambient (50K)", lambda: gpu_amb.add(ambient))
+    _bench("GPU FlatL2 build landmark (1K)", lambda: gpu_lm.add(landmark))
+
+    def _gpu_kball_pipeline():
+        # Step 1: nearest book per query (batch on GPU)
+        D_lm, _ = gpu_lm.search(queries_kball, 1)
+        radii = (radius_fraction ** 2) * D_lm[:, 0]
+        # Step 2: kNN-with-large-K then post-filter (batch on GPU)
+        D_amb, I_amb = gpu_amb.search(queries_kball, k_max_for_filter)
+        # Per-query: keep only neighbours with squared distance <= radius
+        total_found = 0
+        for i in range(n_q):
+            mask = D_amb[i] <= radii[i]
+            total_found += int(mask.sum())
+        return total_found
+
+    gpu_elapsed, gpu_total = _bench("GPU FlatL2: full K-ball pipeline", _gpu_kball_pipeline)
+
+    print(f"\n  CPU HNSW found total neighbours: {cpu_total}")
+    print(f"  GPU FlatL2 found total neighbours: {gpu_total}")
+    print(f"  Speedup (CPU HNSW → GPU FlatL2): {cpu_elapsed / gpu_elapsed:.1f}×")
+    if cpu_total > 0 and abs(cpu_total - gpu_total) / cpu_total > 0.05:
+        print(f"  WARNING: counts differ by >5% — may indicate K_max truncation")
+        print(f"  (consider increasing k_max_for_filter from {k_max_for_filter})")
+    elif cpu_total == 0 and gpu_total == 0:
+        print(f"  Both 0 (random-gaussian data is too sparse at radius_fraction=0.75;")
+        print(f"  timing comparison still valid — both pipelines did full work).")
+    else:
+        print(f"  Counts match within tolerance.")
+
     print("\n=== faiss-gpu smoke test complete ===")
 
 
