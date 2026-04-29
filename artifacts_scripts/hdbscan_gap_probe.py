@@ -629,7 +629,8 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
     from fast_hdbscan import HDBSCAN
 
     needs_graph = denoiser in {"lpp", "lip", "lip_eigen", "lip_diff",
-                               "cclip", "hierarchical", "criteria_union", "rnojd"}
+                               "cclip", "wc_cclip", "hierarchical",
+                               "criteria_union", "rnojd"}
     print(f"Loading scope {scope}...")
     emb, ids, types, titles, topic_ids, refs = load_scope(scope, with_refs=needs_graph)
     n, d = emb.shape
