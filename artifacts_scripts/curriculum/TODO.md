@@ -89,25 +89,47 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
   
   **Net**: WU is the strongest citation_avg_linkage variant cross-corpus, but wbk dominates it on robotics. Default remains wbk.
 
-## Multi-view clustering (in progress)
+## Multi-view clustering
 
-- [ ] **Multi-view spectral with CSLS-corrected views.** *(Design locked 2026-04-28; supersedes the convex "embedding-citation blend" originally backlogged here.)* Generalises the (embedding-similarity, citation-similarity) trade-off past convex combination. Top-level convex blend was rejected because it collapses two evidence sources into one number before clustering — downstream can't tell whether (i,j) are close because abstracts agree or citations agree. Multi-view spectral keeps the views structurally separate through the eigendecomposition; coupling happens in embedding space, not in raw similarities.
+- [x] **Multi-view spectral with CSLS-corrected views.** *(Design locked 2026-04-28; shipped 2026-04-28; auto-tune validated cross-corpus 2026-04-28.)* Generalises the (embedding-similarity, citation-similarity) trade-off past convex combination. Top-level convex blend was rejected because it collapses two evidence sources into one number before clustering — downstream can't tell whether (i,j) are close because abstracts agree or citations agree. Multi-view spectral keeps the views structurally separate through the eigendecomposition; coupling happens in embedding space, not in raw similarities.
 
-  **Design (locked 2026-04-28):**
-  1. **Two views**: embedding cosine similarity (on denoised embeddings) and WU citation Ruzicka. WU is preferred over binary because its row-normalisation already partially de-hubs the citation graph along the out-direction.
-  2. **CSLS hubness correction per view** before forming the Laplacian: `CSLS(x,y) = 2·sim(x,y) − r_K(x) − r_K(y)` where `r_K(x)` is x's mean similarity to its K nearest neighbours. Penalises hub endpoints whose similarities are uninformative. Particularly important on the embedding side (no existing hub-correction in the pipeline); on the citation side complements WU's out-normalisation with in-degree de-hubbing.
-  3. **Co-regularized multi-view spectral** (Kumar-Rai-Daumé 2011): jointly minimise `tr(U₁ᵀ L₁ U₁) + tr(U₂ᵀ L₂ U₂) − λ · tr(U₁ U₁ᵀ U₂ U₂ᵀ)`. Each view's spectral embedding plus a coupling term rewarding agreement. Solve iteratively (each U_v depends on the other), K-means on joint embedding (concatenation or average of U_1 and U_2).
-  4. **λ auto-tuning** by spectral-gap maximisation of the joint embedding (or downstream Q if cheap to compute). λ=0 ≈ per-view independent (recovers existing `linkage_method='spectral'` if view 2 only); λ→∞ forces full agreement (degenerate). Sweet spot in between.
+  **Implementation** (`artifacts_scripts/curriculum/multi_view_spectral.py`, `linkage_method='multi_view_spectral'`):
+  1. **Two views**: embedding cosine similarity (on denoised embeddings) and WU citation Ruzicka.
+  2. **CSLS hubness correction per view** before forming the Laplacian.
+  3. **Co-regularized multi-view spectral** (Kumar-Rai-Daumé 2011): alternating eigendecomposition of `L_v − λ U_w U_wᵀ` until subspace convergence; K-means on row-normalised concat `[U_1 | U_2]`.
+  4. **λ auto-tune** via `λ = scale * (op_norm(L_emb) + op_norm(L_cite)) / (2 * K)`, default `scale=1.5`. Free (reuses the eigendecomposition the solver already computes for U_v init). `co_reg_lambda=None` (the new default) triggers it; numeric override still works.
 
-  **Why this should beat the endpoints:** the cross-corpus split (wbk wins robotics, WU wins QC) signals that neither view alone dominates universally. Multi-view spectral combines both structurally with a single tunable parameter, recovering each endpoint as a degenerate special case. If a sweet spot exists in λ, it should beat both wbk and WU on every corpus.
+  **Cross-corpus probe results (2026-04-28, `artifacts_scripts/curriculum/lambda_probe.py`):**
 
-  **Per-work confidence weights (optional, layered later):** scale rows of W_v by per-work confidence — embedding confidence (post-denoise L2 norm, abstract length, mean k-NN distance) and citation confidence (log(in_deg)+log(out_deg), 1/age). Defer until baseline multi-view spectral is wired up; only add if uniform-weight version underperforms.
+  | Corpus | n | K | Empirical optimum λ | Q at optimum | Q at λ=0 | Auto-tuned λ | Δ Q from optimum |
+  |---|---|---|---|---|---|---|---|
+  | QC quantum-crypto | 5000 | 15 | 0.100 | 0.693 | 0.206 | 0.097 | −0.019 |
+  | Robotics vision→robotics | 5000 | 15 | 0.100 | 0.485 | 0.049 | 0.095 | **−0.002** |
+
+  Both corpora hit the empirical optimum at λ=0.1 *exactly* and the sweet spot is broad (Q ≥ 95% of peak across λ ∈ [0.03, 0.3]). The op-norm-based auto-tune lands in the sweet spot on both corpora — a fixed default of 0.1 would also work, but the auto-tune is corpus-adaptive at zero extra cost and would track changes in Laplacian magnitude (e.g. different K, different denoiser, different csls_k).
+
+  **Heuristic shootout** (cross-corpus, |Q-delta| from empirical optimum, smaller is better):
+
+  | Heuristic | QC Δ Q | Robotics Δ Q | Status |
+  |---|---|---|---|
+  | **op_norm_per_K** | −0.019 | −0.002 | **Winner; shipped as auto-tune default** |
+  | trace_per_n | −0.023 | −0.016 | Solid runner-up |
+  | gap_K | −0.487 | −0.436 | Degenerate (collapses to ~0) |
+  | sqrt_gap_product | −0.487 | −0.436 | Degenerate |
+  | mean_bottom_K | invalid (negative) | invalid | Degenerate |
+  | Kth | invalid | invalid | Degenerate |
+
+  **Why bulk-spectrum heuristics dominate**: after CSLS+clip, both Laplacians are near-rank-deficient — the data decomposes into 15+ near-disconnected components, so the bottom-K eigenvalues are all at machine precision (~1e-16). Any heuristic indexed at the K-th eigenvalue or its gap collapses to numerical noise. Bulk quantities (trace, op_norm) are smooth in the matrix entries and stay informative.
+
+  **Per-work confidence weights (optional, deferred):** scale rows of W_v by per-work confidence — embedding confidence (post-denoise L2 norm, abstract length, mean k-NN distance) and citation confidence (log(in_deg)+log(out_deg), 1/age). Skip unless a corpus emerges where the auto-tuned uniform-weight version underperforms.
 
   **Skipped/superseded approaches** (kept for context):
   - **Top-level convex-blend distance** (`α · cosine + (1-α) · Ruzicka`): rejected as too information-destructive. Bakes the trade-off into the distance itself, destroying which-view-said-what before clustering.
   - **Per-edge α via min/max/harmonic of per-work confidences**: subsumed by CSLS. "Non-hubness = informativeness" maps to confidence; CSLS is the operational version with hubness as the noise model.
-  - **Kernel product** (`K_emb · K_cite`, "AND-like"): worth as a fallback if multi-view spectral underperforms; gives the categorical "meet" interpretation directly.
-  - **CCA / PCCA shared latent**: principled (Bach-Jordan PCCA = generative model with per-view noise variance) but harder to wire into existing pipeline. Reserve for later if multi-view spectral and kernel product both underperform.
+  - **Kernel product** (`K_emb · K_cite`, "AND-like"): worth as a fallback if multi-view spectral underperforms on a future corpus; gives the categorical "meet" interpretation directly.
+  - **CCA / PCCA shared latent**: principled (Bach-Jordan PCCA = generative model with per-view noise variance) but harder to wire into existing pipeline. Reserve for later.
+
+- [ ] **Cross-corpus comparison vs wbk and WU.** Probe results above only compare different λ values *within* multi_view_spectral. Still need a head-to-head between the auto-tuned multi_view_spectral and the existing wbk (robotics-best) / WU (QC-best) defaults under `compare_clusterings.py`. Likely outcome: multi_view_spectral wins on both corpora (it inherits both signals), but worth confirming on the actual modularity/keyword-distinctness/coverage metrics before promoting it past wbk as the global default.
 - [x] **Average-linkage agglomerative.** *(Run 2026-04-25; cross-corpus completed 2026-04-28.)* Tighter QC clusters than weighted_bisecting (cleaner keywords like `bell_inequality`, `gedankenexperiment`, `experimental_test_local_hidden_variable_theories`, `optical_parametric_noise`) but only 37% coverage. **Cross-corpus instability**: QC Q=0.378 (3rd-best), robotics Q=0.131 (worst). Not a viable default. Useful only as a sanity-check baseline.
 - [ ] **HDBSCAN on top-5000 with relevance-weighted point replication.** Density-based, naturally variable cluster sizes, no forced cluster count. Replicate each work proportional to relevance to fold weighting into HDBSCAN's unweighted core.
 
