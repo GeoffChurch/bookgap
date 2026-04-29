@@ -625,7 +625,8 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
         drop_k_graph: int = 0,
         denoiser: str = "pca",
         class_axis: str = "topic_x_type",
-        cclip_alpha: Optional[float] = None) -> None:
+        cclip_alpha: Optional[float] = None,
+        save_state_dir: Optional[str] = None) -> None:
     from fast_hdbscan import HDBSCAN
 
     needs_graph = denoiser in {"lpp", "lip", "lip_eigen", "lip_diff",
@@ -728,6 +729,41 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
 
     n_noise = int((labels == -1).sum())
     n_clusters = int(labels.max()) + 1 if (labels >= 0).any() else 0
+
+    # Optional: dump the full clustering state for downstream analyses
+    # (maximal-bookless-cluster extraction, post-hoc dendrogram walks, etc.)
+    if save_state_dir is not None:
+        from pathlib import Path
+        import json
+        state_dir = Path(save_state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        np.save(state_dir / "labels.npy", labels)
+        # fast_hdbscan exposes both single-linkage and condensed trees as
+        # numpy arrays; condensed is the post-min_cluster_size pruning,
+        # single-linkage is the full agglomerative hierarchy. Save both
+        # so downstream analyses can pick the right granularity.
+        np.save(state_dir / "single_linkage_tree.npy",
+                clusterer.single_linkage_tree_)
+        np.save(state_dir / "condensed_tree.npy",
+                clusterer.condensed_tree_)
+        with open(state_dir / "ids.json", "w") as f:
+            json.dump(ids, f)
+        with open(state_dir / "types.json", "w") as f:
+            json.dump(types, f)
+        with open(state_dir / "topic_ids.json", "w") as f:
+            json.dump(topic_ids, f)
+        with open(state_dir / "metadata.json", "w") as f:
+            json.dump({
+                "scope": scope, "denoiser": denoiser, "drop_k": drop_k,
+                "min_cluster_size": min_cluster_size,
+                "min_samples": min_samples,
+                "cluster_selection_method": cluster_selection_method,
+                "cluster_selection_epsilon": cluster_selection_epsilon,
+                "class_axis": class_axis, "cclip_alpha": cclip_alpha,
+                "n_works": int(n), "n_clusters": int(n_clusters),
+                "n_noise": int(n_noise),
+            }, f, indent=2)
+        print(f"State saved to: {state_dir}")
 
     print(f"\n=== Clustering results ===")
     print(f"  Clusters: {n_clusters}")
@@ -887,12 +923,18 @@ def main():
                    help="α for CCLIP; default auto-picks via trace normalisation")
     p.add_argument("--drop-k-graph", type=int, default=2,
                    help="for hierarchical: drop_k for the graph-Laplacian step")
+    p.add_argument("--save-state-dir", default=None,
+                   help="if set, dump labels.npy + single_linkage_tree.npy + "
+                        "condensed_tree.npy + ids.json + types.json + "
+                        "topic_ids.json + metadata.json under this directory "
+                        "for downstream analysis (e.g. maximal-bookless-cluster "
+                        "extraction)")
     args = p.parse_args()
     run(args.scope, args.min_cluster_size, args.min_samples,
         args.top_clusters, args.size_floor,
         args.cluster_selection_method, args.cluster_selection_epsilon,
         args.drop_k, args.drop_k_graph, args.denoiser, args.class_axis,
-        args.cclip_alpha)
+        args.cclip_alpha, args.save_state_dir)
 
 
 if __name__ == "__main__":
