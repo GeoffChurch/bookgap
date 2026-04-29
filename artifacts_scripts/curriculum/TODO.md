@@ -71,7 +71,20 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
 
 (See `CLUSTERING_NOTES.md` for the singleton-blob diagnosis and weighted-bisecting-kmeans solution that's already shipped.)
 
-- [x] **`min_cluster_weight` at scale.** *(Run 2026-04-29 on robotics with `min_cluster_weight=0.033` = 0.5 × mean topic mass.)* Result: same singleton count as default wbk (5) but **fragments dropped 6→1** and max_fraction improved 21%→16.6%. Singletons are the expected mass-promoted seeds: Topic 6 (mass 0.336, projective_geometry/projection_matrices = Hartley & Zisserman), Topic 7 (mass 0.152, chapters/image_processing = Forsyth & Ponce-style textbook), Topic 8 (mass 0.113), Topic 14 (mass 0.050), plus Topic 13 (size 6, mass 0.030). Other clusters are well-sized (67-829) with topical-coherent keywords (general CV / SLAM / automated driving / people tracking / visual SLAM). Net: useful refinement that surfaces the same landmarks more cleanly than naked wbk. Recommended threshold: `0.5 × (1 / desired_n_topics)` ≈ 0.033 for K=15. Available as `min_cluster_weight` on `CurriculumConfig`.
+- [x] **`min_cluster_weight` at scale.** *(Run 2026-04-29 on robotics with `min_cluster_weight=0.033` = 0.5 × mean topic mass; numbers verified via `compare_clusterings.py`.)* Result: modest improvement across most metrics vs default wbk on robotics:
+
+  | metric | default wbk | mcw=0.033 | Δ |
+  |---|---|---|---|
+  | Q | 0.309 | **0.336** | +0.027 |
+  | flow_capture | 0.396 | 0.429 | +0.033 |
+  | gini | 0.57 | 0.54 | −0.03 |
+  | max% | 21% | 20% | −1pp |
+  | #fragments (size ≤ 20) | 6 | 5 | −1 |
+  | #singletons | 5 | 4 | −1 |
+  | #clusters ≥ 50 | 9 | 10 | +1 |
+  | tpc/kw | 1.32 | 1.35 | +0.03 (worse) |
+
+  Singletons are the expected mass-promoted seeds: Topic 6 (mass 0.336, projective_geometry/projection_matrices = Hartley & Zisserman), Topic 7 (mass 0.152, chapters/image_processing = Forsyth & Ponce), Topic 8 (mass 0.113), Topic 14 (mass 0.050). Other clusters topical-coherent (general CV / SLAM / automated driving / people tracking / visual SLAM). Recommended threshold: `0.5 × (1 / desired_n_topics)` ≈ 0.033 for K=15. Available as `min_cluster_weight` on `CurriculumConfig`. Net: small but consistent improvement; worth bumping the default if a follow-up cross-corpus run on QC also shows positive Δ.
 - [x] **Leiden on the top-5000 citation subgraph.** *(Shipped 2026-04-26; clear winner on the quantum-crypto corpus.)* `linkage_method='leiden'` runs Leiden community detection on the citation subgraph, then truncates to top-N communities by size. At `leiden_resolution=0.5` on `__24`'s targets, produces a 90%-coverage / 0-singleton clustering with cluster sizes `[734, 685, 543, 461, 424, 342, 218, 200, 161, 156, 148, 127, 119, 114, 89]` and very distinct subtopics. **But:** on the vision→robotics corpus, Leiden only produced 9 real communities and the truncation padded with 6 empty topics; spectral clustering on the same inputs produced 15 distinct non-empty topics with finer subtopic structure (motion planning, visual servoing, UAV navigation, depth-from-defocus, etc.). **Choice between Leiden and spectral is corpus-dependent**: Leiden when natural community count is close to desired_n_topics; spectral when exact-N control matters or natural count is far below desired.
 - [x] **Spectral clustering with exact K control.** *(Shipped 2026-04-26 as `linkage_method='spectral'`.)* sklearn's `SpectralClustering` on the symmetrised citation subgraph; takes K = `desired_n_topics` directly. On the vision→robotics corpus produced finer subtopic structure than Leiden: 15 distinct non-empty topics surfacing motion planning, visual servoing, UAV nav, depth-from-defocus, mathematical morphology, OCR — concepts Leiden lumped into broader generic topics. Tradeoff: more skewed cluster sizes (max=1840 vs 1163) and some 3–6-work fragments. Quality depends on corpus connectivity; on tightly-knit subgraphs both methods do well.
 
