@@ -1,10 +1,11 @@
 """Stripped-down kball / Voronoi gap-detection probe.
 
 Runs the existing ball-based or Voronoi-based gap algorithms over a
-single scope and prints the resulting gaps per topic, skipping the LLM
-proposal-generation pipeline that ``batch_generator.py`` would do
-next. For comparing kball/Voronoi output against the HDBSCAN-based gap
-probe (``artifacts_scripts.hdbscan_gap_probe``).
+single scope, prints the resulting gaps per topic, and writes a CSV of
+the per-gap statistics (gap_size, percentile, z-score, Shapiro-Wilk
+log10 p-value) for direct comparison with the HDBSCAN probe's CSV
+output. Skips the LLM proposal-generation pipeline that
+``batch_generator.py`` would do next.
 
 Usage::
 
@@ -19,10 +20,25 @@ embedder, NONE denoiser, etc.) — same defaults as the HDBSCAN probe
 — then iterates topics in scope and runs gap detection per topic via
 ``bookgap.gaps._compute_gaps_for_topic``, which is joblib-cached so
 repeated runs over the same (cloud, topic, radius, num_gaps) hit cache.
+
+CSV output lands at::
+
+    artifacts/kball_gap_probe/{scope_safe}__{algorithm}__rf{radius_fraction}__num{num_gaps}.csv
+
+with per-gap rows (one row per detected gap). HDBSCAN-style
+binomial-p / FDR / effect-size scoring is *not* applied here: K-ball
+gaps are by construction book-free spheres (the radius stops at the
+nearest book), so the depletion test would always score them as
+extreme. The percentile/z-score/Shapiro framework is K-ball's native
+gap-significance signal; cross-algorithm comparison happens at the
+"how many qualifying gaps does each find?" level rather than via a
+shared per-gap p-value.
 """
 from __future__ import annotations
 
 import argparse
+import csv
+from pathlib import Path
 from typing import List
 
 from bookgap.cloud import Cloud
@@ -98,6 +114,7 @@ def main():
     pinned_tax = load_taxonomy(args.snapshot_date)
 
     all_gaps = []
+    csv_rows: List[dict] = []
     for i, topic_id in enumerate(topics, 1):
         topic_rec = pinned_tax.topics.get(topic_id, {})
         topic_name = topic_rec.get("display_name", topic_id)
@@ -124,8 +141,42 @@ def main():
             for ii in idxs:
                 t = article_titles[int(ii)]
                 print(f"    - {(t or '(no title)')[:90]}")
+            csv_rows.append({
+                "scope": args.scope,
+                "algorithm": args.algorithm,
+                "radius_fraction": args.radius_fraction,
+                "num_gaps_per_topic": args.num_gaps,
+                "topic_id": topic_id,
+                "topic_name": topic_name,
+                "gap_idx": int(g.gap_idx),
+                "gap_size": int(g.gap_size),
+                "gap_size_percentile": float(g.gap_size_percentile),
+                "gap_zscore": float(g.gap_zscore),
+                "shapiro_log10_pval": float(g.shapiro_log10_pval),
+            })
 
     print(f"\n=== Total gaps: {len(all_gaps)} across {len(topics)} topic(s) ===")
+
+    # CSV output for cross-run aggregation.
+    csv_dir = Path("artifacts/kball_gap_probe")
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    safe_scope = args.scope.replace("/", "-")
+    csv_path = (
+        csv_dir
+        / f"{safe_scope}__{args.algorithm}__rf{args.radius_fraction}__num{args.num_gaps}.csv"
+    )
+    fieldnames = [
+        "scope", "algorithm", "radius_fraction", "num_gaps_per_topic",
+        "topic_id", "topic_name",
+        "gap_idx", "gap_size",
+        "gap_size_percentile", "gap_zscore", "shapiro_log10_pval",
+    ]
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for row in csv_rows:
+            w.writerow(row)
+    print(f"CSV: {csv_path} ({len(csv_rows)} rows)")
 
 
 if __name__ == "__main__":

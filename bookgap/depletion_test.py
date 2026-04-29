@@ -81,6 +81,35 @@ def benjamini_hochberg_fdr_count(p_values: Sequence[float], alpha: float) -> int
     return int(np.where(passes)[0].max() + 1)
 
 
+def benjamini_hochberg_pass_mask(
+    p_values: Sequence[float], alpha: float
+) -> np.ndarray:
+    """Return a per-input boolean mask of which p-values pass BH-FDR at ``alpha``.
+
+    Same logic as :func:`benjamini_hochberg_fdr_count` but returns the per-
+    input pass/fail decision (in input order, not sorted order) so the
+    flag can be carried through to per-row CSV output.
+    """
+    p_arr = np.asarray(p_values, dtype=np.float64)
+    n = len(p_arr)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    sort_perm = np.argsort(p_arr)
+    sorted_ps = p_arr[sort_perm]
+    thresholds = (np.arange(1, n + 1) / n) * alpha
+    passes_sorted = sorted_ps <= thresholds
+    if not passes_sorted.any():
+        return np.zeros(n, dtype=bool)
+    # Largest rank k where the sorted p-value still satisfies the BH
+    # threshold; everything ranked 1..k+1 is a discovery.
+    last_pass_rank = int(np.where(passes_sorted)[0].max())
+    sorted_mask = np.zeros(n, dtype=bool)
+    sorted_mask[: last_pass_rank + 1] = True
+    pass_mask = np.zeros(n, dtype=bool)
+    pass_mask[sort_perm] = sorted_mask
+    return pass_mask
+
+
 _DEFAULT_RAW_P_THRESHOLDS: tuple[float, ...] = (1e-6, 1e-4, 1e-3, 0.01, 0.05)
 _DEFAULT_FDR_ALPHAS: tuple[float, ...] = (0.05, 0.10, 0.20)
 

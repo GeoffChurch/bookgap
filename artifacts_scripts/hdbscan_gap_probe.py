@@ -368,6 +368,34 @@ def _denoise_cclip(
     return _solve_keep_smallest_gep(A, S_T, n_keep), alpha
 
 
+def _denoise_wc_cclip(
+    ctx: _ProbeDenoiserContext, n_keep: int, alpha: float = 0.5,
+) -> Tuple[np.ndarray, float]:
+    """Within-class CCLIP: minimise ((1-α) S_B + α S_L) / S_W.
+
+    Same numerator as CCLIP but the GEP denominator is the within-class
+    scatter S_W = S_T − S_B instead of total scatter S_T. Avoids the
+    objective conflict in CCLIP where S_T = S_B + S_W rewards the
+    optimiser for the very class separation it's trying to suppress.
+    Equivalent to "Laplacian-regularised Anti-LDA". See WithinClassCCLIP-
+    Denoiser at bookgap/denoisers.py for the canonical formulation.
+    """
+    S_B = ctx.S_B_multi(list(range(ctx.num_subsets())))
+    S_L = ctx.S_L()
+    S_T = ctx.S_T()
+    S_W = S_T - S_B
+    d = S_T.shape[0]
+    tr_B = float(np.trace(S_B))
+    tr_L = float(np.trace(S_L))
+    tr_W = float(np.trace(S_W))
+    print(f"  raw: trace(S_B)={tr_B:.3e}, trace(S_L)={tr_L:.3e}, "
+          f"trace(S_W)={tr_W:.3e}")
+    S_B_norm = S_B * (d / tr_B) if tr_B > 0 else S_B
+    S_L_norm = S_L * (d / tr_L) if tr_L > 0 else S_L
+    A = (1 - alpha) * S_B_norm + alpha * S_L_norm
+    return _solve_keep_smallest_gep(A, S_W, n_keep), alpha
+
+
 def _denoise_hierarchical(
     ctx: _ProbeDenoiserContext, drop_k_class: int, drop_k_graph: int,
 ) -> np.ndarray:
@@ -621,7 +649,7 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
                   f"{drop_k} between-class directions ({n_classes} classes)...")
             emb = _drop_top_k_multi_lda(emb, labels, drop_k)
     elif denoiser in {"lpp", "lip", "lip_eigen", "lip_diff",
-                      "cclip", "hierarchical", "criteria_union", "rnojd"}:
+                      "cclip", "wc_cclip", "hierarchical", "criteria_union", "rnojd"}:
         labels = _class_labels(topic_ids, types, class_axis)
         n_classes = len(set(labels))
         print(f"Building in-scope citation graph for {n:,} works...")
@@ -653,6 +681,15 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
                   f"((1-α) Ŝ_B + α Ŝ_L) / S_T, pre-trace-normalised "
                   f"({n_classes} classes)...")
             basis, _ = _denoise_cclip(ctx, n_keep, alpha_used)
+            emb = _project_via_basis(emb, basis)
+        elif denoiser == "wc_cclip":
+            alpha_used = 0.5 if cclip_alpha is None else cclip_alpha
+            print(f"Denoiser wc_cclip[{class_axis}]: α={alpha_used:.3f}, "
+                  f"keeping {n_keep} smallest eigvecs of "
+                  f"((1-α) Ŝ_B + α Ŝ_L) / S_W, pre-trace-normalised "
+                  f"({n_classes} classes; S_W = S_T − S_B avoids the "
+                  f"S_T-rewards-class-separation conflict)...")
+            basis, _ = _denoise_wc_cclip(ctx, n_keep, alpha_used)
             emb = _project_via_basis(emb, basis)
         elif denoiser == "hierarchical":
             print(f"Denoiser hierarchical[{class_axis}]: project out top {drop_k} class-disc, "
@@ -716,54 +753,81 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
     print(f"\n=== Cluster book-fraction analysis (size >= {size_floor}, "
           f"corpus book rate = {corpus_book_rate:.3%}) ===")
 
-    # Per-cluster (id, size, books, expected_books, p_value, effect_size).
+    # Per-cluster binomial depletion test, FDR correction, and CSV output
+    # via bookgap.depletion_test (shared with kball_gap_probe.py).
     # p_value = P(X <= k | n, p) under H0 (cluster uniform-random from corpus).
     # effect_size = (expected - observed) / expected ∈ (-∞, 1]
     #   = 1.0 means perfectly depleted (observed = 0)
     #   = 0.0 means observed at base-rate
     #   < 0  means cluster is book-ENRICHED, not a gap
-    from scipy.stats import binom
-    rows = []
+    from bookgap.depletion_test import (
+        benjamini_hochberg_pass_mask,
+        score_regions,
+    )
+
+    qualifying_ids: List[int] = []
+    qualifying_sizes: List[int] = []
+    qualifying_books: List[int] = []
     for c in unique_labels:
         mask = labels == c
         sz = int(mask.sum())
         if sz < size_floor:
             continue
-        books = int(is_book[mask].sum())
-        expected = sz * corpus_book_rate
-        p_value = float(binom.cdf(books, sz, corpus_book_rate))
-        effect = (expected - books) / expected if expected > 0 else 0.0
-        rows.append((int(c), sz, books, expected, p_value, effect))
-    rows.sort(key=lambda r: (r[4], -r[1]))  # ascending p, ties → larger first
+        qualifying_ids.append(int(c))
+        qualifying_sizes.append(sz)
+        qualifying_books.append(int(is_book[mask].sum()))
 
-    n_strictly = sum(1 for _, _, b, _, _, _ in rows if b == 0)
-    n_sig_001 = sum(1 for _, _, _, _, p, _ in rows if p < 1e-3)
-    n_sig_0001 = sum(1 for _, _, _, _, p, _ in rows if p < 1e-4)
-    n_sig_000001 = sum(1 for _, _, _, _, p, _ in rows if p < 1e-6)
+    summary = score_regions(
+        region_ids=qualifying_ids,
+        sizes=qualifying_sizes,
+        target_counts=qualifying_books,
+        base_rate=corpus_book_rate,
+    )
+    # Sort by (p ascending, size descending) for top-clusters display.
+    rows = sorted(summary.regions, key=lambda r: (r.p_value, -r.size))
 
-    # Benjamini-Hochberg FDR: rank p-values ascending; find largest i where
-    # p_(i) <= (i / N_tests) * alpha. Declare ranks 1..i discoveries.
-    # Return number of discoveries at each FDR threshold.
-    def _bh_count(alpha: float) -> int:
-        N_tests = len(rows)
-        if N_tests == 0:
-            return 0
-        ps = np.array([r[4] for r in rows])  # already sorted ascending
-        thresholds = (np.arange(1, N_tests + 1) / N_tests) * alpha
-        passes = ps <= thresholds
-        if not passes.any():
-            return 0
-        # largest i where passes[i] is True; everything up to i is discovery
-        return int(np.where(passes)[0].max() + 1)
+    print(f"  qualifying clusters:              {summary.n_regions}")
+    print(f"  strictly book-free (books==0):    {summary.n_strictly_zero}  [raw count]")
+    print(f"  significantly depleted (p<1e-3):  {summary.raw_significance_counts[1e-3]}")
+    print(f"  significantly depleted (p<1e-4):  {summary.raw_significance_counts[1e-4]}")
+    print(f"  very significantly dep (p<1e-6):  {summary.raw_significance_counts[1e-6]}")
+    print(f"  FDR-discoveries at α=0.05:        {summary.fdr_significance_counts[0.05]}")
+    print(f"  FDR-discoveries at α=0.10:        {summary.fdr_significance_counts[0.10]}")
+    print(f"  FDR-discoveries at α=0.20:        {summary.fdr_significance_counts[0.20]}")
 
-    print(f"  qualifying clusters:              {len(rows)}")
-    print(f"  strictly book-free (books==0):    {n_strictly}  [raw count]")
-    print(f"  significantly depleted (p<1e-3):  {n_sig_001}")
-    print(f"  significantly depleted (p<1e-4):  {n_sig_0001}")
-    print(f"  very significantly dep (p<1e-6):  {n_sig_000001}")
-    print(f"  FDR-discoveries at α=0.05:        {_bh_count(0.05)}")
-    print(f"  FDR-discoveries at α=0.10:        {_bh_count(0.10)}")
-    print(f"  FDR-discoveries at α=0.20:        {_bh_count(0.20)}")
+    # CSV output: per-cluster row + scope/denoiser/drop_k metadata so
+    # multiple probe runs can be concatenated for cross-denoiser tables.
+    import csv
+    from pathlib import Path
+
+    csv_dir = Path("artifacts/hdbscan_gap_probe")
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    safe_scope = scope.replace("/", "-")
+    csv_path = csv_dir / f"{safe_scope}__{denoiser}__drop{drop_k}.csv"
+    p_values = [r.p_value for r in rows]
+    fdr_05_mask = benjamini_hochberg_pass_mask(p_values, 0.05)
+    fdr_10_mask = benjamini_hochberg_pass_mask(p_values, 0.10)
+    fdr_20_mask = benjamini_hochberg_pass_mask(p_values, 0.20)
+    with open(csv_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "scope", "denoiser", "drop_k", "class_axis",
+            "min_cluster_size", "min_samples", "size_floor",
+            "n_clusters_total", "corpus_book_rate",
+            "cluster_id", "size", "books", "expected",
+            "p_value", "effect_size",
+            "fdr_pass_05", "fdr_pass_10", "fdr_pass_20",
+        ])
+        for r, p05, p10, p20 in zip(rows, fdr_05_mask, fdr_10_mask, fdr_20_mask):
+            w.writerow([
+                scope, denoiser, drop_k, class_axis,
+                min_cluster_size, min_samples, size_floor,
+                n_clusters, f"{corpus_book_rate:.6f}",
+                r.region_id, r.size, r.target_count, f"{r.expected:.4f}",
+                f"{r.p_value:.6e}", f"{r.effect_size:.6f}",
+                int(p05), int(p10), int(p20),
+            ])
+    print(f"  CSV: {csv_path}")
 
     titles_arr = np.array(titles, dtype=object)
 
@@ -771,26 +835,26 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
           f"(lowest p, size-tiebreak) ===")
     if not rows:
         print("  (none found — no qualifying clusters at this threshold)")
-    for c, sz, books, expected, p, effect in rows[:top_clusters]:
-        mask = labels == c
-        print(f"\n  Cluster {c} (size {sz:,}, books={books}, expected={expected:.1f}, "
-              f"p={p:.2e}, effect={effect:.3f}):")
+    for r in rows[:top_clusters]:
+        mask = labels == r.region_id
+        print(f"\n  Cluster {r.region_id} (size {r.size:,}, books={r.target_count}, "
+              f"expected={r.expected:.1f}, p={r.p_value:.2e}, effect={r.effect_size:.3f}):")
         for t in titles_arr[mask][:5]:
             print(f"    - {(t or '(no title)')[:90]}")
 
     # Also show top by effect size, restricted to those with non-trivial
     # significance — avoids elevating small clusters where effect=1.0 is
     # cheap (size 100, expected 0.76, observed 0 → effect=1, p=0.46).
-    sig_rows = [r for r in rows if r[4] < 0.05]
-    sig_rows.sort(key=lambda r: -r[5])  # descending effect size
+    sig_rows = [r for r in rows if r.p_value < 0.05]
+    sig_rows.sort(key=lambda r: -r.effect_size)  # descending effect size
     print(f"\n=== Top {top_clusters} clusters by effect size "
           f"among p<0.05 (largest depletion) ===")
     if not sig_rows:
         print("  (none found — no clusters with p<0.05)")
-    for c, sz, books, expected, p, effect in sig_rows[:top_clusters]:
-        mask = labels == c
-        print(f"\n  Cluster {c} (size {sz:,}, books={books}, expected={expected:.1f}, "
-              f"p={p:.2e}, effect={effect:.3f}):")
+    for r in sig_rows[:top_clusters]:
+        mask = labels == r.region_id
+        print(f"\n  Cluster {r.region_id} (size {r.size:,}, books={r.target_count}, "
+              f"expected={r.expected:.1f}, p={r.p_value:.2e}, effect={r.effect_size:.3f}):")
         for t in titles_arr[mask][:5]:
             print(f"    - {(t or '(no title)')[:90]}")
 
@@ -809,11 +873,12 @@ def main():
                    help="project out top-k components before clustering")
     p.add_argument("--denoiser",
                    choices=["pca", "multi_lda", "lpp", "lip", "lip_eigen",
-                            "lip_diff", "cclip", "hierarchical",
+                            "lip_diff", "cclip", "wc_cclip", "hierarchical",
                             "criteria_union", "rnojd"],
                    default="pca",
                    help="pca=variance-greedy; multi_lda=between-class GEP; "
-                        "lpp/cclip/hierarchical/rnojd=citation-graph based")
+                        "lpp/cclip/wc_cclip/hierarchical/rnojd=citation-graph based "
+                        "(wc_cclip uses S_W = S_T − S_B as denominator instead of S_T)")
     p.add_argument("--class-axis", choices=["topic", "type", "topic_x_type"],
                    default="topic_x_type",
                    help="class partition (used by multi_lda, cclip, hierarchical, rnojd)")

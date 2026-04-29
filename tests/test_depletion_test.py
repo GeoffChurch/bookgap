@@ -4,6 +4,7 @@ import pytest
 
 from bookgap.depletion_test import (
     benjamini_hochberg_fdr_count,
+    benjamini_hochberg_pass_mask,
     score_region_depletion,
     score_regions,
 )
@@ -82,6 +83,32 @@ class TestBenjaminiHochbergFDRCount:
         ps_sorted = [0.01, 0.012, 0.04, 0.06, 0.5]
         ps_shuffled = [0.5, 0.012, 0.04, 0.01, 0.06]
         assert benjamini_hochberg_fdr_count(ps_sorted, 0.05) == benjamini_hochberg_fdr_count(ps_shuffled, 0.05)
+
+
+class TestBenjaminiHochbergPassMask:
+    def test_empty_returns_empty_mask(self):
+        mask = benjamini_hochberg_pass_mask([], 0.05)
+        assert mask.shape == (0,)
+
+    def test_classic_example_in_input_order(self):
+        # Same p-values as test_classic_example, but mask must reflect
+        # input order: index 0 (p=0.01) and index 1 (p=0.012) pass; rest fail.
+        ps = [0.01, 0.012, 0.04, 0.06, 0.5]
+        mask = benjamini_hochberg_pass_mask(ps, 0.05)
+        assert mask.tolist() == [True, True, False, False, False]
+
+    def test_count_matches_count_function(self):
+        rng = np.random.default_rng(0)
+        ps = rng.uniform(0, 0.2, size=20).tolist()
+        for alpha in (0.05, 0.10, 0.20):
+            mask_count = int(benjamini_hochberg_pass_mask(ps, alpha).sum())
+            assert mask_count == benjamini_hochberg_fdr_count(ps, alpha)
+
+    def test_shuffled_input_preserves_per_index_mapping(self):
+        ps = [0.5, 0.012, 0.04, 0.01, 0.06]
+        # Index 1 (p=0.012) and index 3 (p=0.01) should pass; others fail.
+        mask = benjamini_hochberg_pass_mask(ps, 0.05)
+        assert mask.tolist() == [False, True, False, True, False]
 
 
 class TestScoreRegions:
