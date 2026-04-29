@@ -754,6 +754,22 @@ def plot_col_by_denoiser_pyplot(df: pd.DataFrame, artifacts_dir: Path, y_col: st
     output_file = artifacts_dir / f"{y_col}_by_denoiser_{color_col=}_pyplot.png"
     PlotManager.save_and_close(fig, output_file)
 
+    # Dump CSV of per-(denoiser, drop_k) stats alongside the PNG so the
+    # denoiser ranking is available in tabular form for direct comparison
+    # (same data the plot shows: weighted mean+std per group, ranked).
+    rank_map = {group: i + 1 for i, group in enumerate(sorted_groups)}
+    n_topics = df.groupby('denoiser_drop_k').size().rename('n_topics')
+    csv_df = (
+        stats.assign(
+            rank=stats['denoiser_drop_k'].map(rank_map),
+            n_topics=stats['denoiser_drop_k'].map(n_topics),
+        )
+        .sort_values('rank')
+        [['rank', 'denoiser_drop_k', 'mean', 'std', 'n_topics']]
+    )
+    csv_path = artifacts_dir / f"{y_col}_by_denoiser_{color_col=}_pyplot.csv"
+    csv_df.to_csv(csv_path, index=False)
+
 def plot_col_by_drop_k(df: pd.DataFrame, artifacts_dir: Path, y_col: str, log_y: bool = False, weights: Optional[str] = None):
     """
     Plot metric vs drop_k with each denoiser as a separate series.
