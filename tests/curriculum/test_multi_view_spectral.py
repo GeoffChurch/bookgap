@@ -293,6 +293,30 @@ class TestClusterWithMultiViewSpectral:
                 W1, W2, n_clusters=2, co_reg_lambda=0.5,
             )
 
+    def test_auto_tune_co_reg_lambda_is_none(self):
+        # co_reg_lambda=None triggers the op-norm-based auto-tune; result
+        # should still recover the two-block structure on agreeing views.
+        W1, W2, truth = self._two_block_views(seed=4)
+        labels = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=2, co_reg_lambda=None, seed=0,
+        )
+        assert labels.shape == (8,)
+        ari = adjusted_rand_score(truth, labels)
+        assert ari > 0.95
+
+    def test_auto_lambda_scale_zero_disables_coupling(self):
+        # auto_lambda_scale=0 with co_reg_lambda=None gives λ=0 — same
+        # result as explicit λ=0.
+        W1, W2, _ = self._two_block_views(seed=5)
+        labels_auto_zero = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=2, co_reg_lambda=None,
+            auto_lambda_scale=0.0, seed=0,
+        )
+        labels_explicit_zero = cluster_with_multi_view_spectral(
+            W1, W2, n_clusters=2, co_reg_lambda=0.0, seed=0,
+        )
+        assert (labels_auto_zero == labels_explicit_zero).all()
+
 
 class TestConfigFields:
     def test_clustering_config_has_multi_view_fields(self):
@@ -301,7 +325,9 @@ class TestConfigFields:
         cfg = CurriculumConfig()
         # Defaults exist and have sensible values.
         assert hasattr(cfg, "multi_view_spectral_co_reg_lambda")
-        assert cfg.multi_view_spectral_co_reg_lambda == pytest.approx(0.5)
+        assert cfg.multi_view_spectral_co_reg_lambda is None  # auto-tune default
+        assert hasattr(cfg, "multi_view_spectral_auto_lambda_scale")
+        assert cfg.multi_view_spectral_auto_lambda_scale == pytest.approx(1.5)
         assert hasattr(cfg, "multi_view_spectral_csls_k")
         assert cfg.multi_view_spectral_csls_k == 10
         assert hasattr(cfg, "multi_view_spectral_citation_mode")

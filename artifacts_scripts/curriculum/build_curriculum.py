@@ -1197,10 +1197,15 @@ def run_curriculum_building(
                 build_embedding_similarity_view,
                 cluster_with_multi_view_spectral,
             )
+            lam_display = (
+                f"auto (scale={cfg.multi_view_spectral_auto_lambda_scale})"
+                if cfg.multi_view_spectral_co_reg_lambda is None
+                else f"{cfg.multi_view_spectral_co_reg_lambda}"
+            )
             LOGGER.info(
                 f"Running multi-view spectral on top-{n_samples} works "
                 f"(n_clusters={cfg.desired_n_topics}, "
-                f"λ={cfg.multi_view_spectral_co_reg_lambda}, "
+                f"λ={lam_display}, "
                 f"csls_k={cfg.multi_view_spectral_csls_k}, "
                 f"citation_mode={cfg.multi_view_spectral_citation_mode})..."
             )
@@ -1217,6 +1222,7 @@ def run_curriculum_building(
                 W_emb, W_cite,
                 n_clusters=cfg.desired_n_topics,
                 co_reg_lambda=cfg.multi_view_spectral_co_reg_lambda,
+                auto_lambda_scale=cfg.multi_view_spectral_auto_lambda_scale,
                 max_iters=cfg.multi_view_spectral_max_iters,
                 tol=cfg.multi_view_spectral_tol,
             )
