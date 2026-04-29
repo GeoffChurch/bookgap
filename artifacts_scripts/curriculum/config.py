@@ -479,7 +479,7 @@ class CurriculumConfig:
     If empty, only target injection is used with leakage to ground.
     """
     
-    desired_n_topics: int = 10
+    desired_n_topics: int = 15
     """Desired number of frontier topics in the curriculum."""
     
     # method: RankMethod = RankMethod.PAGE_RANK
