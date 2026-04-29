@@ -14,8 +14,9 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 
 | Method | QC Q | Rob Q | QC tpc/kw | Rob tpc/kw | Singletons | Notes |
 |---|---|---|---|---|---|---|
-| leiden | **0.759** | **0.638** | 1.41 | 1.80 | **0** (refuses) | Citation-graph champion, no landmarks. |
-| **weighted_bisecting_kmeans** | 0.384 | **0.309** | **1.54** | **1.32** | 0–4 (knob) | **Best singleton-allowing method cross-corpus.** Best keyword distinctness on both corpora. |
+| leiden | **0.759** | **0.638** | 1.41 | 1.80 | **0** (refuses) | Citation-graph champion when cleanly producing ≥ K real communities. |
+| **multi_view_spectral** (CSLS + KRD-2011, λ auto-tuned) | **0.691** | 0.484 | 1.42 | 1.68 | 0 (refuses) | **Best cross-corpus exact-K alternative to leiden.** No mega-cluster pathology (gini 0.27/0.32, max% 15%/17%); all 15 clusters substantive on both corpora. Beats wbk on robotics by Q +0.175. |
+| **weighted_bisecting_kmeans** | 0.384 | 0.309 | **1.54** | **1.32** | 0–4 (knob) | **Best earned-singleton-supporting method.** Best keyword distinctness on both corpora; surfaces non-seed landmarks. |
 | WU (citation_avg_linkage, weighted_unified) | 0.320 | 0.287 | 1.18 | 1.27 | 5 | Close to wbk on QC; behind on robotics. |
 | binary (citation_avg_linkage) | 0.258 | 0.169 | 1.09 | 1.15 | 5–7 | Dominated by WU on QC, by wbk on robotics. |
 | WPD (citation_avg_linkage, weighted_per_direction) | 0.248 | 0.176 | 1.18 | 1.12 | 5–8 | Most singletons but lowest Q among citation_avg variants. |
@@ -23,15 +24,16 @@ Format: each item has a one-line summary; deeper context lives in linked notes /
 | spectral | 0.548 | 0.547 | 1.18 | 1.21 | 0 | Mega-cluster pathology on QC (max%=57%). |
 | graph_bisect | 0.215 | 0.569 | 1.88 | 1.67 | 0 | Cross-corpus unstable — slices through real communities on QC. |
 
-**Default**: `linkage_method = "weighted_bisecting_kmeans"` (`config.py:499`). Cross-corpus rationale confirmed by full sweep on 2026-04-28.
+**Default**: `linkage_method = "weighted_bisecting_kmeans"` (`config.py:499`). Cross-corpus rationale confirmed by full sweep on 2026-04-28; retains the default because it's the only top-tier method that produces earned non-seed singletons (Shannon-MTC-class landmarks).
 
 **When to deviate from wbk**:
-- **leiden** if you want pure citation-driven communities and don't care about earned landmarks.
+- **leiden** if you want pure citation-driven communities, don't care about earned landmarks, and the corpus produces ≥ K real communities. Highest Q when it works.
+- **multi_view_spectral** if you want exact-K with no mega-cluster pathology and balanced sizes, especially when leiden under-produces communities (it only found 9 real ones on robotics, padding with empties; multi_view_spectral produced 15 substantive ones). Best Q-vs-stability trade-off among non-singleton-allowing methods.
 - **WU** if you specifically want citation-graph-driven clustering *with* the chance of earned non-seed singletons (it found 3 such on QC: EPR, Algebraic Alphabet, Bell-theorem QKD).
 
 **Avoid**: average (cross-corpus instability), graph_bisect (cross-corpus instability + slicing real communities), WPD (no consistent advantage over WU), spectral (mega-cluster pathology).
 
-**Next** (in progress): Multi-view spectral with CSLS-corrected views (see "Multi-view clustering" section below) targets the cross-corpus split structurally. wbk wins robotics, WU wins QC; rather than pick a per-corpus default, combine both views via a single tunable coupling that recovers each endpoint as a degenerate case.
+**Multi-view spectral verdict (2026-04-28, complete)**: shipped with CSLS-corrected views and op-norm-based λ auto-tune (`λ = 1.5 · op_norm_per_K`). Did not dethrone leiden as the citation-graph champion (Q delta −0.07 on QC, −0.15 on robotics) and did not surface earned singletons (it's exact-K by construction). But: substantially beats wbk on robotics (Q +0.175) with cleaner cluster-size balance, and is the only method that produces 15 substantive clusters on both corpora without singletons or mega-cluster pathology. Net: a compelling third option in the table above, not a default replacement.
 
 ---
 
@@ -129,7 +131,7 @@ Ideas borrowed from `~/src/mycooc/`. The branching-entropy item subsumes the ori
   - **Kernel product** (`K_emb · K_cite`, "AND-like"): worth as a fallback if multi-view spectral underperforms on a future corpus; gives the categorical "meet" interpretation directly.
   - **CCA / PCCA shared latent**: principled (Bach-Jordan PCCA = generative model with per-view noise variance) but harder to wire into existing pipeline. Reserve for later.
 
-- [ ] **Cross-corpus comparison vs wbk and WU.** Probe results above only compare different λ values *within* multi_view_spectral. Still need a head-to-head between the auto-tuned multi_view_spectral and the existing wbk (robotics-best) / WU (QC-best) defaults under `compare_clusterings.py`. Likely outcome: multi_view_spectral wins on both corpora (it inherits both signals), but worth confirming on the actual modularity/keyword-distinctness/coverage metrics before promoting it past wbk as the global default.
+- [x] **Cross-corpus comparison vs wbk and WU.** *(Completed 2026-04-28.)* Result: multi_view_spectral places #2 on QC (Q=0.691 vs leiden 0.759, wbk 0.384) and #4 on robotics (Q=0.484 vs leiden 0.638, graph_bisect 0.569, spectral 0.547, wbk 0.309). Beats wbk on robotics by Q +0.175 with cleaner structure (gini 0.32 vs 0.57, max% 17% vs 21%, 0 fragments vs 6); on QC by Q +0.307 with similar advantages (gini 0.27 vs 0.64). Does NOT dethrone leiden on Q on either corpus, but unlike leiden produces all 15 substantive clusters on robotics (leiden's truncation pads with empties; only 7-9 real communities). Keyword distinctness mid-pack: tpc/kw 1.42 (QC) / 1.68 (robotics) — comparable to leiden, slightly worse than wbk on robotics. **Verdict**: best "exact-K, no mega-cluster, cross-corpus stable" method; default remains wbk (which retains the earned-landmark advantage), but multi_view_spectral is the recommended deviation for corpora where leiden under-produces communities. See verdict-table at top of this file.
 - [x] **Average-linkage agglomerative.** *(Run 2026-04-25; cross-corpus completed 2026-04-28.)* Tighter QC clusters than weighted_bisecting (cleaner keywords like `bell_inequality`, `gedankenexperiment`, `experimental_test_local_hidden_variable_theories`, `optical_parametric_noise`) but only 37% coverage. **Cross-corpus instability**: QC Q=0.378 (3rd-best), robotics Q=0.131 (worst). Not a viable default. Useful only as a sanity-check baseline.
 - [ ] **HDBSCAN on top-5000 with relevance-weighted point replication.** Density-based, naturally variable cluster sizes, no forced cluster count. Replicate each work proportional to relevance to fold weighting into HDBSCAN's unweighted core.
 
