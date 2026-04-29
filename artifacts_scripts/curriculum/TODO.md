@@ -179,7 +179,34 @@ Three gap-detection algorithms in play:
 
   **On bypass vs Cloud(scope, denoiser='X')**: the Cloud abstraction *also* supports scope-restricted operation via the `pre` filter, so a Cloud-path denoiser sweep wouldn't have to load 40M works either — that mischaracterisation in earlier TODO revisions has been fixed. The bypass was chosen for software reasons: API flexibility (Cloud's denoiser is a string with α baked in; the probe's dispatch supports per-call `--cclip-alpha`, `--drop-k-graph`, `--class-axis`), code reuse (hdbscan_gap_probe already implements all 11 dispatches), and cache hygiene (10×8×N denoiser/drop_k/scope Clouds is more cache pressure than reusing per-scope numpy arrays). The Cloud path remains a viable alternative.
 
-- [ ] **Run the actual probe sweeps.** Code on both probes is ready. Run `hdbscan_gap_probe.py` and `kball_gap_probe.py` across the same denoiser×drop_k matrix on a representative scope, aggregate the CSVs, build the comparison table. Each probe invocation is ~5-30 min depending on scope size; full sweep is multi-hour.
+- [x] **Run the actual probe sweeps.** *(Done 2026-04-29 on subfield 17/1702 = CS/AI subfield, 1.96M works, 77 topics. Aggregator at `artifacts_scripts/probe_sweep_summary.py`.)* Matrix: 5 denoisers × 4 drop_k = 20 configs per probe + 1 K-ball Cloud baseline = 41 runs. Total wall-clock: ~5 hours. Findings:
+
+  **HDBSCAN cluster-depletion** (subfield 17/1702 with default `min_cluster_size=50`):
+
+  | rank | config | sig_eff | qual | #clust |
+  |---|---|---|---|---|
+  | 1 | **pca drop_k=100** | **0.092** | 3 | 4 |
+  | 2 | cclip drop_k=100 | 0.074 | 4 | 5 |
+  | 3 | wc_cclip drop_k=100 | 0.073 | 4 | 5 |
+  | 4 | multi_lda drop_k=100 | 0.071 | 2 | 2 |
+  | 5 | cclip drop_k=20 | 0.063 | 3 | 4 |
+  | ... | (cclip/wc_cclip drop_k=5/20 ≈ 0.056) | | | |
+  | bottom | rnojd drop_k=20/100 | 0.026-0.028 | 3 | 3-4 |
+
+  - **PCA drop_k=100 wins by a meaningful margin**. Class-aware denoisers (cclip family) preserve between-class structure that's exactly what we want HDBSCAN to find at this scope — counterproductive.
+  - **WC_CCLIP doesn't beat CCLIP** despite SNR advantage; statistically indistinguishable on this metric (the SNR ranking measures general embedding quality, not gap-detection specifically).
+  - **rNOJD aggressive (drop_k=100) is the weakest** — joint diagonalisation removes too many gap-relevant directions.
+  - **FDR signal is uniformly thin**: every config produces exactly 1 FDR-significant cluster at α=0.05 (1 of 20 produces 0). HDBSCAN at subfield scale finds "the one biggest book-depleted region" rather than many — wrong tool for LLM-pipeline gap candidates.
+
+  **K-ball gap detection** (same scope):
+  - All 20 denoiser configs found 380 gaps each (5 × 76 topics with 1 degenerate).
+  - Mean gap_size_percentile ~0.98 across all configs (extreme outliers vs book null).
+  - Gap-size pattern: cclip/wc_cclip and pca-drop_k=100 produce tighter gaps (mean 237-245); pca-drop_k=1, multi_lda, rnojd produce wider (mean 317-326). Cloud baseline (no denoiser) at 284.
+  - **Denoiser choice has small but visible effects on gap structure but doesn't dramatically change which gaps are found**. Geometric outliers persist under most projections.
+
+  **Net practical verdict**: For LLM-pipeline gap candidates, K-ball with any reasonable denoiser is the right tool. PCA at drop_k=100 is the most defensible HDBSCAN config but the signal is thin enough that it's mostly useful as a confirmatory diagnostic, not a primary gap source.
+
+  **Caveats**: results are for subfield 17/1702 only (CS/AI/NLP); cross-scope replication would strengthen claims. HDBSCAN's `min_cluster_size=50` default is high for this scope — tuning down may surface more clusters and change the picture.
 
 - [x] **Evaluate USearch as a FAISS replacement for K-ball indices.** *(Evaluated 2026-04-29 via `artifacts_scripts/usearch_smoke_test.py`. Verdict: NOT a path to GPU range_search.)* Findings:
   - `pip install usearch` does NOT bundle GPU support. Their GPU path requires cuVS (RAPIDS-scale install with CUDA toolkit).
