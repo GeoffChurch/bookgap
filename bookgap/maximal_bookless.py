@@ -204,28 +204,58 @@ def find_boundary_books(
     single_linkage_tree: NDArray[np.floating],
     is_book: NDArray[np.bool_],
     cluster_id: int,
+    children_map: dict[int, tuple[int, int]] | None = None,
+    parent_map: NDArray[np.int64] | None = None,
 ) -> NDArray[np.int64]:
     """For a given maximal-bookless cluster, find the books in the lowest
     book-containing ancestor — i.e., the books that "stopped" the walk-up.
 
     These books form the natural boundary of the gap; they're the
     closest-related books to the gap's articles in the dendrogram.
+
+    Parameters
+    ----------
+    single_linkage_tree, is_book : as in find_maximal_bookless_clusters.
+    cluster_id : the maximal-bookless cluster ID whose boundary books we want.
+    children_map, parent_map : optional precomputed maps (for callers
+        querying many clusters; saves rebuilding per call). If omitted,
+        constructed locally from ``single_linkage_tree``.
     """
     n_points = is_book.shape[0]
-    # Find parent of cluster_id in the tree.
-    parent = np.full(2 * n_points - 1, -1, dtype=np.int64)
     n_internal = single_linkage_tree.shape[0]
-    for i in range(n_internal):
-        left = int(single_linkage_tree[i, 0])
-        right = int(single_linkage_tree[i, 1])
-        parent[left] = n_points + i
-        parent[right] = n_points + i
-    bounding_ancestor = parent[cluster_id]
+
+    if parent_map is None:
+        parent_map = np.full(2 * n_points - 1, -1, dtype=np.int64)
+        for i in range(n_internal):
+            left = int(single_linkage_tree[i, 0])
+            right = int(single_linkage_tree[i, 1])
+            parent_map[left] = n_points + i
+            parent_map[right] = n_points + i
+
+    bounding_ancestor = int(parent_map[cluster_id])
     if bounding_ancestor == -1:
         return np.array([], dtype=np.int64)
-    # Get the bounding ancestor's leaves.
-    subtree = compute_subtree_leaves(single_linkage_tree, n_points)
-    if bounding_ancestor not in subtree:
-        return np.array([], dtype=np.int64)
-    leaves = subtree[bounding_ancestor]
-    return leaves[is_book[leaves]]
+
+    if children_map is None:
+        children_map = {}
+        for i in range(n_internal):
+            new_node = n_points + i
+            children_map[new_node] = (
+                int(single_linkage_tree[i, 0]),
+                int(single_linkage_tree[i, 1]),
+            )
+
+    # Iterative descent from bounding_ancestor; collect book leaves.
+    book_leaves: list[int] = []
+    stack: list[int] = [bounding_ancestor]
+    while stack:
+        node = stack.pop()
+        if node < n_points:
+            if is_book[node]:
+                book_leaves.append(node)
+        else:
+            children = children_map.get(node)
+            if children is not None:
+                stack.append(children[0])
+                stack.append(children[1])
+    return np.array(book_leaves, dtype=np.int64)
