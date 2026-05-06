@@ -5,8 +5,9 @@ The strict moving-centroid expansion (`expand_seed` in `gap_article_as_seed.py`)
 Variants to test:
 
 - **Lower τ to 0.3 or 0.4**: paths expand further into the basin → more chance of meeting at full saturation. Path-dependence persists in principle but might empirically produce more confluence.
-- **Batch additions**: at each step, add ALL candidates with `post(G ∪ {c}) ≥ τ` rather than just the nearest. Two seeds with similar growing G's would add similar batches simultaneously, increasing the chance of matching. Also more deterministic given G.
 - **Mean_post or median_post objective**: replace the strict `min_post ≥ τ` floor with maximizing mean or median posterior at each step. Less brittle to single outliers; allows more expansion past local cliffs.
+
+See also [batch addition](article-as-seed-batch-addition.md) — a structurally distinct variant that adds all qualifying candidates per step rather than the single nearest. More directly attacks path-dependence than threshold/objective tweaks.
 
 Pairs naturally with [canonicalization](article-as-seed-canonicalization.md): if expansion fills basins more reliably, canonicalization becomes more useful (fixed-points more likely to coincide).
 

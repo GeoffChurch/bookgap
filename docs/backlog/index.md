@@ -10,7 +10,8 @@ How candidate gaps are produced and refined.
 
 - [article-as-seed-canonicalization](gap-detection-methods/article-as-seed-canonicalization.md) — fixed-point iteration to make gap output invariant to starting seed; resolves path-dependence
 - [article-as-seed-with-book-seeds](gap-detection-methods/article-as-seed-with-book-seeds.md) — books as additional seeds; clusters that merge with book-seeded clusters get filtered out as "book covers it"
-- [article-as-seed-better-inclusion-policy](gap-detection-methods/article-as-seed-better-inclusion-policy.md) — lower min_post threshold, batch additions, mean_post objective
+- [article-as-seed-batch-addition](gap-detection-methods/article-as-seed-batch-addition.md) — add all qualifying candidates per step instead of single nearest; attacks path-dependence at its source
+- [article-as-seed-better-inclusion-policy](gap-detection-methods/article-as-seed-better-inclusion-policy.md) — lower min_post threshold, mean_post objective
 - [article-as-seed-lockstep-expansion](gap-detection-methods/article-as-seed-lockstep-expansion.md) — all seeds expand simultaneously; same-cardinality competitors as background
 - [article-as-seed-higher-max-iters](gap-detection-methods/article-as-seed-higher-max-iters.md) — adaptive cap for book-poor topics where natural cluster size > 500
 - [cohesion-cut-on-slt](gap-detection-methods/cohesion-cut-on-slt.md) — replace max-bookless's "stop at first book" with a cohesion-aware cut criterion on the single-linkage tree
