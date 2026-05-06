@@ -160,3 +160,18 @@ Hydra structured configs using dataclasses:
 - Frozen dataclasses throughout for hashability (required by joblib caching)
 - `FilterPair` splits cloud into two filters (e.g., books vs articles) that share the same embedding space
 - Denoiser projection is computed once and cached on `Cloud`, then reused for proposal embeddings via `Cloud.denoiser_projection()`
+
+## Backlog and dead_ends
+
+Two places encode the project's idea-state:
+
+- **What might work** — `docs/backlog/` (organized by theme, with an `index.md`). Forward-looking ideas. If something interesting comes up mid-conversation — a new variant to try, a follow-up question, a refactor worth doing later — drop it there without asking first. One file per idea, self-contained enough to act on later without re-reading conversation context. Short is fine.
+- **What didn't work** — `docs/dead_ends/` (parallel structure to `docs/backlog/`, with its own `index.md`). Refuted ideas with their *diagnosis*. The point is to keep failed-but-instructive directions discoverable so we don't re-run the same experiment, AND so the *reason it failed* is captured (often more useful than the original idea).
+
+When an idea in `docs/backlog/` is executed:
+- **Validated** → delete the backlog file; the permanent home is the relevant code (with comments) plus a results doc under `docs/` if substantial. If the feature is promoted, this CLAUDE.md is updated to describe it.
+- **Refuted** → move to the corresponding subdirectory under `docs/dead_ends/`, rewrite as a failure-and-diagnosis doc (what was tested, what was expected, what actually happened, why, and any salvage paths), and drop the entry from `docs/backlog/index.md` while adding it to `docs/dead_ends/index.md`. Don't just delete — the diagnosis is the artifact worth preserving.
+
+Don't dump every refuted variant into `docs/dead_ends/` — only the *core ideas that sounded promising*. Saturation tweaks of a winning variant get a paragraph in the parent dead_ends entry, not their own files.
+
+Cross-pollination from `~/src/mycooc/docs/backlog/` is welcome: ideas borrowed from the mycooc project should reference the original mycooc backlog file in their bookgap-side description.
