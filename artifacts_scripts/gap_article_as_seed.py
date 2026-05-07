@@ -33,6 +33,7 @@ import json
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -63,6 +64,208 @@ def _topic_id_from_path(path: Path) -> str:
     return stem
 
 
+def _expand_symmetric_loop(
+    seed: int,
+    find_frontier: Callable[[np.ndarray, int], list[int]],
+    compute_state: Callable[[np.ndarray], dict | None],
+    tau: float,
+    frontier_width: int,
+    max_iters: int,
+    claimed: set[int] | None = None,
+    claimed_overlap_threshold: float = 0.5,
+    claimed_check_every: int = 5,
+) -> tuple[dict | None, int]:
+    """Symmetric add+remove fixed-point loop.
+
+    Pure: takes pre-built ``find_frontier`` and ``compute_state``
+    callables. The caller is responsible for building the indices and
+    closures that compute_state/find_frontier rely on.
+
+    On each iteration:
+      ADD: any frontier candidate whose individual addition keeps
+        ``min_post(G ∪ {c}) ≥ tau``.
+      REMOVE: any current member whose ``post(i | G_new) < tau``.
+      Stop when G is unchanged (fixed point) or shrinks to empty.
+
+    Returns ``(final_state, iter_count)``. ``final_state`` is the
+    ``compute_state`` output for the final G, or None on failure
+    (didn't stabilize, shrunk to empty, no candidates, etc.).
+    """
+    G: set[int] = {int(seed)}
+    iter_count = 0
+    for it in range(max_iters):
+        iter_count = it + 1
+        G_arr = np.asarray(sorted(G), dtype=np.int64)
+        # Singleton bootstrap: force-add nearest neighbor on iter 1
+        # because compute_state requires |G| >= 2.
+        if len(G_arr) < 2:
+            cands = find_frontier(G_arr, 1)
+            if not cands:
+                return None, iter_count
+            G.add(int(cands[0]))
+            continue
+        # ADD phase
+        cands = find_frontier(G_arr, frontier_width)
+        to_add: set[int] = set()
+        for c in cands:
+            cand_arr = np.asarray(sorted(G | {int(c)}), dtype=np.int64)
+            st = compute_state(cand_arr)
+            if st is not None and st["min_post"] >= tau:
+                to_add.add(int(c))
+        G_candidate = G | to_add
+        G_arr_new = np.asarray(sorted(G_candidate), dtype=np.int64)
+        st_new = compute_state(G_arr_new)
+        if st_new is None:
+            return None, iter_count
+        # REMOVE phase
+        post_by_idx = dict(zip(G_arr_new.tolist(), st_new["post"].tolist()))
+        to_remove = {i for i, p in post_by_idx.items() if p < tau}
+        G_new = G_candidate - to_remove
+        if G_new == G:
+            # Fixed point; recompute state on the final G to return.
+            G_arr_final = np.asarray(sorted(G), dtype=np.int64)
+            return compute_state(G_arr_final), iter_count
+        G = G_new
+        if not G:
+            return None, iter_count
+        # Optional claimed-overlap early-abort (matches single-add path).
+        if (
+            claimed is not None
+            and (it + 1) % claimed_check_every == 0
+            and claimed
+        ):
+            overlap = len(G & claimed)
+            if overlap / max(len(G), 1) >= claimed_overlap_threshold:
+                return None, iter_count
+    return None, iter_count  # didn't stabilize within max_iters
+
+
+def _expand_symmetric(
+    seed: int,
+    emb: np.ndarray,
+    types: np.ndarray,
+    tau: float = 0.5,
+    frontier_width: int = 50,
+    max_iters: int = 500,
+    k_sigma: int = 7,
+) -> dict | None:
+    """Standalone symmetric expansion for unit testing. Builds its own
+    indices/sigma from (emb, types) and calls ``_expand_symmetric_loop``.
+
+    Returns ``{"members_frozen": frozenset[int], "min_post": float,
+    "logit_sum": float, "iter_count": int}`` on convergence; None on
+    failure.
+    """
+    from bookgap.index import FlatL2, build_index
+    from collections import Counter
+
+    n = len(emb)
+    types_arr = np.asarray(types)
+    is_book_arr = types_arr == "book"
+    is_article_arr = types_arr == "article"
+    book_global = np.where(is_book_arr)[0]
+
+    full_index = build_index(FlatL2(), emb)
+    if len(book_global) == 0:
+        # No books → boundary undefined; can't run the cohesion metric.
+        return None
+    book_emb = np.ascontiguousarray(emb[book_global])
+    book_index = build_index(FlatL2(), book_emb)
+
+    K_sigma_eff = min(k_sigma, n - 1)
+    D_sigma, _ = full_index.search(emb, k=K_sigma_eff + 1)
+    sigma = np.sqrt(np.maximum(
+        np.median(D_sigma[:, 1:K_sigma_eff + 1], axis=1), 1e-8
+    )).astype(np.float32)
+
+    K_query = min(frontier_width * 4 + 50, n - 1)
+
+    def get_knn(i: int) -> tuple[np.ndarray, np.ndarray]:
+        D, I = full_index.search(emb[i:i + 1], k=K_query + 1)
+        return D[0, 1:], I[0, 1:]
+
+    def compute_state(G_arr: np.ndarray) -> dict | None:
+        if len(G_arr) < 2:
+            return None
+        in_G = np.zeros(n, dtype=bool)
+        in_G[G_arr] = True
+        article_members = G_arr[is_article_arr[G_arr]]
+        if len(article_members) == 0:
+            return None
+        b_per_member: list[int] = []
+        K_books = min(5, len(book_global))
+        for a in article_members:
+            _, I_b = book_index.search(emb[a:a + 1], k=K_books)
+            for j_local in I_b[0]:
+                gb = int(book_global[j_local])
+                if not in_G[gb]:
+                    b_per_member.append(gb)
+                    break
+        if not b_per_member:
+            return None
+        book_counts = Counter(b_per_member)
+        in_B = np.zeros(n, dtype=bool)
+        for b, f_b in book_counts.items():
+            in_B[b] = True
+            _, I_a = full_index.search(emb[b:b + 1], k=f_b + len(G_arr) + 5)
+            taken = 0
+            for ia in I_a[0]:
+                ia_int = int(ia)
+                if taken >= f_b:
+                    break
+                if in_G[ia_int] or in_B[ia_int] or not is_article_arr[ia_int]:
+                    continue
+                in_B[ia_int] = True
+                taken += 1
+        K_G = np.zeros(len(G_arr), dtype=np.float64)
+        K_B = np.zeros(len(G_arr), dtype=np.float64)
+        for ix, i in enumerate(G_arr):
+            D, I = get_knn(int(i))
+            sigma_i = sigma[int(i)]
+            sigma_j = sigma[I]
+            w = np.exp(-D / (sigma_i * sigma_j))
+            in_G_mask = in_G[I] & (I != int(i))
+            in_B_mask = in_B[I]
+            K_G[ix] = (w * in_G_mask).sum()
+            K_B[ix] = (w * in_B_mask).sum()
+        denom = K_G + K_B + 1e-30
+        post = K_G / denom
+        post_clip = np.clip(post, 1e-3, 1 - 1e-3)
+        logits = np.log(post_clip / (1 - post_clip))
+        return {
+            "G": G_arr,
+            "post": post,
+            "min_post": float(post.min()),
+            "logit_sum": float(logits.sum()),
+        }
+
+    def find_frontier(G_arr: np.ndarray, top: int) -> list[int]:
+        centroid = emb[G_arr].mean(axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm < 1e-12:
+            return []
+        centroid = (centroid / norm).astype(np.float32)
+        over_k = min(top * 4 + len(G_arr) + 5, n - 1)
+        _, I = full_index.search(centroid[None, :], k=over_k)
+        in_G = np.zeros(n, dtype=bool)
+        in_G[G_arr] = True
+        return [int(i) for i in I[0] if not in_G[i]][:top]
+
+    final_state, iter_count = _expand_symmetric_loop(
+        seed, find_frontier, compute_state,
+        tau=tau, frontier_width=frontier_width, max_iters=max_iters,
+    )
+    if final_state is None:
+        return None
+    G_arr = final_state["G"]
+    return {
+        "members_frozen": frozenset(int(x) for x in G_arr),
+        "min_post": final_state["min_post"],
+        "logit_sum": final_state["logit_sum"],
+        "iter_count": iter_count,
+    }
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True)
@@ -84,6 +287,13 @@ def main() -> None:
     p.add_argument("--disable-fast-filters", action="store_true",
                    help="disable seed-skip and early-abort; only exact-match "
                         "dedup catches duplicates. Slow; for testing confluence.")
+    p.add_argument("--batch-addition", action="store_true",
+                   help="use symmetric add+remove fixed-point inner loop instead of "
+                        "the default strict-single-add. Subsumes batch-addition + "
+                        "canonicalization; see docs/cohesion_aware_gap_quality.md Phase 2.")
+    p.add_argument("--batch-frontier-width", type=int, default=50,
+                   help="number of candidates per iteration when --batch-addition is set "
+                        "(ignored otherwise). Default 50; tune based on observed iter counts.")
     p.add_argument("--output-dir", default="artifacts/gap_article_as_seed")
     args = p.parse_args()
 
@@ -228,24 +438,36 @@ def main() -> None:
         _, I_centroid = full_index.search(centroid[None, :], k=over_k)
         I_centroid = I_centroid[0]
         is_art_mask = is_article[I_centroid]
+        # Always sync in_G_lookup from G_arr so the symmetric path works
+        # correctly even when find_frontier is called between compute_state
+        # calls that may have updated in_G_lookup to a different G.
+        in_G_lookup[:] = False
+        in_G_lookup[G_arr] = True
         in_g_mask = in_G_lookup[I_centroid]
         mask = is_art_mask & (~in_g_mask)
         return I_centroid[mask][:top].tolist()
 
     def expand_seed(seed: int, claimed: set[int]) -> tuple[dict | None, int]:
-        """Strict moving-centroid expansion from a single article seed,
-        with early-abort when G drifts heavily into already-claimed areas.
-
-        Returns (final_state, iter_count) on convergence, or (None, iter_count)
-        on early-abort.
-        """
+        if args.batch_addition:
+            # Symmetric path: reuse the shared closures find_frontier and
+            # compute_state already in scope. claimed-overlap early-abort
+            # is honored unless --disable-fast-filters is set.
+            claimed_arg = None if args.disable_fast_filters else claimed
+            return _expand_symmetric_loop(
+                seed, find_frontier, compute_state,
+                tau=args.min_post_threshold,
+                frontier_width=args.batch_frontier_width,
+                max_iters=args.max_iters,
+                claimed=claimed_arg,
+                claimed_overlap_threshold=args.claimed_overlap_threshold,
+                claimed_check_every=args.claimed_check_every,
+            )
+        # Existing strict-single-add path below — keep unchanged.
         G = [seed]
         state = None
         iters_done = 0
         for it in range(args.max_iters):
             iters_done = it + 1
-            # Find the single nearest candidate (centroid of current G,
-            # excluding G members and books).
             in_G_lookup[:] = False
             in_G_lookup[np.asarray(G, dtype=np.int64)] = True
             cands = find_frontier(np.asarray(G, dtype=np.int64), top=1)
@@ -258,7 +480,6 @@ def main() -> None:
                 break
             G.append(j)
             state = test_state
-            # Periodic claimed-overlap early-abort
             if (
                 not args.disable_fast_filters
                 and (it + 1) % args.claimed_check_every == 0
