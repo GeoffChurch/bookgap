@@ -232,15 +232,18 @@ def main() -> None:
         mask = is_art_mask & (~in_g_mask)
         return I_centroid[mask][:top].tolist()
 
-    def expand_seed(seed: int, claimed: set[int]) -> dict | None:
+    def expand_seed(seed: int, claimed: set[int]) -> tuple[dict | None, int]:
         """Strict moving-centroid expansion from a single article seed,
         with early-abort when G drifts heavily into already-claimed areas.
 
-        Returns the final state on convergence, or None on early-abort.
+        Returns (final_state, iter_count) on convergence, or (None, iter_count)
+        on early-abort.
         """
         G = [seed]
         state = None
+        iters_done = 0
         for it in range(args.max_iters):
+            iters_done = it + 1
             # Find the single nearest candidate (centroid of current G,
             # excluding G members and books).
             in_G_lookup[:] = False
@@ -263,10 +266,10 @@ def main() -> None:
             ):
                 overlap = len(set(G) & claimed)
                 if overlap / len(G) >= args.claimed_overlap_threshold:
-                    return None  # converged to a known basin
+                    return None, iters_done
         if state is None or len(G) < args.min_final_size:
-            return None
-        return state
+            return None, iters_done
+        return state, iters_done
 
     seeds = article_global_idx[::args.seed_stride]
     print(f"\nIterating {len(seeds):,} article seeds (stride {args.seed_stride})...")
@@ -277,6 +280,7 @@ def main() -> None:
     # Relies on confluence — moving-centroid is deterministic enough that
     # seeds in the same basin converge to identical final sets.
     gap_hashes: set[frozenset] = set()
+    iter_counts: list[int] = []  # iterations per converged seed
     n_skipped_claimed = 0
     n_aborted_overlap = 0
     n_below_min_size = 0
@@ -299,10 +303,11 @@ def main() -> None:
         if not args.disable_fast_filters and s in claimed:
             n_skipped_claimed += 1
             continue
-        final = expand_seed(s, claimed)
+        final, iters_done = expand_seed(s, claimed)
         if final is None:
             n_aborted_overlap += 1
             continue
+        iter_counts.append(iters_done)
         G = final["G"]
         if len(G) < args.min_final_size:
             n_below_min_size += 1
@@ -322,9 +327,25 @@ def main() -> None:
         })
         claimed |= members_set
     elapsed = time.time() - t_start
-    print(f"\nDiscovery complete: {len(results)} gaps in pool ({elapsed:.0f}s wall)")
-    print(f"  breakdown: skipped-claimed {n_skipped_claimed} ({n_skipped_claimed/len(seeds)*100:.0f}%), "
-          f"early-abort {n_aborted_overlap}, too-small {n_below_min_size}, dup {n_dup}")
+    n_distinct_frozensets = len(gap_hashes)  # before Jaccard dedup
+    print(f"\nDiscovery complete: {n_distinct_frozensets} distinct frozensets "
+          f"in {elapsed:.0f}s wall")
+    print(f"  breakdown: skipped-claimed {n_skipped_claimed} "
+          f"({n_skipped_claimed/len(seeds)*100:.0f}%), "
+          f"early-abort {n_aborted_overlap}, too-small {n_below_min_size}, "
+          f"dup {n_dup}")
+
+    if iter_counts:
+        arr = np.asarray(iter_counts)
+        print(f"  iterations per converged seed: mean={arr.mean():.1f} "
+              f"p50={int(np.median(arr))} p99={int(np.percentile(arr, 99))} "
+              f"max={int(arr.max())}")
+
+    if args.disable_fast_filters:
+        n_seeds_completed = len(iter_counts)
+        confluence_rate = (1.0 - n_distinct_frozensets / max(n_seeds_completed, 1))
+        print(f"  confluence rate (fraction of completed seeds collapsing "
+              f"into existing frozensets): {confluence_rate*100:.1f}%")
 
     # Sort by logit_sum for display (we already deduped during discovery
     # via the claimed-set + per-acceptance Jaccard check).
