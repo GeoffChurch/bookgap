@@ -16,13 +16,21 @@ side in markdown form. For each gap:
 - Top-3 nearest books (by article-vote frequency).
 - Gap size and key cohesion metrics (article-as-seed only).
 - 2 example article titles.
+- Coverage label (real-gap / book-exists / book-anchored /
+  book-exists+anchored / templated-leak) drawn from Phase-1 and Phase-3
+  enrichment columns.
+
+The CSVs should be the enriched outputs of ``gap_book_existence_filter``
+and ``gap_article_as_seed --with-book-seeds``. Run those upstream first.
+Un-enriched CSVs still load; missing Phase-1/3 columns default to 0/""
+and every gap is labelled ``real-gap``.
 
 Usage::
 
     python -m artifacts_scripts.gap_method_comparison_table \\
         --scope 17/1702/T10181 \\
-        --kball-csv artifacts/kball_gap_probe/17-1702-T10181__pca__drop0.csv \\
-        --article-seed-csv artifacts/gap_article_as_seed/T10181__article_seed.csv \\
+        --kball-csv artifacts/kball_gap_probe/17-1702-T10181__pca__drop0_enriched.csv \\
+        --article-seed-csv /tmp/task10_t10181/T10181__article_seed_top100_enriched.csv \\
         --top-n 20
 """
 from __future__ import annotations
@@ -40,6 +48,21 @@ from artifacts_scripts.hdbscan_gap_probe import load_scope
 from bookgap.index import build_index, FlatL2
 
 
+def _coverage_label(row: dict) -> str:
+    """Apply the Phase-3-precedence classifier from the spec.
+    Precedence: templated-leak > book-anchored > book-exists > real-gap.
+    """
+    if row.get("templated_leak_flag"):
+        return "templated-leak"
+    if row.get("book_anchored"):
+        if row.get("book_exists_flag"):
+            return "book-exists+anchored"
+        return "book-anchored"
+    if row.get("book_exists_flag"):
+        return "book-exists"
+    return "real-gap"
+
+
 def _load_kball(path: Path) -> list[dict]:
     rows = []
     with open(path) as f:
@@ -48,6 +71,11 @@ def _load_kball(path: Path) -> list[dict]:
                 "gap_id": int(r["gap_idx"]),
                 "size": int(r["gap_size"]),
                 "members": json.loads(r["article_indices_json"]),
+                "book_exists_flag": int(r.get("book_exists_flag") or 0),
+                "templated_leak_flag": int(r.get("templated_leak_flag") or 0),
+                "book_anchored": int(r.get("book_anchored") or 0),
+                "top_book_title": r.get("top_book_title", ""),
+                "vote_concentration": float(r.get("vote_concentration") or 0),
             })
     return rows
 
@@ -58,12 +86,18 @@ def _load_article_seed(path: Path) -> list[dict]:
         for r in csv.DictReader(f):
             rows.append({
                 "rank": int(r["rank"]),
-                "seed": int(r["seed_article"]),
-                "size": int(r["final_size"]),
+                "seed": int(r.get("seed_article") or r.get("first_seed") or 0),
+                "size": int(r.get("final_size") or r.get("total_size") or 0),
                 "logit_sum": float(r["logit_sum"]),
                 "mean_post": float(r["mean_post"]),
                 "min_post": float(r["min_post"]),
                 "members": json.loads(r["article_indices_json"]),
+                "n_books": int(r.get("n_books") or 0),
+                "book_exists_flag": int(r.get("book_exists_flag") or 0),
+                "templated_leak_flag": int(r.get("templated_leak_flag") or 0),
+                "book_anchored": int(r.get("book_anchored") or 0),
+                "top_book_title": r.get("top_book_title", ""),
+                "vote_concentration": float(r.get("vote_concentration") or 0),
             })
     return rows
 
@@ -169,23 +203,25 @@ def main() -> None:
 
     out.append("## K-ball (size-ranked)")
     out.append("")
-    out.append("| rank | size | keywords | top books (×votes) | example titles |")
-    out.append("|------|------|----------|-------------------|----------------|")
+    out.append("| rank | size | coverage | keywords | top books (×votes) | example titles |")
+    out.append("|------|------|----------|----------|-------------------|----------------|")
     for i, g in enumerate(kball_top):
+        cov = _coverage_label(g)
         out.append(
-            f"| {i+1} | {g['size']} | {_kw_str(kball_kws[i], args.keywords_per_gap)} | "
+            f"| {i+1} | {g['size']} | {cov} | {_kw_str(kball_kws[i], args.keywords_per_gap)} | "
             f"{_top_books_str(kball_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
         )
     out.append("")
 
     out.append("## Article-as-seed (logit_sum-ranked, cohesion-aware)")
     out.append("")
-    out.append("| rank | size | mean_p / min_p | logit | keywords | top books (×votes) | example titles |")
-    out.append("|------|------|----------------|-------|----------|-------------------|----------------|")
+    out.append("| rank | size | mean_p / min_p | logit | coverage | keywords | top books (×votes) | example titles |")
+    out.append("|------|------|----------------|-------|----------|----------|-------------------|----------------|")
     for i, g in enumerate(seed_top):
+        cov = _coverage_label(g)
         out.append(
             f"| {i+1} | {g['size']} | {g['mean_post']:.2f} / {g['min_post']:.2f} | "
-            f"{g['logit_sum']:.0f} | {_kw_str(seed_kws[i], args.keywords_per_gap)} | "
+            f"{g['logit_sum']:.0f} | {cov} | {_kw_str(seed_kws[i], args.keywords_per_gap)} | "
             f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
         )
     out.append("")
