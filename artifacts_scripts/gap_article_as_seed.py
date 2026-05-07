@@ -104,15 +104,20 @@ def _expand_symmetric_loop(
                 return None, iter_count
             G.add(int(cands[0]))
             continue
-        # ADD phase
+        # ADD phase: ordered cumulative — each candidate evaluated against
+        # the running G (which grows as we add). Stop on first failure;
+        # later candidates are skipped (we've found this iteration's
+        # acceptance frontier). The plan's "ordered, stop-when-collective-
+        # would-drop" variant, replacing the batch-independent ADD that
+        # over-admitted on T11303.
         cands = find_frontier(G_arr, frontier_width)
-        to_add: set[int] = set()
+        G_candidate = set(G)
         for c in cands:
-            cand_arr = np.asarray(sorted(G | {int(c)}), dtype=np.int64)
+            cand_arr = np.asarray(sorted(G_candidate | {int(c)}), dtype=np.int64)
             st = compute_state(cand_arr)
-            if st is not None and st["min_post"] >= tau:
-                to_add.add(int(c))
-        G_candidate = G | to_add
+            if st is None or st["min_post"] < tau:
+                break
+            G_candidate.add(int(c))
         G_arr_new = np.asarray(sorted(G_candidate), dtype=np.int64)
         st_new = compute_state(G_arr_new)
         if st_new is None:
