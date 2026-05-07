@@ -299,6 +299,10 @@ def main() -> None:
     p.add_argument("--batch-frontier-width", type=int, default=50,
                    help="number of candidates per iteration when --batch-addition is set "
                         "(ignored otherwise). Default 50; tune based on observed iter counts.")
+    p.add_argument("--with-book-seeds", action="store_true",
+                   help="iterate book seeds in addition to article seeds; books "
+                        "may end up as G members. Cluster is book_anchored iff "
+                        "n_books > 0. See docs/cohesion_aware_gap_quality.md Phase 3.")
     p.add_argument("--output-dir", default="artifacts/gap_article_as_seed")
     args = p.parse_args()
 
@@ -470,7 +474,13 @@ def main() -> None:
         in_G_lookup[:] = False
         in_G_lookup[G_arr] = True
         in_g_mask = in_G_lookup[I_centroid]
-        mask = is_art_mask & (~in_g_mask)
+        # With --with-book-seeds, books may join G so drop the article-only
+        # filter. Without it, keep the article-only filter so Phase 2 (default)
+        # behaviour is exactly preserved.
+        if args.with_book_seeds:
+            mask = ~in_g_mask
+        else:
+            mask = is_art_mask & (~in_g_mask)
         return I_centroid[mask][:top].tolist()
 
     def expand_seed(seed: int, claimed: set[int]) -> tuple[dict | None, int]:
@@ -519,26 +529,39 @@ def main() -> None:
         return state, iters_done
 
     seeds = article_global_idx[::args.seed_stride]
-    print(f"\nIterating {len(seeds):,} article seeds (stride {args.seed_stride})...")
+    if args.with_book_seeds:
+        # Book seeds run first; book-anchored regions are claimed early so
+        # article seeds entering them early-abort cheaply.
+        all_seeds = np.concatenate([book_global_idx, seeds])
+        seed_is_book = np.concatenate([
+            np.ones(len(book_global_idx), dtype=bool),
+            np.zeros(len(seeds), dtype=bool),
+        ])
+        print(f"\nIterating {len(book_global_idx):,} book seeds + "
+              f"{len(seeds):,} article seeds (stride {args.seed_stride})...")
+    else:
+        all_seeds = seeds
+        seed_is_book = np.zeros(len(seeds), dtype=bool)
+        print(f"\nIterating {len(seeds):,} article seeds (stride {args.seed_stride})...")
     t_start = time.time()
     results: list[dict] = []
     claimed: set[int] = set()
     # Exact-set dedup: hash the gap's frozen member set; O(|G|) per check.
     # Relies on confluence — moving-centroid is deterministic enough that
     # seeds in the same basin converge to identical final sets.
-    gap_hashes: set[frozenset] = set()
+    gap_hashes: dict[frozenset, dict] = {}  # frozenset → {seed_types: set, first_seed: int}
     iter_counts: list[int] = []  # iterations per converged seed
     n_skipped_claimed = 0
     n_aborted_overlap = 0
     n_below_min_size = 0
     n_dup = 0
-    for seed_idx, seed in enumerate(seeds):
+    for seed_idx, seed in enumerate(all_seeds):
         # Progress print at every 1000-seed boundary, BEFORE any short-circuits
-        if (seed_idx + 1) % 1000 == 0 or seed_idx == len(seeds) - 1:
+        if (seed_idx + 1) % 1000 == 0 or seed_idx == len(all_seeds) - 1:
             elapsed = time.time() - t_start
             rate = (seed_idx + 1) / max(elapsed, 0.01)
-            eta = (len(seeds) - seed_idx - 1) / max(rate, 0.01)
-            print(f"  processed {seed_idx + 1}/{len(seeds)} seeds in {elapsed:.0f}s "
+            eta = (len(all_seeds) - seed_idx - 1) / max(rate, 0.01)
+            print(f"  processed {seed_idx + 1}/{len(all_seeds)} seeds in {elapsed:.0f}s "
                   f"({rate:.0f}/s, eta {eta:.0f}s); "
                   f"discovered {len(results)} gaps; "
                   f"skipped-claimed {n_skipped_claimed}, "
@@ -560,10 +583,15 @@ def main() -> None:
             n_below_min_size += 1
             continue
         members_set = frozenset(int(x) for x in G)
+        seed_type = "book" if seed_is_book[seed_idx] else "article"
         if members_set in gap_hashes:
             n_dup += 1
+            gap_hashes[members_set]["seed_types"].add(seed_type)
             continue
-        gap_hashes.add(members_set)
+        gap_hashes[members_set] = {
+            "seed_types": {seed_type},
+            "first_seed": int(s),
+        }
         results.append({
             "seed_article": s,
             "final_size": int(len(G)),
@@ -578,7 +606,7 @@ def main() -> None:
     print(f"\nDiscovery complete: {n_distinct_frozensets} distinct frozensets "
           f"in {elapsed:.0f}s wall")
     print(f"  breakdown: skipped-claimed {n_skipped_claimed} "
-          f"({n_skipped_claimed/len(seeds)*100:.0f}%), "
+          f"({n_skipped_claimed/len(all_seeds)*100:.0f}%), "
           f"early-abort {n_aborted_overlap}, too-small {n_below_min_size}, "
           f"dup {n_dup}")
 
