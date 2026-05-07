@@ -8,6 +8,7 @@ comparison table now imports from here.
 """
 from __future__ import annotations
 
+import re
 import time
 from collections import Counter
 
@@ -134,7 +135,88 @@ def compute_top_books(
     cnt = Counter(nearest_books_global.tolist())
     out: list[tuple[int, str, int]] = []
     for bi, c in cnt.most_common(k):
-        title = all_titles[bi] if bi < len(all_titles) else None
-        title = str(title) if title else "(no title)"
-        out.append((int(bi), title, int(c)))
+        raw = all_titles[bi] if bi < len(all_titles) else None
+        title_str = str(raw) if raw else "(no title)"
+        out.append((int(bi), title_str, int(c)))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 book-existence signal helpers
+# ---------------------------------------------------------------------------
+
+# Standard English stopwords for the title-overlap heuristic.
+# Intentionally small and conservative; the goal is just to avoid
+# trivial overlap on glue words like "the" / "of" / "and".
+_OVERLAP_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at",
+    "for", "with", "by", "from", "as", "is", "are", "was", "were", "be",
+    "been", "being", "have", "has", "had", "do", "does", "did",
+    "this", "that", "these", "those", "it", "its",
+    "i", "ii", "iii", "iv", "vi", "vii", "viii", "ix", "x",  # roman numerals
+})
+
+
+def tokenize_for_overlap(text: str | None) -> set[str]:
+    """Lowercase, split on non-word chars, drop stopwords and 1-char tokens.
+
+    Used for the title<->keywords Jaccard heuristic in the book-existence
+    filter. Deliberately simple — the keyword side is already
+    aggressively cleaned by the production keyword pipeline.
+    """
+    if not text:
+        return set()
+    tokens = re.split(r"\W+", text.lower())
+    return {t for t in tokens if len(t) >= 2 and t not in _OVERLAP_STOPWORDS}
+
+
+def jaccard_set(a: set[str], b: set[str]) -> float:
+    """Standard Jaccard similarity. Returns 0.0 if both inputs empty."""
+    if not a and not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def compute_book_existence_signal(
+    gap_size: int,
+    top_book_votes: int,
+    top_book_title: str | None,
+    top_keywords: list[str],
+    vote_concentration_threshold: float = 0.25,
+    title_overlap_threshold: float = 0.2,
+    templated_concentration_threshold: float = 0.5,
+) -> dict:
+    """Compute the Phase 1 book-existence + templated-leak signals for a single gap.
+
+    Returns a dict with: vote_concentration, title_keyword_overlap,
+    book_exists_flag, templated_leak_flag.
+
+    See ``docs/cohesion_aware_gap_quality.md`` Phase 1 for the
+    threshold rationale. All thresholds are caller-tunable.
+    """
+    vote_concentration = (top_book_votes / gap_size) if gap_size > 0 else 0.0
+
+    # Phrase keywords use underscore separators ("word_sense_disambiguation"). Split
+    # those back into atomic tokens for fair Jaccard against title tokens.
+    keyword_tokens: set[str] = set()
+    for kw in top_keywords:
+        keyword_tokens |= tokenize_for_overlap(kw.replace("_", " "))
+
+    title_tokens = tokenize_for_overlap(top_book_title) if top_book_title else set()
+    title_keyword_overlap = jaccard_set(title_tokens, keyword_tokens)
+
+    book_exists_flag = (
+        vote_concentration >= vote_concentration_threshold
+        and title_keyword_overlap >= title_overlap_threshold
+    )
+    templated_leak_flag = (
+        vote_concentration >= templated_concentration_threshold
+        and title_keyword_overlap == 0.0
+    )
+
+    return {
+        "vote_concentration": vote_concentration,
+        "title_keyword_overlap": title_keyword_overlap,
+        "book_exists_flag": bool(book_exists_flag),
+        "templated_leak_flag": bool(templated_leak_flag),
+    }
