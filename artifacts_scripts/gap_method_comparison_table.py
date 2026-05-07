@@ -63,6 +63,10 @@ def _coverage_label(row: dict) -> str:
     return "real-gap"
 
 
+def _is_real(g: dict) -> bool:
+    return _coverage_label(g) == "real-gap"
+
+
 def _load_kball(path: Path) -> list[dict]:
     rows = []
     with open(path) as f:
@@ -213,6 +217,22 @@ def main() -> None:
         )
     out.append("")
 
+    out.append("### K-ball top-20 — real-gap only")
+    out.append("")
+    kball_real = [g for g in kball_top if _is_real(g)][:args.top_n]
+    if not kball_real:
+        out.append("_(no real-gap rows in this pipeline's top-20)_")
+    else:
+        out.append("| rank | size | keywords | top books (×votes) | example titles |")
+        out.append("|------|------|----------|-------------------|----------------|")
+        for g in kball_real:
+            i = kball_top.index(g)
+            out.append(
+                f"| {i+1} | {g['size']} | {_kw_str(kball_kws[i], args.keywords_per_gap)} | "
+                f"{_top_books_str(kball_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
+            )
+    out.append("")
+
     out.append("## Article-as-seed (logit_sum-ranked, cohesion-aware)")
     out.append("")
     out.append("| rank | size | mean_p / min_p | logit | coverage | keywords | top books (×votes) | example titles |")
@@ -224,6 +244,44 @@ def main() -> None:
             f"{g['logit_sum']:.0f} | {cov} | {_kw_str(seed_kws[i], args.keywords_per_gap)} | "
             f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
         )
+    out.append("")
+
+    out.append("### Article-as-seed top-20 — real-gap only")
+    out.append("")
+    seed_real = [g for g in seed_top if _is_real(g)][:args.top_n]
+    if not seed_real:
+        out.append("_(no real-gap rows in this pipeline's top-20)_")
+    else:
+        out.append("| rank | size | mean_p / min_p | logit | keywords | top books (×votes) | example titles |")
+        out.append("|------|------|----------------|-------|----------|-------------------|----------------|")
+        for g in seed_real:
+            i = seed_top.index(g)
+            out.append(
+                f"| {i+1} | {g['size']} | {g['mean_post']:.2f} / {g['min_post']:.2f} | "
+                f"{g['logit_sum']:.0f} | {_kw_str(seed_kws[i], args.keywords_per_gap)} | "
+                f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
+            )
+    out.append("")
+
+    # The agreement matrix uses the full article-seed pool — not just top-N —
+    # because rare disagreements are most informative across the whole population.
+    out.append("## Phase-1 ↔ Phase-3 agreement matrix (article-seed pipeline)")
+    out.append("")
+    out.append("Agreement between the heuristic (`book_exists_flag` from "
+               "vote-concentration + title overlap) and the structural "
+               "(`book_anchored = (n_books > 0)`) signals on the full article-seed pool.")
+    out.append("")
+    matrix = {(0, 0): 0, (0, 1): 0, (1, 0): 0, (1, 1): 0}
+    for g in seed_all:
+        matrix[(g["book_exists_flag"], g["book_anchored"])] += 1
+    out.append("| | book_anchored=0 | book_anchored=1 |")
+    out.append("|---|---|---|")
+    out.append(f"| **book_exists_flag=0** | {matrix[(0, 0)]} (real-gap) | {matrix[(0, 1)]} (Phase 3 catches) |")
+    out.append(f"| **book_exists_flag=1** | {matrix[(1, 0)]} (heuristic-only) | {matrix[(1, 1)]} (both fire) |")
+    out.append("")
+    total = sum(matrix.values()) or 1
+    agreement = (matrix[(0, 0)] + matrix[(1, 1)]) / total
+    out.append(f"Agreement: {agreement*100:.1f}% ({matrix[(0, 0)] + matrix[(1, 1)]}/{total}).")
     out.append("")
 
     out_path = Path(args.output_md)
