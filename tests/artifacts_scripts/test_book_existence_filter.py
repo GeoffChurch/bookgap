@@ -4,6 +4,8 @@ Covers the pure-logic pieces (tokenization, Jaccard overlap, the
 book-existence signal classification). Full-pipeline correctness is
 validated empirically against T10181.
 """
+import json
+
 import pytest
 
 from artifacts_scripts._keyword_helpers import (
@@ -11,6 +13,7 @@ from artifacts_scripts._keyword_helpers import (
     jaccard_set,
     tokenize_for_overlap,
 )
+from artifacts_scripts.gap_book_existence_filter import _row_members, _row_size
 
 
 class TestTokenizeForOverlap:
@@ -96,3 +99,77 @@ class TestComputeBookExistenceSignal:
         assert out["title_keyword_overlap"] == 0.0
         assert out["book_exists_flag"] is False
         assert out["templated_leak_flag"] is False
+
+
+class TestRowMembers:
+    def test_legacy_article_indices_json(self):
+        row = {"article_indices_json": json.dumps([1, 2, 3])}
+        assert _row_members(row) == [1, 2, 3]
+
+    def test_member_indices_json_filters_to_articles(self):
+        row = {
+            "member_indices_json": json.dumps([
+                {"idx": 1, "type": "article"},
+                {"idx": 7, "type": "book"},
+                {"idx": 12, "type": "article"},
+            ])
+        }
+        assert _row_members(row) == [1, 12]
+
+    def test_member_indices_json_all_books_returns_empty(self):
+        row = {
+            "member_indices_json": json.dumps([
+                {"idx": 5, "type": "book"},
+                {"idx": 9, "type": "book"},
+            ])
+        }
+        assert _row_members(row) == []
+
+    def test_prefers_legacy_when_both_present(self):
+        # Plan §Task 9 keeps both columns populated for backward-compat.
+        # Order in _MEMBER_COLUMNS is (article_indices_json, member_indices_json),
+        # so the legacy column wins.
+        row = {
+            "article_indices_json": json.dumps([1, 2]),
+            "member_indices_json": json.dumps([
+                {"idx": 1, "type": "article"},
+                {"idx": 2, "type": "article"},
+                {"idx": 99, "type": "book"},
+            ]),
+        }
+        # Legacy column already excludes books, so both paths should produce [1, 2].
+        assert _row_members(row) == [1, 2]
+
+    def test_empty_string_column_raises(self):
+        # An empty cell isn't a valid input; the helper should escalate
+        # rather than silently returning [].
+        row = {"article_indices_json": ""}
+        with pytest.raises(KeyError):
+            _row_members(row)
+
+    def test_no_member_column_raises(self):
+        row = {"some_other_col": "foo"}
+        with pytest.raises(KeyError):
+            _row_members(row)
+
+
+class TestRowSize:
+    def test_reads_final_size(self):
+        row = {"final_size": "42"}
+        assert _row_size(row, [1, 2, 3]) == 42
+
+    def test_reads_gap_size(self):
+        row = {"gap_size": "100"}
+        assert _row_size(row, []) == 100
+
+    def test_reads_total_size(self):
+        row = {"total_size": "7"}
+        assert _row_size(row, [10, 11, 12, 13]) == 7
+
+    def test_falls_back_to_member_count_when_no_size_column(self):
+        row = {"some_other_col": "foo"}
+        assert _row_size(row, [1, 2, 3]) == 3
+
+    def test_falls_back_when_size_column_empty(self):
+        row = {"final_size": ""}
+        assert _row_size(row, [1, 2, 3]) == 3
