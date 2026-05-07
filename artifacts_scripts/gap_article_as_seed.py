@@ -6,19 +6,27 @@ boundary criterion + exact-match dedup) should copy from this file. See
 ``docs/gap-method-development.md`` for conventions on CSV schemas,
 naming, progress reporting, HNSW backend defaults, and validation order.
 
-Iterates *every article* in scope as a candidate seed (instead of using
-the K-ball CSV's 200 seeds). Maintains a "claimed" set of articles
-already in some discovered gap; seeds inside claimed regions are
-skipped, and seeds whose expansion drifts into a claimed region are
+Iterates every article in scope as a candidate seed (instead of using
+the K-ball CSV's 200 seeds). With ``--with-book-seeds``, book seeds are
+also iterated (books first, so book-anchored regions are claimed early
+and article seeds in those basins abort cheaply). Maintains a "claimed"
+set of works already in some discovered gap; seeds inside claimed regions
+are skipped, and seeds whose expansion drifts into a claimed region are
 aborted early. This exploits the confluence property of moving-centroid
-expansion: many seeds converge to the same final gap, so most articles
-land in already-discovered basins and are cheap to reject.
+expansion: many seeds converge to the same final gap.
 
-Inner loop is strict moving-centroid (single candidate per iter,
-accept iff min_post ≥ τ; matches gap_kball_moving_centroid --strict).
+Inner loop defaults to strict moving-centroid (single candidate per iter,
+accept iff min_post ≥ τ). With ``--batch-addition``, a symmetric
+add+remove fixed-point loop is used instead (multiple candidates admitted
+per iter, followed by a REMOVE pass to evict members that fell below τ).
 
-Outputs the discovered set of distinct cohesive gaps. Gaps that K-ball's
-greedy missed (low-density regions, tiny clusters) become reachable.
+CSV schema (per-row):
+  rank, seed_article, first_seed_type,
+  n_articles, n_books, total_size, book_anchored, seed_types,
+  final_size (= total_size, backward-compat alias),
+  logit_sum, mean_post, min_post,
+  article_indices_json (article subset, backward-compat),
+  member_indices_json (full typed member list).
 
 Usage::
 
@@ -592,13 +600,23 @@ def main() -> None:
             "seed_types": {seed_type},
             "first_seed": int(s),
         }
+        G_int = [int(x) for x in G]
+        G_articles = [i for i in G_int if is_article[i]]
+        G_books = [i for i in G_int if is_book[i]]
         results.append({
-            "seed_article": s,
-            "final_size": int(len(G)),
+            "first_seed": s,
+            "first_seed_type": seed_type,
+            "seed_types": gap_hashes[members_set]["seed_types"],  # ref into the dict
+            "n_articles": len(G_articles),
+            "n_books": len(G_books),
+            "total_size": len(G_int),
             "logit_sum": final["logit_sum"],
             "min_post": final["min_post"],
             "mean_post": float(final["post"].mean()),
-            "members": [int(x) for x in G],
+            "members": G_int,
+            "members_typed": [{"idx": i, "type": "book" if is_book[i] else "article"}
+                              for i in G_int],
+            "articles": G_articles,
         })
         claimed |= members_set
     elapsed = time.time() - t_start
@@ -628,11 +646,13 @@ def main() -> None:
 
     print()
     print(f"## Top-{args.top_n} discovered gaps (by logit_sum)")
-    print(f"  {'rk':>3}  {'seed':>6}  {'final':>5}  "
+    print(f"  {'rk':>3}  {'seed':>6}  {'type':>7}  {'arts':>5}  {'books':>5}  "
           f"{'logit':>7}  {'mean_p':>6}  {'min_p':>5}")
     for i, r in enumerate(results[:args.top_n]):
-        print(f"  {i+1:>3}  {r['seed_article']:>6}  "
-              f"{r['final_size']:>5}  {r['logit_sum']:>7.1f}  "
+        print(f"  {i+1:>3}  {r['first_seed']:>6}  "
+              f"{r['first_seed_type']:>7}  "
+              f"{r['n_articles']:>5}  {r['n_books']:>5}  "
+              f"{r['logit_sum']:>7.1f}  "
               f"{r['mean_post']:>6.3f}  {r['min_post']:>5.3f}")
 
     out_dir = Path(args.output_dir)
@@ -640,17 +660,29 @@ def main() -> None:
     out_path = out_dir / f"{topic_id}__article_seed.csv"
     with open(out_path, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["rank", "seed_article", "final_size",
-                     "logit_sum", "mean_post", "min_post",
-                     "article_indices_json"])
+        wr.writerow([
+            "rank", "seed_article", "first_seed_type",
+            "n_articles", "n_books", "total_size",
+            "book_anchored", "seed_types",
+            "final_size",  # backwards-compat alias for total_size
+            "logit_sum", "mean_post", "min_post",
+            "article_indices_json",  # backwards-compat: article subset
+            "member_indices_json",   # full members with type tags
+        ])
         for i, r in enumerate(results):
             wr.writerow([
-                i + 1, r["seed_article"],
-                r["final_size"],
+                i + 1,
+                r["first_seed"],
+                r["first_seed_type"],
+                r["n_articles"], r["n_books"], r["total_size"],
+                int(r["n_books"] > 0),
+                "|".join(sorted(r["seed_types"])),
+                r["total_size"],  # final_size mirror
                 f"{r['logit_sum']:.3f}",
                 f"{r['mean_post']:.6f}",
                 f"{r['min_post']:.4f}",
-                json.dumps(r["members"]),
+                json.dumps(r["articles"]),
+                json.dumps(r["members_typed"]),
             ])
     print(f"Wrote {out_path}")
 
