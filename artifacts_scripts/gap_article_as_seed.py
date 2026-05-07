@@ -343,13 +343,17 @@ def main() -> None:
     # Per-book article neighborhood prefetch budget (size-of-G + buffer)
     K_per_book_default = min(500, len(article_global_idx))
 
-    # Precompute 1-NN book for ALL articles in scope (one batched query).
-    # We index by global article position; the lookup is cheap thereafter.
-    print(f"Precomputing 1-NN book for all {len(article_global_idx):,} articles...")
+    # Precompute top-K nearest books for ALL articles in scope (one batched query).
+    # Phase 3's compute_state filters to the first not-in-G book; K=5 is comfortably
+    # above the number of books any article ever has in G in practice.
+    NEAREST_BOOKS_K = 5
+    K_books_eff = min(NEAREST_BOOKS_K, len(book_global_idx))
+    print(f"Precomputing top-{K_books_eff} nearest books for all "
+          f"{len(article_global_idx):,} articles...")
     article_emb_for_book_q = np.ascontiguousarray(emb[article_global_idx])
-    _, I_b_all_local = book_index.search(article_emb_for_book_q, k=1)
-    article_to_nearest_book_global = np.full(n, -1, dtype=np.int64)
-    article_to_nearest_book_global[article_global_idx] = book_global_idx[I_b_all_local[:, 0]]
+    _, I_b_all_local = book_index.search(article_emb_for_book_q, k=K_books_eff)
+    article_to_nearest_books_global = np.full((n, K_books_eff), -1, dtype=np.int64)
+    article_to_nearest_books_global[article_global_idx] = book_global_idx[I_b_all_local]
 
     # Cache K-NN results per article-index so we don't requery FAISS repeatedly.
     knn_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
@@ -386,9 +390,23 @@ def main() -> None:
             return None
         in_G_lookup[:] = False
         in_G_lookup[G_arr] = True
-        # Boundary
-        b_per_member = article_to_nearest_book_global[G_arr]
-        book_counts = Counter(b_per_member.tolist())
+        # Boundary: for each article member, pick the first not-in-G book
+        # from its precomputed top-K list. Books inside G are interior and
+        # don't count as boundary anchors.
+        b_per_member: list[int] = []
+        article_members = [int(i) for i in G_arr if is_article[int(i)]]
+        for i in article_members:
+            cand_books = article_to_nearest_books_global[i]
+            for b in cand_books:
+                b_int = int(b)
+                if b_int == -1:
+                    continue
+                if not in_G_lookup[b_int]:
+                    b_per_member.append(b_int)
+                    break
+        if not b_per_member:
+            return None  # cluster has saturated all nearby books — degenerate
+        book_counts = Counter(b_per_member)
         B_books = list(book_counts.keys())
         B_articles_list: list[int] = []
         in_B_lookup = np.zeros(n, dtype=bool)
