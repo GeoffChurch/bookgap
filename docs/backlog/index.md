@@ -23,7 +23,6 @@ How candidate gaps are produced and refined.
 
 Per-gap quality measurement and filtering.
 
-- [vote-concentration-as-book-exists-filter](cohesion-metric-design/vote-concentration-as-book-exists-filter.md) — `(top_book_votes / |G|, top_book_topical_alignment)` as a "book already exists" detector
 - [boundary-centroid-cosine](cohesion-metric-design/boundary-centroid-cosine.md) — cosine between gap centroid and boundary-books centroid; high = book exists, low = templated-data leak
 - [topic-purity-axis](cohesion-metric-design/topic-purity-axis.md) — OpenAlex topic_id purity; useful at field/subfield scope (degenerate at single-topic scope)
 - [dedup-cache-member-sets](cohesion-metric-design/dedup-cache-member-sets.md) — small optimization for Jaccard dedup loop
