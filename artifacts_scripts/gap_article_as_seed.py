@@ -391,22 +391,25 @@ def main() -> None:
         in_G_lookup[:] = False
         in_G_lookup[G_arr] = True
         # Boundary: for each article member, pick the first not-in-G book
-        # from its precomputed top-K list. Books inside G are interior and
-        # don't count as boundary anchors.
-        b_per_member: list[int] = []
-        article_members = [int(i) for i in G_arr if is_article[int(i)]]
-        for i in article_members:
-            cand_books = article_to_nearest_books_global[i]
-            for b in cand_books:
-                b_int = int(b)
-                if b_int == -1:
-                    continue
-                if not in_G_lookup[b_int]:
-                    b_per_member.append(b_int)
-                    break
-        if not b_per_member:
-            return None  # cluster has saturated all nearby books — degenerate
-        book_counts = Counter(b_per_member)
+        # from its precomputed top-K list. Vectorized: build a (m, K) mask
+        # of valid book candidates (not -1 sentinel, not in G), argmax to
+        # find the first valid column per row, gather. Books inside G are
+        # interior and don't count as boundary anchors.
+        article_mask = is_article[G_arr]
+        article_members_arr = G_arr[article_mask]
+        if len(article_members_arr) == 0:
+            return None  # G has no article members — boundary undefined
+        cand = article_to_nearest_books_global[article_members_arr]  # (m, K)
+        # Valid := not the -1 sentinel AND not in G. The -1 sentinel filter
+        # is load-bearing — without it, in_G_lookup[-1] would be read (the
+        # last work's slot) and could spuriously mark padding as in-G.
+        mask_valid = (cand != -1) & ~in_G_lookup[np.where(cand != -1, cand, 0)]
+        first_valid_col = mask_valid.argmax(axis=1)
+        has_any = mask_valid.any(axis=1)
+        if not has_any.any():
+            return None  # all members saturated their K-NN books — degenerate
+        b_per_member = cand[np.arange(len(cand)), first_valid_col][has_any]
+        book_counts = Counter(b_per_member.tolist())
         B_books = list(book_counts.keys())
         B_articles_list: list[int] = []
         in_B_lookup = np.zeros(n, dtype=bool)
