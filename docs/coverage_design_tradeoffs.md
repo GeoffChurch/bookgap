@@ -318,17 +318,43 @@ through (5) are forward-looking.
    T10181 blocked by per-seed compute. Drop-in compatible with
    multi-scale labeling.
 3. **Soft EM scale work** (medium cost, high value).
-   Approaches in rough order of likely impact:
-   - Sparser candidate set per iter: instead of evaluating posterior
-     for top-200 in centroid neighborhood, use a smaller `frontier_width`
-     or only update points whose previous weight is ≥ some lower threshold.
-   - Lower `--max-iters` (currently 50; soft EM converges in ~10-15 iters
-     on most synthetic test cases).
-   - Seed subsampling: `--seed-stride 4` or 8, relying on confluence to
-     cover the basin space (we already saw 5.5× confluence on T11303,
-     so coverage shouldn't suffer much).
-   - Spatially partitioned EM: process disjoint K-NN regions in parallel
-     before global merge; relies on basins being mostly local.
+   Sweep on T11303 (May 8) quantified the tradeoffs — finding inverts
+   prior intuition: **seed-stride is dramatically better than smaller
+   candidate sets**.
+
+   T11303 sweep results (baseline = fw=200, iters=50, stride=1; 640s; 130 basins):
+
+   | Variant | Wall | Basins | Top-25 size | Exact-match top-25 | Mean Jaccard recall |
+   |---|---|---|---|---|---|
+   | baseline | 640s | 130 | 3252 | 25/25 | 1.000 |
+   | fw=100 | 551s | 181 | 1560 | 0/25 | 0.426 |
+   | fw=50 | 441s | 260 | 820 | 0/25 | 0.239 |
+   | fw=25 | 395s | 422 | 328 | 0/25 | 0.128 |
+   | fw=50, iters=30 | 341s | 253 | 819 | 0/25 | 0.242 |
+   | **stride=4** | **238s** | **100** | **3070** | **4/25** | **0.498** |
+
+   - **Smaller frontier dramatically alters basin shape, not just discovery cost.**
+     fw=100 produces 181 basins (vs 130) with average size halved and
+     ZERO exact matches in top-25. The basins genuinely shift — soft EM
+     with smaller frontier becomes "find the nearest semantic
+     micro-cluster" rather than "find the natural broad basin." Each
+     basin's gradient trajectory changes when fewer candidates are
+     evaluated per iter, and basins converge prematurely to local
+     hot-spots. This is fragmentation, not lossy compression.
+   - **Smaller frontier doesn't even save much wall time:** fw=100 is
+     only 14% faster, fw=25 only 38% faster. Boundary precompute and
+     sigma calculation dominate, not per-iter candidate eval.
+   - **Stride=4 wins both axes:** 2.7× speedup AND best preserved basin
+     shape (4 exact matches, 0.498 Jaccard recall). Stride preserves the
+     algorithm — confluence ensures 77% of baseline basins (100/130) are
+     reachable from 1/4 of seeds.
+   - **Lowering max-iters with `--max-iters 30` saves wall time without
+     quality loss** *given the small-frontier regime*. Soft EM converges
+     in <30 iters routinely; the 50-iter cap was conservative.
+
+   **Recommended scale strategy: `--seed-stride 8` for T10181 + T13734
+   (projected ~6h on T10181 vs the 49h at stride=1). Don't reduce
+   frontier_width.**
 4. **Cross-basin soft membership without separate post-hoc pass.** Once
    soft EM is the default discovery, run multiple seeds and collect
    per-article weight vectors directly across all basins. Coverage
