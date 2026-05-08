@@ -127,6 +127,80 @@ parameterized cluster density** — which would essentially be a
 Gaussian mixture model with K-NN sparsification. That's a much
 larger restructure than just swapping the posterior formula.
 
+## Addendum: the deeper structural reason (no initialization fixes it)
+
+A natural follow-up question: can clever initialization salvage the
+formulation? E.g. seeding with the seed's K-NN at uniform weight, or
+with a Gaussian-shaped initial bump `w(x) ← kern(seed, x)`?
+
+**No, and here's why.** The iteration
+
+```
+new_w(y) = (Σ_x kern(y, x) · w(x)) / (Σ_x kern(y, x))
+         = (K · w)(y) / (K · 1)(y)
+```
+
+is exactly **power iteration on the stochastic kernel-random-walk
+matrix `D⁻¹ K`** (where `D` is the kernel-row-sum diagonal). For a
+connected kernel graph this iteration's fixed point is the
+**stationary distribution of the random walk** — approximately the
+uniform / data-marginal distribution. The cluster around the seed is
+*not* this distribution. The seed's identity is forgotten in O(1/λ₂)
+iterations, where λ₂ is the spectral gap.
+
+Said differently: clustering structure lives in the *lower*
+eigenvectors of the random-walk Laplacian (this is the spectral
+clustering insight). The dominant eigenvector — which is what plain
+power iteration converges to — is uniform up to local density. **No
+amount of cleverness in the initial `w` changes the fixed point.**
+
+Quick analytical check, kernel-init `w(x) ← kern(seed, x)`:
+- iter 2: `w(y) ← Σ_x kern(seed,x)·kern(y,x) / Σ_x kern(y,x)` — a
+  smooth bump around seed.
+- subsequent iters: the bump broadens. After enough iterations, `w`
+  approaches the stationary degree distribution.
+
+This means **size-matched local-CSLS is the regularizer that breaks
+the random-walk drift**, not just a calibration trick. By making
+`K_B` grow with `G` (size-matched to support), the iteration becomes:
+
+```
+post(y) = K_G(y) / (K_G(y) + K_B(y))
+```
+
+which is *not* power iteration — it has an anchor that prevents
+diffusion. Interior points (`K_B` small there because the boundary
+isn't local to them) stay high; exterior points (`K_B` large) drop.
+The size-matching of `B` to `|G|` is what makes the iteration
+anti-diffusive.
+
+### Salvage paths (each is a structural fix, not just initialization)
+
+In rough order of how much they preserve "kernel-only soft EM" vs.
+how much they restructure:
+
+1. **Anchor the seed**: lock `w[seed] = 1` throughout. Prevents
+   diffusion-to-uniform; converges to a smooth bump around seed.
+   But: privileges the seed, threshold still needs recalibration,
+   doesn't handle "seed on cluster boundary."
+2. **Signed iteration with anchor `K_B`** — size-matched local-CSLS,
+   i.e. `gap_soft_em.py`. The validated production design.
+3. **Parameterized cluster density (proper GMM EM)**: `p(y|G) =
+   N(y; μ_G, σ_G)`, M-step updates parameters. Cluster has explicit
+   shape; doesn't degenerate. Standard machinery; bigger restructure.
+4. **Multi-cluster competition (lockstep / global EM)**: the
+   constraint `Σ_k post_k = 1` across clusters prevents any single
+   cluster from collapsing to uniform. Existing
+   `lockstep-expansion` backlog item.
+5. **Spectral cluster discovery**: find clusters as low eigenvectors
+   of the kernel Laplacian. Different algorithm entirely; well-studied
+   but not in this codebase.
+
+(2) is what we have. (1) and (3) are the natural EM-flavored
+alternatives if we want to revisit. The fundamental observation
+generalizes: **kernel-only iterations need anti-diffusion to find
+clusters; you can't bootstrap your way around it.**
+
 ## Files
 
 - `/home/gchurchill/src/bookgap/artifacts_scripts/gap_soft_em_fullmix.py`
