@@ -13,6 +13,7 @@ Approaches to per-gap quality measurement that were tried and refuted.
 - [monotone-scores-as-boundary-criteria](cohesion-metric-design/monotone-scores-as-boundary-criteria.md) — `effective_size` and `logit_sum` are monotone in size; can't be used to define where a gap stops growing
 - [inverse-square-kernel-dimension-inappropriate](cohesion-metric-design/inverse-square-kernel-dimension-inappropriate.md) — `1/d²` is the 3D-specific Newtonian Green's function; in d-dim it'd be `1/r^(d-2)` ≈ delta function for d=384. Use Gaussian heat kernel instead
 - [top-hat-knn-purity-loses-density](cohesion-metric-design/top-hat-knn-purity-loses-density.md) — unweighted K-NN purity loses local-density structure; weighted (Gaussian or 1/d²) preserves it
+- [full-data-soft-mixture-degenerate-bootstrap](cohesion-metric-design/full-data-soft-mixture-degenerate-bootstrap.md) — `K_G/K_total` is mathematically the proper mixture posterior but degenerate from single-seed init: weight diffuses to ~|G|/N uniform, no positive feedback to grow the cluster. Size-matched local CSLS isn't just a tractability dodge; it's the calibration that makes EM converge.
 
 ## Gap detection methods
 
