@@ -20,7 +20,7 @@ How candidate gaps are produced and refined.
 
 Per-gap quality measurement and filtering.
 
-- [full-data-soft-mixture-posterior](cohesion-metric-design/full-data-soft-mixture-posterior.md) — replace size-matched-local-boundary with strict mixture posterior `K_G/K_total` via K-NN sparsification; eliminates the Task-7 in-G-skip rule and the calibration burden
+- [multicluster-softmax-membership](cohesion-metric-design/multicluster-softmax-membership.md) — replace per-seed soft-EM with single global multi-cluster softmax over kNN basin centroids (incl. book-anchored basins as fixed competitors). Subsumes `tau_supp`, `min_final_size`, Phase 1/3 enrichment into a single E-step output. Two variants: ∅-free vs. with marginal-density background ∅.
 - [boundary-centroid-cosine](cohesion-metric-design/boundary-centroid-cosine.md) — cosine between gap centroid and boundary-books centroid; high = book exists, low = templated-data leak
 - [topic-purity-axis](cohesion-metric-design/topic-purity-axis.md) — OpenAlex topic_id purity; useful at field/subfield scope (degenerate at single-topic scope)
 - [dedup-cache-member-sets](cohesion-metric-design/dedup-cache-member-sets.md) — small optimization for Jaccard dedup loop

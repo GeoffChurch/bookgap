@@ -398,9 +398,22 @@ through (5) are forward-looking.
    N-component EM with K-NN sparsification. Whole separate project;
    addresses the "boundary is local-CSLS-balanced, but other basins
    don't appear in the model" gap that fuzzy-per-basin doesn't fix.
+   See
+   [multicluster-softmax-membership](backlog/cohesion-metric-design/multicluster-softmax-membership.md)
+   — the worked-out design for this direction, including a Phase 1
+   post-hoc reassignment experiment (~2 days) that empirically tests
+   whether the principled formulation produces materially different
+   basins before committing to a Phase 2 lockstep restructure
+   (~1–2 weeks). The design also subsumes Phase 1 (`gap_book_existence_filter`)
+   and Phase 3 (`gap_multi_scale_coverage`) enrichment into the
+   discovery step itself, collapsing the current 8-stage pipeline to
+   3 stages.
 
 (3a) is shipped. (5) is the natural next step if we need more
 performance — gives both perf (amortized launch overhead) and
 algorithmic cleanup (multi-cluster competition replaces single-cluster
 EM with size-matched local boundary). (4) is a cleaner architecture
-once (5) proves out.
+once (5) proves out. (6) is the architectural target once we want
+to simplify the post-hoc enrichment pipeline; the
+[multicluster-softmax-membership](backlog/cohesion-metric-design/multicluster-softmax-membership.md)
+design doc lays it out.

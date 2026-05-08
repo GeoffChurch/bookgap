@@ -16,3 +16,5 @@ That's a factor of `e^135` advantage for the gap Gaussian over the corpus Gaussi
 - Per-article kernel density (KDE) with self-tuning bandwidth — what `gap_effective_size_local.py` does. Robust because `σ_i` is set by local 7-NN geometry, not by fitting to small gap samples; the σ_i × σ_j product in the Gaussian kernel cancels the dimension-d normalizer in numerator vs denominator.
 
 **Lesson (more general)**: in high-dim, parametric isotropic-Gaussian likelihoods don't produce discriminative scores. Need either non-parametric (KDE), distance-ratio, or regularized variants.
+
+**Forward reference**: the [multicluster-softmax-membership](../../backlog/cohesion-metric-design/multicluster-softmax-membership.md) backlog item proposes a global multi-cluster softmax built on KDE likelihoods (not parametric Gaussians) for exactly this reason — the KDE+ratio formulation sidesteps the dimensional normalizer that doomed this approach.

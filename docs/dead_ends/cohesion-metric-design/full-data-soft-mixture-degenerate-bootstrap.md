@@ -190,8 +190,12 @@ how much they restructure:
    shape; doesn't degenerate. Standard machinery; bigger restructure.
 4. **Multi-cluster competition (lockstep / global EM)**: the
    constraint `Σ_k post_k = 1` across clusters prevents any single
-   cluster from collapsing to uniform. Existing
-   `lockstep-expansion` backlog item.
+   cluster from collapsing to uniform. See
+   [multicluster-softmax-membership](../../backlog/cohesion-metric-design/multicluster-softmax-membership.md)
+   — the worked-out version of this salvage path, with per-member
+   normalization providing the anti-diffusion regularizer that's
+   missing from the naïve `K_G/K_total` formulation diagnosed above.
+   Generalizes the older `lockstep-expansion` backlog entry.
 5. **Spectral cluster discovery**: find clusters as low eigenvectors
    of the kernel Laplacian. Different algorithm entirely; well-studied
    but not in this codebase.

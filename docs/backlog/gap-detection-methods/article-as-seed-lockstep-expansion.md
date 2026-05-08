@@ -1,5 +1,7 @@
 # Lockstep expansion with same-cardinality competitors
 
+> **See also** [multicluster-softmax-membership](../cohesion-metric-design/multicluster-softmax-membership.md) — supersedes this entry with a softmax-over-kNN-basins formulation that handles arbitrary basin sizes (no same-cardinality constraint), incorporates book-anchored basins as fixed competitors, and obsoletes most of the post-hoc enrichment pipeline. This entry retains its value as the original framing of "what's the natural background for cohesion?"
+
 Restructure expansion from per-seed sequential greedy to all-seeds-simultaneous parallel. At each global step, every active gap expands by one (its nearest non-G non-book article); after each step, check pairwise set equality across active gaps and merge equal sets (collapse to single gap, single trajectory thereafter).
 
 **Mechanics**:
