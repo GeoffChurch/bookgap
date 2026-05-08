@@ -87,32 +87,32 @@ _Filtered to basins with no direct or strong inherited book coverage. `inherited
 |------|------|----------------|-------|----------|---------|----------|-------------------|----------------|
 | 19 | 433 | 0.93 / 0.53 | 1193 | inherited-weak | 0.65 | question_answering, questions, system, question, answer |   • [×69] Constituent Questions: The Syntax and Semantics of Questions with Special Refere<br>  • [×34] Multilingual Natural Language Processing Applications: from Theory to Practice<br>  • [×34] Advances in Natural Language Processing: 4th International Conference, EsTAL 200 |   • Question Answering: Das Retrieval der Zukunft?<br>  • Syntactic Clues and Lexical Resources in Question-Answering. |
 
-### Article-as-seed top-20 — least-contained (sorted by inh_med ascending)
+### Article-as-seed top-20 — most uncovered research (sorted by effective_uncovered_articles descending)
 
-_The basins furthest from any book-anchored basin's structural neighborhood — strongest candidates for genuine research gaps. Sorted by ``inherited_coverage_median_post`` ascending; only non-book-anchored basins shown (n_books=0)._
+_The basins with the largest expected uncovered-article-equivalents — `Σ_a w(a)·(1 − best_post(a, H*))` — strongest candidates for genuine research gaps. Volume-aware: a 500-article basin at moderate containment outranks a 30-article basin at low containment. Only non-book-anchored basins shown (n_books=0)._
 
-| inh_med | size | logit | coverage | keywords (truncated) | top vote book |
-|---------|------|-------|----------|----------------------|---------------|
-| 0.61 | 260 | 647 | inherited-weak | textual_entailment|entailment|rte|recognizing_textual_entail | Multilingual Natural Language Processing Applicati |
-| 0.63 | 115 | 325 | inherited-weak | ocr|historical|correction|ocr_post|optical_character_recogni | Maschinelle Verarbeitung altdeutscher Texte V |
-| 0.63 | 403 | 933 | inherited-weak | wikipedia|links|wikipedia_articles|articles|dbpedia | Probing Semantic Relations |
-| 0.64 | 122 | 354 | inherited-weak | ocr|correction|optical_character_recognition|recognition|ocr | Part-of-Speech Tagging |
-| 0.64 | 124 | 350 | inherited-weak | ocr|correction|historical|ocr_post|optical_character_recogni | Maschinelle Verarbeitung altdeutscher Texte V |
-| 0.64 | 109 | 324 | inherited-weak | ocr|correction|ocr_post|von|optical_character_recognition | Maschinelle Verarbeitung altdeutscher Texte V |
-| 0.65 | 293 | 771 | inherited-weak | named_entity_recognition|named_entity|ner|named_entities|nam | Tagging and Shallow Processing of Portuguese: Work |
-| 0.65 | 433 | 1193 | inherited-weak | question_answering|questions|question|answer|system | Constituent Questions: The Syntax and Semantics of |
-| 0.65 | 224 | 387 | inherited-weak | morphological|unsupervised|morphology|segmentation|morpheme | Morphology |
-| 0.65 | 109 | 355 | inherited-weak | ocr|correction|optical_character_recognition|ocr_post|post_o | Part-of-Speech Tagging |
-| 0.66 | 156 | 384 | inherited-moderate | named_entity|named_entities|entity|wikipedia|disambiguation | Tagging and Shallow Processing of Portuguese: Work |
-| 0.68 | 352 | 735 | inherited-moderate | chinese|parsing|dependency_parsing|dependency|chunk | Dependency Parsing |
-| 0.68 | 221 | 553 | inherited-moderate | sql|natural_language|query|database|queries | Applications of Natural Language to Information Sy |
-| 0.69 | 152 | 344 | inherited-moderate | patent|translation|machine_translation|patent_documents|pate | Machine Translation |
-| 0.69 | 148 | 331 | inherited-moderate | patent|translation|machine_translation|patent_documents|pate | Machine Translation |
-| 0.69 | 152 | 346 | inherited-moderate | patent|translation|machine_translation|patent_documents|pate | Machine Translation |
-| 0.70 | 183 | 428 | inherited-moderate | grapheme_phoneme_conversion|pronunciation|g2p|phoneme|graphe | On Automatic Phonological Transcription of Speech  |
-| 0.71 | 212 | 454 | inherited-moderate | recurrent_neural_networks|recurrent_neural_network|network|n | Models of Language Acquisition: Inductive and Dedu |
-| 0.72 | 200 | 351 | inherited-moderate | transliteration|chinese|pinyin|machine_transliteration|chara | Machine Translation and Transliteration Involving  |
-| 0.72 | 149 | 473 | inherited-moderate | sentence_compression|compression|compressions|compressed|tra | Applied Natural Language Processing: Identificatio |
+| eff_unc | inh_med | size | logit | coverage | keywords (truncated) | top vote book |
+|---------|---------|------|-------|----------|----------------------|---------------|
+| 151.9 | 0.65 | 433 | 1193 | inherited-weak | question_answering|questions|question|answer|system | Constituent Questions: The Syntax and Semantics of |
+| 145.3 | 0.63 | 403 | 933 | inherited-weak | wikipedia|links|wikipedia_articles|articles|dbpedia | Probing Semantic Relations |
+| 114.3 | 0.68 | 352 | 735 | inherited-moderate | chinese|parsing|dependency_parsing|dependency|chunk | Dependency Parsing |
+| 103.5 | 0.65 | 293 | 771 | inherited-weak | named_entity_recognition|named_entity|ner|named_entities|nam | Tagging and Shallow Processing of Portuguese: Work |
+| 102.2 | 0.61 | 260 | 647 | inherited-weak | textual_entailment|entailment|rte|recognizing_textual_entail | Multilingual Natural Language Processing Applicati |
+| 78.3 | 0.65 | 224 | 387 | inherited-weak | morphological|unsupervised|morphology|segmentation|morpheme | Morphology |
+| 70.8 | 0.68 | 221 | 553 | inherited-moderate | sql|natural_language|query|database|queries | Applications of Natural Language to Information Sy |
+| 61.2 | 0.77 | 265 | 467 | inherited-strong | evaluation|metrics|machine_translation|human|metric | Machine Translation Evaluation |
+| 61.2 | 0.71 | 212 | 454 | inherited-moderate | recurrent_neural_networks|recurrent_neural_network|network|n | Models of Language Acquisition: Inductive and Dedu |
+| 60.9 | 0.79 | 299 | 765 | inherited-strong | coreference_resolution|coreference|mentions|mention|resoluti | Anaphora Resolution |
+| 56.0 | 0.72 | 200 | 351 | inherited-moderate | transliteration|chinese|pinyin|machine_transliteration|chara | Machine Translation and Transliteration Involving  |
+| 54.6 | 0.66 | 156 | 384 | inherited-moderate | named_entity|named_entities|entity|wikipedia|disambiguation | Tagging and Shallow Processing of Portuguese: Work |
+| 54.2 | 0.70 | 183 | 428 | inherited-moderate | grapheme_phoneme_conversion|pronunciation|g2p|phoneme|graphe | On Automatic Phonological Transcription of Speech  |
+| 53.9 | 0.87 | 408 | 2078 | inherited-strong | llms|llm|fine_tuning|preference|reward | Unsupervised Machine Translation: How Machines Lea |
+| 48.3 | 0.69 | 152 | 344 | inherited-moderate | patent|translation|machine_translation|patent_documents|pate | Machine Translation |
+| 48.3 | 0.69 | 152 | 346 | inherited-moderate | patent|translation|machine_translation|patent_documents|pate | Machine Translation |
+| 47.9 | 0.78 | 221 | 523 | inherited-strong | vietnamese|word_segmentation|khmer|unl|syllable | Joint Word Segmentation and Part-of-Speech (POS) T |
+| 47.1 | 0.69 | 148 | 331 | inherited-moderate | patent|translation|machine_translation|patent_documents|pate | Machine Translation |
+| 44.1 | 0.64 | 124 | 350 | inherited-weak | ocr|correction|historical|ocr_post|optical_character_recogni | Maschinelle Verarbeitung altdeutscher Texte V |
+| 44.0 | 0.77 | 185 | 319 | inherited-strong | korean|dependency_parsing|sejong|segmentation|treebank | The Syntactic Structures of Korean: A Construction |
 
 ## Phase-1 ↔ Phase-3 agreement matrix (article-seed pipeline)
 

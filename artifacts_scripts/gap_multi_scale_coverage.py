@@ -26,9 +26,13 @@ Algorithm::
     3. Add columns:
        inherited_coverage_max_basin_rank
        inherited_coverage_max_basin_books
-       inherited_coverage_median_post  (continuous; sort by this for
-                                        the most-uncovered leaderboard)
-       coverage_label_v2               (tiered)
+       inherited_coverage_median_post   (continuous depth-of-containment)
+       effective_uncovered_articles      (volume-aware: Σ_a w(a)·(1 - best_post),
+                                          membership-marginalized expectation
+                                          of "uncovered article-equivalents";
+                                          sort descending for the strongest
+                                          textbook-proposal candidates)
+       coverage_label_v2                 (tiered)
 
 Output label hierarchy (descending priority):
   templated-leak     (if templated_leak_flag column present and set)
@@ -272,17 +276,38 @@ def main() -> None:
     print(f"  {len(rows):,} gaps", flush=True)
 
     # Parse member lists
-    def parse_members(row: dict) -> tuple[np.ndarray, np.ndarray]:
-        """Return (all_members_arr, article_members_arr) as global-idx arrays."""
+    def parse_members(row: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return (all_members_arr, article_members_arr, article_weights_arr).
+
+        ``article_weights_arr`` is parallel to ``article_members_arr`` and
+        contains soft-EM weights when ``member_weights_json`` is present
+        (gap_soft_em.py output) or 1.0 for every article in the
+        hard-membership case (gap_article_as_seed.py output). With
+        ``w(a) = 1`` for all hard members, the weighted-sum metric collapses
+        to the unweighted sum — Option B reduces to Option A as a special
+        case.
+        """
         raw = json.loads(row["member_indices_json"])
+        weights_raw = row.get("member_weights_json")
+        weights_lookup: dict[int, float] = {}
+        if weights_raw:
+            for m in json.loads(weights_raw):
+                weights_lookup[int(m["idx"])] = float(m.get("weight", 1.0))
+
         if raw and isinstance(raw[0], dict):
             all_m = np.array([m["idx"] for m in raw], dtype=np.int64)
-            art_m = np.array([m["idx"] for m in raw if m.get("type") == "article"],
-                             dtype=np.int64)
+            art_idx_list = [m["idx"] for m in raw if m.get("type") == "article"]
+            art_m = np.array(art_idx_list, dtype=np.int64)
+            if weights_lookup:
+                art_w = np.array([weights_lookup.get(int(i), 1.0) for i in art_m],
+                                 dtype=np.float64)
+            else:
+                art_w = np.ones(len(art_m), dtype=np.float64)
         else:
             all_m = np.array(raw, dtype=np.int64)
             art_m = all_m[is_article[all_m]]
-        return all_m, art_m
+            art_w = np.ones(len(art_m), dtype=np.float64)
+        return all_m, art_m, art_w
 
     # Partition into book-anchored and non-book-anchored
     book_anchored_rows: list[tuple[int, dict]] = []   # (original_row_idx, row)
@@ -309,7 +334,7 @@ def main() -> None:
     anchored_basins: list[dict] = []
 
     for ba_idx, (row_i, row) in enumerate(book_anchored_rows):
-        all_m, art_m = parse_members(row)
+        all_m, art_m, _art_w = parse_members(row)
         B_books, B_articles = _precompute_boundary(
             H_members=all_m,
             is_article=is_article,
@@ -365,13 +390,14 @@ def main() -> None:
     n_real_gap = 0
 
     for proc_idx, (row_i, row) in enumerate(non_book_anchored_rows):
-        all_m, art_m = parse_members(row)
+        all_m, art_m, art_w = parse_members(row)
 
         if len(art_m) == 0 or N_ba == 0:
             inherited_results[row_i] = {
                 "max_basin_rank": "",
                 "max_basin_books": "",
                 "median_post": "",
+                "effective_uncovered": "",
             }
             n_real_gap += 1
             if (proc_idx + 1) % 50 == 0 or proc_idx == N_nb - 1:
@@ -466,6 +492,16 @@ def main() -> None:
         else:
             median_post = 0.0
 
+        # Effective uncovered articles: Σ_a w(a, G) · (1 - best_post(a, H*)).
+        # Membership-marginalized expectation of "uncovered article-equivalents."
+        # With hard membership (gap_article_as_seed.py output) every w(a)=1 and
+        # this collapses to Σ_a (1 - best_post). With soft-EM weights it
+        # correctly handles fractional membership; it's strictly more general.
+        if len(best_post_per_article) > 0:
+            effective_uncovered = float(np.sum(art_w * (1.0 - best_post_per_article)))
+        else:
+            effective_uncovered = 0.0
+
         # argmax_basin: the H that achieves the highest median_post(G, H)
         # i.e. median over all articles a in G of post(a | H), for each H separately.
         if basin_posts_by_idx:
@@ -491,6 +527,7 @@ def main() -> None:
                 "max_basin_rank": max_basin_rank,
                 "max_basin_books": max_basin_books,
                 "median_post": f"{median_post:.4f}",
+                "effective_uncovered": f"{effective_uncovered:.3f}",
             }
         else:
             n_real_gap += 1
@@ -498,6 +535,7 @@ def main() -> None:
                 "max_basin_rank": "",
                 "max_basin_books": "",
                 "median_post": f"{median_post:.4f}" if median_post > 0 else "",
+                "effective_uncovered": f"{effective_uncovered:.3f}" if median_post > 0 else "",
             }
 
         if (proc_idx + 1) % 50 == 0 or proc_idx == N_nb - 1:
@@ -547,6 +585,7 @@ def main() -> None:
         "inherited_coverage_max_basin_rank",
         "inherited_coverage_max_basin_books",
         "inherited_coverage_median_post",
+        "effective_uncovered_articles",
         "coverage_label_v2",
     ]
     out_fieldnames = in_fieldnames + [c for c in new_fieldnames if c not in in_fieldnames]
@@ -563,6 +602,7 @@ def main() -> None:
                     "inherited_coverage_max_basin_rank": "",
                     "inherited_coverage_max_basin_books": "",
                     "inherited_coverage_median_post": "",
+                    "effective_uncovered_articles": "",
                     "coverage_label_v2": coverage_label_v2(row, None),
                 })
             else:
@@ -570,6 +610,7 @@ def main() -> None:
                     "inherited_coverage_max_basin_rank": inh.get("max_basin_rank", ""),
                     "inherited_coverage_max_basin_books": inh.get("max_basin_books", ""),
                     "inherited_coverage_median_post": inh.get("median_post", ""),
+                    "effective_uncovered_articles": inh.get("effective_uncovered", ""),
                     "coverage_label_v2": coverage_label_v2(row, inh),
                 })
             writer.writerow(row)

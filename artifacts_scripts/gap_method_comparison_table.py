@@ -124,6 +124,10 @@ def _load_article_seed(path: Path) -> list[dict]:
                     int(r["inherited_coverage_max_basin_rank"])
                     if r.get("inherited_coverage_max_basin_rank") else None
                 ),
+                "effective_uncovered_articles": (
+                    float(r["effective_uncovered_articles"])
+                    if r.get("effective_uncovered_articles") else None
+                ),
             })
     return rows
 
@@ -297,30 +301,34 @@ def main() -> None:
             )
     out.append("")
 
-    # Article-seed pool sorted by inherited_coverage_median_post ascending —
-    # the "least-contained" leaderboard. These are the basins furthest from
-    # any book-anchored basin's structural neighborhood, the strongest
-    # candidates for genuine research gaps.
-    seed_with_inh = [g for g in seed_all if g.get("inherited_coverage_median_post") is not None]
+    # Article-seed pool sorted by effective_uncovered_articles descending —
+    # the "most-uncovered-research" leaderboard. Σ_a w(a)·(1-best_post) is
+    # the membership-marginalized expectation of "uncovered article-equivalents"
+    # in this basin. Volume-aware: bigger basins with low containment rank
+    # higher than small basins with low containment.
+    seed_with_inh = [g for g in seed_all if g.get("effective_uncovered_articles") is not None]
     if seed_with_inh:
         seed_least_covered = sorted(
             seed_with_inh,
-            key=lambda r: r["inherited_coverage_median_post"],
+            key=lambda r: -r["effective_uncovered_articles"],
         )[:args.top_n]
-        out.append("### Article-as-seed top-20 — least-contained (sorted by inh_med ascending)")
+        out.append("### Article-as-seed top-20 — most uncovered research (sorted by effective_uncovered_articles descending)")
         out.append("")
-        out.append(f"_The basins furthest from any book-anchored basin's structural "
-                   f"neighborhood — strongest candidates for genuine research gaps. "
-                   f"Sorted by ``inherited_coverage_median_post`` ascending; only "
-                   f"non-book-anchored basins shown (n_books=0)._")
+        out.append(f"_The basins with the largest expected uncovered-article-equivalents — "
+                   f"`Σ_a w(a)·(1 − best_post(a, H*))` — strongest candidates for genuine "
+                   f"research gaps. Volume-aware: a 500-article basin at moderate containment "
+                   f"outranks a 30-article basin at low containment. Only non-book-anchored "
+                   f"basins shown (n_books=0)._")
         out.append("")
-        out.append("| inh_med | size | logit | coverage | keywords (truncated) | top vote book |")
-        out.append("|---------|------|-------|----------|----------------------|---------------|")
+        out.append("| eff_unc | inh_med | size | logit | coverage | keywords (truncated) | top vote book |")
+        out.append("|---------|---------|------|-------|----------|----------------------|---------------|")
         for g in seed_least_covered:
             kw_short = (g.get("top_keywords") or "")[:60] if isinstance(g.get("top_keywords"), str) else ""
             top_book_short = g.get("top_book_title", "")[:50]
+            inh_med = g.get("inherited_coverage_median_post")
+            inh_med_s = f"{inh_med:.2f}" if inh_med is not None else "—"
             out.append(
-                f"| {g['inherited_coverage_median_post']:.2f} | {g['size']} | "
+                f"| {g['effective_uncovered_articles']:.1f} | {inh_med_s} | {g['size']} | "
                 f"{g['logit_sum']:.0f} | {_coverage_label(g)} | {kw_short} | {top_book_short} |"
             )
         out.append("")
