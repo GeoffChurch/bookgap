@@ -20,6 +20,7 @@ How candidate gaps are produced and refined.
 
 Per-gap quality measurement and filtering.
 
+- [fuzzy-membership-preserving-boundary](cohesion-metric-design/fuzzy-membership-preserving-boundary.md) — soft EM in the symmetric loop with the local CSLS boundary intact; fixes Viterbi-artifact threshold brittleness that Phase 3 hit on T10181
 - [boundary-centroid-cosine](cohesion-metric-design/boundary-centroid-cosine.md) — cosine between gap centroid and boundary-books centroid; high = book exists, low = templated-data leak
 - [topic-purity-axis](cohesion-metric-design/topic-purity-axis.md) — OpenAlex topic_id purity; useful at field/subfield scope (degenerate at single-topic scope)
 - [dedup-cache-member-sets](cohesion-metric-design/dedup-cache-member-sets.md) — small optimization for Jaccard dedup loop
