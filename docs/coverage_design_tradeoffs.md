@@ -355,16 +355,52 @@ through (5) are forward-looking.
    **Recommended scale strategy: `--seed-stride 8` for T10181 + T13734
    (projected ~6h on T10181 vs the 49h at stride=1). Don't reduce
    frontier_width.**
+
+   **3a. ~~Partial-lockstep frozenset cache~~ — DONE** (commit `83d11d4`).
+   Cross-seed early-abort when current hard support exactly matches an
+   already-discovered basin. T11303: 38% wall reduction (953s → 590s),
+   100% basin-set overlap with baseline. T10181 stride=8 with cache:
+   running. Pure speedup, zero quality impact.
+
+   **3b. Adaptive K — REFUTED** (commit `dc30967`, opt-in flag).
+   Tested with K_min=100 (936s, 13% basin overlap) and K_min=200
+   (1836s, 55% overlap). Doubling K when |supp|>0.8K saturates fires
+   often; matmul cost (∝ K·S) explodes. Changes basin shape because
+   K affects the algorithm's gradient trajectory, not just the
+   candidate pool. Net loss on both axes (slower AND different basins).
+   Kept as opt-in flag for posterity but not recommended.
+
+   **3c. GPU acceleration — UNDERPERFORMS at small basins**
+   (commit `dc30967`, `--gpu` and `--fp32` flags). T11303 GPU FP64 was
+   ~5× slower than CPU+cache; FP32 was 1.6× slower. FP32 quality is
+   essentially identical to FP64 (129/130 basin overlap). On T11303
+   with ~30-article basins, per-iter dispatch + CUDA launch overhead
+   on ~50 small kernels dominates the actual matmul compute. May tip
+   the scale on T10181 with 200-1000-article basins; untested. The
+   real fix is **batched seed processing** (see (5)) which amortizes
+   per-iter overhead across many seeds.
+
 4. **Cross-basin soft membership without separate post-hoc pass.** Once
    soft EM is the default discovery, run multiple seeds and collect
    per-article weight vectors directly across all basins. Coverage
    inheritance becomes a per-article max over weights, no separate
    `compute_state` re-evaluation needed. Eliminates the post-hoc step.
-5. **Lockstep / global EM** (high cost, theoretical interest). The
+5. **Batched seed processing on GPU.** Process N=32-128 seeds in
+   parallel: each one's tiny matmul stacks into one big matmul,
+   amortizing per-op overhead by N×. Requires reworking claimed-set /
+   frozenset-cache to coordinate across parallel seeds (the
+   claim-as-you-go pattern doesn't naturally batch). The lockstep-
+   expansion backlog item naturally enables this. ~1 day of work.
+   Likely the right move if we end up running these full-corpus
+   discovery passes regularly. Once-off runs probably don't justify
+   the restructure.
+6. **Lockstep / global EM** (high cost, theoretical interest). The
    N-component EM with K-NN sparsification. Whole separate project;
    addresses the "boundary is local-CSLS-balanced, but other basins
    don't appear in the model" gap that fuzzy-per-basin doesn't fix.
 
-(3) is the natural unblock for soft EM at scale and the right path to
-making it production-ready. (4) is a cleaner architecture once (3)
-proves out.
+(3a) is shipped. (5) is the natural next step if we need more
+performance — gives both perf (amortized launch overhead) and
+algorithmic cleanup (multi-cluster competition replaces single-cluster
+EM with size-matched local boundary). (4) is a cleaner architecture
+once (5) proves out.
