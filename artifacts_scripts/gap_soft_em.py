@@ -82,11 +82,20 @@ def expand_soft(
     claimed_overlap_threshold: float = 0.5,
     claimed_check_every: int = 5,
     in_G_lookup: np.ndarray | None = None,
-) -> np.ndarray | None:
-    """Soft-EM expansion from *seed_idx*. Returns weight vector w (length n).
+    frozen_cache: dict | None = None,
+) -> np.ndarray | frozenset | None:
+    """Soft-EM expansion from *seed_idx*. Returns weight vector w (length n),
+    or a ``frozenset`` (cache-hit signalling), or ``None`` (abort/failure).
 
     Returns None if the expansion fails (empty boundary, no article
     members after bootstrap, or claimed-overlap abort).
+
+    Returns a ``frozenset`` (the matched key) if ``frozen_cache`` is
+    provided and the current hard-support set exactly matches an
+    already-discovered basin's frozenset. The caller treats this as
+    a confluent rediscovery — increments the matched basin's
+    seed_types and skips. Saves the per-seed convergence cost when a
+    seed is heading toward an already-known basin.
 
     Inner loop (adapted from ``/tmp/fuzzy_em_prototype.py:expand_fuzzy``):
 
@@ -253,6 +262,16 @@ def expand_soft(
 
         delta = float(np.linalg.norm(new_w - w))
         w = new_w
+
+        # ---- Frozen-set cache: confluent-rediscovery early-abort ----
+        # If the current hard support exactly matches an already-discovered
+        # basin's frozenset, soft EM is deterministic from this state — the
+        # converged frozenset will equal that basin's. Save the remaining
+        # iterations.
+        if frozen_cache is not None:
+            cur_supp = frozenset(int(i) for i in np.where(w > tau_supp)[0])
+            if cur_supp and cur_supp in frozen_cache:
+                return cur_supp
 
         # ---- Claimed-overlap early-abort ----
         if (
@@ -423,6 +442,7 @@ def main() -> None:
     n_aborted_overlap = 0
     n_below_min_size = 0
     n_dup = 0
+    n_cache_hit = 0
 
     for seed_pos, seed in enumerate(seeds):
         # Progress every 1000 seeds (before any short-circuits so counters are accurate)
@@ -435,6 +455,7 @@ def main() -> None:
                 f"({rate:.0f}/s, eta {eta:.0f}s); "
                 f"discovered {len(results)} gaps; "
                 f"skipped-claimed {n_skipped_claimed}, "
+                f"cache-hit {n_cache_hit}, "
                 f"early-abort {n_aborted_overlap}, "
                 f"too-small {n_below_min_size}, "
                 f"dup {n_dup}",
@@ -447,7 +468,11 @@ def main() -> None:
             continue
 
         claimed_arg = None if args.disable_fast_filters else claimed
-        w = expand_soft(
+        # Pass the discovered-frozensets cache for confluent-rediscovery
+        # early-abort. Disabled if --disable-fast-filters is set so dedup
+        # validation runs all seeds to completion.
+        cache_arg = None if args.disable_fast_filters else gap_hashes
+        result = expand_soft(
             seed_idx=s,
             emb=emb,
             types_arr=types_arr,
@@ -467,12 +492,25 @@ def main() -> None:
             claimed_overlap_threshold=args.claimed_overlap_threshold,
             claimed_check_every=args.claimed_check_every,
             in_G_lookup=in_G_lookup,
+            frozen_cache=cache_arg,
         )
 
-        if w is None:
+        if result is None:
             # Claimed-overlap abort
             n_aborted_overlap += 1
             continue
+
+        if isinstance(result, frozenset):
+            # Frozen-set cache hit: this seed was converging to an
+            # already-discovered basin. Update the matched basin's
+            # seed_types and skip without paying the full convergence cost.
+            n_cache_hit += 1
+            if result in gap_hashes:
+                gap_hashes[result]["seed_types"].add("article")
+            continue
+
+        # Otherwise result is the converged weight vector.
+        w = result
 
         stats = _compute_csv_stats(w, args.tau_supp, is_article, is_book)
         if stats is None or stats["total_size"] < args.min_final_size:
@@ -505,6 +543,7 @@ def main() -> None:
     print(
         f"  breakdown: skipped-claimed {n_skipped_claimed} "
         f"({n_skipped_claimed / len(seeds) * 100:.0f}%), "
+        f"cache-hit {n_cache_hit} ({n_cache_hit / len(seeds) * 100:.0f}%), "
         f"early-abort {n_aborted_overlap}, too-small {n_below_min_size}, "
         f"dup {n_dup}"
     )
