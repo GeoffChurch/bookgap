@@ -55,7 +55,7 @@ How does the basin grow at each iteration?
 | **Strict-single-add** (original §D winner) | 1 candidate eval per outer iter | 56.9% | 80–150 articles | Greedy, hard, slow per seed. Stable, well-understood. |
 | **Batch-independent ADD** | W candidate evals per outer iter, all-or-nothing | 35.7% | ~2,400 articles | **Refuted.** Ignores collective effect on `min_post`; produces runaway clusters. |
 | **Ordered cumulative ADD + symmetric REMOVE** (current) | W candidate evals, evaluated against running G | 48.8% | 70–172 articles | Phase 2 shipped. Strict-like cluster sizes, more confluent than strict, faster (mean=3.4 iters vs 25.5). |
-| **Soft EM (fuzzy weights)** (prototype) | W posterior updates per iter, no thresholds | 14 iters / 3.4s for one T10181 seed | 89 articles (cross-lingual UD example) | Smooth dynamics, no Viterbi artifacts. Per-basin runs faster than ordered cumulative. Discovery-pass infrastructure not yet adapted. |
+| **Soft EM (fuzzy weights)** (`gap_soft_em.py`, May 8) | W posterior updates per iter, no thresholds | T11303 full discovery: 16 min / 130 basins. T10181: blocked (~0.5s/seed). | T11303 top-3: BN 198A+14B / Causal 97A / GGM 113A | Smooth dynamics, no Viterbi artifacts. **5.5× confluence improvement on T11303** (130 vs Phase 3's 717). Slow at T10181 scale; needs frontier/iter optimization. |
 
 **Tradeoffs:**
 
@@ -72,7 +72,7 @@ How does the basin grow at each iteration?
 | Variant | Output shape | Multi-scale? | Notes |
 |---|---|---|---|
 | **Hard set** (current) | `frozenset[int]` | No, exclusive within ~50% Jaccard via claimed-set | Simple, fast, supports exact-match dedup. |
-| **Fuzzy weights** (prototype) | `np.ndarray[float]` of length n | Per-basin; an article *can* have weight in multiple basins if we run multiple seeds | Soft EM output. Smooth but doesn't directly enable cross-basin membership inheritance. |
+| **Fuzzy weights** (`gap_soft_em.py`, May 8) | sparse `dict[idx, float]` (above τ_supp); also full weight array internally | Per-basin; an article *can* have weight in multiple basins across discovery seeds | Soft EM output. Smooth, no Viterbi artifacts. Post-hoc multi-scale pass picks up cross-basin inheritance. |
 | **Multi-scale (post-hoc)** (prototype) | `dict[basin_id, posterior]` per article | Explicit | Recovers multi-scale membership by re-evaluating each article's `compute_state` posterior under each basin's structure. Coverage labeling emerges naturally. |
 
 The two prototypes are stackable: fuzzy weights for *discovery* (better convergence, no Viterbi artifacts), multi-scale post-hoc for *coverage labeling* (cross-basin inheritance).
@@ -272,45 +272,73 @@ covered with strong containment" from "tangentially covered, the
 
 ---
 
-## Empirical winners summary (T11303 + T10181 evidence)
+## Empirical winners summary (post-soft-EM-validation update)
 
-| Decision | Current shipped | Prototype candidate | Defer |
-|---|---|---|---|
-| Inner-loop policy | Ordered cumulative ADD + REMOVE | Soft EM (faster convergence, smoother) | Strict (slower, no clear win) |
-| Membership type | Hard set | Fuzzy weights for discovery, multi-scale dict for labeling | — |
-| Book role: boundary | On | On | — |
-| Book role: seeds | On | Off (book-seeded basins are weak) | — |
-| Book role: members | On (if seeds on) | On regardless of seeds | — |
-| Coverage labeling | 4-label (Phase 1+3) | 5-label (+ inherited-coverage) | — |
-| Cluster granularity | Cohesion-aware tight | Multi-scale (tight + broad simultaneously) | K-ball-only |
+| Decision | Production-validated (T11303 + T10181) | Stronger candidate (T11303 only) |
+|---|---|---|
+| Inner-loop policy | Ordered cumulative ADD + REMOVE (`gap_article_as_seed.py --batch-addition`) | **Soft EM (`gap_soft_em.py`) — 5.5× better confluence, blocked at scale by per-seed cost** |
+| Membership type | Hard set | Fuzzy weights (in `gap_soft_em.py`); multi-scale dict for labeling layered on top (`gap_multi_scale_coverage.py`) |
+| Book role: boundary | On (always) | On (always) |
+| Book role: seeds | On (`--with-book-seeds`) | **Off — book-seeded basins are weak (Exp 1: book drops below τ_supp in own basin)** |
+| Book role: members | On (`--with-book-seeds`) | On (always; geometric pull via unconditional frontier) |
+| Coverage labeling | 7-tier `coverage_label_v2` + continuous `inherited_coverage_median_post` for sortable leaderboards | Same — drop-in compatible |
+| Cluster granularity | Cohesion-aware tight, with multi-scale post-hoc inheritance | Same — soft EM's basin shape is similar (tight specialty); multi-scale labeling is the same post-pass |
+
+### Soft EM validation status (May 8)
+
+- **T11303 (small, fast scope):** 130 distinct basins in 16 min vs. Phase 3's
+  717 — **5.5× confluence improvement**, validating the Viterbi-artifact
+  prediction. Top-3 basins (Bayesian Networks 198A+14B; Causal Discovery
+  97A; Gaussian Graphical Models 113A) are semantically clean. Multi-scale
+  labeling on the soft-EM output: 22 book-anchored / 94 inherited-strong /
+  14 inherited-moderate / 0 real-gap. Post-hoc pipeline drop-in.
+- **T10181 (large scope):** **blocked** at ~0.5 seeds/sec → 49h ETA at 88K
+  seeds, even with 40-core vectorized matmul saturated. Killed; not yet
+  validated. Per-seed cost dominated by the dense weight-update step (every
+  candidate gets a weight update each iteration, vs. ordered cumulative's
+  bounded acceptance frontier).
+
+So the production choice today remains Phase 3 + multi-scale post-hoc
+(validated end-to-end on T10181). Soft EM is the strongest theoretical
+candidate but needs scale work before becoming the default.
 
 ---
 
 ## Concrete next-step candidates
 
-In rough order of cost/value:
+Updated post-implementation; both (1) and (2) below are *done*; (3)
+through (5) are forward-looking.
 
-1. **Multi-scale post-hoc labeling** (low cost, high value). Run the
-   existing Phase 3 output's basins through pairwise posterior
-   evaluation: for each (article, book-anchored basin) pair, compute
-   the article's posterior under that basin. Output: enriched CSV with
-   `inherited_coverage_basin_id`, `inherited_coverage_posterior`.
-   Doesn't change discovery; just adds a label column.
+1. ~~Multi-scale post-hoc labeling~~ — DONE
+   (`gap_multi_scale_coverage.py`, commit `b457c76` → `cd77350`).
+   Validated on T10181 with 7-tier classification (4174 non-anchored
+   basins → 7 real-gap at threshold 0.55).
+2. ~~Soft EM with books-as-members-but-not-seeds~~ — DONE
+   (`gap_soft_em.py`, commit `5ce230e`). Validated on T11303;
+   T10181 blocked by per-seed compute. Drop-in compatible with
+   multi-scale labeling.
+3. **Soft EM scale work** (medium cost, high value).
+   Approaches in rough order of likely impact:
+   - Sparser candidate set per iter: instead of evaluating posterior
+     for top-200 in centroid neighborhood, use a smaller `frontier_width`
+     or only update points whose previous weight is ≥ some lower threshold.
+   - Lower `--max-iters` (currently 50; soft EM converges in ~10-15 iters
+     on most synthetic test cases).
+   - Seed subsampling: `--seed-stride 4` or 8, relying on confluence to
+     cover the basin space (we already saw 5.5× confluence on T11303,
+     so coverage shouldn't suffer much).
+   - Spatially partitioned EM: process disjoint K-NN regions in parallel
+     before global merge; relies on basins being mostly local.
+4. **Cross-basin soft membership without separate post-hoc pass.** Once
+   soft EM is the default discovery, run multiple seeds and collect
+   per-article weight vectors directly across all basins. Coverage
+   inheritance becomes a per-article max over weights, no separate
+   `compute_state` re-evaluation needed. Eliminates the post-hoc step.
+5. **Lockstep / global EM** (high cost, theoretical interest). The
+   N-component EM with K-NN sparsification. Whole separate project;
+   addresses the "boundary is local-CSLS-balanced, but other basins
+   don't appear in the model" gap that fuzzy-per-basin doesn't fix.
 
-2. **Soft-EM with books-as-members-but-not-seeds** (medium cost,
-   medium-high value). Replace the Phase 2 inner loop with soft EM
-   (preserving local CSLS boundary). Drop book-seeding. Articles do
-   discovery; books pulled in as members via unconditional frontier;
-   `book_anchored` falls out structurally.
-
-3. **Five-label coverage hierarchy** (low cost, low-medium value).
-   Update the comparison-table generator to produce the
-   five-label classification. Trivial; depends on (1) for the
-   `inherited-coverage` label.
-
-4. **Lockstep / global EM** (high cost, theoretical interest). The
-   N-component EM with K-NN sparsification. Whole separate project.
-
-(2) is the natural successor to today's prototype. (1) is the cheapest
-fix that addresses the "Phase 3 missed coverage" issue with concrete
-evidence we ran today.
+(3) is the natural unblock for soft EM at scale and the right path to
+making it production-ready. (4) is a cleaner architecture once (3)
+proves out.
