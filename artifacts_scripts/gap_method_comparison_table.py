@@ -49,9 +49,15 @@ from bookgap.index import build_index, FlatL2
 
 
 def _coverage_label(row: dict) -> str:
-    """Apply the Phase-3-precedence classifier from the spec.
-    Precedence: templated-leak > book-anchored > book-exists > real-gap.
+    """Coverage label with tiered multi-scale inheritance.
+
+    If the input CSV has a ``coverage_label_v2`` column (produced by
+    ``gap_multi_scale_coverage``), use that directly. Otherwise fall back
+    to the Phase-3-only classifier (templated-leak > book-anchored >
+    book-exists > real-gap).
     """
+    if row.get("coverage_label_v2"):
+        return str(row["coverage_label_v2"])
     if row.get("templated_leak_flag"):
         return "templated-leak"
     if row.get("book_anchored"):
@@ -63,8 +69,14 @@ def _coverage_label(row: dict) -> str:
     return "real-gap"
 
 
+# Labels considered "true research gaps" — basins not covered by any
+# book-anchored basin at meaningful strength. inherited-weak survives
+# because median_post < 0.65 means peripheral overlap, not real coverage.
+_REAL_GAP_LABELS = frozenset({"real-gap", "inherited-weak"})
+
+
 def _is_real(g: dict) -> bool:
-    return _coverage_label(g) == "real-gap"
+    return _coverage_label(g) in _REAL_GAP_LABELS
 
 
 def _load_kball(path: Path) -> list[dict]:
@@ -102,6 +114,16 @@ def _load_article_seed(path: Path) -> list[dict]:
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
+                "coverage_label_v2": r.get("coverage_label_v2", ""),
+                "top_keywords": r.get("top_keywords", ""),
+                "inherited_coverage_median_post": (
+                    float(r["inherited_coverage_median_post"])
+                    if r.get("inherited_coverage_median_post") else None
+                ),
+                "inherited_coverage_max_basin_rank": (
+                    int(r["inherited_coverage_max_basin_rank"])
+                    if r.get("inherited_coverage_max_basin_rank") else None
+                ),
             })
     return rows
 
@@ -233,35 +255,75 @@ def main() -> None:
             )
     out.append("")
 
+    def _med_post_str(g: dict) -> str:
+        v = g.get("inherited_coverage_median_post")
+        return f"{v:.2f}" if v is not None else "—"
+
     out.append("## Article-as-seed (logit_sum-ranked, cohesion-aware)")
     out.append("")
-    out.append("| rank | size | mean_p / min_p | logit | coverage | keywords | top books (×votes) | example titles |")
-    out.append("|------|------|----------------|-------|----------|----------|-------------------|----------------|")
+    out.append("| rank | size | mean_p / min_p | logit | coverage | inh_med | keywords | top books (×votes) | example titles |")
+    out.append("|------|------|----------------|-------|----------|---------|----------|-------------------|----------------|")
     for i, g in enumerate(seed_top):
         cov = _coverage_label(g)
         out.append(
             f"| {i+1} | {g['size']} | {g['mean_post']:.2f} / {g['min_post']:.2f} | "
-            f"{g['logit_sum']:.0f} | {cov} | {_kw_str(seed_kws[i], args.keywords_per_gap)} | "
+            f"{g['logit_sum']:.0f} | {cov} | {_med_post_str(g)} | "
+            f"{_kw_str(seed_kws[i], args.keywords_per_gap)} | "
             f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
         )
     out.append("")
 
-    out.append("### Article-as-seed top-20 — real-gap only")
+    out.append("### Article-as-seed top-20 — real-gap (or inherited-weak) only")
+    out.append("")
+    out.append("_Filtered to basins with no direct or strong inherited book "
+               "coverage. `inherited-weak` (peripheral overlap) included alongside "
+               "`real-gap` because median posterior < 0.65 means the 'covering' "
+               "basin only barely qualifies as a container._")
     out.append("")
     seed_real = [g for g in seed_top if _is_real(g)][:args.top_n]
     if not seed_real:
-        out.append("_(no real-gap rows in this pipeline's top-20)_")
+        out.append("_(no real-gap or inherited-weak rows in this pipeline's top-20)_")
     else:
-        out.append("| rank | size | mean_p / min_p | logit | keywords | top books (×votes) | example titles |")
-        out.append("|------|------|----------------|-------|----------|-------------------|----------------|")
+        out.append("| rank | size | mean_p / min_p | logit | coverage | inh_med | keywords | top books (×votes) | example titles |")
+        out.append("|------|------|----------------|-------|----------|---------|----------|-------------------|----------------|")
         for g in seed_real:
             i = seed_top.index(g)
+            cov = _coverage_label(g)
             out.append(
                 f"| {i+1} | {g['size']} | {g['mean_post']:.2f} / {g['min_post']:.2f} | "
-                f"{g['logit_sum']:.0f} | {_kw_str(seed_kws[i], args.keywords_per_gap)} | "
+                f"{g['logit_sum']:.0f} | {cov} | {_med_post_str(g)} | "
+                f"{_kw_str(seed_kws[i], args.keywords_per_gap)} | "
                 f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
             )
     out.append("")
+
+    # Article-seed pool sorted by inherited_coverage_median_post ascending —
+    # the "least-contained" leaderboard. These are the basins furthest from
+    # any book-anchored basin's structural neighborhood, the strongest
+    # candidates for genuine research gaps.
+    seed_with_inh = [g for g in seed_all if g.get("inherited_coverage_median_post") is not None]
+    if seed_with_inh:
+        seed_least_covered = sorted(
+            seed_with_inh,
+            key=lambda r: r["inherited_coverage_median_post"],
+        )[:args.top_n]
+        out.append("### Article-as-seed top-20 — least-contained (sorted by inh_med ascending)")
+        out.append("")
+        out.append(f"_The basins furthest from any book-anchored basin's structural "
+                   f"neighborhood — strongest candidates for genuine research gaps. "
+                   f"Sorted by ``inherited_coverage_median_post`` ascending; only "
+                   f"non-book-anchored basins shown (n_books=0)._")
+        out.append("")
+        out.append("| inh_med | size | logit | coverage | keywords (truncated) | top vote book |")
+        out.append("|---------|------|-------|----------|----------------------|---------------|")
+        for g in seed_least_covered:
+            kw_short = (g.get("top_keywords") or "")[:60] if isinstance(g.get("top_keywords"), str) else ""
+            top_book_short = g.get("top_book_title", "")[:50]
+            out.append(
+                f"| {g['inherited_coverage_median_post']:.2f} | {g['size']} | "
+                f"{g['logit_sum']:.0f} | {_coverage_label(g)} | {kw_short} | {top_book_short} |"
+            )
+        out.append("")
 
     # The agreement matrix uses the full article-seed pool — not just top-N —
     # because rare disagreements are most informative across the whole population.
