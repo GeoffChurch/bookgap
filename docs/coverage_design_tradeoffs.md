@@ -172,6 +172,106 @@ Both labels are valid. The granularity choice determines which we surface to a r
 
 ---
 
+## Empirical findings from multi-scale labeling on T10181 (May 8 update)
+
+Implemented multi-scale post-hoc labeling
+(`artifacts_scripts/gap_multi_scale_coverage.py`) and ran on T10181's
+4,925-basin Phase-3 output. Several findings disconfirm parts of the
+original design and validate others.
+
+### Single inheritance threshold doesn't work
+
+The original sketch ("inherited-coverage if median_post ≥ τ_inherit")
+implicitly assumed a bimodal distribution — basins either tightly
+inside a book-anchored basin or clearly outside. The actual T10181
+distribution is **unimodal: mean 0.70, std 0.07, min 0.53, max 0.97**.
+At τ=0.5, every single non-book-anchored basin (4174/4174) inherits
+coverage. At τ=0.7, ~50/50. No natural cutoff.
+
+This forced a redesign: replaced the binary inherited-coverage label
+with a **7-tier hierarchy** that treats containment as a spectrum:
+
+| Tier | median_post range | T10181 count |
+|---|---|---|
+| `book-anchored` | n/a (`n_books > 0`) | 751 (15%) |
+| `inherited-strong` | ≥ 0.75 | 1,056 (21%) |
+| `inherited-moderate` | 0.65 ≤ x < 0.75 | 2,128 (43%) |
+| `inherited-weak` | 0.55 ≤ x < 0.65 | 983 (20%) |
+| `real-gap` | < 0.55 | 7 (0.1%) |
+
+The `real-gap` count drops to single digits at any reasonable
+threshold. **A binary "covered/uncovered" classification is wrong for
+this corpus.** The continuous `inherited_coverage_median_post` is the
+informative signal; tiers are just bucketed views of it.
+
+### The "least-contained leaderboard" is the right output shape
+
+For the proposal-generation use case, the question shifts from "which
+basins are real-gaps?" to "which basins are least-covered?" Answer:
+sort by `inherited_coverage_median_post` ascending. Top of the T10181
+leaderboard:
+
+| inh_med | size | coverage | topic |
+|---|---|---|---|
+| 0.61 | 260 | inherited-weak | RTE / textual entailment |
+| 0.63 | 115 | inherited-weak | Historical OCR |
+| 0.63 | 403 | inherited-weak | Wikipedia / DBpedia knowledge graphs |
+| 0.64-0.65 | 100-300 | inherited-weak | OCR variants, NER, QA, Morphology |
+| 0.66-0.72 | 150-350 | inherited-moderate | Dep Parsing, patent MT, G2P, etc. |
+
+These are interpretable subspecialties. Several have textbook
+candidates that were tangentially relevant but didn't pull tight basin
+inheritance — Dep Parsing (top vote = "Dependency Parsing" textbook,
+inh_med=0.68 i.e. inherited-moderate, *not* tight inheritance) is the
+canonical example. The leaderboard correctly distinguishes "broadly
+covered with strong containment" from "tangentially covered, the
+'covering' basin barely contains it."
+
+### What changed about the design
+
+- **`book_anchored` binary kept as Tier 1** (when n_books > 0 directly).
+  Phase 3's structural answer is still load-bearing for the strongest
+  signal. Multi-scale is layered on top.
+- **`inherited-coverage` split into three tiers.** Reflecting the
+  unimodal distribution: continuous score, bucketed display.
+- **`real-gap` tier becomes minority** (7 of 4925 on T10181). The
+  original framing assumed real-gaps would be a meaningful fraction;
+  empirically they're rare under any reasonable threshold. The
+  meaningful "uncovered" signal is the *bottom of the leaderboard*,
+  not a binary filter.
+- **Seven labels, not five.** Per `coverage_label_v2`:
+  `templated-leak > book-anchored > book-exists >
+   inherited-strong > inherited-moderate > inherited-weak > real-gap`.
+  The continuous score (`inherited_coverage_median_post`) is the
+  primary signal; tiers are summary views.
+
+### Implications for next iterations
+
+- **The "fuzzy membership preserving boundary" backlog item still
+  applies, but for a different reason than initially.** It's no longer
+  primarily about fixing the basin-matching unreliability (multi-scale
+  post-hoc resolved that). It's about getting smoother convergence
+  dynamics + sparse-weight output that's natively multi-scale (an
+  article's weight vector across all converged basins is exactly
+  multi-scale membership without a separate post-hoc pass).
+- **Books-as-seeds may be vestigial.** The Experiment-1 finding (book
+  seed basins where the book itself drops below τ_supp) suggests
+  book-seeded discovery isn't load-bearing. Articles do discovery;
+  books participate as members where geometry warrants.
+- **The 7 real-gap basins on T10181** are interpretable niches
+  (interactive-predictive MT, historical NLP message systems
+  (NOMAD/CIRCUS/PUNDIT), UIMA pipeline tooling, transport-domain NLP,
+  Swedish temporal extraction). Whether these are good textbook
+  proposal targets is a separate question — they're plausibly real
+  research gaps, but they're also small (6-21 articles) and low-logit.
+- **The DP textbook example** (top vote book matches the gap topic
+  exactly, basin inh_med=0.68) shows the metric correctly distinguishes
+  "the textbook covers a broad area that contains this basin tangentially"
+  from "this basin sits inside the textbook's coverage zone." This is
+  a correct distinction the K-ball baseline conflates.
+
+---
+
 ## Empirical winners summary (T11303 + T10181 evidence)
 
 | Decision | Current shipped | Prototype candidate | Defer |
