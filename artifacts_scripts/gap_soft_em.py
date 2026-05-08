@@ -83,6 +83,12 @@ def expand_soft(
     claimed_check_every: int = 5,
     in_G_lookup: np.ndarray | None = None,
     frozen_cache: dict | None = None,
+    adaptive_K: bool = False,
+    K_max: int = 1000,
+    K_saturation: float = 0.8,
+    emb_gpu=None,        # torch.Tensor on cuda, shape (n, d), float32 — when provided, kernel matmul runs on GPU
+    sigma_gpu=None,      # torch.Tensor on cuda, shape (n,), float32
+    gpu_fp32: bool = False,   # use float32 (not float64) for the GPU kernel matmul
 ) -> np.ndarray | frozenset | None:
     """Soft-EM expansion from *seed_idx*. Returns weight vector w (length n),
     or a ``frozenset`` (cache-hit signalling), or ``None`` (abort/failure).
@@ -122,6 +128,10 @@ def expand_soft(
 
     w = np.zeros(n, dtype=np.float64)
     w[seed_idx] = 1.0
+    # Adaptive K: starts at neighborhood_K, can only grow within this seed
+    # (capped at K_max). When adaptive_K=False, never grows; while-loop
+    # below runs once.
+    K_eff_current = neighborhood_K
 
     for it in range(max_iters):
         supp = np.where(w > tau_supp)[0]
@@ -141,14 +151,7 @@ def expand_soft(
             break
         centroid = (centroid / norm).astype(np.float32)
 
-        # ---- Neighbourhood candidates (centroid K-NN ∪ current support) ----
-        K_eff = min(neighborhood_K, n)
-        _, I_centroid = full_index.search(centroid[None, :], k=K_eff)
-        candidates = set(int(c) for c in I_centroid[0])
-        candidates.update(int(s) for s in supp)
-        candidates_arr = np.array(sorted(candidates), dtype=np.int64)
-
-        # ---- Boundary books: first not-in-support book per article member ----
+        # ---- Boundary (computed once per outer iter; doesn't depend on K) ----
         in_G_lookup[:] = False
         in_G_lookup[supp] = True
 
@@ -194,68 +197,131 @@ def expand_soft(
         B_books_arr = np.array(list(f_b.keys()), dtype=np.int64)
         B_books_mass = np.array(list(f_b.values()), dtype=np.float64)
         B_arts_arr = np.array(list(B_articles), dtype=np.int64)
-
-        # ---- Weight update (fully vectorised over all candidates) ----
-        # cand_emb: (C, d),  supp_emb: (S, d),  sigma_cand: (C,),  sigma_supp: (S,)
-        # Kernel matrix K[c, s] = exp(-‖cand_c - supp_s‖² / (σ_c · σ_s))
-        # For unit-normalised embeddings: ‖a-b‖² = 2(1 - a·b), computed via
-        #   ‖a-b‖² = ‖a‖²+‖b‖²-2a·b = 2 - 2(a·b)  [both unit vectors]
-        # which is equivalent to the direct difference for float32 emb.
-        cand_emb = emb[candidates_arr].astype(np.float64)  # (C, d)
-        sigma_cand = sigma[candidates_arr].astype(np.float64)  # (C,)
         supp_emb = emb[supp].astype(np.float64)              # (S, d)
         supp_sigma = sigma[supp].astype(np.float64)          # (S,)
 
-        # d2[c, s] = ‖cand_c − supp_s‖²  via broadcasting (C, S)
-        # = (cand_emb² row-sum) + (supp_emb² row-sum) - 2 * cand @ supp.T
-        c2 = (cand_emb * cand_emb).sum(axis=1, keepdims=True)   # (C, 1)
-        s2 = (supp_emb * supp_emb).sum(axis=1, keepdims=True).T  # (1, S)
-        dot_cs = cand_emb @ supp_emb.T                           # (C, S)
-        d2_cs = np.maximum(c2 + s2 - 2 * dot_cs, 0.0)           # (C, S)
+        # ---- Adaptive-K candidate retrieval: try K_eff_current; double if
+        #      |supp| in updated weights exceeds saturation × K_eff. The
+        #      saturation check is cheap (one count) and detects "we're
+        #      filling the K-NN window — basin likely extends further."
+        #      Persists K_eff_current across outer iters within this seed
+        #      (only grows; never shrinks). When adaptive_K=False, the
+        #      while-loop runs once with neighborhood_K and never doubles.
+        while True:
+            K_eff = min(K_eff_current, n)
 
-        # σ_cand × σ_supp outer product → (C, S) denominator
-        sigma_outer = sigma_cand[:, None] * supp_sigma[None, :]  # (C, S)
-        kern_cs = np.exp(-d2_cs / (sigma_outer + 1e-30))         # (C, S)
+            # Centroid K-NN
+            _, I_centroid = full_index.search(centroid[None, :], k=K_eff)
+            candidates = set(int(c) for c in I_centroid[0])
+            candidates.update(int(s) for s in supp)
+            candidates_arr = np.array(sorted(candidates), dtype=np.int64)
 
-        # K_G[c] = Σ_s w[s] · kern[c,s]  — (C,)
-        K_G_vec = kern_cs @ w_supp  # (C,)
+            # ---- Kernel matmul (CPU or GPU branch) ----
+            if emb_gpu is not None:
+                # GPU path: emb_gpu, sigma_gpu are torch.float32 on cuda.
+                # Transfer just the small index/weight arrays per iter; emb
+                # and sigma stay resident on GPU. All matmul + exp on GPU.
+                import torch
+                dev = emb_gpu.device
+                kdtype = torch.float32 if gpu_fp32 else torch.float64
+                cand_t = torch.from_numpy(candidates_arr).to(dev)
+                supp_t = torch.from_numpy(supp).to(dev)
+                w_supp_t = torch.from_numpy(w_supp).to(dev, dtype=kdtype)
+                cand_emb_t = emb_gpu[cand_t].to(kdtype)        # (C, d)
+                sigma_cand_t = sigma_gpu[cand_t].to(kdtype)    # (C,)
+                supp_emb_t = emb_gpu[supp_t].to(kdtype)        # (S, d)
+                supp_sigma_t = sigma_gpu[supp_t].to(kdtype)    # (S,)
 
-        # Subtract self-contribution for candidates that are also in support
-        supp_set = set(int(s) for s in supp)
-        supp_pos_in_cand = {int(s): i for i, s in enumerate(candidates_arr)
-                            if int(s) in supp_set}
-        for s_global, c_idx in supp_pos_in_cand.items():
-            K_G_vec[c_idx] -= float(w[s_global])  # kern(y,y)=1; remove w[y]·1
+                # K_G: kern(C, S) @ w_supp
+                c2 = (cand_emb_t * cand_emb_t).sum(dim=1, keepdim=True)
+                s2 = (supp_emb_t * supp_emb_t).sum(dim=1, keepdim=True).T
+                dot_cs = cand_emb_t @ supp_emb_t.T
+                d2_cs = torch.clamp(c2 + s2 - 2 * dot_cs, min=0.0)
+                sigma_outer = sigma_cand_t[:, None] * supp_sigma_t[None, :]
+                kern_cs = torch.exp(-d2_cs / (sigma_outer + 1e-30))
+                K_G_vec = (kern_cs @ w_supp_t).cpu().numpy()
 
-        # K_B_books[c] = Σ_b f(b) · kern(cand_c, book_b)  — (C,)
-        if len(B_books_arr) > 0:
-            book_emb_b = emb[B_books_arr].astype(np.float64)    # (B, d)
-            sigma_b = sigma[B_books_arr].astype(np.float64)      # (B,)
-            c2_for_b = c2  # reuse (C, 1)
-            b2 = (book_emb_b * book_emb_b).sum(axis=1, keepdims=True).T  # (1, B)
-            dot_cb = cand_emb @ book_emb_b.T                    # (C, B)
-            d2_cb = np.maximum(c2_for_b + b2 - 2 * dot_cb, 0.0)  # (C, B)
-            sigma_outer_b = sigma_cand[:, None] * sigma_b[None, :]  # (C, B)
-            kern_cb = np.exp(-d2_cb / (sigma_outer_b + 1e-30))  # (C, B)
-            K_B_books_vec = kern_cb @ B_books_mass               # (C,)
-        else:
-            K_B_books_vec = np.zeros(len(candidates_arr))
+                # K_B from boundary books
+                if len(B_books_arr) > 0:
+                    bb_t = torch.from_numpy(B_books_arr).to(dev)
+                    bbm_t = torch.from_numpy(B_books_mass).to(dev, dtype=kdtype)
+                    bb_emb_t = emb_gpu[bb_t].to(kdtype)
+                    bb_sigma_t = sigma_gpu[bb_t].to(kdtype)
+                    b2 = (bb_emb_t * bb_emb_t).sum(dim=1, keepdim=True).T
+                    dot_cb = cand_emb_t @ bb_emb_t.T
+                    d2_cb = torch.clamp(c2 + b2 - 2 * dot_cb, min=0.0)
+                    sigma_outer_b = sigma_cand_t[:, None] * bb_sigma_t[None, :]
+                    kern_cb = torch.exp(-d2_cb / (sigma_outer_b + 1e-30))
+                    K_B_books_vec = (kern_cb @ bbm_t).cpu().numpy()
+                else:
+                    K_B_books_vec = np.zeros(len(candidates_arr))
 
-        # K_B_arts[c] = Σ_a kern(cand_c, art_a)  — mass=1 each  — (C,)
-        if len(B_arts_arr) > 0:
-            art_emb_a = emb[B_arts_arr].astype(np.float64)      # (A, d)
-            sigma_a = sigma[B_arts_arr].astype(np.float64)       # (A,)
-            a2 = (art_emb_a * art_emb_a).sum(axis=1, keepdims=True).T  # (1, A)
-            dot_ca = cand_emb @ art_emb_a.T                     # (C, A)
-            d2_ca = np.maximum(c2 + a2 - 2 * dot_ca, 0.0)      # (C, A)
-            sigma_outer_a = sigma_cand[:, None] * sigma_a[None, :]  # (C, A)
-            kern_ca = np.exp(-d2_ca / (sigma_outer_a + 1e-30))  # (C, A)
-            K_B_arts_vec = kern_ca.sum(axis=1)                   # (C,)
-        else:
-            K_B_arts_vec = np.zeros(len(candidates_arr))
+                # K_B from boundary articles (mass=1 per article)
+                if len(B_arts_arr) > 0:
+                    ba_t = torch.from_numpy(B_arts_arr).to(dev)
+                    ba_emb_t = emb_gpu[ba_t].to(kdtype)
+                    ba_sigma_t = sigma_gpu[ba_t].to(kdtype)
+                    a2 = (ba_emb_t * ba_emb_t).sum(dim=1, keepdim=True).T
+                    dot_ca = cand_emb_t @ ba_emb_t.T
+                    d2_ca = torch.clamp(c2 + a2 - 2 * dot_ca, min=0.0)
+                    sigma_outer_a = sigma_cand_t[:, None] * ba_sigma_t[None, :]
+                    kern_ca = torch.exp(-d2_ca / (sigma_outer_a + 1e-30))
+                    K_B_arts_vec = kern_ca.sum(dim=1).cpu().numpy()
+                else:
+                    K_B_arts_vec = np.zeros(len(candidates_arr))
+            else:
+                # CPU path (numpy)
+                cand_emb = emb[candidates_arr].astype(np.float64)  # (C, d)
+                sigma_cand = sigma[candidates_arr].astype(np.float64)  # (C,)
+                c2 = (cand_emb * cand_emb).sum(axis=1, keepdims=True)   # (C, 1)
+                s2 = (supp_emb * supp_emb).sum(axis=1, keepdims=True).T  # (1, S)
+                dot_cs = cand_emb @ supp_emb.T                           # (C, S)
+                d2_cs = np.maximum(c2 + s2 - 2 * dot_cs, 0.0)           # (C, S)
+                sigma_outer = sigma_cand[:, None] * supp_sigma[None, :]  # (C, S)
+                kern_cs = np.exp(-d2_cs / (sigma_outer + 1e-30))         # (C, S)
+                K_G_vec = kern_cs @ w_supp  # (C,)
+                if len(B_books_arr) > 0:
+                    book_emb_b = emb[B_books_arr].astype(np.float64)    # (B, d)
+                    sigma_b = sigma[B_books_arr].astype(np.float64)      # (B,)
+                    b2 = (book_emb_b * book_emb_b).sum(axis=1, keepdims=True).T
+                    dot_cb = cand_emb @ book_emb_b.T
+                    d2_cb = np.maximum(c2 + b2 - 2 * dot_cb, 0.0)
+                    sigma_outer_b = sigma_cand[:, None] * sigma_b[None, :]
+                    kern_cb = np.exp(-d2_cb / (sigma_outer_b + 1e-30))
+                    K_B_books_vec = kern_cb @ B_books_mass
+                else:
+                    K_B_books_vec = np.zeros(len(candidates_arr))
+                if len(B_arts_arr) > 0:
+                    art_emb_a = emb[B_arts_arr].astype(np.float64)
+                    sigma_a = sigma[B_arts_arr].astype(np.float64)
+                    a2 = (art_emb_a * art_emb_a).sum(axis=1, keepdims=True).T
+                    dot_ca = cand_emb @ art_emb_a.T
+                    d2_ca = np.maximum(c2 + a2 - 2 * dot_ca, 0.0)
+                    sigma_outer_a = sigma_cand[:, None] * sigma_a[None, :]
+                    kern_ca = np.exp(-d2_ca / (sigma_outer_a + 1e-30))
+                    K_B_arts_vec = kern_ca.sum(axis=1)
+                else:
+                    K_B_arts_vec = np.zeros(len(candidates_arr))
 
-        K_B_vec = K_B_books_vec + K_B_arts_vec                  # (C,)
-        new_w_cands = K_G_vec / (K_G_vec + K_B_vec + 1e-30)    # (C,)
+            # Subtract self-contribution for candidates that are also in support
+            # (kern(y,y)=1; we don't want self-mass contributing to its own K_G)
+            supp_set = set(int(s) for s in supp)
+            supp_pos_in_cand = {int(s): i for i, s in enumerate(candidates_arr)
+                                if int(s) in supp_set}
+            for s_global, c_idx in supp_pos_in_cand.items():
+                K_G_vec[c_idx] -= float(w[s_global])
+
+            K_B_vec = K_B_books_vec + K_B_arts_vec                  # (C,)
+            new_w_cands = K_G_vec / (K_G_vec + K_B_vec + 1e-30)    # (C,)
+
+            # Saturation check: if too many of the K_eff candidates are
+            # in support after the update, basin likely extends beyond K.
+            if adaptive_K and K_eff_current < K_max:
+                n_in_supp = int((new_w_cands > tau_supp).sum())
+                if n_in_supp > K_saturation * K_eff:
+                    K_eff_current = min(K_eff_current * 2, K_max)
+                    continue   # redo this iter with bigger K
+            break
 
         new_w = w.copy()
         new_w[candidates_arr] = new_w_cands
@@ -377,6 +443,25 @@ def main() -> None:
     p.add_argument("--disable-fast-filters", action="store_true",
                    help="Disable seed-skip and early-abort; only exact-match "
                         "dedup catches duplicates. Slow; for testing confluence.")
+    p.add_argument("--adaptive-K", action="store_true",
+                   help="Adaptive K-NN window: start at --frontier-width, "
+                        "double when |supp| > --K-saturation × K_eff, "
+                        "cap at --K-max. Smaller wall time on tight basins.")
+    p.add_argument("--K-max", type=int, default=1000,
+                   help="Maximum K-NN window when --adaptive-K is set.")
+    p.add_argument("--K-saturation", type=float, default=0.8,
+                   help="Saturation fraction: if |new_w_cands > tau_supp| "
+                        "exceeds this fraction of K_eff, double K_eff.")
+    p.add_argument("--gpu", action="store_true",
+                   help="Run kernel matmul on GPU (torch + cuda). Embedding "
+                        "and sigma stay resident on the device; only small "
+                        "index/weight arrays are transferred per iter. Expected "
+                        "3-10× speedup at large basin sizes.")
+    p.add_argument("--fp32", action="store_true",
+                   help="Use float32 (not float64) for the GPU kernel matmul. "
+                        "Default float64 to match CPU. fp32 is 2× faster on "
+                        "GPU but may slightly perturb basin shapes via float "
+                        "precision; verify against fp64 baseline.")
     args = p.parse_args()
 
     print(f"Loading scope {args.scope}...")
@@ -415,6 +500,21 @@ def main() -> None:
     sigma = np.sqrt(sigma_sq)
     print(f"  σ stats: min={sigma.min():.4f}, median={np.median(sigma):.4f}, "
           f"max={sigma.max():.4f}")
+
+    # Optional GPU residency: emb and sigma transferred once at startup;
+    # kernel matmul happens on GPU each iter. Only small index/weight
+    # arrays move per iter.
+    emb_gpu = None
+    sigma_gpu = None
+    if args.gpu:
+        import torch
+        if not torch.cuda.is_available():
+            print("WARNING: --gpu set but CUDA not available; falling back to CPU.")
+        else:
+            print(f"Transferring emb ({emb.nbytes / 1e6:.0f} MB) and sigma to GPU...")
+            emb_gpu = torch.from_numpy(emb).cuda()      # float32
+            sigma_gpu = torch.from_numpy(sigma).cuda()  # float32
+            print(f"  emb_gpu: {tuple(emb_gpu.shape)}, sigma_gpu: {tuple(sigma_gpu.shape)}")
 
     # Precompute top-5 nearest books for every article (one batched query).
     NEAREST_BOOKS_K = 5
@@ -493,6 +593,12 @@ def main() -> None:
             claimed_check_every=args.claimed_check_every,
             in_G_lookup=in_G_lookup,
             frozen_cache=cache_arg,
+            adaptive_K=args.adaptive_K,
+            K_max=args.K_max,
+            K_saturation=args.K_saturation,
+            emb_gpu=emb_gpu,
+            sigma_gpu=sigma_gpu,
+            gpu_fp32=args.fp32,
         )
 
         if result is None:
