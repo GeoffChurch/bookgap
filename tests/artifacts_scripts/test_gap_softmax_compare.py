@@ -6,8 +6,12 @@ import numpy as np
 import pytest
 
 from artifacts_scripts.gap_softmax_compare import (
-    load_basin_supports,
+    argmax_shift_rate,
     best_match_jaccard,
+    eff_rank_summary,
+    effective_rank,
+    load_basin_supports,
+    save_eff_rank_scatter,
 )
 
 
@@ -70,14 +74,8 @@ def test_best_match_jaccard_skips_empty():
 
 
 # ---------------------------------------------------------------------------
-# Task 13 imports (added in second step)
+# Task 13: argmax-shift + effective-rank + scatter
 # ---------------------------------------------------------------------------
-
-from artifacts_scripts.gap_softmax_compare import (
-    argmax_shift_rate,
-    effective_rank,
-    eff_rank_summary,
-)
 
 
 def test_effective_rank_pure():
@@ -117,3 +115,14 @@ def test_eff_rank_summary_returns_quantiles():
     assert s["median_delta"] == pytest.approx(np.median(eff_old - eff_new))
     assert "iqr_delta" in s
     assert "frac_delta_ge_0.5" in s
+
+
+def test_save_eff_rank_scatter_creates_file(tmp_path: Path):
+    """Smoke test: scatter PNG is written and is non-empty."""
+    out = tmp_path / "scatter.png"
+    rng = np.random.default_rng(42)
+    eff_old = rng.uniform(1.0, 4.0, size=50)
+    eff_new = rng.uniform(1.0, 4.0, size=50)
+    save_eff_rank_scatter(out, eff_old, eff_new, None, title_suffix=" test")
+    assert out.exists()
+    assert out.stat().st_size > 1000  # non-trivial PNG
