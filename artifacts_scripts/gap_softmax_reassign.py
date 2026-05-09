@@ -391,6 +391,7 @@ def run_softmax_reassign(
     iter_mode: str,
     max_iters: int = 20,
     conv_tol: float = 1e-3,
+    book_anchored_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Drive one or more E-steps. Returns final M and meta dict
     including τ history, iter count, final L_inf delta, converged flag.
@@ -398,6 +399,12 @@ def run_softmax_reassign(
     iter_mode='oneshot': one E-step starting from M0.
     iter_mode='iterated': E-steps until ‖M_new − M‖_∞ < conv_tol or
         iter count reaches max_iters.
+
+    If book_anchored_mask is provided (shape (N_basins,) bool), those
+    basins' member weights are restored to M0 after each E-step. Their
+    centroids stay fixed across iterations — the parent doc's "fixed
+    competitors" framing. Articles can still softmax-assign elsewhere;
+    only the centroid drift is suppressed.
     """
     deltas: list[float] = []
     taus: list[float] = []
@@ -427,7 +434,11 @@ def run_softmax_reassign(
         )
         taus.append(step_meta["tau"])
         achieved_Hs.append(step_meta["achieved_H"])
-        M_basins_new = M_new[:, :M0.shape[1]]
+        M_basins_new = M_new[:, :M0.shape[1]].copy()
+        if book_anchored_mask is not None:
+            # Hold book-anchored basin member weights fixed; their
+            # centroids derived from these weights stay constant.
+            M_basins_new[:, book_anchored_mask] = M0[:, book_anchored_mask]
         delta = float(np.abs(M_basins_new - M_iter).max())
         deltas.append(delta)
         M_iter = M_basins_new
@@ -562,6 +573,11 @@ def main() -> None:
     p.add_argument("--k-marginal", type=int, default=200)
     p.add_argument("--max-iters", type=int, default=20)
     p.add_argument("--conv-tol", type=float, default=1e-3)
+    p.add_argument("--fix-book-anchored", action="store_true",
+                   help="Hold book-anchored basin member weights (and "
+                        "thus centroids) fixed across iterations. The "
+                        "parent doc's 'fixed competitors' framing — most "
+                        "likely fix for variant A and B iterated divergence.")
     args = p.parse_args()
 
     # Imports kept local to avoid heavy startup cost in unit tests
@@ -570,7 +586,8 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    config_tag = f"variant{args.variant}__P{args.perplexity}__{args.iter_mode}"
+    suffix = "__fixedBA" if args.fix_book_anchored else ""
+    config_tag = f"variant{args.variant}__P{args.perplexity}__{args.iter_mode}{suffix}"
 
     print(f"Loading scope {args.scope}...", flush=True)
     emb, ids, types, _titles, _topic_ids, _refs = load_scope(args.scope, with_refs=False)
@@ -598,11 +615,20 @@ def main() -> None:
               flush=True)
         log_K_empty = compute_log_K_empty(article_emb, article_sigma, args.k_marginal)
 
+    book_anchored_mask = None
+    if args.fix_book_anchored:
+        book_anchored_mask = np.array(
+            [int(m.get("book_anchored", 0)) == 1 for m in basin_meta], dtype=bool
+        )
+        print(f"  Holding {int(book_anchored_mask.sum())} book-anchored basins fixed",
+              flush=True)
+
     print(f"Running softmax reassign ({config_tag})...", flush=True)
     M, meta = run_softmax_reassign(
         article_emb, article_sigma, M0, log_K_empty,
         k_knn=args.k_knn, P_target=args.perplexity,
         iter_mode=args.iter_mode, max_iters=args.max_iters, conv_tol=args.conv_tol,
+        book_anchored_mask=book_anchored_mask,
     )
     print(f"  iters={meta['iters']}, converged={meta.get('converged', None)}, "
           f"final_delta={meta.get('final_delta', float('nan')):.6f}, "
