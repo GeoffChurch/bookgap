@@ -190,3 +190,45 @@ If Phase 2 ships:
 - Updated: `artifacts_scripts/gap_method_comparison_table.py` (read direct softmax outputs instead of multi-stage enriched columns)
 - `docs/coverage_design_tradeoffs.md` becomes a historical doc; new design replaces it
 - `gap_soft_em.py` retained for comparison / fallback during transition
+
+## Phase 1 result (2026-05-08)
+
+**Verdict: Phase 2 justified by formulation.** See
+[`docs/multicluster-softmax-phase1-results.md`](../../multicluster-softmax-phase1-results.md)
+for the full report (12 configs × 3 crisp rules on T10181).
+
+Headline numbers:
+- Mean best-match Jaccard (old → new) is **0.146–0.172** across all
+  one-shot configs, with **422/423 old basins below the 0.80 threshold**.
+  The spec's "<80% Jaccard for ≥20% of basins" criterion clears by an
+  order of magnitude.
+- Variant A vs Variant B is essentially indistinguishable (Jaccard
+  differs by < 0.005 across all cells). Perplexity sweep
+  (P ∈ {1.5, 2.0, 3.0}) and crisp rule sweep (argmax / p > 0.5 /
+  confidence-margin) are also second-order.
+- All 6 iterated configs hit `max_iters=20` without converging
+  (final_delta 0.75–0.99). The parent doc's "diffusion / runaway"
+  prediction is confirmed for Variant A, but Variant B fails too.
+- Top-20 leaderboard symmetric difference is **20/20** — completely
+  disjoint. Caveat: old uses Phase-3 cross-basin posterior, new uses
+  direct softmax readout — formulas differ by design.
+
+Phase 2 design notes derived from this run:
+
+1. **Keep ∅ active across iterations** in Variant B. The Phase 1
+   prototype dropped ∅ when feeding M back into the next E-step,
+   which is why Variant B doesn't stabilize. Phase 2's lockstep EM
+   should treat ∅ as a first-class basin in the iteration loop.
+2. **Hold book-anchored basin centroids fixed** during EM (the parent
+   doc's "fixed competitors" framing). Without this, both variants
+   drift in book-poor regions. This is the most likely fix for the
+   convergence failure.
+
+T11303 was **not run** — verdict on T10181 was unambiguous and the
+sweep across all dimensions agreed. A second topic would be redundant
+for the Phase 2 go/no-go decision.
+
+The Phase 1 implementation lives in
+`artifacts_scripts/gap_softmax_reassign.py` and
+`artifacts_scripts/gap_softmax_compare.py` and is retained for use as
+a reference / regression test against the Phase 2 lockstep EM.
