@@ -149,91 +149,6 @@ def test_write_enriched_csv_phase3_schema(tmp_path: Path):
     assert sizes == sorted(sizes, reverse=True)
 
 
-def test_compute_book_csls_matrix_high_for_anchored_basin():
-    """When a basin centroid is close to one specific book and far
-    from all others, CSLS to that book should be substantially higher
-    than CSLS to other books."""
-    from artifacts_scripts.gap_softmax_enrich import compute_book_csls_matrix
-
-    book_emb = np.eye(3, dtype=np.float32)
-    basin_centroids = np.array([
-        [0.95, 0.30, 0.10],
-        [0.30, 0.95, 0.10],
-    ], dtype=np.float32)
-    basin_centroids /= np.linalg.norm(basin_centroids, axis=1, keepdims=True)
-
-    csls = compute_book_csls_matrix(basin_centroids, book_emb, k_csls=2)
-    assert csls.shape == (2, 3)
-    assert csls[0, 0] > csls[0, 1]
-    assert csls[0, 0] > csls[0, 2]
-    assert csls[1, 1] > csls[1, 0]
-    assert csls[1, 1] > csls[1, 2]
-
-
-def test_compute_book_csls_matrix_handles_more_basins_than_books():
-    from artifacts_scripts.gap_softmax_enrich import compute_book_csls_matrix
-    rng = np.random.default_rng(3)
-    basin_centroids = rng.normal(size=(5, 8)).astype(np.float32)
-    basin_centroids /= np.linalg.norm(basin_centroids, axis=1, keepdims=True)
-    book_emb = rng.normal(size=(2, 8)).astype(np.float32)
-    book_emb /= np.linalg.norm(book_emb, axis=1, keepdims=True)
-    csls = compute_book_csls_matrix(basin_centroids, book_emb, k_csls=5)
-    assert csls.shape == (5, 2)
-
-
-def test_compute_book_csls_matrix_low_when_book_is_hub():
-    from artifacts_scripts.gap_softmax_enrich import compute_book_csls_matrix
-    book_emb = np.array([
-        [1.0, 0.0],
-        [0.0, 1.0],
-    ], dtype=np.float32)
-    basin_centroids = np.array([
-        [1.0, 0.05],
-        [0.7, 0.7],
-        [1.0, 0.1],
-    ], dtype=np.float32)
-    basin_centroids /= np.linalg.norm(basin_centroids, axis=1, keepdims=True)
-    csls = compute_book_csls_matrix(basin_centroids, book_emb, k_csls=2)
-    assert csls[1, 1] >= csls[1, 0] - 1e-6
-
-
-def test_top_books_csls_per_basin_returns_sorted_top_k():
-    from artifacts_scripts.gap_softmax_enrich import top_books_csls_per_basin
-    csls_matrix = np.array([
-        [0.5, 0.2, 0.8, 0.1, 0.4],
-        [0.1, 0.6, 0.3, 0.9, 0.2],
-    ], dtype=np.float32)
-    book_global_idx = np.array([100, 101, 102, 103, 104], dtype=np.int64)
-    all_titles = np.array(
-        ["Book A", "Book B", "Book C", "Book D", "Book E"], dtype=object
-    )
-    top = top_books_csls_per_basin(
-        csls_matrix=csls_matrix,
-        book_global_idx=book_global_idx,
-        all_titles=all_titles,
-        k_top_books=3,
-    )
-    assert len(top) == 2
-    assert len(top[0]) == 3
-    assert top[0][0]["idx"] == 102
-    assert top[0][0]["title"] == "Book C"
-    assert top[0][0]["csls"] == pytest.approx(0.8, abs=1e-5)
-    assert top[1][0]["idx"] == 103
-
-
-def test_top_books_csls_per_basin_clamps_when_k_exceeds_n_books():
-    from artifacts_scripts.gap_softmax_enrich import top_books_csls_per_basin
-    csls_matrix = np.array([[0.5, 0.2, 0.8]], dtype=np.float32)
-    book_global_idx = np.array([10, 20, 30], dtype=np.int64)
-    all_titles = np.array(["A", "B", "C"], dtype=object)
-    top = top_books_csls_per_basin(
-        csls_matrix=csls_matrix,
-        book_global_idx=book_global_idx,
-        all_titles=all_titles,
-        k_top_books=10,
-    )
-    assert len(top[0]) == 3
-
 
 def test_book_basin_softmax_book_assigned_to_nearer_basin():
     """User's scenario: book is geometrically close to a small tight
@@ -394,6 +309,37 @@ def test_write_memberships_npz_roundtrip(tmp_path: Path):
     np.testing.assert_allclose(M_loaded.toarray(), M_new, atol=1e-6)
 
 
+def test_write_memberships_npz_with_book_basin(tmp_path: Path):
+    """Optional book-basin softmax fields round-trip correctly."""
+    from artifacts_scripts.gap_softmax_enrich import write_memberships_npz
+    import scipy.sparse as sp
+
+    M_new = np.array([[0.7, 0.3], [0.0, 1.0]], dtype=np.float32)
+    M_books = np.array([[0.6, 0.4], [0.5, 0.5], [0.0, 1.0]], dtype=np.float32)
+    article_global_idx = np.array([100, 200], dtype=np.int64)
+    book_global_idx = np.array([1000, 2000, 3000], dtype=np.int64)
+    basin_rank = np.array([1, 2], dtype=np.int64)
+
+    out = tmp_path / "memberships.npz"
+    write_memberships_npz(
+        out_path=out,
+        M_new=M_new,
+        article_global_idx=article_global_idx,
+        basin_rank=basin_rank,
+        M_books=M_books,
+        book_global_idx=book_global_idx,
+    )
+    data = np.load(out, allow_pickle=False)
+    assert "M_books_data" in data.files
+    assert "book_global_idx" in data.files
+    np.testing.assert_array_equal(data["book_global_idx"], book_global_idx)
+    M_books_loaded = sp.csr_matrix(
+        (data["M_books_data"], data["M_books_indices"], data["M_books_indptr"]),
+        shape=tuple(data["M_books_shape"]),
+    )
+    np.testing.assert_allclose(M_books_loaded.toarray(), M_books, atol=1e-6)
+
+
 def test_run_end_to_end_synthetic_phase3(tmp_path: Path, monkeypatch):
     """run() produces both the Phase 3 CSV (12 cols) and the sidecar
     .memberships.npz."""
@@ -450,7 +396,6 @@ def test_run_end_to_end_synthetic_phase3(tmp_path: Path, monkeypatch):
         perplexity=2.0,
         keywords_per_gap=3,
         bigram_iterations=1,
-        k_csls=2,
         k_top_books=3,
     )
     assert out_csv.exists()
@@ -466,3 +411,6 @@ def test_run_end_to_end_synthetic_phase3(tmp_path: Path, monkeypatch):
     assert "article_global_idx" in data.files
     assert "basin_rank" in data.files
     assert "M_shape" in data.files
+    # Phase 3.5: npz also includes M_books
+    assert "M_books_data" in data.files
+    assert "book_global_idx" in data.files

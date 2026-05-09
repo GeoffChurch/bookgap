@@ -25,12 +25,16 @@ csv.field_size_limit(sys.maxsize)
 from artifacts_scripts.gap_softmax_reassign import (
     compute_basin_centroids,
     compute_self_tuning_sigma,
+    knn_basin_lookup,
     load_enriched_csv,
     softmax_e_step,
+    softmax_with_optional_empty,
+    tune_tau_for_perplexity,
 )
 
 from artifacts_scripts._keyword_helpers import compute_gap_keywords
 from artifacts_scripts.hdbscan_gap_probe import load_scope
+from bookgap.index import build_index, FlatL2
 
 
 def load_soft_em_basins(
@@ -74,60 +78,6 @@ def run_softmax_step(
     return M_new
 
 
-def compute_book_csls_matrix(
-    basin_centroids: np.ndarray,
-    book_emb: np.ndarray,
-    k_csls: int = 10,
-) -> np.ndarray:
-    """Per-(basin, book) CSLS reciprocity:
-        csls(G, B) = 2·sim(G, B) − hub_basin(G) − hub_book(B)
-    where hub_X is the mean cos-sim of X to its top-k_csls nearest
-    counterparts. Distance-aware via raw cos-sim; bilateral against
-    both basin- and book-side hubs.
-    """
-    sims = (basin_centroids @ book_emb.T).astype(np.float32)
-    n_basins, n_books = sims.shape
-    k_b = min(k_csls, n_books)
-    k_g = min(k_csls, n_basins)
-    top_b = np.partition(sims, -k_b, axis=1)[:, -k_b:]
-    hub_basin = top_b.mean(axis=1)
-    top_g = np.partition(sims, -k_g, axis=0)[-k_g:, :]
-    hub_book = top_g.mean(axis=0)
-    csls = 2.0 * sims - hub_basin[:, None] - hub_book[None, :]
-    return csls.astype(np.float32)
-
-
-def top_books_csls_per_basin(
-    csls_matrix: np.ndarray,
-    book_global_idx: np.ndarray,
-    all_titles: np.ndarray,
-    k_top_books: int = 10,
-) -> list[list[dict]]:
-    """Per basin, return top-k books by CSLS as a sorted-desc list of
-    {"idx", "title", "csls"} dicts. Clamps k to N_books if smaller."""
-    n_basins, n_books = csls_matrix.shape
-    k = min(k_top_books, n_books)
-    out: list[list[dict]] = []
-    if k >= n_books:
-        topk_idx = np.argsort(-csls_matrix, axis=1)[:, :k]
-    else:
-        part = np.argpartition(-csls_matrix, k - 1, axis=1)[:, :k]
-        rows = np.arange(n_basins)[:, None]
-        topk_idx = part[rows, np.argsort(-csls_matrix[rows, part], axis=1)]
-    for g in range(n_basins):
-        per_basin: list[dict] = []
-        for local_b in topk_idx[g]:
-            local_b_int = int(local_b)
-            global_b = int(book_global_idx[local_b_int])
-            title = str(all_titles[local_b_int]) if local_b_int < len(all_titles) else ""
-            per_basin.append({
-                "idx": global_b,
-                "title": title,
-                "csls": float(csls_matrix[g, local_b_int]),
-            })
-        out.append(per_basin)
-    return out
-
 
 def compute_book_basin_softmax(
     book_emb: np.ndarray,
@@ -157,14 +107,6 @@ def compute_book_basin_softmax(
         softmax distribution over its top-k_knn basins; other entries
         are 0 (kNN truncation).
     """
-    from artifacts_scripts.gap_softmax_reassign import (
-        compute_basin_centroids,
-        knn_basin_lookup,
-        tune_tau_for_perplexity,
-        softmax_with_optional_empty,
-    )
-    from bookgap.index import build_index, FlatL2
-
     n_books = book_emb.shape[0]
     n_basins = M_new.shape[1]
 
@@ -314,6 +256,8 @@ def write_memberships_npz(
     M_new: np.ndarray,
     article_global_idx: np.ndarray,
     basin_rank: np.ndarray,
+    M_books: np.ndarray | None = None,
+    book_global_idx: np.ndarray | None = None,
 ) -> None:
     """Save the sparse softmax membership matrix + row/col labels as
     an .npz sidecar.
@@ -324,6 +268,9 @@ def write_memberships_npz(
       - article_global_idx: (N_articles,) int64, row labels.
       - basin_rank: (N_basins,) int64, column labels — each col's
         rank in the corresponding CSV row.
+      - M_books_data, M_books_indices, M_books_indptr, M_books_shape:
+        optional sparse CSR components of M_books (book→basin softmax).
+      - book_global_idx: (N_books,) int64, book row labels (optional).
 
     To reload:
       data = np.load(path, allow_pickle=False)
@@ -333,16 +280,26 @@ def write_memberships_npz(
       )
     """
     import scipy.sparse as sp
-    sparse = sp.csr_matrix(M_new)
-    np.savez(
-        out_path,
-        M_data=sparse.data,
-        M_indices=sparse.indices,
-        M_indptr=sparse.indptr,
-        M_shape=np.array(sparse.shape, dtype=np.int64),
+    sparse_M = sp.csr_matrix(M_new)
+    save_dict = dict(
+        M_data=sparse_M.data,
+        M_indices=sparse_M.indices,
+        M_indptr=sparse_M.indptr,
+        M_shape=np.array(sparse_M.shape, dtype=np.int64),
         article_global_idx=article_global_idx.astype(np.int64),
         basin_rank=basin_rank.astype(np.int64),
     )
+    if M_books is not None:
+        sparse_books = sp.csr_matrix(M_books)
+        save_dict.update(
+            M_books_data=sparse_books.data,
+            M_books_indices=sparse_books.indices,
+            M_books_indptr=sparse_books.indptr,
+            M_books_shape=np.array(sparse_books.shape, dtype=np.int64),
+        )
+        if book_global_idx is not None:
+            save_dict["book_global_idx"] = book_global_idx.astype(np.int64)
+    np.savez(out_path, **save_dict)
 
 
 def _carry_book_members(
@@ -370,19 +327,17 @@ def run(
     perplexity: float = 2.0,
     keywords_per_gap: int = 5,
     bigram_iterations: int = 2,
-    k_csls: int = 10,
     k_top_books: int = 10,
 ) -> None:
     """Phase 3 enrichment pipeline.
 
     1. Load scope embeddings + soft-EM CSV → M0
-    2. Self-tuning σ + one-shot softmax E-step → M_new (full kNN-truncated)
-    3. Compute basin centroids + per-(basin, book) CSLS matrix →
-       top-k books per basin
+    2. Self-tuning σ (articles) + one-shot softmax E-step → M_new (full kNN-truncated)
+    3. Compute book σ + book→basin softmax → M_books → top-k books per basin
     4. Compute weighted keywords per basin (input: full kNN-truncated
        softmax members + weights)
     5. Compute effective_size = Σ_a M_new[a, G] per basin
-    6. Write 12-column CSV + sidecar .memberships.npz
+    6. Write 12-column CSV + sidecar .memberships.npz (includes M_books)
     """
     print(f"Loading scope {scope}...", flush=True)
     emb, ids, types, titles, _topic_ids, _refs = load_scope(scope, with_refs=False)
@@ -428,31 +383,39 @@ def run(
         global_abstracts = [""] * n
 
     print(f"Running softmax (P={perplexity}, k_knn={k_knn})...", flush=True)
+    article_sigma = compute_self_tuning_sigma(article_emb, k_sigma=k_sigma)
     M_new = run_softmax_step(
         article_emb=article_emb, M0=M0,
         k_knn=k_knn, k_sigma=k_sigma, perplexity=perplexity,
     )
     print("  done", flush=True)
 
-    # CSLS book-anchoring (computed for ALL basins; basin centroids from M_new)
-    print(f"Computing basin centroids + CSLS (k_csls={k_csls}, "
-          f"k_top_books={k_top_books})...", flush=True)
-    centroids_all = compute_basin_centroids(article_emb, M_new)
-    csls_matrix = compute_book_csls_matrix(
-        centroids_all, book_emb, k_csls=k_csls,
+    # Book→basin softmax (replaces CSLS). Basin centroids from M_new.
+    print(f"Computing book→basin softmax (k_knn={k_knn}, k_top_books={k_top_books})...",
+          flush=True)
+    book_sigma = compute_self_tuning_sigma(book_emb, k_sigma=k_sigma)
+    M_books = compute_book_basin_softmax(
+        book_emb=book_emb,
+        book_sigma=book_sigma,
+        article_emb=article_emb,
+        article_sigma=article_sigma,
+        M_new=M_new,
+        k_knn=k_knn,
+        perplexity=perplexity,
+        k_marginal=k_marginal,
     )
-    # IMPORTANT: top_books_csls_per_basin indexes all_titles by book-LOCAL
+    # IMPORTANT: top_books_membership_per_basin indexes all_titles by book-LOCAL
     # index (parallel to book_global_idx). Pass the book-subset titles
     # array, not the full corpus titles array.
     all_titles_corpus = np.array(titles, dtype=object)
     book_titles = all_titles_corpus[book_global_idx]
-    top_books_per_basin_list = top_books_csls_per_basin(
-        csls_matrix=csls_matrix,
+    top_books_per_basin_list = top_books_membership_per_basin(
+        M_books=M_books,
         book_global_idx=book_global_idx,
         all_titles=book_titles,
         k_top_books=k_top_books,
     )
-    top_books_csls_dict = {b: top_books_per_basin_list[b] for b in range(n_basins)}
+    top_books_membership_dict = {b: top_books_per_basin_list[b] for b in range(n_basins)}
 
     # Weighted keyword extraction over the full kNN-truncated membership
     print(f"Computing weighted keywords (top_k={keywords_per_gap})...", flush=True)
@@ -499,7 +462,7 @@ def run(
         n_articles_kNN_per_basin=n_articles_kNN_dict,
         effective_size_per_basin=effective_size_dict,
         top_keywords_per_basin=top_keywords_dict,
-        top_books_csls_per_basin=top_books_csls_dict,
+        top_books_membership_per_basin=top_books_membership_dict,
     )
 
     npz_path = output_path.with_suffix(".csv.memberships.npz")
@@ -510,6 +473,8 @@ def run(
         M_new=M_new,
         article_global_idx=article_global_idx,
         basin_rank=basin_rank_arr,
+        M_books=M_books,
+        book_global_idx=book_global_idx,
     )
     print("Done.", flush=True)
 
@@ -525,10 +490,8 @@ def main() -> None:
     p.add_argument("--perplexity", type=float, default=2.0)
     p.add_argument("--keywords-per-gap", type=int, default=5)
     p.add_argument("--bigram-iterations", type=int, default=2)
-    p.add_argument("--k-csls", type=int, default=10,
-                   help="Hub-correction neighborhood for CSLS (mycooc convention).")
     p.add_argument("--k-top-books", type=int, default=10,
-                   help="How many top-CSLS books to retain per basin.")
+                   help="How many top-membership books to retain per basin.")
     args = p.parse_args()
     run(
         scope=args.scope,
@@ -540,7 +503,6 @@ def main() -> None:
         perplexity=args.perplexity,
         keywords_per_gap=args.keywords_per_gap,
         bigram_iterations=args.bigram_iterations,
-        k_csls=args.k_csls,
         k_top_books=args.k_top_books,
     )
 
