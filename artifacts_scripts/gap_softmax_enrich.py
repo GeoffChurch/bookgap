@@ -129,6 +129,126 @@ def top_books_csls_per_basin(
     return out
 
 
+def compute_book_basin_softmax(
+    book_emb: np.ndarray,
+    book_sigma: np.ndarray,
+    article_emb: np.ndarray,
+    article_sigma: np.ndarray,
+    M_new: np.ndarray,
+    k_knn: int = 10,
+    perplexity: float = 2.0,
+    k_marginal: int = 200,
+) -> np.ndarray:
+    """Symmetric to article→basin softmax: compute book→basin softmax
+    membership.
+
+    For each book B:
+      1. Find B's top-k_knn nearest basin centroids (cos sim against
+         centroids derived from M_new on article_emb).
+      2. Per-basin density at B's location:
+           K̃_G(B) = (1 / Σ_x M_new[x, G]) · Σ_x M_new[x, G] · κ(B, x)
+         summed over B's top-k_marginal nearest articles
+         (kernel-tail truncation, same as compute_log_K_basins).
+      3. τ-tune for target perplexity (one global τ across all books).
+      4. Softmax over B's k_knn candidate basins.
+
+    Returns:
+        M_books: (N_books, N_basins) float32. Each row is a book's
+        softmax distribution over its top-k_knn basins; other entries
+        are 0 (kNN truncation).
+    """
+    from artifacts_scripts.gap_softmax_reassign import (
+        compute_basin_centroids,
+        knn_basin_lookup,
+        tune_tau_for_perplexity,
+        softmax_with_optional_empty,
+    )
+    from bookgap.index import build_index, FlatL2
+
+    n_books = book_emb.shape[0]
+    n_basins = M_new.shape[1]
+
+    # 1. Basin centroids from articles + M_new
+    centroids = compute_basin_centroids(article_emb, M_new)
+    # 2. Each book's top-k_knn basins
+    knn_book_basins = knn_basin_lookup(book_emb, centroids, k=k_knn)  # (N_books, k_knn)
+
+    # 3. Book→article kNN for kernel truncation
+    article_index = build_index(FlatL2(), article_emb.astype(np.float32))
+    D, I = article_index.search(
+        book_emb.astype(np.float32), k=min(k_marginal, article_emb.shape[0])
+    )  # squared L2 distances, neighbor indices
+    sigma_a_at = article_sigma.astype(np.float64)[I]      # (N_books, K_marg)
+    book_sigma_f64 = book_sigma.astype(np.float64)
+    d2 = D.astype(np.float64)
+    kappa = np.exp(-d2 / (book_sigma_f64[:, None] * sigma_a_at + 1e-30))   # (N_books, K_marg)
+
+    # 4. Per (book, kNN basin) density. Loop over k_knn slot to keep memory at (N_books, K_marg).
+    denom_full = M_new.sum(axis=0)                          # (N_basins,)
+    denom_at_kNN = denom_full[knn_book_basins]              # (N_books, k_knn)
+    log_K = np.zeros((n_books, k_knn), dtype=np.float64)
+    for k_col in range(k_knn):
+        basin_id = knn_book_basins[:, k_col]                # (N_books,)
+        # Gather M_new[I[b, j], basin_id[b]] for each (book b, neighbor j)
+        M_at = M_new[I, basin_id[:, None]]                  # (N_books, K_marg)
+        numerator = (kappa * M_at).sum(axis=1)              # (N_books,)
+        K_tilde_col = numerator / np.maximum(denom_at_kNN[:, k_col], 1e-30)
+        log_K[:, k_col] = np.log(K_tilde_col + 1e-30)
+
+    # 5. τ tune (one global τ across all books, same as articles)
+    tau = tune_tau_for_perplexity(
+        log_K, log_K_empty=None, P_target=perplexity,
+    )
+    probs = softmax_with_optional_empty(log_K, None, tau)   # (N_books, k_knn)
+
+    # 6. Scatter probs into full (N_books, N_basins) matrix
+    M_books = np.zeros((n_books, n_basins), dtype=np.float32)
+    rows = np.arange(n_books)[:, None]
+    M_books[rows, knn_book_basins] = probs.astype(np.float32)
+    return M_books
+
+
+def top_books_membership_per_basin(
+    M_books: np.ndarray,
+    book_global_idx: np.ndarray,
+    all_titles: np.ndarray,
+    k_top_books: int = 10,
+) -> list[list[dict]]:
+    """Per basin, return the top-k books by softmax membership weight
+    as a sorted-desc list of {"idx", "title", "weight"} dicts.
+
+    Books with zero weight on a basin are excluded (most basins have
+    at most a few books with nonzero weight due to kNN truncation
+    on the book side).
+    """
+    n_books, n_basins = M_books.shape
+    out: list[list[dict]] = []
+    for g in range(n_basins):
+        col = M_books[:, g]
+        nonzero_local = np.where(col > 0)[0]
+        if len(nonzero_local) == 0:
+            out.append([])
+            continue
+        order = np.argsort(-col[nonzero_local])
+        top_local = nonzero_local[order[:k_top_books]]
+        per_basin: list[dict] = []
+        for local_b in top_local:
+            local_b_int = int(local_b)
+            global_b = int(book_global_idx[local_b_int])
+            title = (
+                str(all_titles[local_b_int])
+                if local_b_int < len(all_titles)
+                else ""
+            )
+            per_basin.append({
+                "idx": global_b,
+                "title": title,
+                "weight": float(col[local_b_int]),
+            })
+        out.append(per_basin)
+    return out
+
+
 PHASE3_FIELDNAMES = [
     "rank", "seed_article", "first_seed_type",
     "n_articles_kNN", "n_books", "book_members_json",

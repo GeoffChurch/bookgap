@@ -235,6 +235,129 @@ def test_top_books_csls_per_basin_clamps_when_k_exceeds_n_books():
     assert len(top[0]) == 3
 
 
+def test_book_basin_softmax_book_assigned_to_nearer_basin():
+    """User's scenario: book is geometrically close to a small tight
+    basin (basin 0) and farther from a larger basin (basin 1).
+    The book's softmax should concentrate on basin 0."""
+    from artifacts_scripts.gap_softmax_enrich import compute_book_basin_softmax
+
+    rng = np.random.default_rng(7)
+    d = 8
+
+    # Basin 0: 3 articles tightly clustered around (1, 0, 0, ...)
+    # Basin 1: 30 articles loosely clustered around (0.7, 0.7, 0, ...)
+    # Book is at (0.95, 0.05, 0, ...) — close to basin 0's center, farther from basin 1.
+    base_a = np.array([1.0] + [0.0] * (d - 1), dtype=np.float32)
+    base_b = np.array([0.7, 0.7] + [0.0] * (d - 2), dtype=np.float32)
+
+    arts_a = base_a + 0.05 * rng.normal(size=(3, d)).astype(np.float32)
+    arts_b = base_b + 0.30 * rng.normal(size=(30, d)).astype(np.float32)
+    article_emb = np.concatenate([arts_a, arts_b], axis=0)
+    article_emb /= np.linalg.norm(article_emb, axis=1, keepdims=True)
+
+    M_new = np.zeros((33, 2), dtype=np.float32)
+    M_new[:3, 0] = 1.0
+    M_new[3:, 1] = 1.0
+
+    book_emb = np.array([[0.95, 0.05] + [0.0] * (d - 2)], dtype=np.float32)
+    book_emb /= np.linalg.norm(book_emb, axis=1, keepdims=True)
+
+    article_sigma = np.full(33, 0.3, dtype=np.float32)
+    book_sigma = np.array([0.3], dtype=np.float32)
+
+    M_books = compute_book_basin_softmax(
+        book_emb=book_emb,
+        book_sigma=book_sigma,
+        article_emb=article_emb,
+        article_sigma=article_sigma,
+        M_new=M_new,
+        k_knn=2,
+        perplexity=1.5,
+        k_marginal=10,
+    )
+    assert M_books.shape == (1, 2)
+    assert np.isclose(M_books.sum(axis=1)[0], 1.0, atol=1e-5)
+    # Book's softmax should weight basin 0 (its tight neighbor) more than basin 1
+    assert M_books[0, 0] > M_books[0, 1], (
+        f"book should belong to tight nearby basin 0, not larger far basin 1; "
+        f"got M_books={M_books}"
+    )
+
+
+def test_book_basin_softmax_returns_full_matrix_with_sparsity():
+    """Sanity: M_books shape is (N_books, N_basins). Each book has
+    nonzero weight on at most k_knn basins (kNN truncation)."""
+    from artifacts_scripts.gap_softmax_enrich import compute_book_basin_softmax
+
+    rng = np.random.default_rng(11)
+    d = 16
+    article_emb = rng.normal(size=(20, d)).astype(np.float32)
+    article_emb /= np.linalg.norm(article_emb, axis=1, keepdims=True)
+    book_emb = rng.normal(size=(5, d)).astype(np.float32)
+    book_emb /= np.linalg.norm(book_emb, axis=1, keepdims=True)
+
+    M_new = rng.uniform(0, 1, size=(20, 4)).astype(np.float32)
+    M_new = M_new / M_new.sum(axis=1, keepdims=True)
+    article_sigma = np.full(20, 0.3, dtype=np.float32)
+    book_sigma = np.full(5, 0.3, dtype=np.float32)
+
+    M_books = compute_book_basin_softmax(
+        book_emb=book_emb,
+        book_sigma=book_sigma,
+        article_emb=article_emb,
+        article_sigma=article_sigma,
+        M_new=M_new,
+        k_knn=2,
+        perplexity=1.5,
+        k_marginal=10,
+    )
+    assert M_books.shape == (5, 4)
+    # Rows sum to 1 (full softmax across kNN basins, others zero)
+    np.testing.assert_allclose(M_books.sum(axis=1), 1.0, atol=1e-5)
+    # At most k_knn=2 nonzero entries per row
+    nonzero_per_row = (M_books > 0).sum(axis=1)
+    assert (nonzero_per_row <= 2).all(), f"got nonzero counts {nonzero_per_row}"
+
+
+def test_top_books_membership_per_basin_returns_sorted_top_k():
+    from artifacts_scripts.gap_softmax_enrich import top_books_membership_per_basin
+    M_books = np.array([
+        [0.7, 0.3, 0.0, 0.0],   # book 0 → basin 0 (high), basin 1 (some)
+        [0.0, 0.6, 0.4, 0.0],   # book 1 → basin 1 (high), basin 2
+        [0.5, 0.0, 0.0, 0.5],   # book 2 → basin 0, basin 3
+    ], dtype=np.float32)
+    book_global_idx = np.array([100, 200, 300], dtype=np.int64)
+    all_titles = np.array(["Book A", "Book B", "Book C"], dtype=object)
+
+    top = top_books_membership_per_basin(
+        M_books=M_books,
+        book_global_idx=book_global_idx,
+        all_titles=all_titles,
+        k_top_books=2,
+    )
+    assert len(top) == 4   # one per basin
+    # Basin 0: book 0 (weight 0.7), book 2 (weight 0.5)
+    assert len(top[0]) == 2
+    assert top[0][0]["idx"] == 100
+    assert top[0][0]["weight"] == pytest.approx(0.7, abs=1e-5)
+    assert top[0][1]["idx"] == 300
+    # Basin 3: only book 2 contributes (others have 0 weight)
+    assert len(top[3]) == 1
+    assert top[3][0]["idx"] == 300
+
+
+def test_top_books_membership_per_basin_skips_zero_weight_entries():
+    """Books with 0 softmax weight on a basin shouldn't appear in
+    that basin's top list, even if k_top_books is large."""
+    from artifacts_scripts.gap_softmax_enrich import top_books_membership_per_basin
+    M_books = np.array([[0.7, 0.0]], dtype=np.float32)
+    book_global_idx = np.array([100], dtype=np.int64)
+    all_titles = np.array(["A"], dtype=object)
+    top = top_books_membership_per_basin(M_books, book_global_idx, all_titles, k_top_books=10)
+    assert len(top[0]) == 1   # only nonzero entry
+    assert len(top[1]) == 0   # no books weight basin 1
+
+
 def test_write_memberships_npz_roundtrip(tmp_path: Path):
     """write_memberships_npz emits a sparse softmax matrix + row/col
     labels; the npz round-trips correctly."""
