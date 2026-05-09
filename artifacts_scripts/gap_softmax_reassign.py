@@ -266,6 +266,57 @@ def compute_log_K_basins(
     return np.log(K_tilde + 1e-30)
 
 
+def softmax_e_step(
+    article_emb: np.ndarray,
+    article_sigma: np.ndarray,
+    M: np.ndarray,
+    log_K_empty: np.ndarray | None,
+    k_knn: int,
+    P_target: float,
+    log_tau_low: float = -3.0,
+    log_tau_high: float = 1.0,
+) -> tuple[np.ndarray, dict]:
+    """One E-step. Returns new M (full N_articles × N_basins or
+    N_basins+1 if ∅ is included) and a meta dict.
+
+    Steps:
+        1. centroids ← weighted mean of M's article members
+        2. knn_idx[a] ← top-k_knn basins by cosine to centroids
+        3. log_K[a, k] ← log K̃_kNN(a) for k ∈ kNN(a)
+        4. tau ← bisection on target perplexity
+        5. probs ← softmax over kNN basins (+ ∅ if log_K_empty given)
+        6. M_new ← scatter probs back into full N_basins (+1 if ∅)
+    """
+    N, _ = article_emb.shape
+    N_basins = M.shape[1]
+
+    centroids = compute_basin_centroids(article_emb, M)
+    knn_idx = knn_basin_lookup(article_emb, centroids, k=k_knn)
+    log_K = compute_log_K_basins(article_emb, article_sigma, M, knn_idx)
+    tau = tune_tau_for_perplexity(
+        log_K, log_K_empty, P_target,
+        log_tau_low=log_tau_low, log_tau_high=log_tau_high,
+    )
+    probs = softmax_with_optional_empty(log_K, log_K_empty, tau)
+
+    out_cols = N_basins + (1 if log_K_empty is not None else 0)
+    M_new = np.zeros((N, out_cols), dtype=np.float32)
+    K_kNN = knn_idx.shape[1]
+    rows = np.arange(N)[:, None]
+    M_new[rows, knn_idx] = probs[:, :K_kNN].astype(np.float32)
+    if log_K_empty is not None:
+        M_new[:, -1] = probs[:, -1].astype(np.float32)
+
+    achieved_H = mean_entropy(probs)
+    return M_new, {
+        "tau": float(tau),
+        "achieved_H": float(achieved_H),
+        "achieved_P": float(np.exp(achieved_H)),
+        "k_knn": int(k_knn),
+        "with_empty": log_K_empty is not None,
+    }
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,

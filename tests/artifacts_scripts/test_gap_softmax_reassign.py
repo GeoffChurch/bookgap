@@ -244,3 +244,53 @@ def test_compute_log_K_basins_matches_brute():
             expected[a, k] = num / max(denom, 1e-30)
     expected_log = np.log(expected + 1e-30)
     np.testing.assert_allclose(log_K, expected_log, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Task 7: softmax_e_step
+# ---------------------------------------------------------------------------
+from artifacts_scripts.gap_softmax_reassign import softmax_e_step
+
+
+def test_softmax_e_step_rebuilds_full_membership():
+    """One E-step: from M, compute (centroids, kNN, K̃, τ, softmax) →
+    new M_full of shape (N_articles, N_basins). The softmax-supported
+    columns should be only the per-article kNN basins; all other
+    columns are 0."""
+    rng = np.random.default_rng(5)
+    N, d, K_basins = 30, 16, 8
+    emb = rng.normal(size=(N, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(N, 0.3, dtype=np.float32)
+    M = rng.uniform(0, 1, size=(N, K_basins)).astype(np.float32)
+    log_K_empty = None
+
+    M_new, meta = softmax_e_step(
+        article_emb=emb, article_sigma=sigma, M=M,
+        log_K_empty=log_K_empty, k_knn=4, P_target=2.0,
+    )
+    assert M_new.shape == (N, K_basins)
+    assert (M_new >= 0).all()
+    assert np.allclose(M_new.sum(axis=1), 1.0, atol=1e-5)
+    assert ((M_new > 0).sum(axis=1) <= 4).all()
+    assert "tau" in meta
+    assert "achieved_H" in meta
+    assert abs(meta["achieved_H"] - np.log(2.0)) < 0.05
+
+
+def test_softmax_e_step_with_empty_class_returns_extra_column():
+    """Variant B: M_new has an extra column for ∅."""
+    rng = np.random.default_rng(6)
+    N, d, K_basins = 30, 16, 8
+    emb = rng.normal(size=(N, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(N, 0.3, dtype=np.float32)
+    M = rng.uniform(0, 1, size=(N, K_basins)).astype(np.float32)
+    log_K_empty = rng.normal(-2, 0.3, size=(N,)).astype(np.float64)
+
+    M_new, meta = softmax_e_step(
+        article_emb=emb, article_sigma=sigma, M=M,
+        log_K_empty=log_K_empty, k_knn=4, P_target=2.0,
+    )
+    assert M_new.shape == (N, K_basins + 1)
+    assert np.allclose(M_new.sum(axis=1), 1.0, atol=1e-5)
