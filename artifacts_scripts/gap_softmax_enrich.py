@@ -285,96 +285,62 @@ def top_books_csls_per_basin(
     return out
 
 
-PHASE2_FIELDNAMES = [
+PHASE3_FIELDNAMES = [
     "rank", "seed_article", "first_seed_type",
-    "n_articles", "n_books", "total_size", "book_anchored",
-    "member_indices_json", "member_weights_json",
-    "top_book_id", "top_book_title", "top_book_votes",
-    "vote_concentration", "top_keywords", "title_keyword_overlap",
-    "book_exists_flag", "templated_leak_flag",
-    "inherited_coverage_max_basin_rank", "inherited_coverage_max_basin_books",
-    "inherited_coverage_median_post", "effective_uncovered_articles",
+    "n_articles_kNN", "n_books", "book_members_json",
+    "top_book_id", "top_book_title", "top_keywords",
+    "top_books_csls_json", "effective_size",
 ]
 
 
 def write_enriched_csv(
     out_path: Path,
-    M_new: np.ndarray,
-    surviving: dict[int, list[tuple[int, float]]],
     basin_meta: list[dict],
     book_members_per_basin: dict[int, list[dict]],
-    article_global_idx: np.ndarray,
-    readouts: dict[int, dict],
-    book_signals: dict[int, dict],
+    n_articles_kNN_per_basin: dict[int, int],
+    effective_size_per_basin: dict[int, float],
+    top_keywords_per_basin: dict[int, str],
+    top_books_csls_per_basin: dict[int, list[dict]],
 ) -> None:
-    """Write the Phase 2 enriched CSV.
+    """Write the Phase 3 enriched CSV (summary schema; no per-article
+    member lists — those live in the sidecar .npz).
 
-    Output rows are sorted by effective_uncovered_articles descending
-    (book-anchored basins, which have effective_uncovered=0 by
-    convention, sort to the bottom).
-
-    Article members come from `surviving` (post-tau_supp); book members
-    are carried through from soft-EM via `book_members_per_basin`.
+    Output rows are sorted by effective_size descending; rank is
+    re-assigned 1..N after sort.
     """
     rows: list[dict] = []
-    for b, members_local_w in surviving.items():
+    n_basins = len(basin_meta)
+    for b in range(n_basins):
         meta = basin_meta[b]
-        member_dicts_articles = [
-            {"idx": int(article_global_idx[lidx]), "type": "article", "weight": float(w)}
-            for lidx, w in members_local_w
-        ]
-        member_dicts_books = book_members_per_basin.get(b, [])
-        all_members_dicts = member_dicts_articles + member_dicts_books
-        member_indices_dicts = [
-            {"idx": m["idx"], "type": m["type"]} for m in all_members_dicts
-        ]
-        n_articles = len(member_dicts_articles)
-        n_books = len(member_dicts_books)
-        sig = book_signals.get(b, {})
-        rd = readouts.get(b, {})
-        row = {
+        if b not in effective_size_per_basin:
+            continue
+        top_books = top_books_csls_per_basin.get(b, [])
+        top_book = top_books[0] if top_books else {"idx": -1, "title": "", "csls": 0.0}
+        rows.append({
             "rank": meta["rank"],
             "seed_article": meta.get("first_seed", -1),
             "first_seed_type": meta.get("first_seed_type", ""),
-            "n_articles": n_articles,
-            "n_books": n_books,
-            "total_size": n_articles + n_books,
-            "book_anchored": int(meta.get("book_anchored", 0)),
-            "member_indices_json": json.dumps(member_indices_dicts),
-            "member_weights_json": json.dumps(all_members_dicts),
-            "top_book_id": sig.get("top_book_id", -1),
-            "top_book_title": sig.get("top_book_title", ""),
-            "top_book_votes": sig.get("top_book_votes", 0),
-            "vote_concentration": f"{sig.get('vote_concentration', 0.0):.4f}",
-            "top_keywords": sig.get("top_keywords", ""),
-            "title_keyword_overlap": f"{sig.get('title_keyword_overlap', 0.0):.4f}",
-            "book_exists_flag": sig.get("book_exists_flag", 0),
-            "templated_leak_flag": sig.get("templated_leak_flag", 0),
-            "inherited_coverage_max_basin_rank": rd.get("inherited_coverage_max_basin_rank", ""),
-            "inherited_coverage_max_basin_books": rd.get("inherited_coverage_max_basin_books", ""),
-            "inherited_coverage_median_post": (
-                f"{rd['inherited_coverage_median_post']:.4f}"
-                if "inherited_coverage_median_post" in rd else ""
-            ),
-            "effective_uncovered_articles": (
-                f"{rd['effective_uncovered_articles']:.3f}"
-                if "effective_uncovered_articles" in rd else ""
-            ),
-        }
-        rows.append(row)
+            "n_articles_kNN": int(n_articles_kNN_per_basin.get(b, 0)),
+            "n_books": int(meta.get("n_books", 0) or 0),
+            "book_members_json": json.dumps(book_members_per_basin.get(b, [])),
+            "top_book_id": top_book["idx"],
+            "top_book_title": top_book["title"],
+            "top_keywords": top_keywords_per_basin.get(b, ""),
+            "top_books_csls_json": json.dumps(top_books),
+            "effective_size": f"{effective_size_per_basin.get(b, 0.0):.3f}",
+        })
 
     def sort_key(r):
         try:
-            return -float(r["effective_uncovered_articles"])
+            return -float(r["effective_size"])
         except (ValueError, TypeError):
             return 0.0
     rows.sort(key=sort_key)
-    # Re-rank after sort
     for new_rank, r in enumerate(rows, 1):
         r["rank"] = new_rank
 
     with out_path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=PHASE2_FIELDNAMES)
+        w = csv.DictWriter(f, fieldnames=PHASE3_FIELDNAMES)
         w.writeheader()
         w.writerows(rows)
 

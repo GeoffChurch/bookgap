@@ -210,22 +210,11 @@ def test_tag_basin_book_signals_passes_through_helpers():
         assert "templated_leak_flag" in sig
 
 
-def test_write_enriched_csv_includes_all_phase2_columns(tmp_path: Path):
-    """The output CSV has exactly the schema specified in the design doc.
-    No coverage_label_v2 column."""
+def test_write_enriched_csv_phase3_schema(tmp_path: Path):
+    """Phase 3 CSV: 12 summary columns, no per-article member lists.
+    Books carry through as book_members_json (compact)."""
     from artifacts_scripts.gap_softmax_enrich import write_enriched_csv
 
-    article_global_idx = np.array([100, 101, 200, 300], dtype=np.int64)
-    M_new = np.array([
-        [0.7, 0.3, 0.0],
-        [0.6, 0.4, 0.0],
-        [0.0, 0.7, 0.3],
-        [0.0, 0.0, 1.0],
-    ], dtype=np.float32)
-    surviving = {
-        0: [(0, 0.7), (1, 0.6)],
-        1: [(2, 0.7)],
-    }
     basin_meta = [
         {"rank": 1, "first_seed": 100, "first_seed_type": "article",
          "n_books": 0, "book_anchored": 0},
@@ -234,58 +223,48 @@ def test_write_enriched_csv_includes_all_phase2_columns(tmp_path: Path):
         {"rank": 3, "first_seed": 300, "first_seed_type": "article",
          "n_books": 0, "book_anchored": 0},
     ]
-    book_members_per_basin = {0: [], 1: [{"idx": 999, "type": "book", "weight": 1.0}], 2: []}
-    book_anchored_mask = np.array([False, True, False])
-    readouts = {
-        0: {"inherited_coverage_median_post": 0.42,
-            "effective_uncovered_articles": 1.23,
-            "inherited_coverage_max_basin_rank": 2,
-            "inherited_coverage_max_basin_books": 1},
-        1: {"inherited_coverage_median_post": 0.0,
-            "effective_uncovered_articles": 0.0,
-            "inherited_coverage_max_basin_rank": "",
-            "inherited_coverage_max_basin_books": ""},
+    book_members_per_basin = {
+        0: [],
+        1: [{"idx": 999, "type": "book", "weight": 1.0}],
+        2: [],
     }
-    book_signals = {
-        0: {"top_book_id": 999, "top_book_title": "Some Book",
-            "top_book_votes": 2, "vote_concentration": 1.0,
-            "top_keywords": "kw1 kw2", "title_keyword_overlap": 0.0,
-            "book_exists_flag": 0, "templated_leak_flag": 1},
-        1: {"top_book_id": 888, "top_book_title": "Other Book",
-            "top_book_votes": 1, "vote_concentration": 1.0,
-            "top_keywords": "kw3", "title_keyword_overlap": 0.5,
-            "book_exists_flag": 1, "templated_leak_flag": 0},
+    n_articles_kNN_per_basin = {0: 200, 1: 50, 2: 1138}
+    effective_size_per_basin = {0: 1.3, 1: 0.7, 2: 1129.6}
+    top_keywords_per_basin = {0: "kw1 kw2", 1: "kw3", 2: "que para como"}
+    top_books_csls_per_basin_dict = {
+        0: [{"idx": 999, "title": "Some Book", "csls": 0.42}],
+        1: [{"idx": 777, "title": "Anchor Book", "csls": 0.95}],
+        2: [{"idx": 888, "title": "Other Book", "csls": 0.10}],
     }
-    out = tmp_path / "enriched.csv"
+
+    out = tmp_path / "phase3.csv"
     write_enriched_csv(
         out_path=out,
-        M_new=M_new,
-        surviving=surviving,
         basin_meta=basin_meta,
         book_members_per_basin=book_members_per_basin,
-        article_global_idx=article_global_idx,
-        readouts=readouts,
-        book_signals=book_signals,
+        n_articles_kNN_per_basin=n_articles_kNN_per_basin,
+        effective_size_per_basin=effective_size_per_basin,
+        top_keywords_per_basin=top_keywords_per_basin,
+        top_books_csls_per_basin=top_books_csls_per_basin_dict,
     )
 
     rows = list(csv.DictReader(out.open()))
-    # Two surviving basins; ranked by effective_uncovered descending
-    assert len(rows) == 2
+    assert len(rows) == 3
     expected_cols = {
         "rank", "seed_article", "first_seed_type",
-        "n_articles", "n_books", "total_size", "book_anchored",
-        "member_indices_json", "member_weights_json",
-        "top_book_id", "top_book_title", "top_book_votes",
-        "vote_concentration", "top_keywords", "title_keyword_overlap",
-        "book_exists_flag", "templated_leak_flag",
-        "inherited_coverage_max_basin_rank", "inherited_coverage_max_basin_books",
-        "inherited_coverage_median_post", "effective_uncovered_articles",
+        "n_articles_kNN", "n_books", "book_members_json",
+        "top_book_id", "top_book_title", "top_keywords",
+        "top_books_csls_json", "effective_size",
     }
     assert set(rows[0].keys()) == expected_cols
-    assert "coverage_label_v2" not in rows[0]
-    # Highest effective_uncovered comes first
-    assert float(rows[0]["effective_uncovered_articles"]) >= float(
-        rows[1]["effective_uncovered_articles"])
+    for legacy in ("coverage_label_v2", "templated_leak_flag",
+                   "book_exists_flag", "inherited_coverage_median_post",
+                   "effective_uncovered_articles", "vote_concentration",
+                   "member_indices_json", "member_weights_json",
+                   "total_size"):
+        assert legacy not in rows[0]
+    sizes = [float(r["effective_size"]) for r in rows]
+    assert sizes == sorted(sizes, reverse=True)
 
 
 def test_compute_book_csls_matrix_high_for_anchored_basin():
