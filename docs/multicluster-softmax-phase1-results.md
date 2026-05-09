@@ -110,6 +110,65 @@ partly attributable to the formula difference flagged in the spec
 (direct softmax readout vs Phase-3 cross-basin posterior), but also
 reflects that the basin sets themselves are disjoint.
 
+### Refined verdict (post-hoc semantic spot-check, 2026-05-08)
+
+A semantic check of basin contents — top article titles for high-recall
+vs low-recall old basins, plus the three largest new basins — reframes
+the Jaccard 0.15 number.
+
+**The new pipeline is mostly expansion, not scrambling.** Per-old-basin
+recall against best-match new basin:
+
+- mean recall = 0.65, median = 0.72
+- recall ≥ 0.50 for 70.2% of old basins (297/423)
+- recall ≥ 0.90 for 31.2% of old basins (132/423)
+
+Precision is correspondingly low (mean 0.19) because the new basin is
+~7× larger on average — the new pipeline's argmax rule **partitions
+every article**, while the old pipeline's `tau_supp ≥ 0.5` filter only
+claims 21,009 / 88,460 articles (~24%). New basin sizes range up to
+2698; old basins cap at 210.
+
+**Semantically, the largest new basins are coherent broad topics, not
+garbage:**
+
+- new rank 102, n=2698 → computational / formal linguistics
+- new rank 13,  n=1648 → corpus linguistics
+- new rank 25,  n=1255 → Japanese/Korean linguistics
+
+**For low-recall old basins (the ~30% where members scatter), the
+best-match new basin is topically adjacent but framed differently.**
+Sample inspection:
+
+| old | old topic | new | new topic | recall |
+|---|---|---|---|---|
+| rank 1 | LLM reasoning + dynamic programming | rank 1 | combinatorial optimization, theorem proving | 0.04 |
+| rank 3 | generation + diffusion models | rank 3 | multimodal MT | 0.09 |
+| rank 2 | multimodal LLM reasoning | rank 2 | vision-to-language | 0.10 |
+
+These aren't "wrong" reassignments — they're alternative topical
+groupings of related material.
+
+**What this means for the Phase 2 verdict.** The two pipelines aren't
+producing fundamentally disjoint basin sets; they're producing the
+same corpus partitioned at different granularities:
+
+- **Old**: narrow tight seeds (~80 articles each), most articles
+  unassigned. Each basin defined by a seed's pairwise posterior.
+- **New**: broad natural partition (~210 average, up to 2698), every
+  article assigned to its softmax-nearest basin. Each basin defined
+  by its centroid in embedding space.
+
+Phase 2 is still justified — these are different models and the
+choice between "narrow seeds" vs "complete partition" is a real
+design decision, not a numerical artifact. But the right Phase 2
+question is **"what basin granularity do we want?"**, not "how do
+we make the formulations agree?". The Phase 2 spec should make this
+an explicit design choice: keep `tau_supp` as a post-hoc filter on
+the multi-cluster softmax (recovering the narrow-seeds behavior),
+or commit to the partition behavior (the design doc's vision), or
+something tunable in between.
+
 ### Caveats on the readout
 
 - **eff_rank_delta numbers (~421) are inflated** by an artifact: most

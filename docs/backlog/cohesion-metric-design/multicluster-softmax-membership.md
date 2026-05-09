@@ -213,16 +213,35 @@ Headline numbers:
   disjoint. Caveat: old uses Phase-3 cross-basin posterior, new uses
   direct softmax readout — formulas differ by design.
 
+**Refined readout from semantic spot-check.** The Jaccard 0.15
+headline understates structural relatedness. Per-old-basin recall
+against best-match new basin: median 0.72, ≥0.50 for 70% of old
+basins. The new pipeline mostly **expands** old tight basins (~80
+members, tau_supp ≥ 0.5) into broader natural partition basins
+(~210 mean, up to 2698 articles), claiming all 88k articles vs
+the old's 21k. The largest new basins are topically coherent
+(formal linguistics, corpus linguistics, Japanese/Korean
+linguistics), not garbage. For ~30% of old basins, members do
+scatter into related-but-distinct topical framings (e.g.,
+"LLM reasoning" → "combinatorial optimization") — real divergence,
+but adjacent.
+
 Phase 2 design notes derived from this run:
 
-1. **Keep ∅ active across iterations** in Variant B. The Phase 1
+1. **Pick a basin granularity explicitly.** This is the most
+   important design decision. The new pipeline's argmax-partition
+   gives broader basins; the old's `tau_supp` filter gives narrow
+   seeds. Phase 2 should expose this as a tunable
+   (e.g., post-hoc `tau_supp` on softmax probabilities) rather
+   than implicitly choose.
+2. **Keep ∅ active across iterations** in Variant B. The Phase 1
    prototype dropped ∅ when feeding M back into the next E-step,
    which is why Variant B doesn't stabilize. Phase 2's lockstep EM
    should treat ∅ as a first-class basin in the iteration loop.
-2. **Hold book-anchored basin centroids fixed** during EM (the parent
-   doc's "fixed competitors" framing). Without this, both variants
-   drift in book-poor regions. This is the most likely fix for the
-   convergence failure.
+3. **Hold book-anchored basin centroids fixed** during EM (the
+   parent doc's "fixed competitors" framing). Without this, both
+   variants drift in book-poor regions. This is the most likely
+   fix for the convergence failure.
 
 T11303 was **not run** — verdict on T10181 was unambiguous and the
 sweep across all dimensions agreed. A second topic would be redundant
