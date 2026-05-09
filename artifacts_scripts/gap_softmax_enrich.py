@@ -229,6 +229,100 @@ def tag_basin_book_signals(
     return out
 
 
+PHASE2_FIELDNAMES = [
+    "rank", "seed_article", "first_seed_type",
+    "n_articles", "n_books", "total_size", "book_anchored",
+    "member_indices_json", "member_weights_json",
+    "top_book_id", "top_book_title", "top_book_votes",
+    "vote_concentration", "top_keywords", "title_keyword_overlap",
+    "book_exists_flag", "templated_leak_flag",
+    "inherited_coverage_max_basin_rank", "inherited_coverage_max_basin_books",
+    "inherited_coverage_median_post", "effective_uncovered_articles",
+]
+
+
+def write_enriched_csv(
+    out_path: Path,
+    M_new: np.ndarray,
+    surviving: dict[int, list[tuple[int, float]]],
+    basin_meta: list[dict],
+    book_members_per_basin: dict[int, list[dict]],
+    article_global_idx: np.ndarray,
+    readouts: dict[int, dict],
+    book_signals: dict[int, dict],
+) -> None:
+    """Write the Phase 2 enriched CSV.
+
+    Output rows are sorted by effective_uncovered_articles descending
+    (book-anchored basins, which have effective_uncovered=0 by
+    convention, sort to the bottom).
+
+    Article members come from `surviving` (post-tau_supp); book members
+    are carried through from soft-EM via `book_members_per_basin`.
+    """
+    rows: list[dict] = []
+    for b, members_local_w in surviving.items():
+        meta = basin_meta[b]
+        member_dicts_articles = [
+            {"idx": int(article_global_idx[lidx]), "type": "article", "weight": float(w)}
+            for lidx, w in members_local_w
+        ]
+        member_dicts_books = book_members_per_basin.get(b, [])
+        all_members_dicts = member_dicts_articles + member_dicts_books
+        member_indices_dicts = [
+            {"idx": m["idx"], "type": m["type"]} for m in all_members_dicts
+        ]
+        n_articles = len(member_dicts_articles)
+        n_books = len(member_dicts_books)
+        sig = book_signals.get(b, {})
+        rd = readouts.get(b, {})
+        row = {
+            "rank": meta["rank"],
+            "seed_article": meta.get("first_seed", -1),
+            "first_seed_type": meta.get("first_seed_type", ""),
+            "n_articles": n_articles,
+            "n_books": n_books,
+            "total_size": n_articles + n_books,
+            "book_anchored": int(meta.get("book_anchored", 0)),
+            "member_indices_json": json.dumps(member_indices_dicts),
+            "member_weights_json": json.dumps(all_members_dicts),
+            "top_book_id": sig.get("top_book_id", -1),
+            "top_book_title": sig.get("top_book_title", ""),
+            "top_book_votes": sig.get("top_book_votes", 0),
+            "vote_concentration": f"{sig.get('vote_concentration', 0.0):.4f}",
+            "top_keywords": sig.get("top_keywords", ""),
+            "title_keyword_overlap": f"{sig.get('title_keyword_overlap', 0.0):.4f}",
+            "book_exists_flag": sig.get("book_exists_flag", 0),
+            "templated_leak_flag": sig.get("templated_leak_flag", 0),
+            "inherited_coverage_max_basin_rank": rd.get("inherited_coverage_max_basin_rank", ""),
+            "inherited_coverage_max_basin_books": rd.get("inherited_coverage_max_basin_books", ""),
+            "inherited_coverage_median_post": (
+                f"{rd['inherited_coverage_median_post']:.4f}"
+                if "inherited_coverage_median_post" in rd else ""
+            ),
+            "effective_uncovered_articles": (
+                f"{rd['effective_uncovered_articles']:.3f}"
+                if "effective_uncovered_articles" in rd else ""
+            ),
+        }
+        rows.append(row)
+
+    def sort_key(r):
+        try:
+            return -float(r["effective_uncovered_articles"])
+        except (ValueError, TypeError):
+            return 0.0
+    rows.sort(key=sort_key)
+    # Re-rank after sort
+    for new_rank, r in enumerate(rows, 1):
+        r["rank"] = new_rank
+
+    with out_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=PHASE2_FIELDNAMES)
+        w.writeheader()
+        w.writerows(rows)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
