@@ -426,27 +426,154 @@ def crisp_confidence_margin(
     return out.astype(np.int64)
 
 
+def write_basin_csv(
+    out_path: Path,
+    M: np.ndarray,
+    crisp: np.ndarray,
+    basin_meta: list[dict],
+    article_global_idx: np.ndarray,
+    with_empty: bool,
+) -> None:
+    """Write a basin CSV in the same schema as gap_soft_em's enriched
+    output. One row per basin; members are articles whose crisp ==
+    basin index, sorted by softmax weight desc.
+
+    crisp: (N_articles,) int64; values in [0, N_basins) or -1 (no support).
+
+    Note: the CSV column header for the seed index is `seed_article`
+    (matches gap_soft_em.py:1327); the internal basin_meta dict uses
+    key `first_seed` for the same value.
+    """
+    n_basins = len(basin_meta)
+    fieldnames = [
+        "rank", "seed_article", "n_articles", "n_books", "book_anchored",
+        "member_indices_json", "member_weights_json",
+    ]
+    with out_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for k in range(n_basins):
+            mask = (crisp == k)
+            members_local = np.where(mask)[0]
+            if len(members_local) == 0:
+                w.writerow({
+                    "rank": basin_meta[k]["rank"],
+                    "seed_article": basin_meta[k]["first_seed"],
+                    "n_articles": 0,
+                    "n_books": basin_meta[k]["n_books"],
+                    "book_anchored": basin_meta[k]["book_anchored"],
+                    "member_indices_json": json.dumps([]),
+                    "member_weights_json": json.dumps([]),
+                })
+                continue
+            weights = M[members_local, k]
+            order = np.argsort(-weights)
+            members_local = members_local[order]
+            members_global = article_global_idx[members_local]
+            member_weights = [
+                {"idx": int(g), "type": "article", "weight": float(M[l, k])}
+                for g, l in zip(members_global, members_local)
+            ]
+            w.writerow({
+                "rank": basin_meta[k]["rank"],
+                "seed_article": basin_meta[k]["first_seed"],
+                "n_articles": len(members_local),
+                "n_books": basin_meta[k]["n_books"],
+                "book_anchored": basin_meta[k]["book_anchored"],
+                "member_indices_json": json.dumps([int(g) for g in members_global]),
+                "member_weights_json": json.dumps(member_weights),
+            })
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--scope", required=True,
-                   help="Topic scope path, e.g. 17/1702/T10181")
-    p.add_argument("--enriched-csv", required=True,
-                   help="Enriched soft-EM CSV path (input).")
+    p.add_argument("--scope", required=True)
+    p.add_argument("--enriched-csv", required=True)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--variant", choices=["A", "B"], required=True)
     p.add_argument("--perplexity", type=float, required=True)
     p.add_argument("--iter-mode", choices=["oneshot", "iterated"], required=True)
-    p.add_argument("--k-knn", type=int, default=10,
-                   help="Number of basin neighbors per article in the softmax.")
-    p.add_argument("--k-sigma", type=int, default=7,
-                   help="Self-tuning σ: median distance to k-th nearest neighbor.")
-    p.add_argument("--k-marginal", type=int, default=200,
-                   help="Article-kNN truncation for variant B's K̃_∅.")
+    p.add_argument("--k-knn", type=int, default=10)
+    p.add_argument("--k-sigma", type=int, default=7)
+    p.add_argument("--k-marginal", type=int, default=200)
     p.add_argument("--max-iters", type=int, default=20)
-    p.add_argument("--conv-tol", type=float, default=1e-3,
-                   help="L_inf convergence tolerance on membership matrix.")
+    p.add_argument("--conv-tol", type=float, default=1e-3)
     args = p.parse_args()
-    raise NotImplementedError("driver implemented in later tasks")
+
+    # Imports kept local to avoid heavy startup cost in unit tests
+    from artifacts_scripts.hdbscan_gap_probe import load_scope
+    from scipy.sparse import csr_matrix, save_npz
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config_tag = f"variant{args.variant}__P{args.perplexity}__{args.iter_mode}"
+
+    print(f"Loading scope {args.scope}...", flush=True)
+    emb, ids, types, _titles, _topic_ids, _refs = load_scope(args.scope, with_refs=False)
+    n = len(ids)
+    types_arr = np.array(types)
+    is_article = types_arr == "article"
+    article_global_idx = np.where(is_article)[0]
+    article_emb = emb[article_global_idx]
+    norms = np.linalg.norm(article_emb, axis=1, keepdims=True)
+    article_emb = (article_emb / np.where(norms > 0, norms, 1.0)).astype(np.float32)
+
+    print(f"  {n:,} works ({(~is_article).sum():,} books, {is_article.sum():,} articles)",
+          flush=True)
+
+    print("Loading enriched CSV...", flush=True)
+    M0, basin_meta = load_enriched_csv(Path(args.enriched_csv), is_article)
+    print(f"  M0 shape: {M0.shape}", flush=True)
+
+    print(f"Computing self-tuning σ (k={args.k_sigma})...", flush=True)
+    article_sigma = compute_self_tuning_sigma(article_emb, k_sigma=args.k_sigma)
+
+    log_K_empty = None
+    if args.variant == "B":
+        print(f"Computing K̃_∅ via article-kNN truncation (k_marginal={args.k_marginal})...",
+              flush=True)
+        log_K_empty = compute_log_K_empty(article_emb, article_sigma, args.k_marginal)
+
+    print(f"Running softmax reassign ({config_tag})...", flush=True)
+    M, meta = run_softmax_reassign(
+        article_emb, article_sigma, M0, log_K_empty,
+        k_knn=args.k_knn, P_target=args.perplexity,
+        iter_mode=args.iter_mode, max_iters=args.max_iters, conv_tol=args.conv_tol,
+    )
+    print(f"  iters={meta['iters']}, converged={meta.get('converged', None)}, "
+          f"final_delta={meta.get('final_delta', float('nan')):.6f}, "
+          f"final τ={meta['taus'][-1]:.4f}, achieved P={meta['achieved_Ps'][-1]:.3f}",
+          flush=True)
+
+    M_basins_only = M[:, :M0.shape[1]]
+    sparse = csr_matrix(M_basins_only)
+    save_npz(out_dir / f"memberships__{config_tag}.npz", sparse)
+
+    with_empty = log_K_empty is not None
+    rules = {
+        "argmax": crisp_argmax(M, with_empty),
+        "p_gt_0.5": crisp_threshold(M, with_empty, 0.5),
+        "confidence_margin": crisp_confidence_margin(M, with_empty, args.k_knn),
+    }
+    for rule_name, crisp in rules.items():
+        write_basin_csv(
+            out_dir / f"basins__{config_tag}__{rule_name}.csv",
+            M_basins_only, crisp, basin_meta, article_global_idx, with_empty=False,
+        )
+
+    meta_full = dict(meta)
+    meta_full["config"] = config_tag
+    meta_full["variant"] = args.variant
+    meta_full["perplexity_target"] = args.perplexity
+    meta_full["iter_mode"] = args.iter_mode
+    meta_full["k_knn"] = args.k_knn
+    meta_full["k_sigma"] = args.k_sigma
+    meta_full["k_marginal"] = args.k_marginal if args.variant == "B" else None
+    meta_full["with_empty"] = with_empty
+    meta_full["n_articles"] = int(len(article_global_idx))
+    meta_full["n_basins"] = int(M0.shape[1])
+    (out_dir / f"meta__{config_tag}.json").write_text(json.dumps(meta_full, indent=2))
+    print(f"Done. Wrote artifacts to {out_dir}/*__{config_tag}.*", flush=True)
 
 
 if __name__ == "__main__":

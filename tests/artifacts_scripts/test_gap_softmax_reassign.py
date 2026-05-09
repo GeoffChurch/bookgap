@@ -375,3 +375,39 @@ def test_run_softmax_reassign_iterated_converges_or_caps():
     assert 1 <= meta["iters"] <= 20
     assert "final_delta" in meta
     assert "converged" in meta
+
+
+# ---------------------------------------------------------------------------
+# Task 9: write_basin_csv
+# ---------------------------------------------------------------------------
+from artifacts_scripts.gap_softmax_reassign import write_basin_csv
+
+
+def test_write_basin_csv_round_trips_supports(tmp_path: Path):
+    """Given a crisp support assignment, basin CSV rows have correct
+    n_articles, member_indices_json, and members are ordered by weight."""
+    article_global_idx = np.array([100, 101, 200, 300, 400], dtype=np.int64)
+    M = np.array([
+        [0.6, 0.3, 0.1],
+        [0.1, 0.8, 0.1],
+        [0.5, 0.4, 0.1],
+        [0.0, 0.1, 0.9],
+        [0.0, 0.5, 0.5],
+    ], dtype=np.float32)
+    crisp = np.array([0, 1, 0, 2, 1], dtype=np.int64)   # argmax
+    basin_meta = [
+        {"rank": 1, "first_seed": 100, "n_books": 0, "book_anchored": 0},
+        {"rank": 2, "first_seed": 101, "n_books": 0, "book_anchored": 0},
+        {"rank": 3, "first_seed": 300, "n_books": 1, "book_anchored": 1},
+    ]
+    out = tmp_path / "basins.csv"
+    write_basin_csv(out, M, crisp, basin_meta, article_global_idx, with_empty=False)
+    rows = list(csv.DictReader(out.open()))
+    # 3 basins emitted; basin 0 has 2 members, basin 1 has 2 members,
+    # basin 2 has 1 member. Empty basins also emitted (n_articles=0).
+    assert len(rows) == 3
+    rows_by_rank = {int(r["rank"]): r for r in rows}
+    b0 = rows_by_rank[1]
+    assert int(b0["n_articles"]) == 2
+    members = json.loads(b0["member_indices_json"])
+    assert sorted(members) == [100, 200]
