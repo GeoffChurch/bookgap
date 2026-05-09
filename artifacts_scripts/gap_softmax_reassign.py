@@ -53,7 +53,7 @@ def load_enriched_csv(
                 M0[local, k] = float(w["weight"])
         basin_meta.append({
             "rank": int(row["rank"]),
-            "first_seed": int(row["first_seed"]),
+            "first_seed": int(row["seed_article"]),   # CSV header is seed_article, not first_seed
             "n_books": int(row.get("n_books", 0)),
             "n_articles": int(row.get("n_articles", 0)),
             "book_anchored": int(row.get("book_anchored", 0)),

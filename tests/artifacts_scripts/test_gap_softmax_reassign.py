@@ -15,7 +15,7 @@ def test_load_enriched_csv_builds_M0(tmp_path: Path):
     rows = [
         {
             "rank": "1",
-            "first_seed": "100",
+            "seed_article": "100",
             "n_books": "0",
             "n_articles": "2",
             "book_anchored": "0",
@@ -27,7 +27,7 @@ def test_load_enriched_csv_builds_M0(tmp_path: Path):
         },
         {
             "rank": "2",
-            "first_seed": "200",
+            "seed_article": "200",
             "n_books": "1",
             "n_articles": "1",
             "book_anchored": "1",
