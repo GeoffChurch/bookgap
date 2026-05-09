@@ -124,3 +124,46 @@ def test_tune_tau_with_empty_class():
     assert np.allclose(probs.sum(axis=1), 1.0, atol=1e-6)
     H_bar = mean_entropy(probs)
     assert abs(H_bar - np.log(P)) < 0.02
+
+
+from artifacts_scripts.gap_softmax_reassign import compute_log_K_empty
+
+
+def test_compute_log_K_empty_matches_brute_at_small_N():
+    """At small N the kNN truncation should reproduce the brute-force
+    marginal-density sum within numerical precision."""
+    rng = np.random.default_rng(7)
+    n, d = 40, 16
+    emb = rng.normal(size=(n, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(n, 0.5, dtype=np.float32)
+
+    # Brute force: K̃_∅(a) = (1/N) Σ_y exp(-||a-y||² / (σ_a σ_y))
+    d2 = ((emb[:, None, :] - emb[None, :, :]) ** 2).sum(axis=2)
+    sigma_outer = sigma[:, None] * sigma[None, :]
+    K_full = np.exp(-d2 / (sigma_outer + 1e-30)).astype(np.float64)
+    expected = K_full.mean(axis=1)
+    expected_log = np.log(expected + 1e-30)
+
+    # kNN truncation with K=n (full set, sanity check)
+    log_K_empty = compute_log_K_empty(
+        article_emb=emb, article_sigma=sigma, k_marginal=n,
+    )
+    np.testing.assert_allclose(log_K_empty, expected_log, atol=1e-5)
+
+
+def test_compute_log_K_empty_kNN_truncation_is_close():
+    """At a small but representative K (kernel mass concentrated
+    locally), kNN truncation should be within a few percent of brute."""
+    rng = np.random.default_rng(11)
+    n, d = 200, 32
+    emb = rng.normal(size=(n, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(n, 0.2, dtype=np.float32)  # small σ → tight kernel
+
+    log_K_full = compute_log_K_empty(emb, sigma, k_marginal=n)
+    log_K_trunc = compute_log_K_empty(emb, sigma, k_marginal=50)
+    rel_err = np.abs(np.exp(log_K_trunc) - np.exp(log_K_full)) / (
+        np.exp(log_K_full) + 1e-30
+    )
+    assert rel_err.max() < 0.05, f"max rel err: {rel_err.max()}"

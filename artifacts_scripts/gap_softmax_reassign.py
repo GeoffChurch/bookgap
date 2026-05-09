@@ -143,6 +143,39 @@ def tune_tau_for_perplexity(
     return float(np.exp(0.5 * (lo + hi)))
 
 
+def compute_log_K_empty(
+    article_emb: np.ndarray,
+    article_sigma: np.ndarray,
+    k_marginal: int,
+) -> np.ndarray:
+    """Marginal-density background kernel K̃_∅(a) = (1/N) · Σ_y κ(a, y),
+    truncated to a's k_marginal nearest articles.
+
+    The kernel is essentially zero beyond ~5σ; this matches the
+    truncation strategy gap_soft_em uses internally for K_G/K_B.
+
+    Returns log(K̃_∅) of shape (N_articles,) in float64.
+    """
+    N = article_emb.shape[0]
+    k = min(k_marginal, N)
+    index = build_index(FlatL2(), article_emb.astype(np.float32))
+    D, I = index.search(article_emb.astype(np.float32), k=k)  # squared L2
+
+    sigma_a = article_sigma.astype(np.float64)
+    sigma_y = sigma_a[I]                       # (N, k)
+    d2 = D.astype(np.float64)                  # (N, k)
+    kern = np.exp(-d2 / (sigma_a[:, None] * sigma_y + 1e-30))  # (N, k)
+
+    K_emp = kern.sum(axis=1) / float(N)        # (N,) — divide by N (not k)
+    # Sanity-check the kernel tail: log the value at the K-th neighbor
+    tail = kern[:, -1]
+    median_tail = float(np.median(tail))
+    if median_tail > 1e-4:
+        print(f"WARNING: K_empty kNN tail not negligible "
+              f"(median tail κ = {median_tail:.2e}); consider larger k_marginal")
+    return np.log(K_emp + 1e-30)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
