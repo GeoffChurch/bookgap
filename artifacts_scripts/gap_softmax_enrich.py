@@ -230,6 +230,29 @@ def tag_basin_book_signals(
     return out
 
 
+def compute_book_csls_matrix(
+    basin_centroids: np.ndarray,
+    book_emb: np.ndarray,
+    k_csls: int = 10,
+) -> np.ndarray:
+    """Per-(basin, book) CSLS reciprocity:
+        csls(G, B) = 2·sim(G, B) − hub_basin(G) − hub_book(B)
+    where hub_X is the mean cos-sim of X to its top-k_csls nearest
+    counterparts. Distance-aware via raw cos-sim; bilateral against
+    both basin- and book-side hubs.
+    """
+    sims = (basin_centroids @ book_emb.T).astype(np.float32)
+    n_basins, n_books = sims.shape
+    k_b = min(k_csls, n_books)
+    k_g = min(k_csls, n_basins)
+    top_b = np.partition(sims, -k_b, axis=1)[:, -k_b:]
+    hub_basin = top_b.mean(axis=1)
+    top_g = np.partition(sims, -k_g, axis=0)[-k_g:, :]
+    hub_book = top_g.mean(axis=0)
+    csls = 2.0 * sims - hub_basin[:, None] - hub_book[None, :]
+    return csls.astype(np.float32)
+
+
 PHASE2_FIELDNAMES = [
     "rank", "seed_article", "first_seed_type",
     "n_articles", "n_books", "total_size", "book_anchored",

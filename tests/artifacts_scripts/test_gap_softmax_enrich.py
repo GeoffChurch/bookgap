@@ -288,6 +288,54 @@ def test_write_enriched_csv_includes_all_phase2_columns(tmp_path: Path):
         rows[1]["effective_uncovered_articles"])
 
 
+def test_compute_book_csls_matrix_high_for_anchored_basin():
+    """When a basin centroid is close to one specific book and far
+    from all others, CSLS to that book should be substantially higher
+    than CSLS to other books."""
+    from artifacts_scripts.gap_softmax_enrich import compute_book_csls_matrix
+
+    book_emb = np.eye(3, dtype=np.float32)
+    basin_centroids = np.array([
+        [0.95, 0.30, 0.10],
+        [0.30, 0.95, 0.10],
+    ], dtype=np.float32)
+    basin_centroids /= np.linalg.norm(basin_centroids, axis=1, keepdims=True)
+
+    csls = compute_book_csls_matrix(basin_centroids, book_emb, k_csls=2)
+    assert csls.shape == (2, 3)
+    assert csls[0, 0] > csls[0, 1]
+    assert csls[0, 0] > csls[0, 2]
+    assert csls[1, 1] > csls[1, 0]
+    assert csls[1, 1] > csls[1, 2]
+
+
+def test_compute_book_csls_matrix_handles_more_basins_than_books():
+    from artifacts_scripts.gap_softmax_enrich import compute_book_csls_matrix
+    rng = np.random.default_rng(3)
+    basin_centroids = rng.normal(size=(5, 8)).astype(np.float32)
+    basin_centroids /= np.linalg.norm(basin_centroids, axis=1, keepdims=True)
+    book_emb = rng.normal(size=(2, 8)).astype(np.float32)
+    book_emb /= np.linalg.norm(book_emb, axis=1, keepdims=True)
+    csls = compute_book_csls_matrix(basin_centroids, book_emb, k_csls=5)
+    assert csls.shape == (5, 2)
+
+
+def test_compute_book_csls_matrix_low_when_book_is_hub():
+    from artifacts_scripts.gap_softmax_enrich import compute_book_csls_matrix
+    book_emb = np.array([
+        [1.0, 0.0],
+        [0.0, 1.0],
+    ], dtype=np.float32)
+    basin_centroids = np.array([
+        [1.0, 0.05],
+        [0.7, 0.7],
+        [1.0, 0.1],
+    ], dtype=np.float32)
+    basin_centroids /= np.linalg.norm(basin_centroids, axis=1, keepdims=True)
+    csls = compute_book_csls_matrix(basin_centroids, book_emb, k_csls=2)
+    assert csls[1, 1] >= csls[1, 0] - 1e-6
+
+
 def _make_book_members_per_basin(basin_meta, book_global_idx_set):
     """Helper for the end-to-end test: every basin has zero book members."""
     return {b: [] for b in range(len(basin_meta))}
