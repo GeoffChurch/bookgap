@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from bookgap.index import build_index, FlatL2
+from bookgap.index import build_index, FlatL2, HNSW
 
 
 def compute_self_tuning_sigma(
@@ -27,11 +27,16 @@ def compute_self_tuning_sigma(
     """σ_i = sqrt(median squared distance to k_sigma nearest neighbors
     of i, excluding i itself).
 
-    Matches gap_soft_em.py's formula. Returns shape (N,) float32.
+    Matches gap_soft_em.py's formula. Uses HNSW at N > 5000 for ~10×
+    speedup; falls back to exact FlatL2 for small N (preserves exact
+    behavior in unit tests). Returns shape (N,) float32.
     """
-    index = build_index(FlatL2(), emb)
+    if emb.shape[0] > 5000:
+        efs = max(k_sigma * 4 + 20, 50)
+        index = build_index(HNSW(hnsw_m=32, hnsw_efc=400, hnsw_efs=efs), emb)
+    else:
+        index = build_index(FlatL2(), emb)
     D, _ = index.search(emb, k=k_sigma + 1)   # +1 for self
-    # D[:, 0] is self (distance 0); take 1 .. k_sigma+1
     sigma_sq = np.median(D[:, 1:k_sigma + 1], axis=1)
     sigma_sq = np.maximum(sigma_sq, 1e-8).astype(np.float32)
     return np.sqrt(sigma_sq).astype(np.float32)
@@ -162,8 +167,13 @@ def compute_log_K_empty(
     """
     N = article_emb.shape[0]
     k = min(k_marginal, N)
-    index = build_index(FlatL2(), article_emb.astype(np.float32))
-    D, I = index.search(article_emb.astype(np.float32), k=k)  # squared L2
+    emb_f32 = article_emb.astype(np.float32)
+    if N > 5000:
+        efs = max(k * 4 + 50, 200)
+        index = build_index(HNSW(hnsw_m=32, hnsw_efc=400, hnsw_efs=efs), emb_f32)
+    else:
+        index = build_index(FlatL2(), emb_f32)
+    D, I = index.search(emb_f32, k=k)  # squared L2
 
     sigma_a = article_sigma.astype(np.float64)
     sigma_y = sigma_a[I]                       # (N, k)
@@ -220,53 +230,103 @@ def knn_basin_lookup(
     return sorted_part.astype(np.int64)
 
 
+def compute_article_knn_kappa(
+    article_emb: np.ndarray,
+    article_sigma: np.ndarray,
+    k_marginal: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Precompute article-side kNN indices and kernel values κ(a, kNN(a)[j]).
+
+    Both are reused by compute_log_K_basins (numerator) and
+    compute_log_K_empty (marginal density). Same kernel-tail truncation
+    rationale: κ is essentially zero beyond ~5σ, so truncating sums to
+    each article's kNN is faithful for tight self-tuning σ.
+
+    Uses HNSW at N > 5000 for ~10× speedup; falls back to exact FlatL2
+    for small N (preserves exact behavior in unit tests). HNSW recall
+    loss is irrelevant here since we only need approximate kNN for
+    kernel truncation.
+
+    Args:
+        article_emb: (N, d) float32, unit-normalized.
+        article_sigma: (N,) float32.
+        k_marginal: number of neighbors to retain per article.
+
+    Returns:
+        kNN_indices: (N, K) int64 — article-side kNN (includes self at column 0).
+        kappa: (N, K) float64 — κ values at the kNN positions.
+    """
+    N = article_emb.shape[0]
+    k = min(k_marginal, N)
+    emb_f32 = article_emb.astype(np.float32)
+    if N > 5000:
+        efs = max(k * 4 + 50, 200)
+        index = build_index(HNSW(hnsw_m=32, hnsw_efc=400, hnsw_efs=efs), emb_f32)
+    else:
+        index = build_index(FlatL2(), emb_f32)
+    D, I = index.search(emb_f32, k=k)
+
+    sigma_a = article_sigma.astype(np.float64)
+    sigma_y = sigma_a[I]                       # (N, k)
+    d2 = D.astype(np.float64)                  # (N, k)
+    kappa = np.exp(-d2 / (sigma_a[:, None] * sigma_y + 1e-30))  # (N, k)
+    return I.astype(np.int64), kappa
+
+
 def compute_log_K_basins(
     article_emb: np.ndarray,
     article_sigma: np.ndarray,
     M: np.ndarray,
     knn_basin_idx: np.ndarray,
+    article_kNN_indices: np.ndarray | None = None,
+    article_kNN_kappa: np.ndarray | None = None,
+    k_marginal: int = 200,
 ) -> np.ndarray:
     """For each (article a, basin k in a's kNN), compute
         K̃_k(a) = (1 / Σ_x M[x,k]) · Σ_x M[x,k] · κ(a, x)
     and return log K̃ of shape (N_articles, K_kNN) in float64.
+
+    Numerator sum is truncated to a's article-kNN (kernel-tail
+    truncation). Denominator is exact (full sum of M's column).
+    For tight self-tuning σ, the truncation captures essentially all
+    the kernel mass; faithful approximation.
 
     Args:
         article_emb: (N, d) float32, unit-normalized.
         article_sigma: (N,) float32.
         M: (N, N_basins) float32, soft membership weights.
         knn_basin_idx: (N, K_kNN) int64, indices into M's columns.
+        article_kNN_indices: (N, K_marg) int64, optional precomputed
+            article-side kNN. If None, computed internally.
+        article_kNN_kappa: (N, K_marg) float64, optional precomputed
+            kernel values at the kNN positions. If None, computed
+            internally.
+        k_marginal: number of article-side neighbors to use when
+            article_kNN_indices is None.
 
-    Vectorized over articles; loops over the basin-side index columns
-    of knn_basin_idx (K_kNN ≤ 10 in practice).
+    Returns:
+        log K̃ of shape (N, K_kNN) in float64.
     """
-    N, d = article_emb.shape
-    K = knn_basin_idx.shape[1]
-    sigma_a = article_sigma.astype(np.float64)
-    emb_f64 = article_emb.astype(np.float64)
-    sigma_y = sigma_a   # member-side sigma is same array indexed by member
+    if article_kNN_indices is None or article_kNN_kappa is None:
+        article_kNN_indices, article_kNN_kappa = compute_article_knn_kappa(
+            article_emb, article_sigma, k_marginal,
+        )
 
-    # Pairwise squared distances between every article and every other
-    # article, computed on demand per basin's member set.
-    K_tilde = np.zeros((N, K), dtype=np.float64)
-    for k_col in range(K):
-        basin_ids = knn_basin_idx[:, k_col]   # (N,)
-        # For each article a, look up its assigned basin (basin_ids[a]),
-        # then sum κ(a, x) · M[x, basin] over members x.
-        # Group articles by basin to vectorize.
-        unique_basins = np.unique(basin_ids)
-        for b in unique_basins:
-            arts_with_b = np.where(basin_ids == b)[0]            # (m,)
-            members = np.where(M[:, b] > 0)[0]                   # (s,)
-            if len(members) == 0:
-                K_tilde[arts_with_b, k_col] = 1e-30
-                continue
-            denom = M[members, b].sum()
-            d2 = ((emb_f64[arts_with_b, None, :] - emb_f64[None, members, :]) ** 2).sum(axis=2)
-            sig_o = sigma_a[arts_with_b, None] * sigma_y[None, members]
-            kern = np.exp(-d2 / (sig_o + 1e-30))                 # (m, s)
-            num = (kern * M[members, b][None, :]).sum(axis=1)    # (m,)
-            K_tilde[arts_with_b, k_col] = num / max(denom, 1e-30)
-
+    N, K_kNN = knn_basin_idx.shape
+    denom_full = M.sum(axis=0)                                  # (N_basins,)
+    denom_at_kNN = denom_full[knn_basin_idx]                    # (N, K_kNN)
+    K_tilde = np.zeros((N, K_kNN), dtype=np.float64)
+    # Loop over the small K_kNN dim to keep peak memory at (N, K_marg)
+    # instead of (N, K_marg, K_kNN). For T10181 this is ~70 MB per slice
+    # vs ~700 MB for the 3-D gather.
+    for k_col in range(K_kNN):
+        basin_id = knn_basin_idx[:, k_col]                      # (N,)
+        # Gather M[kNN_indices[a, j], basin_id[a]] for each (a, j).
+        M_at = M[article_kNN_indices, basin_id[:, None]]        # (N, K_marg)
+        numerator = (article_kNN_kappa * M_at).sum(axis=1)      # (N,)
+        K_tilde[:, k_col] = numerator / np.maximum(
+            denom_at_kNN[:, k_col], 1e-30
+        )
     return np.log(K_tilde + 1e-30)
 
 
