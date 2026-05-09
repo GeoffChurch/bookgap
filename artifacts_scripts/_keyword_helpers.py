@@ -56,11 +56,19 @@ def compute_gap_keywords(
     top_k: int = 5,
     bigram_iterations: int = 2,
     verbose: bool = True,
+    weights: list[list[float]] | None = None,
 ) -> list[list[tuple[str, float]]]:
     """Compute distinguishing keywords per gap using the production
     log-odds + lattice-bigram pipeline. Joint phrase mining across all
     gaps so phrase vocab is shared; per-gap pooled-marginal background
     for the keyword score itself.
+
+    If `weights` is provided (one weight per article in `gaps`,
+    parallel structure), articles contribute to their basin's keyword
+    profile proportional to their weight (via DocWeighting.RELEVANCE
+    in the underlying log-odds extractor). Articles with weight 0
+    contribute nothing. If None (default), all articles contribute
+    equally (DocWeighting.EQUAL — same as before).
 
     Returns one list of (keyword, score) tuples per input gap.
     """
@@ -96,24 +104,70 @@ def compute_gap_keywords(
         merged_per_topic.append(parsed[offset:offset + n])
         offset += n
 
+    # Align weights to kept docs.
+    # _gap_to_raw_tokens drops articles with no title/abstract or no tokens
+    # AFTER tokenize. filter_stopwords below drops further. We mirror the
+    # drop logic in a parallel pass to align weights.
     topic_doc_tokens: list[list[list[str]]] = []
-    for topic_docs in merged_per_topic:
-        kept = []
-        for tokens in topic_docs:
+    topic_doc_weights: list[list[float]] | None = [] if weights is not None else None
+
+    for topic_idx, topic_docs in enumerate(merged_per_topic):
+        member_ids = gaps[topic_idx]
+        member_weights = weights[topic_idx] if weights is not None else None
+
+        # Re-derive which member_ids _gap_to_raw_tokens kept (the same
+        # filter logic, applied here parallel to weights).
+        kept_member_ids: list[int] = []
+        for member_id in member_ids:
+            if member_id >= len(titles):
+                continue
+            text_parts = []
+            if titles[member_id]:
+                text_parts.append(titles[member_id])
+            if abstracts[member_id]:
+                text_parts.append(abstracts[member_id])
+            text = " ".join(text_parts)
+            toks_raw = tokenize(text)
+            if not toks_raw:
+                continue
+            kept_member_ids.append(member_id)
+
+        # Sanity: kept_member_ids must align 1:1 with topic_docs (the parsed
+        # post-_gap_to_raw_tokens output). If this assertion ever fails,
+        # _gap_to_raw_tokens's drop logic has diverged from the mirror
+        # above and weights cannot be aligned safely.
+        assert len(kept_member_ids) == len(topic_docs), (
+            f"weight-alignment error: kept_member_ids={len(kept_member_ids)} "
+            f"vs topic_docs={len(topic_docs)} for topic {topic_idx}"
+        )
+
+        kept_tokens: list[list[str]] = []
+        kept_weights: list[float] = []
+        for j, tokens in enumerate(topic_docs):
             tokens = filter_stopwords(tokens)
             if tokens:
-                kept.append(tokens)
-        topic_doc_tokens.append(kept)
+                kept_tokens.append(tokens)
+                if member_weights is not None:
+                    member_pos = member_ids.index(kept_member_ids[j])
+                    kept_weights.append(float(member_weights[member_pos]))
+        topic_doc_tokens.append(kept_tokens)
+        if topic_doc_weights is not None:
+            topic_doc_weights.append(kept_weights)
 
-    return extract_topic_keywords(
-        topic_doc_tokens,
+    extract_kwargs: dict = dict(
         method=KeywordMethod.LOG_ODDS,
         top_k=top_k,
-        doc_weighting=DocWeighting.EQUAL,
         topic_weighting=TopicWeighting.POOLED,
         background_mode=BackgroundMode.MARGINAL,
         weight_by_freq=True,
     )
+    if topic_doc_weights is not None:
+        extract_kwargs["doc_weighting"] = DocWeighting.RELEVANCE
+        extract_kwargs["topic_doc_weights"] = topic_doc_weights
+    else:
+        extract_kwargs["doc_weighting"] = DocWeighting.EQUAL
+
+    return extract_topic_keywords(topic_doc_tokens, **extract_kwargs)
 
 
 def compute_top_books(
