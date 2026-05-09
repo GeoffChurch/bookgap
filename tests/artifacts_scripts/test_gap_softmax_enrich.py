@@ -165,3 +165,46 @@ def test_per_basin_readouts():
     assert 1 in readouts
     assert readouts[1]["inherited_coverage_median_post"] == pytest.approx(0.0)
     assert readouts[1]["effective_uncovered_articles"] == pytest.approx(1.42, abs=1e-5)
+
+
+def test_tag_basin_book_signals_passes_through_helpers():
+    """tag_basin_book_signals delegates to the existing
+    compute_top_books / compute_gap_keywords / compute_book_existence_signal
+    helpers and returns the per-basin signal dict."""
+    from artifacts_scripts.gap_softmax_enrich import tag_basin_book_signals
+
+    rng = np.random.default_rng(7)
+    N = 20
+    d = 8
+    emb = rng.normal(size=(N, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    types_arr = np.array(["article"] * 15 + ["book"] * 5)
+    titles = [f"Article {i}" for i in range(15)] + [f"Book {i}" for i in range(5)]
+    abstracts = [""] * N
+
+    # Two basins with article-only members
+    surviving = {
+        0: [(0, 0.9), (1, 0.8), (2, 0.7), (3, 0.6), (4, 0.5)],
+        1: [(5, 0.9), (6, 0.8), (7, 0.7), (8, 0.6), (9, 0.5)],
+    }
+    article_global_idx = np.where(types_arr == "article")[0]
+
+    signals = tag_basin_book_signals(
+        surviving=surviving,
+        emb=emb,
+        types_arr=types_arr,
+        titles=titles,
+        abstracts=abstracts,
+        article_global_idx=article_global_idx,
+    )
+    assert set(signals) == {0, 1}
+    for b in (0, 1):
+        sig = signals[b]
+        assert "top_book_id" in sig
+        assert "top_book_title" in sig
+        assert "top_book_votes" in sig
+        assert "vote_concentration" in sig
+        assert "top_keywords" in sig
+        assert "title_keyword_overlap" in sig
+        assert "book_exists_flag" in sig
+        assert "templated_leak_flag" in sig

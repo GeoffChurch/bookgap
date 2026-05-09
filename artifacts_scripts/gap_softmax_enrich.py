@@ -143,6 +143,92 @@ def per_basin_readouts(
     return out
 
 
+from artifacts_scripts._keyword_helpers import (
+    compute_book_existence_signal,
+    compute_gap_keywords,
+    compute_top_books,
+)
+from bookgap.index import FlatL2, build_index
+
+
+def tag_basin_book_signals(
+    surviving: dict[int, list[tuple[int, float]]],
+    emb: np.ndarray,
+    types_arr: np.ndarray,
+    titles: list[str],
+    abstracts: list[str],
+    article_global_idx: np.ndarray,
+    keywords_per_gap: int = 5,
+    bigram_iterations: int = 2,
+    vote_concentration_threshold: float = 0.25,
+    title_overlap_threshold: float = 0.2,
+    templated_concentration_threshold: float = 0.5,
+) -> dict[int, dict]:
+    """For each surviving basin, compute book-existence + templated-leak
+    signals using the existing _keyword_helpers logic.
+
+    Returns dict basin_idx → {top_book_id, top_book_title, top_book_votes,
+    vote_concentration, top_keywords, title_keyword_overlap,
+    book_exists_flag, templated_leak_flag}.
+    """
+    book_global_idx = np.where(types_arr == "book")[0]
+    book_emb = np.ascontiguousarray(emb[book_global_idx])
+    book_index = build_index(FlatL2(), book_emb)
+    all_titles_arr = np.array(titles, dtype=object)
+
+    # Build per-basin global member-index lists (articles only)
+    basin_ids = sorted(surviving.keys())
+    gaps_global = [
+        [int(article_global_idx[i]) for i, _ in surviving[b]]
+        for b in basin_ids
+    ]
+
+    keywords_per_basin = compute_gap_keywords(
+        gaps=gaps_global,
+        titles=titles,
+        abstracts=abstracts,
+        top_k=keywords_per_gap,
+        bigram_iterations=bigram_iterations,
+        verbose=False,
+    )
+
+    out: dict[int, dict] = {}
+    for b, members_global, kw_pairs in zip(basin_ids, gaps_global, keywords_per_basin):
+        top_books = compute_top_books(
+            members=members_global,
+            emb=emb,
+            book_index=book_index,
+            book_global_idx=book_global_idx,
+            all_titles=all_titles_arr,
+            k=3,
+        )
+        if top_books:
+            top_book_id, top_book_title, top_book_votes = top_books[0]
+        else:
+            top_book_id, top_book_title, top_book_votes = -1, "", 0
+        top_keywords = [kw for kw, _ in kw_pairs]
+        signal = compute_book_existence_signal(
+            gap_size=len(members_global),
+            top_book_votes=top_book_votes,
+            top_book_title=top_book_title,
+            top_keywords=top_keywords,
+            vote_concentration_threshold=vote_concentration_threshold,
+            title_overlap_threshold=title_overlap_threshold,
+            templated_concentration_threshold=templated_concentration_threshold,
+        )
+        out[b] = {
+            "top_book_id": top_book_id,
+            "top_book_title": top_book_title,
+            "top_book_votes": top_book_votes,
+            "vote_concentration": signal["vote_concentration"],
+            "top_keywords": " ".join(top_keywords),
+            "title_keyword_overlap": signal["title_keyword_overlap"],
+            "book_exists_flag": int(signal["book_exists_flag"]),
+            "templated_leak_flag": int(signal["templated_leak_flag"]),
+        }
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
