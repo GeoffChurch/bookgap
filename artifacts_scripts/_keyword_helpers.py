@@ -63,6 +63,15 @@ def compute_gap_keywords(
     gaps so phrase vocab is shared; per-gap pooled-marginal background
     for the keyword score itself.
 
+    Articles are deduplicated before phrase mining: each unique article
+    is tokenized and parsed once, regardless of how many gaps include
+    it. Duplicate inclusion of the same article in phrase-mining input
+    would inflate count thresholds without changing NPMI (which is a
+    probability ratio, invariant to total mass), so deduping is purely
+    a perf optimization. Per-basin keyword scoring still sees each
+    basin's full membership (with duplicates across basins) via the
+    cached parsed-tokens lookup.
+
     If `weights` is provided (one weight per article in `gaps`,
     parallel structure), articles contribute to their basin's keyword
     profile proportional to their weight (via DocWeighting.RELEVANCE
@@ -72,17 +81,45 @@ def compute_gap_keywords(
 
     Returns one list of (keyword, score) tuples per input gap.
     """
-    raw_topic_tokens = [_gap_to_raw_tokens(members, titles, abstracts) for members in gaps]
+    # Step 1: collect unique member IDs across all gaps.
+    all_member_ids: set[int] = set()
+    for members in gaps:
+        all_member_ids.update(members)
+    unique_members = sorted(all_member_ids)
 
-    flat_raw = [doc for topic_docs in raw_topic_tokens for doc in topic_docs]
+    # Step 2: tokenize each unique article once. Cache by member_id.
+    # Mirrors _gap_to_raw_tokens's drop logic (no title+abstract → drop;
+    # zero tokens after tokenize → drop).
+    member_tokens: dict[int, list[str]] = {}
+    for m in unique_members:
+        if m >= len(titles):
+            continue
+        text_parts = []
+        if titles[m]:
+            text_parts.append(titles[m])
+        if m < len(abstracts) and abstracts[m]:
+            text_parts.append(abstracts[m])
+        if not text_parts:
+            continue
+        toks = tokenize(" ".join(text_parts))
+        if toks:
+            member_tokens[m] = toks
+
+    # Step 3: phrase mining on the deduped corpus. Parsed token lists
+    # cached by member_id (parsed_unique[m] gets re-parsed each iteration
+    # with the cumulative phrase vocab).
     if verbose:
         print(f"Mining phrases ({bigram_iterations} iters, lattice longest-match) "
-              f"from {len(flat_raw)} docs...")
+              f"from {len(member_tokens)} unique docs...")
     phrase_vocab: set = set()
-    parsed = flat_raw
+    parsed_unique: dict[int, list[str]] = dict(member_tokens)
     for it in range(bigram_iterations):
         t0 = time.time()
-        new_phrases = mine_phrases_lattice(parsed, npmi_threshold=0.5, min_boundary_be=0.5)
+        new_phrases = mine_phrases_lattice(
+            list(parsed_unique.values()),
+            npmi_threshold=0.5,
+            min_boundary_be=0.5,
+        )
         t_mine = time.time() - t0
         if not new_phrases:
             if verbose:
@@ -92,64 +129,32 @@ def compute_gap_keywords(
         phrase_vocab |= new_phrases
         added = len(phrase_vocab) - prev
         t1 = time.time()
-        parsed = [parse_with_phrases(doc, phrase_vocab) for doc in flat_raw]
+        parsed_unique = {
+            m: parse_with_phrases(member_tokens[m], phrase_vocab)
+            for m in member_tokens
+        }
         if verbose:
             print(f"  iter {it+1}: +{added} phrases ({t_mine:.1f}s + {time.time()-t1:.1f}s); "
                   f"total {len(phrase_vocab)}")
 
-    merged_per_topic: list[list[list[str]]] = []
-    offset = 0
-    for topic_docs in raw_topic_tokens:
-        n = len(topic_docs)
-        merged_per_topic.append(parsed[offset:offset + n])
-        offset += n
-
-    # Align weights to kept docs.
-    # _gap_to_raw_tokens drops articles with no title/abstract or no tokens
-    # AFTER tokenize. filter_stopwords below drops further. We mirror the
-    # drop logic in a parallel pass to align weights.
+    # Step 4: build per-topic doc lists by looking up cached parsed tokens.
+    # Articles missing from parsed_unique (dropped at tokenize step) are
+    # skipped here too. Weights are aligned to kept docs.
     topic_doc_tokens: list[list[list[str]]] = []
     topic_doc_weights: list[list[float]] | None = [] if weights is not None else None
-
-    for topic_idx, topic_docs in enumerate(merged_per_topic):
-        member_ids = gaps[topic_idx]
+    for topic_idx, member_ids in enumerate(gaps):
         member_weights = weights[topic_idx] if weights is not None else None
-
-        # Re-derive which member_ids _gap_to_raw_tokens kept (the same
-        # filter logic, applied here parallel to weights).
-        kept_member_ids: list[int] = []
-        for member_id in member_ids:
-            if member_id >= len(titles):
-                continue
-            text_parts = []
-            if titles[member_id]:
-                text_parts.append(titles[member_id])
-            if abstracts[member_id]:
-                text_parts.append(abstracts[member_id])
-            text = " ".join(text_parts)
-            toks_raw = tokenize(text)
-            if not toks_raw:
-                continue
-            kept_member_ids.append(member_id)
-
-        # Sanity: kept_member_ids must align 1:1 with topic_docs (the parsed
-        # post-_gap_to_raw_tokens output). If this assertion ever fails,
-        # _gap_to_raw_tokens's drop logic has diverged from the mirror
-        # above and weights cannot be aligned safely.
-        assert len(kept_member_ids) == len(topic_docs), (
-            f"weight-alignment error: kept_member_ids={len(kept_member_ids)} "
-            f"vs topic_docs={len(topic_docs)} for topic {topic_idx}"
-        )
-
         kept_tokens: list[list[str]] = []
         kept_weights: list[float] = []
-        for j, tokens in enumerate(topic_docs):
-            tokens = filter_stopwords(tokens)
-            if tokens:
-                kept_tokens.append(tokens)
-                if member_weights is not None:
-                    member_pos = member_ids.index(kept_member_ids[j])
-                    kept_weights.append(float(member_weights[member_pos]))
+        for j, m in enumerate(member_ids):
+            if m not in parsed_unique:
+                continue
+            tokens = filter_stopwords(parsed_unique[m])
+            if not tokens:
+                continue
+            kept_tokens.append(tokens)
+            if member_weights is not None:
+                kept_weights.append(float(member_weights[j]))
         topic_doc_tokens.append(kept_tokens)
         if topic_doc_weights is not None:
             topic_doc_weights.append(kept_weights)
