@@ -176,6 +176,46 @@ def compute_log_K_empty(
     return np.log(K_emp + 1e-30)
 
 
+def compute_basin_centroids(
+    article_emb: np.ndarray,
+    M: np.ndarray,
+) -> np.ndarray:
+    """Weighted mean of article embeddings, unit-normalized per basin.
+
+    Args:
+        article_emb: (N_articles, d) float32, unit-normalized.
+        M: (N_articles, N_basins) float32, soft membership weights.
+
+    Returns:
+        (N_basins, d) float32, unit-normalized.
+    """
+    weight_sum = M.sum(axis=0)                  # (N_basins,)
+    weight_sum = np.where(weight_sum > 0, weight_sum, 1.0)
+    centroids = (M.T @ article_emb) / weight_sum[:, None]  # (N_basins, d)
+    norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+    return (centroids / np.where(norms > 0, norms, 1.0)).astype(np.float32)
+
+
+def knn_basin_lookup(
+    article_emb: np.ndarray,
+    centroids: np.ndarray,
+    k: int,
+) -> np.ndarray:
+    """For each article, return indices of its top-k nearest basin
+    centroids by cosine (= dot product on the unit sphere).
+
+    Brute matmul + argpartition; basin set is small (~hundreds).
+    """
+    sims = article_emb @ centroids.T          # (N_articles, N_basins)
+    k = min(k, centroids.shape[0])
+    if k >= sims.shape[1]:
+        return np.argsort(-sims, axis=1)
+    part = np.argpartition(-sims, k - 1, axis=1)[:, :k]
+    rows = np.arange(sims.shape[0])[:, None]
+    sorted_part = part[rows, np.argsort(-sims[rows, part], axis=1)]
+    return sorted_part.astype(np.int64)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,

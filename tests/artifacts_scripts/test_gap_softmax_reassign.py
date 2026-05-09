@@ -167,3 +167,46 @@ def test_compute_log_K_empty_kNN_truncation_is_close():
         np.exp(log_K_full) + 1e-30
     )
     assert rel_err.max() < 0.05, f"max rel err: {rel_err.max()}"
+
+
+from artifacts_scripts.gap_softmax_reassign import (
+    compute_basin_centroids,
+    knn_basin_lookup,
+)
+
+
+def test_compute_basin_centroids_weighted_mean():
+    """Centroids are unit-normalized weighted means of member emb."""
+    emb = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float32)
+    M = np.array([
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+    ], dtype=np.float32)   # basin 0: arts 0+1; basin 1: art 2
+    C = compute_basin_centroids(emb, M)
+    # Basin 0 centroid: (e0+e1)/sqrt(2); Basin 1: e2.
+    expected_0 = np.array([1, 1, 0]) / np.sqrt(2.0)
+    np.testing.assert_allclose(C[0], expected_0, atol=1e-6)
+    np.testing.assert_allclose(C[1], np.array([0, 0, 1.0]), atol=1e-6)
+
+
+def test_knn_basin_lookup_returns_top_k():
+    """For each article, kNN basin lookup returns indices of top-k
+    nearest basin centroids by cosine."""
+    article_emb = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ], dtype=np.float32)
+    centroids = np.array([
+        [1.0, 0.0, 0.0],   # nearest to article 0
+        [0.0, 1.0, 0.0],   # nearest to article 1
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float32)
+    knn_idx = knn_basin_lookup(article_emb, centroids, k=2)
+    assert knn_idx.shape == (2, 2)
+    assert knn_idx[0, 0] == 0
+    assert knn_idx[1, 0] == 1
