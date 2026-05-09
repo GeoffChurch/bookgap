@@ -7,6 +7,11 @@ import pytest
 
 from artifacts_scripts.gap_softmax_reassign import load_enriched_csv
 from artifacts_scripts.gap_softmax_reassign import compute_self_tuning_sigma
+from artifacts_scripts.gap_softmax_reassign import (
+    softmax_with_optional_empty,
+    mean_entropy,
+    tune_tau_for_perplexity,
+)
 
 
 def test_load_enriched_csv_builds_M0(tmp_path: Path):
@@ -79,3 +84,43 @@ def test_compute_self_tuning_sigma_synthetic():
     assert np.all(sigma > 0)
     # Middle points should have similar σ (translation symmetry)
     assert sigma[10:20].std() < 0.1 * sigma[10:20].mean()
+
+
+def test_tune_tau_hits_target_perplexity():
+    """Synthetic logits over 4 basins for 100 articles. Bisection
+    on log τ should land mean entropy near log(P) within 0.01 nats.
+    """
+    rng = np.random.default_rng(42)
+    log_K = rng.normal(0, 1, size=(100, 4)).astype(np.float64)
+
+    for P in (1.5, 2.0, 3.0):
+        tau = tune_tau_for_perplexity(
+            log_K, log_K_empty=None, P_target=P,
+            log_tau_low=-3.0, log_tau_high=1.0,
+            tol=0.01, max_iters=30,
+        )
+        probs = softmax_with_optional_empty(log_K, None, tau)
+        H_bar = mean_entropy(probs)
+        assert abs(H_bar - np.log(P)) < 0.02, (
+            f"P={P}: target log P={np.log(P):.3f}, got H̄={H_bar:.3f}"
+        )
+
+
+def test_tune_tau_with_empty_class():
+    """Variant B: ∅ class is an extra logit per article. Same target
+    perplexity criterion."""
+    rng = np.random.default_rng(0)
+    log_K = rng.normal(0, 1, size=(50, 5)).astype(np.float64)
+    log_K_empty = rng.normal(-1, 0.5, size=(50,)).astype(np.float64)
+    P = 2.0
+    tau = tune_tau_for_perplexity(
+        log_K, log_K_empty=log_K_empty, P_target=P,
+        log_tau_low=-3.0, log_tau_high=1.0, tol=0.01, max_iters=30,
+    )
+    probs = softmax_with_optional_empty(log_K, log_K_empty, tau)
+    # Rows include the empty class as extra column
+    assert probs.shape == (50, 6)
+    # Rows sum to 1
+    assert np.allclose(probs.sum(axis=1), 1.0, atol=1e-6)
+    H_bar = mean_entropy(probs)
+    assert abs(H_bar - np.log(P)) < 0.02

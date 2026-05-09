@@ -81,6 +81,68 @@ def load_enriched_csv(
     return M0, basin_meta
 
 
+def softmax_with_optional_empty(
+    log_K: np.ndarray,
+    log_K_empty: np.ndarray | None,
+    tau: float,
+) -> np.ndarray:
+    """Numerically-stable softmax over log_K / tau (and optional log_K_empty / tau).
+
+    Args:
+        log_K: (N, K) array of log K̃_k(a) for kNN basins.
+        log_K_empty: (N,) or None. If provided, append as an extra
+            column.
+        tau: temperature.
+
+    Returns:
+        (N, K) or (N, K+1) array of probabilities. Rows sum to 1.
+    """
+    if log_K_empty is not None:
+        logits = np.concatenate(
+            [log_K / tau, (log_K_empty / tau)[:, None]], axis=1
+        )
+    else:
+        logits = log_K / tau
+    logits = logits - logits.max(axis=1, keepdims=True)
+    exps = np.exp(logits)
+    return exps / exps.sum(axis=1, keepdims=True)
+
+
+def mean_entropy(probs: np.ndarray) -> float:
+    """Mean per-row entropy (nats)."""
+    p = np.clip(probs, 1e-30, 1.0)
+    return float((-p * np.log(p)).sum(axis=1).mean())
+
+
+def tune_tau_for_perplexity(
+    log_K: np.ndarray,
+    log_K_empty: np.ndarray | None,
+    P_target: float,
+    log_tau_low: float = -3.0,
+    log_tau_high: float = 1.0,
+    tol: float = 0.01,
+    max_iters: int = 30,
+) -> float:
+    """Bisect on log τ until mean per-row entropy is within tol of
+    log(P_target). Returns the tuned τ.
+
+    Higher τ → flatter softmax → higher entropy → higher perplexity.
+    """
+    target_H = float(np.log(P_target))
+    lo, hi = float(log_tau_low), float(log_tau_high)
+    for _ in range(max_iters):
+        mid = 0.5 * (lo + hi)
+        probs = softmax_with_optional_empty(log_K, log_K_empty, np.exp(mid))
+        H = mean_entropy(probs)
+        if abs(H - target_H) < tol:
+            return float(np.exp(mid))
+        if H < target_H:
+            lo = mid    # need higher τ → higher entropy
+        else:
+            hi = mid    # need lower τ → lower entropy
+    return float(np.exp(0.5 * (lo + hi)))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
