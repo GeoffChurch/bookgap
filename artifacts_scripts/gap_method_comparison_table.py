@@ -17,14 +17,14 @@ markdown form. For each gap:
 - Top-3 nearest books (by article-vote frequency).
 - Gap size and key cohesion metrics (article-as-seed only).
 - 2 example article titles.
-- Coverage label (real-gap / book-exists / book-anchored /
-  book-exists+anchored / templated-leak) drawn from Phase-1 and Phase-3
-  enrichment columns.
+- Unanchored flag (top-CSLS book < 0.3) derived from the Phase 3
+  ``top_books_csls_json`` column; replaces the old categorical
+  coverage_label_v2 / templated_leak_flag scheme.
 
-The CSVs should be the enriched outputs of ``gap_book_existence_filter``
-and ``gap_article_as_seed --with-book-seeds``. Run those upstream first.
-Un-enriched CSVs still load; missing Phase-1/3 columns default to 0/""
-and every gap is labelled ``real-gap``.
+The CSVs should be the Phase 3 enriched outputs of ``gap_soft_em``
+(which emits ``top_books_csls_json``, ``effective_size``, and
+``n_articles_kNN``). Un-enriched CSVs still load; missing columns
+default to "" and every gap is treated as unanchored.
 
 Usage::
 
@@ -49,42 +49,24 @@ from artifacts_scripts.hdbscan_gap_probe import load_scope
 from bookgap.index import build_index, FlatL2
 
 
-def _coverage_label(row: dict) -> str:
-    """Coverage label derived from raw flags + continuous metric.
+def _is_unanchored(row: dict, csls_threshold: float = 0.3) -> bool:
+    """Phase 3 replacement for _is_real.
 
-    Buckets (descending priority):
-      templated-leak > book-anchored > book-exists >
-      covered (inherited_coverage_median_post >= 0.65) > real-gap
-
-    Replaces the old 7-tier coverage_label_v2 scheme. The 0.65
-    threshold matches the previous inherited-weak/inherited-moderate
-    boundary; tuning is now an explicit consumer choice.
+    A basin is 'unanchored' (a candidate research gap) if no book
+    strongly owns it: the top-CSLS book in top_books_csls_json[0]
+    has csls < csls_threshold. Default 0.3 is rough; consumers can
+    tune.
     """
-    if int(row.get("templated_leak_flag", 0) or 0):
-        return "templated-leak"
-    if int(row.get("n_books", 0) or 0) > 0:
-        return "book-anchored"
-    if int(row.get("book_exists_flag", 0) or 0):
-        return "book-exists"
-    mp_str = row.get("inherited_coverage_median_post", "")
-    if mp_str:
-        try:
-            if float(mp_str) >= 0.65:
-                return "covered"
-        except (ValueError, TypeError):
-            pass
-    return "real-gap"
-
-
-# Labels considered "true research gaps" — basins not covered by any
-# book-anchored basin at meaningful strength. The 0.65 threshold lives
-# in _coverage_label above; a basin labeled "covered" (median_post >=
-# 0.65) does not count as a real gap, anything else does.
-_REAL_GAP_LABELS = frozenset({"real-gap"})
-
-
-def _is_real(g: dict) -> bool:
-    return _coverage_label(g) in _REAL_GAP_LABELS
+    raw = row.get("top_books_csls_json", "")
+    if not raw:
+        return True
+    try:
+        top = json.loads(raw)
+    except (ValueError, TypeError):
+        return True
+    if not top:
+        return True
+    return float(top[0].get("csls", 0.0)) < csls_threshold
 
 
 def _load_kball(path: Path) -> list[dict]:
@@ -96,10 +78,11 @@ def _load_kball(path: Path) -> list[dict]:
                 "size": int(r["gap_size"]),
                 "members": json.loads(r["article_indices_json"]),
                 "book_exists_flag": int(r.get("book_exists_flag") or 0),
-                "templated_leak_flag": int(r.get("templated_leak_flag") or 0),
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
+                "top_books_csls_json": r.get("top_books_csls_json", ""),
+                "effective_size": r.get("effective_size", ""),
             })
     return rows
 
@@ -120,11 +103,11 @@ def _load_hdbscan(path: Path) -> list[dict]:
                 "members": json.loads(r["article_indices_json"]),
                 "n_books": int(r.get("n_books") or 0),
                 "book_exists_flag": int(r.get("book_exists_flag") or 0),
-                "templated_leak_flag": int(r.get("templated_leak_flag") or 0),
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
-                "coverage_label_v2": r.get("coverage_label_v2", ""),
+                "top_books_csls_json": r.get("top_books_csls_json", ""),
+                "effective_size": r.get("effective_size", ""),
                 "top_keywords": r.get("top_keywords", ""),
             })
     return rows
@@ -144,11 +127,11 @@ def _load_article_seed(path: Path) -> list[dict]:
                 "members": json.loads(r["article_indices_json"]),
                 "n_books": int(r.get("n_books") or 0),
                 "book_exists_flag": int(r.get("book_exists_flag") or 0),
-                "templated_leak_flag": int(r.get("templated_leak_flag") or 0),
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
-                "coverage_label_v2": r.get("coverage_label_v2", ""),
+                "top_books_csls_json": r.get("top_books_csls_json", ""),
+                "effective_size": r.get("effective_size", ""),
                 "top_keywords": r.get("top_keywords", ""),
                 "inherited_coverage_median_post": (
                     float(r["inherited_coverage_median_post"])
@@ -295,134 +278,60 @@ def main() -> None:
     out.append(pipelines_lead)
     out.append("")
 
-    # ---- Artifact-recall summary (headline) -----------------------------
-    out.append("## Artifact recall summary")
+    # ---- Basin summary (headline) ----------------------------------------
+    out.append("## Basin summary")
     out.append("")
     out.append(
-        "Counts of `templated-leak` basins (gaps whose articles are unified "
-        "by *templated* lexical patterns — datasets, names, model brands — "
-        "rather than a coherent research direction; flagged by the "
-        "vote-concentration + title-overlap heuristic in "
-        "`gap_book_existence_filter`). The headline is how many such "
-        "basins each pipeline surfaces — more is *better* here, since "
-        "they're artifacts the downstream curriculum-builder filters out, "
-        "and surfacing them lets the heuristic catch more bad gaps before "
-        "LLM proposal."
+        "Counts and size ranges for all basins in each pipeline. "
+        "Phase 3 drops the templated-leak tag; users can identify lexical "
+        "artifacts directly from `top_keywords`. Unanchored basins are those "
+        "where the top-CSLS book scores < 0.3 (see `_is_unanchored`)."
     )
     out.append("")
 
-    def _summarize(rows: list[dict], rank_key) -> dict:
+    def _summarize(rows: list[dict]) -> dict:
         sizes = [r["size"] for r in rows]
-        tl = [r for r in rows if (r.get("coverage_label_v2") == "templated-leak")
-              or (not r.get("coverage_label_v2") and r.get("templated_leak_flag"))]
-        tl_sizes = [r["size"] for r in tl] or [0]
+        unanchored = [r for r in rows if _is_unanchored(r)]
         return {
             "total": len(rows),
-            "templated_leak": len(tl),
-            "tl_min": min(tl_sizes),
-            "tl_max": max(tl_sizes),
+            "unanchored": len(unanchored),
             "min_size": min(sizes) if sizes else 0,
             "max_size": max(sizes) if sizes else 0,
         }
 
-    kb_sum = _summarize(
-        [{"size": g["size"], "templated_leak_flag": g["templated_leak_flag"],
-          "coverage_label_v2": ""} for g in kball_all],
-        None,
-    )
-    se_sum = _summarize(
-        [{"size": g["size"], "templated_leak_flag": g["templated_leak_flag"],
-          "coverage_label_v2": g.get("coverage_label_v2", "")} for g in seed_all],
-        None,
-    )
-    hb_sum = _summarize(
-        [{"size": g["size"], "templated_leak_flag": g["templated_leak_flag"],
-          "coverage_label_v2": g.get("coverage_label_v2", "")} for g in hdbscan_all],
-        None,
-    ) if hdbscan_all else None
+    kb_sum = _summarize(kball_all)
+    se_sum = _summarize(seed_all)
+    hb_sum = _summarize(hdbscan_all) if hdbscan_all else None
 
-    out.append("| pipeline | total basins | templated-leak | TL size range | basin size range |")
-    out.append("|----------|--------------|----------------|---------------|------------------|")
-    out.append(f"| K-ball | {kb_sum['total']} | "
-               f"{kb_sum['templated_leak']} | {kb_sum['tl_min']}–{kb_sum['tl_max']} | "
+    out.append("| pipeline | total basins | unanchored (CSLS<0.3) | basin size range |")
+    out.append("|----------|--------------|-----------------------|------------------|")
+    out.append(f"| K-ball | {kb_sum['total']} | {kb_sum['unanchored']} | "
                f"{kb_sum['min_size']}–{kb_sum['max_size']} |")
-    out.append(f"| Soft-EM (article-seed) | {se_sum['total']} | "
-               f"{se_sum['templated_leak']} | {se_sum['tl_min']}–{se_sum['tl_max']} | "
+    out.append(f"| Soft-EM (article-seed) | {se_sum['total']} | {se_sum['unanchored']} | "
                f"{se_sum['min_size']}–{se_sum['max_size']} |")
     if hb_sum:
-        out.append(f"| HDBSCAN max-bookless | {hb_sum['total']} | "
-                   f"{hb_sum['templated_leak']} | {hb_sum['tl_min']}–{hb_sum['tl_max']} | "
+        out.append(f"| HDBSCAN max-bookless | {hb_sum['total']} | {hb_sum['unanchored']} | "
                    f"{hb_sum['min_size']}–{hb_sum['max_size']} |")
-    out.append("")
-
-    # Pairwise overlap on templated-leak subsets (Jaccard >= 0.5).
-    def _tl_subset(rows: list[dict]) -> list[dict]:
-        return [r for r in rows
-                if r.get("coverage_label_v2") == "templated-leak"
-                or (not r.get("coverage_label_v2") and r.get("templated_leak_flag"))]
-
-    def _jaccard(a: set, b: set) -> float:
-        if not a and not b:
-            return 0.0
-        return len(a & b) / max(1, len(a | b))
-
-    def _pairwise(rows_a: list[dict], rows_b: list[dict], thresh: float = 0.5) -> int:
-        sets_a = [set(r["members"]) for r in rows_a]
-        sets_b = [set(r["members"]) for r in rows_b]
-        used: set[int] = set()
-        matched = 0
-        for sa in sets_a:
-            best, best_j = 0.0, -1
-            for j, sb in enumerate(sets_b):
-                if j in used:
-                    continue
-                ji = _jaccard(sa, sb)
-                if ji > best:
-                    best, best_j = ji, j
-            if best >= thresh:
-                matched += 1
-                used.add(best_j)
-        return matched
-
-    kb_tl = _tl_subset(kball_all)
-    se_tl = _tl_subset(seed_all)
-    out.append("**Templated-leak basin overlap (Jaccard ≥ 0.5):**")
-    out.append("")
-    out.append("| pair | matched basins |")
-    out.append("|------|-----------------|")
-    out.append(f"| K-ball ↔ Soft-EM | {_pairwise(kb_tl, se_tl)} |")
-    if hdbscan_all:
-        hb_tl = _tl_subset(hdbscan_all)
-        out.append(f"| K-ball ↔ HDBSCAN | {_pairwise(kb_tl, hb_tl)} |")
-        out.append(f"| Soft-EM ↔ HDBSCAN | {_pairwise(se_tl, hb_tl)} |")
-    out.append("")
-    out.append(
-        "Low pairwise overlap indicates each method surfaces a mostly-disjoint "
-        "set of templated leaks — they're complementary, not redundant. K-ball "
-        "and Soft-EM tend to miss the smallest leak basins; HDBSCAN's "
-        "max-bookless extraction picks them up because tiny dense clumps that "
-        "haven't yet absorbed any book remain visible in the single-linkage "
-        "tree."
-    )
     out.append("")
 
     out.append("## K-ball (size-ranked)")
     out.append("")
-    out.append("| rank | size | coverage | keywords | top books (×votes) | example titles |")
-    out.append("|------|------|----------|----------|-------------------|----------------|")
+    out.append("| rank | size | unanchored | keywords | top books (×votes) | example titles |")
+    out.append("|------|------|------------|----------|-------------------|----------------|")
     for i, g in enumerate(kball_top):
-        cov = _coverage_label(g)
+        unanchored = _is_unanchored(g)
         out.append(
-            f"| {i+1} | {g['size']} | {cov} | {_kw_str(kball_kws[i], args.keywords_per_gap)} | "
+            f"| {i+1} | {g['size']} | {'yes' if unanchored else 'no'} | "
+            f"{_kw_str(kball_kws[i], args.keywords_per_gap)} | "
             f"{_top_books_str(kball_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
         )
     out.append("")
 
-    out.append("### K-ball top-20 — real-gap only")
+    out.append("### K-ball top-N — unanchored only")
     out.append("")
-    kball_real = [g for g in kball_top if _is_real(g)][:args.top_n]
+    kball_real = [g for g in kball_top if _is_unanchored(g)][:args.top_n]
     if not kball_real:
-        out.append("_(no real-gap rows in this pipeline's top-20)_")
+        out.append("_(no unanchored rows in this pipeline's top-N)_")
     else:
         out.append("| rank | size | keywords | top books (×votes) | example titles |")
         out.append("|------|------|----------|-------------------|----------------|")
@@ -440,37 +349,36 @@ def main() -> None:
 
     out.append("## Article-as-seed (logit_sum-ranked, cohesion-aware)")
     out.append("")
-    out.append("| rank | size | mean_p / min_p | logit | coverage | inh_med | keywords | top books (×votes) | example titles |")
-    out.append("|------|------|----------------|-------|----------|---------|----------|-------------------|----------------|")
+    out.append("| rank | size | mean_p / min_p | logit | unanchored | inh_med | keywords | top books (×votes) | example titles |")
+    out.append("|------|------|----------------|-------|------------|---------|----------|-------------------|----------------|")
     for i, g in enumerate(seed_top):
-        cov = _coverage_label(g)
+        unanchored = _is_unanchored(g)
         out.append(
             f"| {i+1} | {g['size']} | {g['mean_post']:.2f} / {g['min_post']:.2f} | "
-            f"{g['logit_sum']:.0f} | {cov} | {_med_post_str(g)} | "
+            f"{g['logit_sum']:.0f} | {'yes' if unanchored else 'no'} | {_med_post_str(g)} | "
             f"{_kw_str(seed_kws[i], args.keywords_per_gap)} | "
             f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
         )
     out.append("")
 
-    out.append("### Article-as-seed top-20 — real-gap (or inherited-weak) only")
+    out.append("### Article-as-seed top-N — unanchored only")
     out.append("")
-    out.append("_Filtered to basins with no direct or strong inherited book "
-               "coverage. `inherited-weak` (peripheral overlap) included alongside "
-               "`real-gap` because median posterior < 0.65 means the 'covering' "
-               "basin only barely qualifies as a container._")
+    out.append("_Filtered to basins where no book strongly owns the space "
+               "(top-CSLS book < 0.3). Phase 3 drops the inherited-coverage "
+               "tier; use `top_books_csls_json` and `effective_size` directly "
+               "to gauge coverage strength._")
     out.append("")
-    seed_real = [g for g in seed_top if _is_real(g)][:args.top_n]
+    seed_real = [g for g in seed_top if _is_unanchored(g)][:args.top_n]
     if not seed_real:
-        out.append("_(no real-gap or inherited-weak rows in this pipeline's top-20)_")
+        out.append("_(no unanchored rows in this pipeline's top-N)_")
     else:
-        out.append("| rank | size | mean_p / min_p | logit | coverage | inh_med | keywords | top books (×votes) | example titles |")
-        out.append("|------|------|----------------|-------|----------|---------|----------|-------------------|----------------|")
+        out.append("| rank | size | mean_p / min_p | logit | unanchored | inh_med | keywords | top books (×votes) | example titles |")
+        out.append("|------|------|----------------|-------|------------|---------|----------|-------------------|----------------|")
         for g in seed_real:
             i = seed_top.index(g)
-            cov = _coverage_label(g)
             out.append(
                 f"| {i+1} | {g['size']} | {g['mean_post']:.2f} / {g['min_post']:.2f} | "
-                f"{g['logit_sum']:.0f} | {cov} | {_med_post_str(g)} | "
+                f"{g['logit_sum']:.0f} | yes | {_med_post_str(g)} | "
                 f"{_kw_str(seed_kws[i], args.keywords_per_gap)} | "
                 f"{_top_books_str(seed_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
             )
@@ -495,16 +403,17 @@ def main() -> None:
                    f"outranks a 30-article basin at low containment. Only non-book-anchored "
                    f"basins shown (n_books=0)._")
         out.append("")
-        out.append("| eff_unc | inh_med | size | logit | coverage | keywords (truncated) | top vote book |")
-        out.append("|---------|---------|------|-------|----------|----------------------|---------------|")
+        out.append("| eff_unc | inh_med | size | logit | unanchored | keywords (truncated) | top vote book |")
+        out.append("|---------|---------|------|-------|------------|----------------------|---------------|")
         for g in seed_least_covered:
             kw_short = (g.get("top_keywords") or "")[:60] if isinstance(g.get("top_keywords"), str) else ""
             top_book_short = g.get("top_book_title", "")[:50]
             inh_med = g.get("inherited_coverage_median_post")
             inh_med_s = f"{inh_med:.2f}" if inh_med is not None else "—"
+            unanchored = _is_unanchored(g)
             out.append(
                 f"| {g['effective_uncovered_articles']:.1f} | {inh_med_s} | {g['size']} | "
-                f"{g['logit_sum']:.0f} | {_coverage_label(g)} | {kw_short} | {top_book_short} |"
+                f"{g['logit_sum']:.0f} | {'yes' if unanchored else 'no'} | {kw_short} | {top_book_short} |"
             )
         out.append("")
 
@@ -516,26 +425,24 @@ def main() -> None:
                    "articles+books, then for each book-bearing subtree the maximal "
                    "pure-article cluster *before any book joins* is emitted. By "
                    "construction `n_books = 0`; basins are size-ranked since no "
-                   "posterior is computed. `book_anchored` is always 0, so any "
-                   "downstream coverage label collapses to templated-leak / "
-                   "book-exists / real-gap (no inherited-coverage tier)._")
+                   "posterior is computed._")
         out.append("")
-        out.append("| rank | size | coverage | keywords | top books (×votes) | example titles |")
-        out.append("|------|------|----------|----------|-------------------|----------------|")
+        out.append("| rank | size | unanchored | keywords | top books (×votes) | example titles |")
+        out.append("|------|------|------------|----------|-------------------|----------------|")
         for i, g in enumerate(hdbscan_top):
-            cov = _coverage_label(g)
+            unanchored = _is_unanchored(g)
             out.append(
-                f"| {i+1} | {g['size']} | {cov} | "
+                f"| {i+1} | {g['size']} | {'yes' if unanchored else 'no'} | "
                 f"{_kw_str(hdbscan_kws[i], args.keywords_per_gap)} | "
                 f"{_top_books_str(hdbscan_books[i])} | {_title_lines(g, args.titles_per_gap)} |"
             )
         out.append("")
 
-        out.append("### HDBSCAN top-20 — real-gap only")
+        out.append("### HDBSCAN top-N — unanchored only")
         out.append("")
-        hdbscan_real = [g for g in hdbscan_top if _is_real(g)][:args.top_n]
+        hdbscan_real = [g for g in hdbscan_top if _is_unanchored(g)][:args.top_n]
         if not hdbscan_real:
-            out.append("_(no real-gap rows in this pipeline's top-20)_")
+            out.append("_(no unanchored rows in this pipeline's top-N)_")
         else:
             out.append("| rank | size | keywords | top books (×votes) | example titles |")
             out.append("|------|------|----------|-------------------|----------------|")
@@ -560,7 +467,7 @@ def main() -> None:
         matrix[(g["book_exists_flag"], g["book_anchored"])] += 1
     out.append("| | book_anchored=0 | book_anchored=1 |")
     out.append("|---|---|---|")
-    out.append(f"| **book_exists_flag=0** | {matrix[(0, 0)]} (real-gap) | {matrix[(0, 1)]} (Phase 3 catches) |")
+    out.append(f"| **book_exists_flag=0** | {matrix[(0, 0)]} (unanchored) | {matrix[(0, 1)]} (book_anchored only) |")
     out.append(f"| **book_exists_flag=1** | {matrix[(1, 0)]} (heuristic-only) | {matrix[(1, 1)]} (both fire) |")
     out.append("")
     total = sum(matrix.values()) or 1
