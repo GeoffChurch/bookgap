@@ -253,7 +253,7 @@ PHASE3_FIELDNAMES = [
     "rank", "seed_article", "first_seed_type",
     "n_articles_kNN", "n_books", "book_members_json",
     "top_book_id", "top_book_title", "top_keywords",
-    "top_books_csls_json", "effective_size",
+    "top_books_membership_json", "effective_size",
 ]
 
 
@@ -264,7 +264,7 @@ def write_enriched_csv(
     n_articles_kNN_per_basin: dict[int, int],
     effective_size_per_basin: dict[int, float],
     top_keywords_per_basin: dict[int, str],
-    top_books_csls_per_basin: dict[int, list[dict]],
+    top_books_membership_per_basin: dict[int, list[dict]],
 ) -> None:
     """Write the Phase 3 enriched CSV (summary schema; no per-article
     member lists — those live in the sidecar .npz).
@@ -278,8 +278,8 @@ def write_enriched_csv(
         meta = basin_meta[b]
         if b not in effective_size_per_basin:
             continue
-        top_books = top_books_csls_per_basin.get(b, [])
-        top_book = top_books[0] if top_books else {"idx": -1, "title": "", "csls": 0.0}
+        top_books = top_books_membership_per_basin.get(b, [])
+        top_book = top_books[0] if top_books else {"idx": -1, "title": "", "weight": 0.0}
         rows.append({
             "rank": meta["rank"],
             "seed_article": meta.get("first_seed", -1),
@@ -290,7 +290,7 @@ def write_enriched_csv(
             "top_book_id": top_book["idx"],
             "top_book_title": top_book["title"],
             "top_keywords": top_keywords_per_basin.get(b, ""),
-            "top_books_csls_json": json.dumps(top_books),
+            "top_books_membership_json": json.dumps(top_books),
             "effective_size": f"{effective_size_per_basin.get(b, 0.0):.3f}",
         })
 

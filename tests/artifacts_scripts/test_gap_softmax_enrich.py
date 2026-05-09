@@ -113,10 +113,10 @@ def test_write_enriched_csv_phase3_schema(tmp_path: Path):
     n_articles_kNN_per_basin = {0: 200, 1: 50, 2: 1138}
     effective_size_per_basin = {0: 1.3, 1: 0.7, 2: 1129.6}
     top_keywords_per_basin = {0: "kw1 kw2", 1: "kw3", 2: "que para como"}
-    top_books_csls_per_basin_dict = {
-        0: [{"idx": 999, "title": "Some Book", "csls": 0.42}],
-        1: [{"idx": 777, "title": "Anchor Book", "csls": 0.95}],
-        2: [{"idx": 888, "title": "Other Book", "csls": 0.10}],
+    top_books_membership_per_basin_dict = {
+        0: [{"idx": 999, "title": "Some Book", "weight": 0.42}],
+        1: [{"idx": 777, "title": "Anchor Book", "weight": 0.95}],
+        2: [{"idx": 888, "title": "Other Book", "weight": 0.10}],
     }
 
     out = tmp_path / "phase3.csv"
@@ -127,7 +127,7 @@ def test_write_enriched_csv_phase3_schema(tmp_path: Path):
         n_articles_kNN_per_basin=n_articles_kNN_per_basin,
         effective_size_per_basin=effective_size_per_basin,
         top_keywords_per_basin=top_keywords_per_basin,
-        top_books_csls_per_basin=top_books_csls_per_basin_dict,
+        top_books_membership_per_basin=top_books_membership_per_basin_dict,
     )
 
     rows = list(csv.DictReader(out.open()))
@@ -136,7 +136,7 @@ def test_write_enriched_csv_phase3_schema(tmp_path: Path):
         "rank", "seed_article", "first_seed_type",
         "n_articles_kNN", "n_books", "book_members_json",
         "top_book_id", "top_book_title", "top_keywords",
-        "top_books_csls_json", "effective_size",
+        "top_books_membership_json", "effective_size",
     }
     assert set(rows[0].keys()) == expected_cols
     for legacy in ("coverage_label_v2", "templated_leak_flag",
