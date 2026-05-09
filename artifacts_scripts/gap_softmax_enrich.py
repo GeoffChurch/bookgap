@@ -1,13 +1,13 @@
-"""Multi-cluster softmax Phase 2 enrichment.
+"""Multi-cluster softmax Phase 3 enrichment.
 
 Replaces gap_book_existence_filter + gap_multi_scale_coverage with a
 single one-shot multi-cluster softmax refinement layer over soft-EM's
-basin set. Output is a drop-in enriched CSV with templated-leak
-tagging, direct softmax effective_uncovered, and continuous
-inherited_coverage_median_post (no coverage_label_v2 column —
-downstream computes its own buckets from the raw flags + metric).
+basin set. Output is a minimal threshold-free 12-column summary CSV
+plus a sidecar .npz containing the sparse softmax membership matrix.
+No per-basin article lists in the CSV (load the npz, threshold M_new
+yourself).
 
-Spec: docs/superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md
+Spec: docs/superpowers/specs/2026-05-09-multicluster-softmax-phase3-design.md
 """
 from __future__ import annotations
 
@@ -19,14 +19,18 @@ from pathlib import Path
 
 import numpy as np
 
-# Soft-EM and Phase 2 CSVs both have member_weights_json fields > 131072 bytes
+# Soft-EM and Phase 3 CSVs both have member_weights_json fields > 131072 bytes
 csv.field_size_limit(sys.maxsize)
 
 from artifacts_scripts.gap_softmax_reassign import (
+    compute_basin_centroids,
     compute_self_tuning_sigma,
     load_enriched_csv,
     softmax_e_step,
 )
+
+from artifacts_scripts._keyword_helpers import compute_gap_keywords
+from artifacts_scripts.hdbscan_gap_probe import load_scope
 
 
 def load_soft_em_basins(
@@ -68,166 +72,6 @@ def run_softmax_step(
         P_target=perplexity,
     )
     return M_new
-
-
-def crisp_filter(
-    M_new: np.ndarray,
-    tau_supp: float = 0.5,
-    min_final_size: int = 5,
-) -> dict[int, list[tuple[int, float]]]:
-    """For each basin, return its supported members above tau_supp.
-
-    Returns dict mapping basin_idx → list of (article_local_idx, weight)
-    pairs, sorted by weight descending. Basins with fewer than
-    min_final_size supported articles are dropped from the dict.
-    """
-    out: dict[int, list[tuple[int, float]]] = {}
-    n_articles, n_basins = M_new.shape
-    for b in range(n_basins):
-        col = M_new[:, b]
-        members = np.where(col > tau_supp)[0]
-        if len(members) < min_final_size:
-            continue
-        weights = col[members]
-        order = np.argsort(-weights)
-        out[b] = [(int(members[i]), float(weights[i])) for i in order]
-    return out
-
-
-def inherited_coverage_per_article(
-    M_new: np.ndarray,
-    book_anchored_mask: np.ndarray,
-) -> np.ndarray:
-    """For each article a: max over book-anchored basins H of M_new[a, H].
-    Returns shape (N_articles,). Zero everywhere if no basins anchored.
-    """
-    if not book_anchored_mask.any():
-        return np.zeros(M_new.shape[0], dtype=np.float64)
-    book_columns = M_new[:, book_anchored_mask]
-    return book_columns.max(axis=1).astype(np.float64)
-
-
-def per_basin_readouts(
-    M_new: np.ndarray,
-    surviving: dict[int, list[tuple[int, float]]],
-    cov_per_article: np.ndarray,
-    book_anchored_mask: np.ndarray,
-) -> dict[int, dict]:
-    """Compute per-basin direct softmax readouts.
-
-    For each surviving non-book-anchored basin G:
-      - inherited_coverage_median_post = median over G's tau_supp members
-        a of cov_per_article[a]
-      - effective_uncovered_articles = Σ_a M_new[a, G] · (1 − cov_per_article[a])
-        summed over all articles (not just members)
-
-    For book-anchored basins, both readouts are emitted as 0.0
-    (they are themselves the source of coverage).
-    """
-    uncovered = 1.0 - cov_per_article
-    out: dict[int, dict] = {}
-    for b, members in surviving.items():
-        if book_anchored_mask[b]:
-            out[b] = {
-                "inherited_coverage_median_post": 0.0,
-                "effective_uncovered_articles": 0.0,
-            }
-            continue
-        member_idx = np.array([i for i, _ in members], dtype=np.int64)
-        median_post = float(np.median(cov_per_article[member_idx]))
-        eff_uncovered = float((M_new[:, b] * uncovered).sum())
-        out[b] = {
-            "inherited_coverage_median_post": median_post,
-            "effective_uncovered_articles": eff_uncovered,
-        }
-    return out
-
-
-from artifacts_scripts._keyword_helpers import (
-    compute_book_existence_signal,
-    compute_gap_keywords,
-    compute_top_books,
-)
-from artifacts_scripts.hdbscan_gap_probe import load_scope
-from bookgap.index import FlatL2, build_index
-
-
-def tag_basin_book_signals(
-    surviving: dict[int, list[tuple[int, float]]],
-    emb: np.ndarray,
-    types_arr: np.ndarray,
-    titles: list[str],
-    abstracts: list[str],
-    article_global_idx: np.ndarray,
-    keywords_per_gap: int = 5,
-    bigram_iterations: int = 2,
-    vote_concentration_threshold: float = 0.25,
-    title_overlap_threshold: float = 0.2,
-    templated_concentration_threshold: float = 0.5,
-) -> dict[int, dict]:
-    """For each surviving basin, compute book-existence + templated-leak
-    signals using the existing _keyword_helpers logic.
-
-    Returns dict basin_idx → {top_book_id, top_book_title, top_book_votes,
-    vote_concentration, top_keywords, title_keyword_overlap,
-    book_exists_flag, templated_leak_flag}.
-    """
-    book_global_idx = np.where(types_arr == "book")[0]
-    book_emb = np.ascontiguousarray(emb[book_global_idx])
-    book_index = build_index(FlatL2(), book_emb)
-    all_titles_arr = np.array(titles, dtype=object)
-
-    # Build per-basin global member-index lists (articles only)
-    basin_ids = sorted(surviving.keys())
-    gaps_global = [
-        [int(article_global_idx[i]) for i, _ in surviving[b]]
-        for b in basin_ids
-    ]
-
-    keywords_per_basin = compute_gap_keywords(
-        gaps=gaps_global,
-        titles=titles,
-        abstracts=abstracts,
-        top_k=keywords_per_gap,
-        bigram_iterations=bigram_iterations,
-        verbose=False,
-    )
-
-    out: dict[int, dict] = {}
-    for b, members_global, kw_pairs in zip(basin_ids, gaps_global, keywords_per_basin):
-        top_books = compute_top_books(
-            members=members_global,
-            emb=emb,
-            book_index=book_index,
-            book_global_idx=book_global_idx,
-            all_titles=all_titles_arr,
-            k=3,
-        )
-        if top_books:
-            top_book_id, top_book_title, top_book_votes = top_books[0]
-        else:
-            top_book_id, top_book_title, top_book_votes = -1, "", 0
-        top_keywords = [kw for kw, _ in kw_pairs]
-        signal = compute_book_existence_signal(
-            gap_size=len(members_global),
-            top_book_votes=top_book_votes,
-            top_book_title=top_book_title,
-            top_keywords=top_keywords,
-            vote_concentration_threshold=vote_concentration_threshold,
-            title_overlap_threshold=title_overlap_threshold,
-            templated_concentration_threshold=templated_concentration_threshold,
-        )
-        out[b] = {
-            "top_book_id": top_book_id,
-            "top_book_title": top_book_title,
-            "top_book_votes": top_book_votes,
-            "vote_concentration": signal["vote_concentration"],
-            "top_keywords": " ".join(top_keywords),
-            "title_keyword_overlap": signal["title_keyword_overlap"],
-            "book_exists_flag": int(signal["book_exists_flag"]),
-            "templated_leak_flag": int(signal["templated_leak_flag"]),
-        }
-    return out
 
 
 def compute_book_csls_matrix(
@@ -386,7 +230,7 @@ def _carry_book_members(
     n_basins: int,
 ) -> dict[int, list[dict]]:
     """Re-read input CSV and carry through book members per basin
-    (Phase 2 doesn't reassign books; they pass through unchanged)."""
+    (Phase 3 doesn't reassign books; they pass through unchanged)."""
     out: dict[int, list[dict]] = {b: [] for b in range(n_basins)}
     with csv_path.open() as f:
         for k, row in enumerate(csv.DictReader(f)):
@@ -404,33 +248,40 @@ def run(
     k_sigma: int = 7,
     k_marginal: int = 200,
     perplexity: float = 2.0,
-    tau_supp: float = 0.5,
-    min_final_size: int = 5,
     keywords_per_gap: int = 5,
     bigram_iterations: int = 2,
-    vote_concentration_threshold: float = 0.25,
-    title_overlap_threshold: float = 0.2,
-    templated_concentration_threshold: float = 0.5,
+    k_csls: int = 10,
+    k_top_books: int = 10,
 ) -> None:
-    """Phase 2 enrichment pipeline. See module docstring for context."""
+    """Phase 3 enrichment pipeline.
+
+    1. Load scope embeddings + soft-EM CSV → M0
+    2. Self-tuning σ + one-shot softmax E-step → M_new (full kNN-truncated)
+    3. Compute basin centroids + per-(basin, book) CSLS matrix →
+       top-k books per basin
+    4. Compute weighted keywords per basin (input: full kNN-truncated
+       softmax members + weights)
+    5. Compute effective_size = Σ_a M_new[a, G] per basin
+    6. Write 12-column CSV + sidecar .memberships.npz
+    """
     print(f"Loading scope {scope}...", flush=True)
     emb, ids, types, titles, _topic_ids, _refs = load_scope(scope, with_refs=False)
     n = len(ids)
     types_arr = np.array(types)
     is_article = types_arr == "article"
     article_global_idx = np.where(is_article)[0]
+    book_global_idx = np.where(~is_article)[0]
+
     article_emb = emb[article_global_idx]
     norms = np.linalg.norm(article_emb, axis=1, keepdims=True)
     article_emb = (article_emb / np.where(norms > 0, norms, 1.0)).astype(np.float32)
-    print(f"  {n:,} works ({(~is_article).sum():,} books, {is_article.sum():,} articles)",
-          flush=True)
 
-    # The full-corpus emb (not article-only) is also needed for the
-    # book-vote and keyword steps that index into the original embedding.
-    full_emb = emb.copy()
-    full_norms = np.linalg.norm(full_emb, axis=1, keepdims=True)
-    full_emb = (full_emb / np.where(full_norms > 0, full_norms, 1.0)).astype(np.float32)
-    full_emb = np.ascontiguousarray(full_emb)
+    book_emb = emb[book_global_idx]
+    book_norms = np.linalg.norm(book_emb, axis=1, keepdims=True)
+    book_emb = (book_emb / np.where(book_norms > 0, book_norms, 1.0)).astype(np.float32)
+
+    print(f"  {n:,} works ({len(book_global_idx):,} books, "
+          f"{len(article_global_idx):,} articles)", flush=True)
 
     print("Loading soft-EM CSV...", flush=True)
     M0, basin_meta = load_soft_em_basins(input_path, is_article)
@@ -438,24 +289,21 @@ def run(
     book_members_per_basin = _carry_book_members(input_path, n_basins)
     print(f"  {n_basins} basins; M0 shape {M0.shape}", flush=True)
 
-    # We also need abstracts for keyword extraction. Read directly from
-    # the per-scope parquet (matches gap_book_existence_filter:_load_articles_parquet).
+    # Article abstracts for keyword extraction
     print("Loading article abstracts...", flush=True)
     import pyarrow.parquet as pq
     parts = scope.split("/")
-    if Path("cache/works_parquet").joinpath(*parts, "article.parquet").exists():
-        article_pq = Path("cache/works_parquet").joinpath(*parts, "article.parquet")
-        tbl = pq.read_table(article_pq, columns=["display_name", "abstract"])
+    article_pq_path = Path("cache/works_parquet").joinpath(*parts, "article.parquet")
+    if article_pq_path.exists():
+        tbl = pq.read_table(article_pq_path, columns=["display_name", "abstract"])
         article_titles = tbl.column("display_name").to_pylist()
         article_abstracts = tbl.column("abstract").to_pylist()
-        # Map article-local titles/abstracts back to global indexing
         global_titles = list(titles)
         global_abstracts = [""] * n
         for local_i, g in enumerate(article_global_idx):
             global_titles[int(g)] = article_titles[local_i]
             global_abstracts[int(g)] = article_abstracts[local_i] or ""
     else:
-        # Synthetic / no parquet: use load_scope titles + empty abstracts
         global_titles = list(titles)
         global_abstracts = [""] * n
 
@@ -466,63 +314,82 @@ def run(
     )
     print("  done", flush=True)
 
-    print(f"Crisp filter (tau_supp={tau_supp}, min_final_size={min_final_size})...",
-          flush=True)
-    surviving = crisp_filter(M_new, tau_supp=tau_supp, min_final_size=min_final_size)
-    print(f"  {len(surviving)} basins survived", flush=True)
-
-    book_anchored_mask = np.array(
-        [int(m.get("book_anchored", 0)) == 1 for m in basin_meta], dtype=bool
+    # CSLS book-anchoring (computed for ALL basins; basin centroids from M_new)
+    print(f"Computing basin centroids + CSLS (k_csls={k_csls}, "
+          f"k_top_books={k_top_books})...", flush=True)
+    centroids_all = compute_basin_centroids(article_emb, M_new)
+    csls_matrix = compute_book_csls_matrix(
+        centroids_all, book_emb, k_csls=k_csls,
     )
-    cov = inherited_coverage_per_article(M_new, book_anchored_mask)
-    readouts = per_basin_readouts(M_new, surviving, cov, book_anchored_mask)
+    # IMPORTANT: top_books_csls_per_basin indexes all_titles by book-LOCAL
+    # index (parallel to book_global_idx). Pass the book-subset titles
+    # array, not the full corpus titles array.
+    all_titles_corpus = np.array(titles, dtype=object)
+    book_titles = all_titles_corpus[book_global_idx]
+    top_books_per_basin_list = top_books_csls_per_basin(
+        csls_matrix=csls_matrix,
+        book_global_idx=book_global_idx,
+        all_titles=book_titles,
+        k_top_books=k_top_books,
+    )
+    top_books_csls_dict = {b: top_books_per_basin_list[b] for b in range(n_basins)}
 
-    # Augment readouts with max_basin_rank / max_basin_books (which book-anchored
-    # basin claims this basin's members most strongly)
-    if book_anchored_mask.any():
-        book_basin_indices = np.where(book_anchored_mask)[0]
-        book_columns = M_new[:, book_anchored_mask]   # (N_articles, n_book_basins)
-        argmax_book = book_columns.argmax(axis=1)     # (N_articles,)
-        for b, members_local_w in surviving.items():
-            if book_anchored_mask[b]:
-                continue
-            member_idx = np.array([i for i, _ in members_local_w], dtype=np.int64)
-            if len(member_idx) == 0:
-                continue
-            chosen_book_basin_local = int(np.bincount(argmax_book[member_idx]).argmax())
-            chosen_book_basin = int(book_basin_indices[chosen_book_basin_local])
-            readouts[b]["inherited_coverage_max_basin_rank"] = basin_meta[chosen_book_basin]["rank"]
-            readouts[b]["inherited_coverage_max_basin_books"] = basin_meta[chosen_book_basin].get("n_books", 0)
-    else:
-        for b in surviving:
-            readouts[b].setdefault("inherited_coverage_max_basin_rank", "")
-            readouts[b].setdefault("inherited_coverage_max_basin_books", "")
+    # Weighted keyword extraction over the full kNN-truncated membership
+    print(f"Computing weighted keywords (top_k={keywords_per_gap})...", flush=True)
+    gaps_global: list[list[int]] = []
+    weights_per_basin: list[list[float]] = []
+    n_articles_kNN_dict: dict[int, int] = {}
+    for b in range(n_basins):
+        col = M_new[:, b]
+        nonzero_local = np.where(col > 0)[0]
+        n_articles_kNN_dict[b] = int(len(nonzero_local))
+        order = np.argsort(-col[nonzero_local])
+        nonzero_local = nonzero_local[order]
+        gaps_global.append(
+            [int(article_global_idx[lidx]) for lidx in nonzero_local]
+        )
+        weights_per_basin.append(
+            [float(col[lidx]) for lidx in nonzero_local]
+        )
 
-    print("Computing book signals + keywords...", flush=True)
-    book_signals = tag_basin_book_signals(
-        surviving=surviving,
-        emb=full_emb,
-        types_arr=types_arr,
+    keywords_per_basin = compute_gap_keywords(
+        gaps=gaps_global,
         titles=global_titles,
         abstracts=global_abstracts,
-        article_global_idx=article_global_idx,
-        keywords_per_gap=keywords_per_gap,
+        weights=weights_per_basin,
+        top_k=keywords_per_gap,
         bigram_iterations=bigram_iterations,
-        vote_concentration_threshold=vote_concentration_threshold,
-        title_overlap_threshold=title_overlap_threshold,
-        templated_concentration_threshold=templated_concentration_threshold,
+        verbose=False,
     )
+    top_keywords_dict = {
+        b: " ".join(kw for kw, _ in keywords_per_basin[b])
+        for b in range(n_basins)
+    }
+
+    # effective_size = basin softmax mass
+    effective_size_dict = {
+        b: float(M_new[:, b].sum()) for b in range(n_basins)
+    }
 
     print(f"Writing {output_path}...", flush=True)
     write_enriched_csv(
         out_path=output_path,
-        M_new=M_new,
-        surviving=surviving,
         basin_meta=basin_meta,
         book_members_per_basin=book_members_per_basin,
+        n_articles_kNN_per_basin=n_articles_kNN_dict,
+        effective_size_per_basin=effective_size_dict,
+        top_keywords_per_basin=top_keywords_dict,
+        top_books_csls_per_basin=top_books_csls_dict,
+    )
+
+    npz_path = output_path.with_suffix(".csv.memberships.npz")
+    print(f"Writing {npz_path}...", flush=True)
+    basin_rank_arr = np.array([m["rank"] for m in basin_meta], dtype=np.int64)
+    write_memberships_npz(
+        out_path=npz_path,
+        M_new=M_new,
         article_global_idx=article_global_idx,
-        readouts=readouts,
-        book_signals=book_signals,
+        basin_rank=basin_rank_arr,
     )
     print("Done.", flush=True)
 
@@ -536,13 +403,12 @@ def main() -> None:
     p.add_argument("--k-sigma", type=int, default=7)
     p.add_argument("--k-marginal", type=int, default=200)
     p.add_argument("--perplexity", type=float, default=2.0)
-    p.add_argument("--tau-supp", type=float, default=0.5)
-    p.add_argument("--min-final-size", type=int, default=5)
     p.add_argument("--keywords-per-gap", type=int, default=5)
     p.add_argument("--bigram-iterations", type=int, default=2)
-    p.add_argument("--vote-concentration-threshold", type=float, default=0.25)
-    p.add_argument("--title-overlap-threshold", type=float, default=0.2)
-    p.add_argument("--templated-concentration-threshold", type=float, default=0.5)
+    p.add_argument("--k-csls", type=int, default=10,
+                   help="Hub-correction neighborhood for CSLS (mycooc convention).")
+    p.add_argument("--k-top-books", type=int, default=10,
+                   help="How many top-CSLS books to retain per basin.")
     args = p.parse_args()
     run(
         scope=args.scope,
@@ -552,13 +418,10 @@ def main() -> None:
         k_sigma=args.k_sigma,
         k_marginal=args.k_marginal,
         perplexity=args.perplexity,
-        tau_supp=args.tau_supp,
-        min_final_size=args.min_final_size,
         keywords_per_gap=args.keywords_per_gap,
         bigram_iterations=args.bigram_iterations,
-        vote_concentration_threshold=args.vote_concentration_threshold,
-        title_overlap_threshold=args.title_overlap_threshold,
-        templated_concentration_threshold=args.templated_concentration_threshold,
+        k_csls=args.k_csls,
+        k_top_books=args.k_top_books,
     )
 
 
