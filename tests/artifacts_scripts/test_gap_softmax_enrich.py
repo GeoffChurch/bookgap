@@ -90,3 +90,24 @@ def test_run_softmax_step_returns_membership_matrix(tmp_path: Path):
     assert M_new.shape == (N, K)
     np.testing.assert_allclose(M_new.sum(axis=1), 1.0, atol=1e-5)
     assert ((M_new > 0).sum(axis=1) <= 4).all()
+
+
+def test_crisp_filter_returns_per_basin_member_lists():
+    """For each basin, list of (article_local_idx, weight) pairs above
+    tau_supp. Drop basins below min_final_size."""
+    from artifacts_scripts.gap_softmax_enrich import crisp_filter
+
+    M_new = np.array([
+        [0.7, 0.3, 0.0, 0.0],   # article 0 → basin 0 (above 0.5)
+        [0.6, 0.4, 0.0, 0.0],   # article 1 → basin 0
+        [0.0, 0.8, 0.2, 0.0],   # article 2 → basin 1
+        [0.0, 0.4, 0.6, 0.0],   # article 3 → basin 2
+        [0.0, 0.4, 0.6, 0.0],   # article 4 → basin 2
+        [0.0, 0.0, 0.0, 0.55],  # article 5 → basin 3 (single member; < min_size)
+    ], dtype=np.float32)
+
+    surviving = crisp_filter(M_new, tau_supp=0.5, min_final_size=2)
+    # surviving is dict[basin_idx, list[(article_local_idx, weight)]]
+    assert set(surviving) == {0, 2}        # basin 1 has only 1 member; basin 3 has 1
+    assert sorted([i for i, _ in surviving[0]]) == [0, 1]
+    assert sorted([i for i, _ in surviving[2]]) == [3, 4]

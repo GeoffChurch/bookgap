@@ -70,6 +70,30 @@ def run_softmax_step(
     return M_new
 
 
+def crisp_filter(
+    M_new: np.ndarray,
+    tau_supp: float = 0.5,
+    min_final_size: int = 5,
+) -> dict[int, list[tuple[int, float]]]:
+    """For each basin, return its supported members above tau_supp.
+
+    Returns dict mapping basin_idx → list of (article_local_idx, weight)
+    pairs, sorted by weight descending. Basins with fewer than
+    min_final_size supported articles are dropped from the dict.
+    """
+    out: dict[int, list[tuple[int, float]]] = {}
+    n_articles, n_basins = M_new.shape
+    for b in range(n_basins):
+        col = M_new[:, b]
+        members = np.where(col > tau_supp)[0]
+        if len(members) < min_final_size:
+            continue
+        weights = col[members]
+        order = np.argsort(-weights)
+        out[b] = [(int(members[i]), float(weights[i])) for i in order]
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
