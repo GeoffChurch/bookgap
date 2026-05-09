@@ -49,15 +49,15 @@ from artifacts_scripts.hdbscan_gap_probe import load_scope
 from bookgap.index import build_index, FlatL2
 
 
-def _is_unanchored(row: dict, csls_threshold: float = 0.3) -> bool:
-    """Phase 3 replacement for _is_real.
+def _is_unanchored(row: dict, weight_threshold: float = 0.3) -> bool:
+    """Phase 3.5 replacement.
 
-    A basin is 'unanchored' (a candidate research gap) if no book
-    strongly owns it: the top-CSLS book in top_books_csls_json[0]
-    has csls < csls_threshold. Default 0.3 is rough; consumers can
-    tune.
+    A basin is 'unanchored' (gap candidate) if no book strongly belongs
+    to it: the top book in top_books_membership_json[0] has weight
+    < weight_threshold. Default 0.3 — softmax weights are in [0, 1] and
+    a strongly-anchored basin's top book typically weights ≥0.5.
     """
-    raw = row.get("top_books_csls_json", "")
+    raw = row.get("top_books_membership_json", "")
     if not raw:
         return True
     try:
@@ -66,7 +66,7 @@ def _is_unanchored(row: dict, csls_threshold: float = 0.3) -> bool:
         return True
     if not top:
         return True
-    return float(top[0].get("csls", 0.0)) < csls_threshold
+    return float(top[0].get("weight", 0.0)) < weight_threshold
 
 
 def _load_kball(path: Path) -> list[dict]:
