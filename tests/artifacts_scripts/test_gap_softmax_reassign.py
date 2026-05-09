@@ -294,3 +294,84 @@ def test_softmax_e_step_with_empty_class_returns_extra_column():
     )
     assert M_new.shape == (N, K_basins + 1)
     assert np.allclose(M_new.sum(axis=1), 1.0, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Task 8: run_softmax_reassign + crisp readouts
+# ---------------------------------------------------------------------------
+from artifacts_scripts.gap_softmax_reassign import (
+    run_softmax_reassign,
+    crisp_argmax,
+    crisp_threshold,
+    crisp_confidence_margin,
+)
+
+
+def test_crisp_argmax_picks_top_basin():
+    M = np.array([
+        [0.7, 0.2, 0.1],
+        [0.1, 0.8, 0.1],
+        [0.4, 0.4, 0.2],
+    ], dtype=np.float32)
+    crisp = crisp_argmax(M, with_empty=False)
+    assert crisp.tolist() == [0, 1, 0]
+
+
+def test_crisp_argmax_with_empty_returns_minus_one_for_empty_winners():
+    M = np.array([
+        [0.7, 0.2, 0.1],
+        [0.1, 0.2, 0.7],
+    ], dtype=np.float32)
+    crisp = crisp_argmax(M, with_empty=True)
+    assert crisp.tolist() == [0, -1]
+
+
+def test_crisp_threshold_can_yield_zero_or_one_basin():
+    M = np.array([
+        [0.6, 0.3, 0.1],
+        [0.4, 0.4, 0.2],
+        [0.55, 0.45, 0.0],
+    ], dtype=np.float32)
+    crisp = crisp_threshold(M, with_empty=False, threshold=0.5)
+    assert crisp.tolist() == [0, -1, 0]
+
+
+def test_crisp_confidence_margin():
+    M = np.array([
+        [0.51, 0.49, 0.0],
+        [0.6, 0.3, 0.1],
+    ], dtype=np.float32)
+    crisp = crisp_confidence_margin(M, with_empty=False, k_knn=10)
+    assert crisp.tolist() == [-1, 0]
+
+
+def test_run_softmax_reassign_oneshot_returns_same_as_single_e_step():
+    rng = np.random.default_rng(101)
+    N, d, K = 40, 16, 6
+    emb = rng.normal(size=(N, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(N, 0.3, dtype=np.float32)
+    M0 = rng.uniform(0, 1, size=(N, K)).astype(np.float32)
+
+    M_one, meta = run_softmax_reassign(
+        emb, sigma, M0, log_K_empty=None,
+        k_knn=4, P_target=2.0, iter_mode="oneshot", max_iters=20, conv_tol=1e-3,
+    )
+    assert meta["iters"] == 1
+    assert M_one.shape == (N, K)
+
+
+def test_run_softmax_reassign_iterated_converges_or_caps():
+    rng = np.random.default_rng(202)
+    N, d, K = 40, 16, 6
+    emb = rng.normal(size=(N, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(N, 0.3, dtype=np.float32)
+    M0 = rng.uniform(0, 1, size=(N, K)).astype(np.float32)
+    M, meta = run_softmax_reassign(
+        emb, sigma, M0, log_K_empty=None,
+        k_knn=4, P_target=2.0, iter_mode="iterated", max_iters=20, conv_tol=1e-3,
+    )
+    assert 1 <= meta["iters"] <= 20
+    assert "final_delta" in meta
+    assert "converged" in meta

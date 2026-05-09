@@ -317,6 +317,115 @@ def softmax_e_step(
     }
 
 
+def run_softmax_reassign(
+    article_emb: np.ndarray,
+    article_sigma: np.ndarray,
+    M0: np.ndarray,
+    log_K_empty: np.ndarray | None,
+    k_knn: int,
+    P_target: float,
+    iter_mode: str,
+    max_iters: int = 20,
+    conv_tol: float = 1e-3,
+) -> tuple[np.ndarray, dict]:
+    """Drive one or more E-steps. Returns final M and meta dict
+    including τ history, iter count, final L_inf delta, converged flag.
+
+    iter_mode='oneshot': one E-step starting from M0.
+    iter_mode='iterated': E-steps until ‖M_new − M‖_∞ < conv_tol or
+        iter count reaches max_iters.
+    """
+    deltas: list[float] = []
+    taus: list[float] = []
+    achieved_Hs: list[float] = []
+
+    if iter_mode == "oneshot":
+        M_new, step_meta = softmax_e_step(
+            article_emb, article_sigma, M0, log_K_empty, k_knn, P_target,
+        )
+        return M_new, {
+            "iters": 1,
+            "final_delta": float("nan"),
+            "converged": False,
+            "taus": [step_meta["tau"]],
+            "achieved_Hs": [step_meta["achieved_H"]],
+            "achieved_Ps": [step_meta["achieved_P"]],
+        }
+
+    if iter_mode != "iterated":
+        raise ValueError(f"unknown iter_mode {iter_mode}")
+
+    M_iter = M0.copy()
+    M_new = M_iter
+    for it in range(1, max_iters + 1):
+        M_new, step_meta = softmax_e_step(
+            article_emb, article_sigma, M_iter, log_K_empty, k_knn, P_target,
+        )
+        taus.append(step_meta["tau"])
+        achieved_Hs.append(step_meta["achieved_H"])
+        M_basins_new = M_new[:, :M0.shape[1]]
+        delta = float(np.abs(M_basins_new - M_iter).max())
+        deltas.append(delta)
+        M_iter = M_basins_new
+        if delta < conv_tol:
+            return M_new, {
+                "iters": it,
+                "final_delta": delta,
+                "converged": True,
+                "taus": taus,
+                "achieved_Hs": achieved_Hs,
+                "achieved_Ps": [float(np.exp(h)) for h in achieved_Hs],
+            }
+
+    return M_new, {
+        "iters": max_iters,
+        "final_delta": deltas[-1],
+        "converged": False,
+        "taus": taus,
+        "achieved_Hs": achieved_Hs,
+        "achieved_Ps": [float(np.exp(h)) for h in achieved_Hs],
+    }
+
+
+def crisp_argmax(M: np.ndarray, with_empty: bool) -> np.ndarray:
+    """Argmax over basin columns. With ∅, last column is ∅; if it wins,
+    return -1 (no basin claim)."""
+    am = M.argmax(axis=1)
+    if with_empty:
+        empty_col = M.shape[1] - 1
+        am = np.where(am == empty_col, -1, am)
+    return am.astype(np.int64)
+
+
+def crisp_threshold(M: np.ndarray, with_empty: bool, threshold: float) -> np.ndarray:
+    """For each row, return the unique basin with p > threshold; -1 if
+    none. ∅ column is ignored (cannot be a 'support')."""
+    cols = M.shape[1] - (1 if with_empty else 0)
+    M_basins = M[:, :cols]
+    above = M_basins > threshold
+    counts = above.sum(axis=1)
+    am = M_basins.argmax(axis=1)
+    out = np.where(counts >= 1, am, -1)
+    return out.astype(np.int64)
+
+
+def crisp_confidence_margin(
+    M: np.ndarray, with_empty: bool, k_knn: int,
+) -> np.ndarray:
+    """Article supports basin k iff p_k − p_(2nd over basins) > 1/(2*k_knn).
+    ∅ is excluded from the comparison."""
+    cols = M.shape[1] - (1 if with_empty else 0)
+    M_basins = M[:, :cols]
+    sorted_desc = -np.sort(-M_basins, axis=1)
+    top1 = sorted_desc[:, 0]
+    top2 = sorted_desc[:, 1] if M_basins.shape[1] > 1 else np.zeros_like(top1)
+    margin = top1 - top2
+    threshold = 1.0 / (2.0 * k_knn)
+    am = M_basins.argmax(axis=1)
+    out = np.where(margin > threshold, am, -1)
+    return out.astype(np.int64)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
