@@ -22,7 +22,11 @@ import numpy as np
 # Soft-EM and Phase 2 CSVs both have member_weights_json fields > 131072 bytes
 csv.field_size_limit(sys.maxsize)
 
-from artifacts_scripts.gap_softmax_reassign import load_enriched_csv
+from artifacts_scripts.gap_softmax_reassign import (
+    compute_self_tuning_sigma,
+    load_enriched_csv,
+    softmax_e_step,
+)
 
 
 def load_soft_em_basins(
@@ -38,6 +42,32 @@ def load_soft_em_basins(
     on either input.
     """
     return load_enriched_csv(csv_path, is_article)
+
+
+def run_softmax_step(
+    article_emb: np.ndarray,
+    M0: np.ndarray,
+    k_knn: int = 10,
+    k_sigma: int = 7,
+    perplexity: float = 2.0,
+) -> np.ndarray:
+    """One-shot softmax E-step over M0's basin set.
+
+    Returns refined membership matrix M_new of shape
+    (N_articles, N_basins). Only the k_knn basin columns per article
+    are nonzero; the rest are 0 (kNN truncation). Rows sum to 1
+    (Variant A — no ∅ class).
+    """
+    article_sigma = compute_self_tuning_sigma(article_emb, k_sigma=k_sigma)
+    M_new, _ = softmax_e_step(
+        article_emb=article_emb,
+        article_sigma=article_sigma,
+        M=M0,
+        log_K_empty=None,
+        k_knn=k_knn,
+        P_target=perplexity,
+    )
+    return M_new
 
 
 def main() -> None:

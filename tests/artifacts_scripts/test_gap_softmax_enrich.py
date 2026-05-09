@@ -68,3 +68,25 @@ def test_load_soft_em_csv_returns_M0_and_meta(tmp_path: Path):
     assert M0[0, 0] == pytest.approx(1.0)
     assert basin_meta[1]["book_anchored"] == 1
     assert basin_meta[1]["n_books"] == 1
+
+
+def test_run_softmax_step_returns_membership_matrix(tmp_path: Path):
+    """run_softmax_step composes σ, centroids, kNN, K̃, τ, softmax in one
+    call. Returns M_new shape (N_articles, N_basins) with rows summing
+    to 1 (per the per-article kNN truncation; sums are over kNN basins
+    plus zeros elsewhere)."""
+    from artifacts_scripts.gap_softmax_enrich import run_softmax_step
+
+    rng = np.random.default_rng(11)
+    N, d, K = 30, 16, 5
+    article_emb = rng.normal(size=(N, d)).astype(np.float32)
+    article_emb /= np.linalg.norm(article_emb, axis=1, keepdims=True)
+    M0 = rng.uniform(0, 1, size=(N, K)).astype(np.float32)
+
+    M_new = run_softmax_step(
+        article_emb=article_emb, M0=M0,
+        k_knn=4, k_sigma=7, perplexity=2.0,
+    )
+    assert M_new.shape == (N, K)
+    np.testing.assert_allclose(M_new.sum(axis=1), 1.0, atol=1e-5)
+    assert ((M_new > 0).sum(axis=1) <= 4).all()
