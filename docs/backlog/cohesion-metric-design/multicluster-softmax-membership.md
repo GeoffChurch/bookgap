@@ -291,3 +291,52 @@ Key implementation choices, all derived from Phase 1 evidence:
 See [`docs/superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md`](../../superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md)
 for the spec and [`docs/superpowers/plans/2026-05-09-multicluster-softmax-phase2.md`](../../superpowers/plans/2026-05-09-multicluster-softmax-phase2.md)
 for the implementation plan.
+
+
+## Phase 3 shipped (2026-05-09)
+
+Phase 3 strips Phase 2 to threshold-free continuous metrics + a
+CSV/npz separation. Implementation in
+`artifacts_scripts/gap_softmax_enrich.py` (modified in place from
+Phase 2) and `artifacts_scripts/_keyword_helpers.py` (added
+`weights` parameter to `compute_gap_keywords`).
+
+Removed (vs Phase 2):
+
+- `templated_leak_flag` and `book_exists_flag` (threshold-fragile).
+- `inherited_coverage_*` (cross-basin coverage was a workaround for
+  granularity issues; CSLS answers the right question more directly).
+- `coverage_label_v2` and the `_is_real` / `_coverage_label`
+  derivations in `gap_method_comparison_table.py`.
+- `tau_supp` and `min_final_size` runtime parameters; the
+  `crisp_filter` partitioning step. No basin-membership thresholds at
+  all in the pipeline.
+- `member_indices_json` and `member_weights_json` for articles in the
+  CSV (moved to a sidecar `.memberships.npz`).
+
+Added:
+
+- `top_books_csls_json` — top-`k_top_books` (default 10) books per
+  basin by CSLS reciprocity, sorted descending. Distance-aware (raw
+  cos-sim) and bilateral (penalizes both basin- and book-side hubs).
+- Weighted keyword extraction — `compute_gap_keywords` now accepts a
+  `weights` parameter and threads through to
+  `extract_topic_keywords` with `DocWeighting.RELEVANCE` (the
+  curriculum keyword pipeline already supported this).
+- Sidecar `.memberships.npz` containing the sparse softmax matrix +
+  row/column labels for downstream filtering.
+
+Renamed:
+
+- `effective_uncovered_articles` → `effective_size` (= Σ_a M[a, G],
+  basin softmax mass).
+
+Final output: 12 CSV columns + sidecar npz. No flags, no labels,
+no thresholds. The user ranks gaps by sorting `effective_size`
+descending and (if desired) filtering on an aggregation of
+`top_books_csls_json`. To inspect article-level memberships, load
+the npz and threshold `M_new[:, basin_col]` however they want.
+
+See [`docs/superpowers/specs/2026-05-09-multicluster-softmax-phase3-design.md`](../../superpowers/specs/2026-05-09-multicluster-softmax-phase3-design.md)
+for the spec and [`docs/superpowers/plans/2026-05-09-multicluster-softmax-phase3.md`](../../superpowers/plans/2026-05-09-multicluster-softmax-phase3.md)
+for the implementation plan.

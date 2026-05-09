@@ -433,3 +433,23 @@ collapses the post-hoc enrichment chain from 4 stages into 1.
 
 See [`docs/superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md`](superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md)
 for the Phase 2 design.
+
+
+## Superseded by Phase 3 multi-cluster softmax (2026-05-09)
+
+Phase 3 simplifies Phase 2 further: drops `templated_leak_flag`,
+`book_exists_flag`, `inherited_coverage_*`, `coverage_label_v2`,
+`tau_supp`, `min_final_size`, the `crisp_filter` partitioning step,
+and the `_coverage_label` / `_is_real` derivations in
+`gap_method_comparison_table.py`. Adds a CSLS-style basin↔book
+reciprocity output (`top_books_csls_json`) and renames
+`effective_uncovered_articles` → `effective_size`. Membership is now
+fully fuzzy (full kNN-truncated softmax distribution per basin); the
+CSV is summary-only and a sidecar `.npz` carries the raw sparse
+softmax matrix.
+
+Output: 12 CSV columns + sidecar `.npz`. Threshold-free across the
+data flow.
+
+See [`docs/superpowers/specs/2026-05-09-multicluster-softmax-phase3-design.md`](superpowers/specs/2026-05-09-multicluster-softmax-phase3-design.md)
+for the Phase 3 design.
