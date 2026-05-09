@@ -50,30 +50,37 @@ from bookgap.index import build_index, FlatL2
 
 
 def _coverage_label(row: dict) -> str:
-    """Coverage label with tiered multi-scale inheritance.
+    """Coverage label derived from raw flags + continuous metric.
 
-    If the input CSV has a ``coverage_label_v2`` column (produced by
-    ``gap_multi_scale_coverage``), use that directly. Otherwise fall back
-    to the Phase-3-only classifier (templated-leak > book-anchored >
-    book-exists > real-gap).
+    Buckets (descending priority):
+      templated-leak > book-anchored > book-exists >
+      covered (inherited_coverage_median_post >= 0.65) > real-gap
+
+    Replaces the old 7-tier coverage_label_v2 scheme. The 0.65
+    threshold matches the previous inherited-weak/inherited-moderate
+    boundary; tuning is now an explicit consumer choice.
     """
-    if row.get("coverage_label_v2"):
-        return str(row["coverage_label_v2"])
-    if row.get("templated_leak_flag"):
+    if int(row.get("templated_leak_flag", 0) or 0):
         return "templated-leak"
-    if row.get("book_anchored"):
-        if row.get("book_exists_flag"):
-            return "book-exists+anchored"
+    if int(row.get("n_books", 0) or 0) > 0:
         return "book-anchored"
-    if row.get("book_exists_flag"):
+    if int(row.get("book_exists_flag", 0) or 0):
         return "book-exists"
+    mp_str = row.get("inherited_coverage_median_post", "")
+    if mp_str:
+        try:
+            if float(mp_str) >= 0.65:
+                return "covered"
+        except (ValueError, TypeError):
+            pass
     return "real-gap"
 
 
 # Labels considered "true research gaps" — basins not covered by any
-# book-anchored basin at meaningful strength. inherited-weak survives
-# because median_post < 0.65 means peripheral overlap, not real coverage.
-_REAL_GAP_LABELS = frozenset({"real-gap", "inherited-weak"})
+# book-anchored basin at meaningful strength. The 0.65 threshold lives
+# in _coverage_label above; a basin labeled "covered" (median_post >=
+# 0.65) does not count as a real gap, anything else does.
+_REAL_GAP_LABELS = frozenset({"real-gap"})
 
 
 def _is_real(g: dict) -> bool:
