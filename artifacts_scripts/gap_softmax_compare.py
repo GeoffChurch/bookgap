@@ -134,6 +134,92 @@ def save_eff_rank_scatter(
     plt.close(fig)
 
 
+def coverage_label_v2_minimal(row: dict, inh: dict | None) -> str:
+    """Minimal port of coverage_label_v2 from gap_multi_scale_coverage.py.
+
+    Tier order (descending priority):
+        templated-leak > book-anchored > book-exists > inherited-strong
+        > inherited-moderate > inherited-weak > real-gap
+
+    Inputs are CSV row dicts with string values (matching enriched CSV).
+    `inh` is a per-basin dict from coverage post-processing or None.
+    """
+    if int(row.get("templated_leak_flag", 0) or 0):
+        return "templated-leak"
+    if int(row.get("n_books", 0) or 0) > 0:
+        return "book-anchored"
+    if int(row.get("book_exists_flag", 0) or 0):
+        return "book-exists"
+    if inh and inh.get("max_basin_rank", ""):
+        mp_str = inh.get("median_post", "")
+        if mp_str:
+            try:
+                mp = float(mp_str)
+            except ValueError:
+                mp = 0.0
+            if mp >= 0.75:
+                return "inherited-strong"
+            if mp >= 0.65:
+                return "inherited-moderate"
+            if mp >= 0.55:
+                return "inherited-weak"
+    return "real-gap"
+
+
+def coverage_label_distribution(
+    rows: list[dict],
+    inh_by_idx: dict[int, dict],
+) -> dict[str, int]:
+    """Count coverage_label_v2_minimal outputs across rows."""
+    counts: dict[str, int] = {}
+    for i, row in enumerate(rows):
+        label = coverage_label_v2_minimal(row, inh_by_idx.get(i))
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def top_n_symdiff(
+    old_top: list[frozenset[int]],
+    new_top: list[frozenset[int]],
+    n: int = 20,
+) -> dict[str, list[frozenset[int]]]:
+    """Symmetric difference of top-n basin frozensets."""
+    old_set = set(old_top[:n])
+    new_set = set(new_top[:n])
+    return {
+        "only_old": list(old_set - new_set),
+        "only_new": list(new_set - old_set),
+        "in_both": list(old_set & new_set),
+    }
+
+
+def compute_effective_uncovered_new(
+    M: np.ndarray,
+    basin_meta: list[dict],
+) -> np.ndarray:
+    """Direct softmax readout per the parent design doc:
+
+        effective_uncovered(G) = Σ_a p(a∈G) · (1 − Σ_H∈book-anchored p(a∈H))
+
+    Args:
+        M: (N_articles, N_basins) softmax membership matrix.
+        basin_meta: list of dicts with `book_anchored` flag.
+
+    Returns:
+        (N_basins,) float64.
+    """
+    book_anchored_mask = np.array(
+        [bool(m.get("book_anchored", 0)) for m in basin_meta], dtype=bool
+    )
+    if book_anchored_mask.any():
+        coverage_per_article = M[:, book_anchored_mask].sum(axis=1)
+    else:
+        coverage_per_article = np.zeros(M.shape[0], dtype=np.float64)
+    coverage_per_article = np.clip(coverage_per_article, 0.0, 1.0)
+    uncovered_per_article = 1.0 - coverage_per_article
+    return (M * uncovered_per_article[:, None]).sum(axis=0)
+
+
 def main() -> None:
     raise NotImplementedError("driver assembled in later tasks")
 

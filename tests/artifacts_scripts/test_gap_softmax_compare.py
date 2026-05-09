@@ -126,3 +126,52 @@ def test_save_eff_rank_scatter_creates_file(tmp_path: Path):
     save_eff_rank_scatter(out, eff_old, eff_new, None, title_suffix=" test")
     assert out.exists()
     assert out.stat().st_size > 1000  # non-trivial PNG
+
+
+# ---------------------------------------------------------------------------
+# Task 14: coverage labels + top-20 leaderboard diff
+# ---------------------------------------------------------------------------
+
+from artifacts_scripts.gap_softmax_compare import (
+    coverage_label_v2_minimal,
+    coverage_label_distribution,
+    top_n_symdiff,
+)
+
+
+def test_coverage_label_v2_minimal_book_anchored():
+    row = {"templated_leak_flag": "0", "n_books": "3", "book_exists_flag": "0"}
+    assert coverage_label_v2_minimal(row, inh=None) == "book-anchored"
+
+
+def test_coverage_label_v2_minimal_real_gap():
+    row = {"templated_leak_flag": "0", "n_books": "0", "book_exists_flag": "0"}
+    assert coverage_label_v2_minimal(row, inh=None) == "real-gap"
+
+
+def test_coverage_label_v2_minimal_inherited_strong():
+    row = {"templated_leak_flag": "0", "n_books": "0", "book_exists_flag": "0"}
+    inh = {"max_basin_rank": "5", "median_post": "0.80"}
+    assert coverage_label_v2_minimal(row, inh=inh) == "inherited-strong"
+
+
+def test_coverage_label_distribution():
+    rows = [
+        {"templated_leak_flag": "0", "n_books": "1", "book_exists_flag": "0"},
+        {"templated_leak_flag": "0", "n_books": "0", "book_exists_flag": "1"},
+        {"templated_leak_flag": "0", "n_books": "0", "book_exists_flag": "0"},
+        {"templated_leak_flag": "1", "n_books": "0", "book_exists_flag": "0"},
+    ]
+    dist = coverage_label_distribution(rows, inh_by_idx={})
+    assert dist["book-anchored"] == 1
+    assert dist["book-exists"] == 1
+    assert dist["real-gap"] == 1
+    assert dist["templated-leak"] == 1
+
+
+def test_top_n_symdiff_simple():
+    old_top = [frozenset({1, 2}), frozenset({3}), frozenset({4})]
+    new_top = [frozenset({1, 2}), frozenset({4}), frozenset({5})]
+    diff = top_n_symdiff(old_top, new_top, n=3)
+    assert frozenset({3}) in diff["only_old"]
+    assert frozenset({5}) in diff["only_new"]
