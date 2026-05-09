@@ -148,6 +148,7 @@ from artifacts_scripts._keyword_helpers import (
     compute_gap_keywords,
     compute_top_books,
 )
+from artifacts_scripts.hdbscan_gap_probe import load_scope
 from bookgap.index import FlatL2, build_index
 
 
@@ -323,14 +324,157 @@ def write_enriched_csv(
         w.writerows(rows)
 
 
+def _carry_book_members(
+    csv_path: Path,
+    n_basins: int,
+) -> dict[int, list[dict]]:
+    """Re-read input CSV and carry through book members per basin
+    (Phase 2 doesn't reassign books; they pass through unchanged)."""
+    out: dict[int, list[dict]] = {b: [] for b in range(n_basins)}
+    with csv_path.open() as f:
+        for k, row in enumerate(csv.DictReader(f)):
+            weights = json.loads(row["member_weights_json"])
+            books = [w for w in weights if w.get("type") == "book"]
+            out[k] = books
+    return out
+
+
+def run(
+    scope: str,
+    input_path: Path,
+    output_path: Path,
+    k_knn: int = 10,
+    k_sigma: int = 7,
+    k_marginal: int = 200,
+    perplexity: float = 2.0,
+    tau_supp: float = 0.5,
+    min_final_size: int = 5,
+    keywords_per_gap: int = 5,
+    bigram_iterations: int = 2,
+    vote_concentration_threshold: float = 0.25,
+    title_overlap_threshold: float = 0.2,
+    templated_concentration_threshold: float = 0.5,
+) -> None:
+    """Phase 2 enrichment pipeline. See module docstring for context."""
+    print(f"Loading scope {scope}...", flush=True)
+    emb, ids, types, titles, _topic_ids, _refs = load_scope(scope, with_refs=False)
+    n = len(ids)
+    types_arr = np.array(types)
+    is_article = types_arr == "article"
+    article_global_idx = np.where(is_article)[0]
+    article_emb = emb[article_global_idx]
+    norms = np.linalg.norm(article_emb, axis=1, keepdims=True)
+    article_emb = (article_emb / np.where(norms > 0, norms, 1.0)).astype(np.float32)
+    print(f"  {n:,} works ({(~is_article).sum():,} books, {is_article.sum():,} articles)",
+          flush=True)
+
+    # The full-corpus emb (not article-only) is also needed for the
+    # book-vote and keyword steps that index into the original embedding.
+    full_emb = emb.copy()
+    full_norms = np.linalg.norm(full_emb, axis=1, keepdims=True)
+    full_emb = (full_emb / np.where(full_norms > 0, full_norms, 1.0)).astype(np.float32)
+    full_emb = np.ascontiguousarray(full_emb)
+
+    print("Loading soft-EM CSV...", flush=True)
+    M0, basin_meta = load_soft_em_basins(input_path, is_article)
+    n_basins = M0.shape[1]
+    book_members_per_basin = _carry_book_members(input_path, n_basins)
+    print(f"  {n_basins} basins; M0 shape {M0.shape}", flush=True)
+
+    # We also need abstracts for keyword extraction. Read directly from
+    # the per-scope parquet (matches gap_book_existence_filter:_load_articles_parquet).
+    print("Loading article abstracts...", flush=True)
+    import pyarrow.parquet as pq
+    parts = scope.split("/")
+    if Path("cache/works_parquet").joinpath(*parts, "article.parquet").exists():
+        article_pq = Path("cache/works_parquet").joinpath(*parts, "article.parquet")
+        tbl = pq.read_table(article_pq, columns=["display_name", "abstract"])
+        article_titles = tbl.column("display_name").to_pylist()
+        article_abstracts = tbl.column("abstract").to_pylist()
+        # Map article-local titles/abstracts back to global indexing
+        global_titles = list(titles)
+        global_abstracts = [""] * n
+        for local_i, g in enumerate(article_global_idx):
+            global_titles[int(g)] = article_titles[local_i]
+            global_abstracts[int(g)] = article_abstracts[local_i] or ""
+    else:
+        # Synthetic / no parquet: use load_scope titles + empty abstracts
+        global_titles = list(titles)
+        global_abstracts = [""] * n
+
+    print(f"Running softmax (P={perplexity}, k_knn={k_knn})...", flush=True)
+    M_new = run_softmax_step(
+        article_emb=article_emb, M0=M0,
+        k_knn=k_knn, k_sigma=k_sigma, perplexity=perplexity,
+    )
+    print("  done", flush=True)
+
+    print(f"Crisp filter (tau_supp={tau_supp}, min_final_size={min_final_size})...",
+          flush=True)
+    surviving = crisp_filter(M_new, tau_supp=tau_supp, min_final_size=min_final_size)
+    print(f"  {len(surviving)} basins survived", flush=True)
+
+    book_anchored_mask = np.array(
+        [int(m.get("book_anchored", 0)) == 1 for m in basin_meta], dtype=bool
+    )
+    cov = inherited_coverage_per_article(M_new, book_anchored_mask)
+    readouts = per_basin_readouts(M_new, surviving, cov, book_anchored_mask)
+
+    # Augment readouts with max_basin_rank / max_basin_books (which book-anchored
+    # basin claims this basin's members most strongly)
+    if book_anchored_mask.any():
+        book_basin_indices = np.where(book_anchored_mask)[0]
+        book_columns = M_new[:, book_anchored_mask]   # (N_articles, n_book_basins)
+        argmax_book = book_columns.argmax(axis=1)     # (N_articles,)
+        for b, members_local_w in surviving.items():
+            if book_anchored_mask[b]:
+                continue
+            member_idx = np.array([i for i, _ in members_local_w], dtype=np.int64)
+            if len(member_idx) == 0:
+                continue
+            chosen_book_basin_local = int(np.bincount(argmax_book[member_idx]).argmax())
+            chosen_book_basin = int(book_basin_indices[chosen_book_basin_local])
+            readouts[b]["inherited_coverage_max_basin_rank"] = basin_meta[chosen_book_basin]["rank"]
+            readouts[b]["inherited_coverage_max_basin_books"] = basin_meta[chosen_book_basin].get("n_books", 0)
+    else:
+        for b in surviving:
+            readouts[b].setdefault("inherited_coverage_max_basin_rank", "")
+            readouts[b].setdefault("inherited_coverage_max_basin_books", "")
+
+    print("Computing book signals + keywords...", flush=True)
+    book_signals = tag_basin_book_signals(
+        surviving=surviving,
+        emb=full_emb,
+        types_arr=types_arr,
+        titles=global_titles,
+        abstracts=global_abstracts,
+        article_global_idx=article_global_idx,
+        keywords_per_gap=keywords_per_gap,
+        bigram_iterations=bigram_iterations,
+        vote_concentration_threshold=vote_concentration_threshold,
+        title_overlap_threshold=title_overlap_threshold,
+        templated_concentration_threshold=templated_concentration_threshold,
+    )
+
+    print(f"Writing {output_path}...", flush=True)
+    write_enriched_csv(
+        out_path=output_path,
+        M_new=M_new,
+        surviving=surviving,
+        basin_meta=basin_meta,
+        book_members_per_basin=book_members_per_basin,
+        article_global_idx=article_global_idx,
+        readouts=readouts,
+        book_signals=book_signals,
+    )
+    print("Done.", flush=True)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--scope", required=True,
-                   help="Topic scope, e.g. 17/1702/T10181")
-    p.add_argument("--input", required=True,
-                   help="Soft-EM raw CSV path (output of gap_soft_em.py)")
-    p.add_argument("--output", required=True,
-                   help="Phase 2 enriched CSV path")
+    p.add_argument("--scope", required=True)
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
     p.add_argument("--k-knn", type=int, default=10)
     p.add_argument("--k-sigma", type=int, default=7)
     p.add_argument("--k-marginal", type=int, default=200)
@@ -338,11 +482,27 @@ def main() -> None:
     p.add_argument("--tau-supp", type=float, default=0.5)
     p.add_argument("--min-final-size", type=int, default=5)
     p.add_argument("--keywords-per-gap", type=int, default=5)
+    p.add_argument("--bigram-iterations", type=int, default=2)
     p.add_argument("--vote-concentration-threshold", type=float, default=0.25)
     p.add_argument("--title-overlap-threshold", type=float, default=0.2)
     p.add_argument("--templated-concentration-threshold", type=float, default=0.5)
     args = p.parse_args()
-    raise NotImplementedError("driver implemented in later tasks")
+    run(
+        scope=args.scope,
+        input_path=Path(args.input),
+        output_path=Path(args.output),
+        k_knn=args.k_knn,
+        k_sigma=args.k_sigma,
+        k_marginal=args.k_marginal,
+        perplexity=args.perplexity,
+        tau_supp=args.tau_supp,
+        min_final_size=args.min_final_size,
+        keywords_per_gap=args.keywords_per_gap,
+        bigram_iterations=args.bigram_iterations,
+        vote_concentration_threshold=args.vote_concentration_threshold,
+        title_overlap_threshold=args.title_overlap_threshold,
+        templated_concentration_threshold=args.templated_concentration_threshold,
+    )
 
 
 if __name__ == "__main__":

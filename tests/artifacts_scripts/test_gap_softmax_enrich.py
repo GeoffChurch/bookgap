@@ -286,3 +286,86 @@ def test_write_enriched_csv_includes_all_phase2_columns(tmp_path: Path):
     # Highest effective_uncovered comes first
     assert float(rows[0]["effective_uncovered_articles"]) >= float(
         rows[1]["effective_uncovered_articles"])
+
+
+def _make_book_members_per_basin(basin_meta, book_global_idx_set):
+    """Helper for the end-to-end test: every basin has zero book members."""
+    return {b: [] for b in range(len(basin_meta))}
+
+
+def test_run_end_to_end_synthetic(tmp_path: Path, monkeypatch):
+    """run() composes load → softmax → crisp → tag → readouts → write
+    against a synthetic in-memory scope. Verifies the output CSV is
+    well-formed and has the right number of rows."""
+    from artifacts_scripts import gap_softmax_enrich
+
+    N_articles = 30
+    N_books = 5
+    N_total = N_articles + N_books
+    d = 16
+
+    rng = np.random.default_rng(42)
+    emb = rng.normal(size=(N_total, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    types = ["article"] * N_articles + ["book"] * N_books
+    titles = [f"Article {i}" for i in range(N_articles)] + [
+        f"Book {i}" for i in range(N_books)
+    ]
+    abstracts = [""] * N_total
+    ids = list(range(N_total))
+
+    def fake_load_scope(scope, with_refs=False):
+        return emb, ids, types, titles, [scope] * N_total, None
+
+    monkeypatch.setattr(
+        "artifacts_scripts.gap_softmax_enrich.load_scope", fake_load_scope,
+        raising=False,
+    )
+
+    # Synthetic soft-EM CSV: 4 basins (one book-anchored)
+    soft_em_csv = tmp_path / "soft_em.csv"
+    write_soft_em_csv(soft_em_csv, [
+        {"seed_article": 0, "n_articles": 5, "n_books": 0, "book_anchored": 0,
+         "member_indices": [{"idx": i, "type": "article"} for i in range(5)],
+         "member_weights": [{"idx": i, "type": "article", "weight": 0.9}
+                            for i in range(5)]},
+        {"seed_article": 5, "n_articles": 5, "n_books": 0, "book_anchored": 0,
+         "member_indices": [{"idx": i, "type": "article"} for i in range(5, 10)],
+         "member_weights": [{"idx": i, "type": "article", "weight": 0.9}
+                            for i in range(5, 10)]},
+        {"seed_article": 10, "n_articles": 5, "n_books": 0, "book_anchored": 0,
+         "member_indices": [{"idx": i, "type": "article"} for i in range(10, 15)],
+         "member_weights": [{"idx": i, "type": "article", "weight": 0.9}
+                            for i in range(10, 15)]},
+        {"seed_article": 15, "n_articles": 5, "n_books": 1, "book_anchored": 1,
+         "member_indices": [{"idx": i, "type": "article"} for i in range(15, 20)] +
+                           [{"idx": N_articles, "type": "book"}],
+         "member_weights": [{"idx": i, "type": "article", "weight": 0.9}
+                            for i in range(15, 20)] +
+                           [{"idx": N_articles, "type": "book", "weight": 1.0}]},
+    ])
+
+    out_csv = tmp_path / "phase2_enriched.csv"
+    gap_softmax_enrich.run(
+        scope="synthetic",
+        input_path=soft_em_csv,
+        output_path=out_csv,
+        k_knn=3,
+        k_sigma=5,
+        k_marginal=20,
+        perplexity=2.0,
+        tau_supp=0.3,           # low, so synthetic basins survive
+        min_final_size=2,
+        keywords_per_gap=3,
+        bigram_iterations=1,
+        vote_concentration_threshold=0.25,
+        title_overlap_threshold=0.2,
+        templated_concentration_threshold=0.5,
+    )
+    assert out_csv.exists()
+    rows = list(csv.DictReader(out_csv.open()))
+    # Most synthetic basins should survive at tau_supp=0.3 / min_size=2
+    assert 1 <= len(rows) <= 4
+    # All emitted rows have the full schema
+    expected_cols = set(gap_softmax_enrich.PHASE2_FIELDNAMES)
+    assert set(rows[0].keys()) == expected_cols
