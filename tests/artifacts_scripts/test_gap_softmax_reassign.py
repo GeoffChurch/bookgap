@@ -210,3 +210,37 @@ def test_knn_basin_lookup_returns_top_k():
     assert knn_idx.shape == (2, 2)
     assert knn_idx[0, 0] == 0
     assert knn_idx[1, 0] == 1
+
+
+from artifacts_scripts.gap_softmax_reassign import compute_log_K_basins
+
+
+def test_compute_log_K_basins_matches_brute():
+    """K̃_k(a) = (1/Σ_x M[x,k]) · Σ_x M[x,k] · κ(a, x), restricted to
+    the kNN basins of a. Compare to brute-force formula."""
+    rng = np.random.default_rng(3)
+    N, d, K = 12, 8, 5   # 12 articles, 5 basins
+    emb = rng.normal(size=(N, d)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sigma = np.full(N, 0.4, dtype=np.float32)
+    M = rng.uniform(0, 1, size=(N, K)).astype(np.float32)
+    # Each article uses all basins as kNN (k=K)
+    knn_idx = np.tile(np.arange(K)[None, :], (N, 1)).astype(np.int64)
+
+    log_K = compute_log_K_basins(
+        article_emb=emb, article_sigma=sigma, M=M, knn_basin_idx=knn_idx,
+    )
+    assert log_K.shape == (N, K)
+
+    # Brute reference
+    d2 = ((emb[:, None, :] - emb[None, :, :]) ** 2).sum(axis=2)  # (N, N)
+    sigma_outer = sigma[:, None] * sigma[None, :]
+    kern = np.exp(-d2 / (sigma_outer + 1e-30)).astype(np.float64)  # (N, N)
+    expected = np.zeros((N, K), dtype=np.float64)
+    for a in range(N):
+        for k in range(K):
+            denom = M[:, k].sum()
+            num = (M[:, k] * kern[a, :]).sum()
+            expected[a, k] = num / max(denom, 1e-30)
+    expected_log = np.log(expected + 1e-30)
+    np.testing.assert_allclose(log_K, expected_log, atol=1e-5)

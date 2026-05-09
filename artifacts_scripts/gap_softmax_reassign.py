@@ -216,6 +216,56 @@ def knn_basin_lookup(
     return sorted_part.astype(np.int64)
 
 
+def compute_log_K_basins(
+    article_emb: np.ndarray,
+    article_sigma: np.ndarray,
+    M: np.ndarray,
+    knn_basin_idx: np.ndarray,
+) -> np.ndarray:
+    """For each (article a, basin k in a's kNN), compute
+        K̃_k(a) = (1 / Σ_x M[x,k]) · Σ_x M[x,k] · κ(a, x)
+    and return log K̃ of shape (N_articles, K_kNN) in float64.
+
+    Args:
+        article_emb: (N, d) float32, unit-normalized.
+        article_sigma: (N,) float32.
+        M: (N, N_basins) float32, soft membership weights.
+        knn_basin_idx: (N, K_kNN) int64, indices into M's columns.
+
+    Vectorized over articles; loops over the basin-side index columns
+    of knn_basin_idx (K_kNN ≤ 10 in practice).
+    """
+    N, d = article_emb.shape
+    K = knn_basin_idx.shape[1]
+    sigma_a = article_sigma.astype(np.float64)
+    emb_f64 = article_emb.astype(np.float64)
+    sigma_y = sigma_a   # member-side sigma is same array indexed by member
+
+    # Pairwise squared distances between every article and every other
+    # article, computed on demand per basin's member set.
+    K_tilde = np.zeros((N, K), dtype=np.float64)
+    for k_col in range(K):
+        basin_ids = knn_basin_idx[:, k_col]   # (N,)
+        # For each article a, look up its assigned basin (basin_ids[a]),
+        # then sum κ(a, x) · M[x, basin] over members x.
+        # Group articles by basin to vectorize.
+        unique_basins = np.unique(basin_ids)
+        for b in unique_basins:
+            arts_with_b = np.where(basin_ids == b)[0]            # (m,)
+            members = np.where(M[:, b] > 0)[0]                   # (s,)
+            if len(members) == 0:
+                K_tilde[arts_with_b, k_col] = 1e-30
+                continue
+            denom = M[members, b].sum()
+            d2 = ((emb_f64[arts_with_b, None, :] - emb_f64[None, members, :]) ** 2).sum(axis=2)
+            sig_o = sigma_a[arts_with_b, None] * sigma_y[None, members]
+            kern = np.exp(-d2 / (sig_o + 1e-30))                 # (m, s)
+            num = (kern * M[members, b][None, :]).sum(axis=1)    # (m,)
+            K_tilde[arts_with_b, k_col] = num / max(denom, 1e-30)
+
+    return np.log(K_tilde + 1e-30)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,
