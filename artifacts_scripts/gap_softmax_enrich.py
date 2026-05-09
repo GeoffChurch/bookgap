@@ -253,6 +253,38 @@ def compute_book_csls_matrix(
     return csls.astype(np.float32)
 
 
+def top_books_csls_per_basin(
+    csls_matrix: np.ndarray,
+    book_global_idx: np.ndarray,
+    all_titles: np.ndarray,
+    k_top_books: int = 10,
+) -> list[list[dict]]:
+    """Per basin, return top-k books by CSLS as a sorted-desc list of
+    {"idx", "title", "csls"} dicts. Clamps k to N_books if smaller."""
+    n_basins, n_books = csls_matrix.shape
+    k = min(k_top_books, n_books)
+    out: list[list[dict]] = []
+    if k >= n_books:
+        topk_idx = np.argsort(-csls_matrix, axis=1)[:, :k]
+    else:
+        part = np.argpartition(-csls_matrix, k - 1, axis=1)[:, :k]
+        rows = np.arange(n_basins)[:, None]
+        topk_idx = part[rows, np.argsort(-csls_matrix[rows, part], axis=1)]
+    for g in range(n_basins):
+        per_basin: list[dict] = []
+        for local_b in topk_idx[g]:
+            local_b_int = int(local_b)
+            global_b = int(book_global_idx[local_b_int])
+            title = str(all_titles[local_b_int]) if local_b_int < len(all_titles) else ""
+            per_basin.append({
+                "idx": global_b,
+                "title": title,
+                "csls": float(csls_matrix[g, local_b_int]),
+            })
+        out.append(per_basin)
+    return out
+
+
 PHASE2_FIELDNAMES = [
     "rank", "seed_article", "first_seed_type",
     "n_articles", "n_books", "total_size", "book_anchored",

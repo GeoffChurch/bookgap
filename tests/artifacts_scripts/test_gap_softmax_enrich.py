@@ -336,6 +336,44 @@ def test_compute_book_csls_matrix_low_when_book_is_hub():
     assert csls[1, 1] >= csls[1, 0] - 1e-6
 
 
+def test_top_books_csls_per_basin_returns_sorted_top_k():
+    from artifacts_scripts.gap_softmax_enrich import top_books_csls_per_basin
+    csls_matrix = np.array([
+        [0.5, 0.2, 0.8, 0.1, 0.4],
+        [0.1, 0.6, 0.3, 0.9, 0.2],
+    ], dtype=np.float32)
+    book_global_idx = np.array([100, 101, 102, 103, 104], dtype=np.int64)
+    all_titles = np.array(
+        ["Book A", "Book B", "Book C", "Book D", "Book E"], dtype=object
+    )
+    top = top_books_csls_per_basin(
+        csls_matrix=csls_matrix,
+        book_global_idx=book_global_idx,
+        all_titles=all_titles,
+        k_top_books=3,
+    )
+    assert len(top) == 2
+    assert len(top[0]) == 3
+    assert top[0][0]["idx"] == 102
+    assert top[0][0]["title"] == "Book C"
+    assert top[0][0]["csls"] == pytest.approx(0.8, abs=1e-5)
+    assert top[1][0]["idx"] == 103
+
+
+def test_top_books_csls_per_basin_clamps_when_k_exceeds_n_books():
+    from artifacts_scripts.gap_softmax_enrich import top_books_csls_per_basin
+    csls_matrix = np.array([[0.5, 0.2, 0.8]], dtype=np.float32)
+    book_global_idx = np.array([10, 20, 30], dtype=np.int64)
+    all_titles = np.array(["A", "B", "C"], dtype=object)
+    top = top_books_csls_per_basin(
+        csls_matrix=csls_matrix,
+        book_global_idx=book_global_idx,
+        all_titles=all_titles,
+        k_top_books=10,
+    )
+    assert len(top[0]) == 3
+
+
 def _make_book_members_per_basin(basin_meta, book_global_idx_set):
     """Helper for the end-to-end test: every basin has zero book members."""
     return {b: [] for b in range(len(basin_meta))}
