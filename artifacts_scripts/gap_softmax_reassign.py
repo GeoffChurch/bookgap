@@ -118,15 +118,19 @@ def tune_tau_for_perplexity(
     log_K: np.ndarray,
     log_K_empty: np.ndarray | None,
     P_target: float,
-    log_tau_low: float = -3.0,
-    log_tau_high: float = 1.0,
+    log_tau_low: float = -7.0,
+    log_tau_high: float = 3.0,
     tol: float = 0.01,
-    max_iters: int = 30,
+    max_iters: int = 40,
 ) -> float:
     """Bisect on log τ until mean per-row entropy is within tol of
     log(P_target). Returns the tuned τ.
 
     Higher τ → flatter softmax → higher entropy → higher perplexity.
+
+    Default bracket [log τ ∈ [-7, 3], τ ∈ [9e-4, 20]] covers the empirical
+    log_K scale on T10181 (range ~tens of nats). Initial range [-3, 1]
+    saturated at the lower bound for P_target ≤ 2 with this data.
     """
     target_H = float(np.log(P_target))
     lo, hi = float(log_tau_low), float(log_tau_high)
@@ -273,8 +277,8 @@ def softmax_e_step(
     log_K_empty: np.ndarray | None,
     k_knn: int,
     P_target: float,
-    log_tau_low: float = -3.0,
-    log_tau_high: float = 1.0,
+    log_tau_low: float = -7.0,
+    log_tau_high: float = 3.0,
 ) -> tuple[np.ndarray, dict]:
     """One E-step. Returns new M (full N_articles × N_basins or
     N_basins+1 if ∅ is included) and a meta dict.
