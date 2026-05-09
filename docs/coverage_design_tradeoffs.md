@@ -417,3 +417,19 @@ once (5) proves out. (6) is the architectural target once we want
 to simplify the post-hoc enrichment pipeline; the
 [multicluster-softmax-membership](backlog/cohesion-metric-design/multicluster-softmax-membership.md)
 design doc lays it out.
+
+
+---
+
+## Superseded by Phase 2 multi-cluster softmax (2026-05-09)
+
+The 7-tier `coverage_label_v2` and the cross-basin pairwise posterior
+machinery described above are superseded for new runs by the
+multi-cluster softmax enrichment in `gap_softmax_enrich.py`. The new
+pipeline produces `inherited_coverage_median_post` and
+`effective_uncovered_articles` as direct softmax readouts, drops
+`coverage_label_v2` in favor of raw flags + continuous metric, and
+collapses the post-hoc enrichment chain from 4 stages into 1.
+
+See [`docs/superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md`](superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md)
+for the Phase 2 design.

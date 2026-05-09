@@ -265,3 +265,29 @@ The Phase 1 implementation lives in
 `artifacts_scripts/gap_softmax_reassign.py` and
 `artifacts_scripts/gap_softmax_compare.py` and is retained for use as
 a reference / regression test against the Phase 2 lockstep EM.
+
+
+## Phase 2 shipped (2026-05-09)
+
+Implemented in `artifacts_scripts/gap_softmax_enrich.py`. The new
+driver replaces `gap_book_existence_filter` + `gap_multi_scale_coverage`
+with a single one-shot multi-cluster softmax refinement layer over
+soft-EM's basin set. Soft-EM (per-seed bootstrap discovery) is kept
+unchanged as the upstream input.
+
+Key implementation choices, all derived from Phase 1 evidence:
+
+- One-shot only (no iteration; Phase 1 showed pure unsupervised
+  lockstep EM diverges).
+- Variant A only (no ∅ class; Phase 1 showed Variant B is
+  indistinguishable from A in one-shot).
+- `tau_supp` exposed as a tunable knob, default 0.5 (narrow seeds,
+  backwards-compatible).
+- 7-tier `coverage_label_v2` retired; downstream consumers compute
+  their own categorical buckets from the raw flags + continuous
+  `inherited_coverage_median_post`.
+- Templated-leak signal kept as a tagger (flagging, not dropping).
+
+See [`docs/superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md`](../../superpowers/specs/2026-05-09-multicluster-softmax-phase2-design.md)
+for the spec and [`docs/superpowers/plans/2026-05-09-multicluster-softmax-phase2.md`](../../superpowers/plans/2026-05-09-multicluster-softmax-phase2.md)
+for the implementation plan.

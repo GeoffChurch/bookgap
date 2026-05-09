@@ -1,5 +1,11 @@
 """Multi-scale post-hoc coverage labeling for cohesion-aware gap basins.
 
+SUPERSEDED for new runs by ``gap_softmax_enrich.py`` (multi-cluster
+softmax Phase 2), which produces inherited_coverage_median_post and
+effective_uncovered_articles as direct softmax readouts (formula
+differs; see the Phase 2 design doc). Retained for fallback /
+regression.
+
 Post-processes a Phase-3-enriched gap CSV (with ``member_indices_json``,
 ``book_anchored``, ``n_books``, ``logit_sum`` columns) and adds
 *inherited coverage* labels to non-book-anchored basins.

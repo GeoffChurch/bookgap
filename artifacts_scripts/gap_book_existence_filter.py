@@ -1,5 +1,11 @@
 """Phase 1: enrich a gap CSV with book-existence signal columns.
 
+SUPERSEDED for new runs by ``gap_softmax_enrich.py`` (multi-cluster
+softmax Phase 2), which produces these columns plus the multi-scale
+coverage columns and the direct softmax effective_uncovered in one
+pass. Retained for fallback / regression and for use against gap CSVs
+from non-soft-EM pipelines (K-ball, HDBSCAN max-bookless).
+
 Reads any gap CSV produced by the gap-detection pipelines (K-ball,
 article-as-seed, max-bookless), computes per-gap top keywords + top
 nearest book + Jaccard overlap + flags, and writes an enriched CSV.
