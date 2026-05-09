@@ -11,9 +11,32 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
+
+# Basin CSVs can have member_weights_json fields > 131072 bytes
+# (a basin claiming all articles serializes to ~7 MB of JSON).
+csv.field_size_limit(sys.maxsize)
+
+
+def _parse_member_indices(raw: str) -> frozenset[int]:
+    """Parse member_indices_json from either CSV schema:
+
+    - gap_softmax_reassign output: list of plain ints
+    - soft-EM enriched CSV (gap_book_existence_filter): list of dicts
+      with "idx" + "type" keys; we only keep articles
+    """
+    members = json.loads(raw)
+    if not members:
+        return frozenset()
+    first = members[0]
+    if isinstance(first, dict):
+        return frozenset(
+            int(m["idx"]) for m in members if m.get("type", "article") == "article"
+        )
+    return frozenset(int(m) for m in members)
 
 
 def load_basin_supports(csv_path: Path) -> list[frozenset[int]]:
@@ -25,8 +48,7 @@ def load_basin_supports(csv_path: Path) -> list[frozenset[int]]:
     out: list[frozenset[int]] = []
     with csv_path.open() as f:
         for row in csv.DictReader(f):
-            members = json.loads(row["member_indices_json"])
-            out.append(frozenset(int(m) for m in members))
+            out.append(_parse_member_indices(row["member_indices_json"]))
     return out
 
 
@@ -228,8 +250,7 @@ def _read_old_supports_and_meta(
     meta: list[dict] = []
     with enriched_csv.open() as f:
         for row in csv.DictReader(f):
-            members = json.loads(row["member_indices_json"])
-            supports.append(frozenset(int(m) for m in members))
+            supports.append(_parse_member_indices(row["member_indices_json"]))
             meta.append(dict(row))
     return supports, meta
 
