@@ -17,6 +17,25 @@ from pathlib import Path
 
 import numpy as np
 
+from bookgap.index import build_index, FlatL2
+
+
+def compute_self_tuning_sigma(
+    emb: np.ndarray,
+    k_sigma: int = 7,
+) -> np.ndarray:
+    """σ_i = sqrt(median squared distance to k_sigma nearest neighbors
+    of i, excluding i itself).
+
+    Matches gap_soft_em.py's formula. Returns shape (N,) float32.
+    """
+    index = build_index(FlatL2(), emb)
+    D, _ = index.search(emb, k=k_sigma + 1)   # +1 for self
+    # D[:, 0] is self (distance 0); take 1 .. k_sigma+1
+    sigma_sq = np.median(D[:, 1:k_sigma + 1], axis=1)
+    sigma_sq = np.maximum(sigma_sq, 1e-8).astype(np.float32)
+    return np.sqrt(sigma_sq).astype(np.float32)
+
 
 def load_enriched_csv(
     csv_path: Path,

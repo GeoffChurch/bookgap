@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from artifacts_scripts.gap_softmax_reassign import load_enriched_csv
+from artifacts_scripts.gap_softmax_reassign import compute_self_tuning_sigma
 
 
 def test_load_enriched_csv_builds_M0(tmp_path: Path):
@@ -55,3 +56,26 @@ def test_load_enriched_csv_builds_M0(tmp_path: Path):
     assert M0[2, 1] == pytest.approx(0.9)   # article 200 in basin 2
     assert M0[0, 1] == 0.0                   # article 100 not in basin 2
     assert basin_meta[1]["book_anchored"] == 1
+
+
+def test_compute_self_tuning_sigma_synthetic():
+    """σ_i is the sqrt of the median squared L2 distance to the
+    k_sigma nearest neighbors (excluding self).
+
+    Set up 10 points evenly spaced on a line: emb[i] = [i, 0, ...].
+    For point i (not at edge), 7-NN squared distances are
+    {1, 1, 4, 4, 9, 9, 16}; median = 4. σ_i = 2.
+    """
+    rng = np.random.default_rng(0)
+    n, d = 30, 8
+    emb = np.zeros((n, d), dtype=np.float32)
+    emb[:, 0] = np.arange(n) * 0.1   # spaced along axis 0
+    norms = np.linalg.norm(emb, axis=1, keepdims=True)
+    emb = emb / np.where(norms > 0, norms, 1.0)
+    emb = emb.astype(np.float32)
+
+    sigma = compute_self_tuning_sigma(emb, k_sigma=7)
+    assert sigma.shape == (n,)
+    assert np.all(sigma > 0)
+    # Middle points should have similar σ (translation symmetry)
+    assert sigma[10:20].std() < 0.1 * sigma[10:20].mean()
