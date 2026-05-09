@@ -94,6 +94,55 @@ def crisp_filter(
     return out
 
 
+def inherited_coverage_per_article(
+    M_new: np.ndarray,
+    book_anchored_mask: np.ndarray,
+) -> np.ndarray:
+    """For each article a: max over book-anchored basins H of M_new[a, H].
+    Returns shape (N_articles,). Zero everywhere if no basins anchored.
+    """
+    if not book_anchored_mask.any():
+        return np.zeros(M_new.shape[0], dtype=np.float64)
+    book_columns = M_new[:, book_anchored_mask]
+    return book_columns.max(axis=1).astype(np.float64)
+
+
+def per_basin_readouts(
+    M_new: np.ndarray,
+    surviving: dict[int, list[tuple[int, float]]],
+    cov_per_article: np.ndarray,
+    book_anchored_mask: np.ndarray,
+) -> dict[int, dict]:
+    """Compute per-basin direct softmax readouts.
+
+    For each surviving non-book-anchored basin G:
+      - inherited_coverage_median_post = median over G's tau_supp members
+        a of cov_per_article[a]
+      - effective_uncovered_articles = Σ_a M_new[a, G] · (1 − cov_per_article[a])
+        summed over all articles (not just members)
+
+    For book-anchored basins, both readouts are emitted as 0.0
+    (they are themselves the source of coverage).
+    """
+    uncovered = 1.0 - cov_per_article
+    out: dict[int, dict] = {}
+    for b, members in surviving.items():
+        if book_anchored_mask[b]:
+            out[b] = {
+                "inherited_coverage_median_post": 0.0,
+                "effective_uncovered_articles": 0.0,
+            }
+            continue
+        member_idx = np.array([i for i, _ in members], dtype=np.int64)
+        median_post = float(np.median(cov_per_article[member_idx]))
+        eff_uncovered = float((M_new[:, b] * uncovered).sum())
+        out[b] = {
+            "inherited_coverage_median_post": median_post,
+            "effective_uncovered_articles": eff_uncovered,
+        }
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", required=True,

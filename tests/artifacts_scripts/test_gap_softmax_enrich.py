@@ -111,3 +111,57 @@ def test_crisp_filter_returns_per_basin_member_lists():
     assert set(surviving) == {0, 2}        # basin 1 has only 1 member; basin 3 has 1
     assert sorted([i for i, _ in surviving[0]]) == [0, 1]
     assert sorted([i for i, _ in surviving[2]]) == [3, 4]
+
+
+def test_inherited_coverage_per_article():
+    """For each article: max softmax weight over book-anchored basins."""
+    from artifacts_scripts.gap_softmax_enrich import inherited_coverage_per_article
+
+    M_new = np.array([
+        [0.6, 0.3, 0.1, 0.0],   # basins 0,2 are book-anchored; max(0.6, 0.1) = 0.6
+        [0.0, 0.5, 0.5, 0.0],   # max(0.0, 0.5) = 0.5
+        [0.0, 1.0, 0.0, 0.0],   # max(0.0, 0.0) = 0.0 (basin 1 not anchored)
+    ], dtype=np.float32)
+    book_anchored_mask = np.array([True, False, True, False])
+
+    cov = inherited_coverage_per_article(M_new, book_anchored_mask)
+    np.testing.assert_allclose(cov, [0.6, 0.5, 0.0], atol=1e-6)
+
+
+def test_inherited_coverage_per_article_no_book_anchored():
+    """If no basins are book-anchored, all-zeros."""
+    from artifacts_scripts.gap_softmax_enrich import inherited_coverage_per_article
+
+    M_new = np.eye(3, dtype=np.float32)
+    book_anchored_mask = np.array([False, False, False])
+    cov = inherited_coverage_per_article(M_new, book_anchored_mask)
+    np.testing.assert_allclose(cov, [0.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_per_basin_readouts():
+    """Per non-anchored basin: median_post over its tau_supp members,
+    effective_uncovered_articles = Σ_a M_new[a, G] · (1 − cov[a])."""
+    from artifacts_scripts.gap_softmax_enrich import (
+        inherited_coverage_per_article,
+        per_basin_readouts,
+    )
+
+    M_new = np.array([
+        [0.6, 0.3, 0.1],
+        [0.0, 0.7, 0.3],
+        [0.0, 0.6, 0.4],
+        [0.4, 0.0, 0.6],
+    ], dtype=np.float32)
+    book_anchored_mask = np.array([True, False, False])
+    surviving = {1: [(1, 0.7), (2, 0.6)]}     # only basin 1 survived
+
+    cov = inherited_coverage_per_article(M_new, book_anchored_mask)
+    # cov = [0.6, 0.0, 0.0, 0.4]
+    readouts = per_basin_readouts(M_new, surviving, cov, book_anchored_mask)
+    # basin 1: members [1, 2]; cov[1]=0, cov[2]=0; median_post=0.0
+    # effective_uncovered = Σ over all a of M[a,1]*(1-cov[a])
+    #   = 0.3*(1-0.6) + 0.7*(1-0.0) + 0.6*(1-0.0) + 0.0*(1-0.4)
+    #   = 0.12 + 0.7 + 0.6 + 0.0 = 1.42
+    assert 1 in readouts
+    assert readouts[1]["inherited_coverage_median_post"] == pytest.approx(0.0)
+    assert readouts[1]["effective_uncovered_articles"] == pytest.approx(1.42, abs=1e-5)
