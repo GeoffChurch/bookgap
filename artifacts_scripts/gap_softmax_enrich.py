@@ -345,6 +345,42 @@ def write_enriched_csv(
         w.writerows(rows)
 
 
+def write_memberships_npz(
+    out_path: Path,
+    M_new: np.ndarray,
+    article_global_idx: np.ndarray,
+    basin_rank: np.ndarray,
+) -> None:
+    """Save the sparse softmax membership matrix + row/col labels as
+    an .npz sidecar.
+
+    Schema:
+      - M_data, M_indices, M_indptr, M_shape: sparse CSR components
+        of M_new (allow_pickle=False compatible).
+      - article_global_idx: (N_articles,) int64, row labels.
+      - basin_rank: (N_basins,) int64, column labels — each col's
+        rank in the corresponding CSV row.
+
+    To reload:
+      data = np.load(path, allow_pickle=False)
+      M = scipy.sparse.csr_matrix(
+          (data['M_data'], data['M_indices'], data['M_indptr']),
+          shape=tuple(data['M_shape']),
+      )
+    """
+    import scipy.sparse as sp
+    sparse = sp.csr_matrix(M_new)
+    np.savez(
+        out_path,
+        M_data=sparse.data,
+        M_indices=sparse.indices,
+        M_indptr=sparse.indptr,
+        M_shape=np.array(sparse.shape, dtype=np.int64),
+        article_global_idx=article_global_idx.astype(np.int64),
+        basin_rank=basin_rank.astype(np.int64),
+    )
+
+
 def _carry_book_members(
     csv_path: Path,
     n_basins: int,

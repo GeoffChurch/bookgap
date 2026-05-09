@@ -353,6 +353,42 @@ def test_top_books_csls_per_basin_clamps_when_k_exceeds_n_books():
     assert len(top[0]) == 3
 
 
+def test_write_memberships_npz_roundtrip(tmp_path: Path):
+    """write_memberships_npz emits a sparse softmax matrix + row/col
+    labels; the npz round-trips correctly."""
+    from artifacts_scripts.gap_softmax_enrich import write_memberships_npz
+    import scipy.sparse as sp
+
+    M_new = np.array([
+        [0.7, 0.3, 0.0],
+        [0.0, 0.6, 0.4],
+        [1.0, 0.0, 0.0],
+    ], dtype=np.float32)
+    article_global_idx = np.array([100, 200, 300], dtype=np.int64)
+    basin_rank = np.array([1, 2, 3], dtype=np.int64)
+
+    out = tmp_path / "memberships.npz"
+    write_memberships_npz(
+        out_path=out,
+        M_new=M_new,
+        article_global_idx=article_global_idx,
+        basin_rank=basin_rank,
+    )
+    assert out.exists()
+
+    data = np.load(out, allow_pickle=False)
+    assert "article_global_idx" in data.files
+    assert "basin_rank" in data.files
+    np.testing.assert_array_equal(data["article_global_idx"], article_global_idx)
+    np.testing.assert_array_equal(data["basin_rank"], basin_rank)
+
+    M_loaded = sp.csr_matrix(
+        (data["M_data"], data["M_indices"], data["M_indptr"]),
+        shape=tuple(data["M_shape"]),
+    )
+    np.testing.assert_allclose(M_loaded.toarray(), M_new, atol=1e-6)
+
+
 def _make_book_members_per_basin(basin_meta, book_global_idx_set):
     """Helper for the end-to-end test: every basin has zero book members."""
     return {b: [] for b in range(len(basin_meta))}
