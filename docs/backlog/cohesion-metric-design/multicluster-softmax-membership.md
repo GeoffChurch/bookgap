@@ -234,14 +234,28 @@ Phase 2 design notes derived from this run:
    seeds. Phase 2 should expose this as a tunable
    (e.g., post-hoc `tau_supp` on softmax probabilities) rather
    than implicitly choose.
-2. **Keep ∅ active across iterations** in Variant B. The Phase 1
-   prototype dropped ∅ when feeding M back into the next E-step,
-   which is why Variant B doesn't stabilize. Phase 2's lockstep EM
-   should treat ∅ as a first-class basin in the iteration loop.
-3. **Hold book-anchored basin centroids fixed** during EM (the
-   parent doc's "fixed competitors" framing). Without this, both
-   variants drift in book-poor regions. This is the most likely
-   fix for the convergence failure.
+2. ~~**Keep ∅ active across iterations** in Variant B.~~ Re-examination
+   showed ∅ is already active in every iteration (`log_K_empty` is a
+   per-topic constant computed from the marginal density and passed
+   unchanged into each E-step; dropping the ∅ column from M before
+   re-feeding it is correct because ∅ has no embedding location).
+   Not the bug. *(Removed.)*
+3. ~~**Hold book-anchored basin centroids fixed** during EM~~
+   Tested via the `--fix-book-anchored` flag and a 6-config rerun:
+   final_delta still 0.93–1.00 (essentially scrambled), and at
+   P=3.0 the fix slightly hurts (0.79 → 0.93). T10181 has only 63
+   / 423 book-anchored basins, so 360 non-anchored basins still
+   drift freely. *(Refuted.)*
+4. **Alternatives Phase 2 should test for iteration convergence:**
+   (a) hold *every* basin's core (M0 nonzero) members fixed across
+   iterations — anchor every centroid to its soft-EM origin while
+   allowing softmax to expand the periphery;
+   (b) damped updates (M_iter ← α·M_softmax + (1-α)·M_iter_prev
+   for α<1) to slow centroid drift;
+   (c) accept that pure unsupervised lockstep EM doesn't converge
+   in this formulation and ship the **one-shot variant only**
+   (which converges trivially and produces sensible basins per the
+   Phase 1 spot-check).
 
 T11303 was **not run** — verdict on T10181 was unambiguous and the
 sweep across all dimensions agreed. A second topic would be redundant

@@ -169,6 +169,57 @@ the multi-cluster softmax (recovering the narrow-seeds behavior),
 or commit to the partition behavior (the design doc's vision), or
 something tunable in between.
 
+### Phase 1 addendum: --fix-book-anchored experiment (2026-05-08)
+
+The Phase 2 design note "hold book-anchored basin centroids fixed
+during iteration" was tested via a `--fix-book-anchored` flag added
+to `run_softmax_reassign`. Result: **the fix does not stabilize
+iteration.** All 6 iterated configs (variant × P) still hit
+`max_iters=20` with final_delta ~0.93–1.00, in some cases slightly
+worse than the unanchored baseline:
+
+| config | final_delta no_fix | final_delta fixedBA |
+|---|---|---|
+| variantA P=1.5 | 0.997 | 0.991 |
+| variantA P=2.0 | 0.972 | 0.981 |
+| variantA P=3.0 | 0.788 | **0.926** |
+| variantB P=1.5 | 0.987 | 0.995 |
+| variantB P=2.0 | 0.973 | 0.979 |
+| variantB P=3.0 | 0.752 | **0.928** |
+
+T10181 has only 63 / 423 book-anchored basins (~15%). Holding those
+centroids fixed leaves 360 non-book-anchored basins free to drift,
+which is enough to keep the system in steady-state scrambling. The
+P=3.0 deltas getting worse with the fix is consistent with
+book-anchored centroids previously moving toward better positions
+during EM that are now denied.
+
+**Refuted Phase 2 design note:** "hold book-anchored basin centroids
+fixed" is not sufficient. The convergence issue is more fundamental.
+
+**Updated Phase 2 design notes** (the underlying problem is more
+structural than this single fix):
+
+1. The basin-granularity decision (narrow seeds vs full partition)
+   is still the most important Phase 2 question — *unchanged*.
+2. ∅ is not the bug — Variant B already includes the marginal
+   density in every iteration via a per-topic constant — *removed*.
+3. Holding book-anchored centroids fixed does not stabilize
+   iteration — *refuted by this experiment*.
+4. **Possible alternatives for Phase 2 to test:**
+   (a) hold *every* basin's core (M0 nonzero) members fixed across
+   iterations — anchor every centroid to its soft-EM origin while
+   allowing softmax to expand the periphery;
+   (b) damped updates (M_iter ← α·M_softmax + (1-α)·M_iter for
+   α<1) to slow centroid drift;
+   (c) accept that pure unsupervised lockstep EM doesn't converge
+   in this formulation and ship the one-shot variant only.
+
+The one-shot variant is robust and converges trivially. If Phase 2
+ships one-shot with a tunable post-hoc support filter, the
+narrow-vs-broad granularity question becomes the user's choice
+without needing to solve iteration stability.
+
 ### Caveats on the readout
 
 - **eff_rank_delta numbers (~421) are inflated** by an artifact: most
