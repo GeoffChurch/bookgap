@@ -16,6 +16,8 @@ from artifacts_scripts.gap_static_seed_diagnostic import (
     generalized_containment,
     joint_normalize,
     kernel_mass_matrix,
+    _sparse_weighted_jaccard,
+    _sparse_weighted_containment,
 )
 
 
@@ -95,6 +97,55 @@ def test_kernel_mass_matrix_known_distances():
         [np.exp(-1.0), np.exp(-1.0) + np.exp(-1.0)],
     ])
     np.testing.assert_allclose(M, expected, rtol=1e-5)
+
+
+def test_sparse_weighted_jaccard_matches_dense_on_random_columns():
+    """Sparse and dense weighted Jaccard must agree to numerical precision."""
+    from scipy.sparse import csc_matrix
+    rng = np.random.default_rng(42)
+    N = 100
+    n_cols = 6
+    # Random sparse columns with ~15 nonzeros each.
+    rows = []
+    cols = []
+    vals = []
+    for c in range(n_cols):
+        r = rng.choice(N, size=15, replace=False)
+        v = rng.uniform(0.1, 1.0, size=15)
+        rows.extend(r.tolist())
+        cols.extend([c] * 15)
+        vals.extend(v.tolist())
+    M = csc_matrix((vals, (rows, cols)), shape=(N, n_cols))
+    for ci in range(n_cols):
+        for cj in range(ci + 1, n_cols):
+            sparse_j = _sparse_weighted_jaccard(M, ci, cj)
+            wi = np.asarray(M[:, ci].todense()).flatten()
+            wj = np.asarray(M[:, cj].todense()).flatten()
+            dense_j = generalized_jaccard(wi, wj)
+            assert sparse_j == pytest.approx(dense_j, rel=1e-9, abs=1e-12)
+
+
+def test_sparse_weighted_containment_matches_dense_on_random_columns():
+    """Sparse and dense generalized containment must agree."""
+    from scipy.sparse import csc_matrix
+    rng = np.random.default_rng(43)
+    N = 100
+    n_cols = 6
+    rows, cols, vals = [], [], []
+    for c in range(n_cols):
+        r = rng.choice(N, size=15, replace=False)
+        v = rng.uniform(0.1, 1.0, size=15)
+        rows.extend(r.tolist())
+        cols.extend([c] * 15)
+        vals.extend(v.tolist())
+    M = csc_matrix((vals, (rows, cols)), shape=(N, n_cols))
+    for ci in range(n_cols):
+        for cj in range(ci + 1, n_cols):
+            sparse_c = _sparse_weighted_containment(M, ci, cj)
+            wi = np.asarray(M[:, ci].todense()).flatten()
+            wj = np.asarray(M[:, cj].todense()).flatten()
+            dense_c = generalized_containment(wi, wj)
+            assert sparse_c == pytest.approx(dense_c, rel=1e-9, abs=1e-12)
 
 
 def test_section1_returns_decision_on_synthetic_state(tmp_path):

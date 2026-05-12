@@ -89,6 +89,86 @@ def joint_normalize(M: csr_matrix) -> tuple[csr_matrix, np.ndarray]:
     return M_norm, eff
 
 
+def _sparse_weighted_jaccard(Mc, ci: int, cj: int) -> float:
+    """Generalized Jaccard on two sparse CSC columns.
+
+    Same value as ``generalized_jaccard`` on the densified columns, but
+    O(nnz_i + nnz_j) — avoids materializing N_rows-long dense vectors.
+    Assumes CSC storage (row indices sorted within each column).
+    """
+    a_start, a_end = int(Mc.indptr[ci]), int(Mc.indptr[ci + 1])
+    b_start, b_end = int(Mc.indptr[cj]), int(Mc.indptr[cj + 1])
+    a_rows = Mc.indices[a_start:a_end]
+    a_vals = Mc.data[a_start:a_end]
+    b_rows = Mc.indices[b_start:b_end]
+    b_vals = Mc.data[b_start:b_end]
+    i = j = 0
+    min_sum = 0.0
+    max_sum = 0.0
+    na, nb = len(a_rows), len(b_rows)
+    while i < na and j < nb:
+        ra, rb = a_rows[i], b_rows[j]
+        if ra < rb:
+            max_sum += a_vals[i]
+            i += 1
+        elif ra > rb:
+            max_sum += b_vals[j]
+            j += 1
+        else:
+            av, bv = a_vals[i], b_vals[j]
+            if av < bv:
+                min_sum += av
+                max_sum += bv
+            else:
+                min_sum += bv
+                max_sum += av
+            i += 1
+            j += 1
+    while i < na:
+        max_sum += a_vals[i]
+        i += 1
+    while j < nb:
+        max_sum += b_vals[j]
+        j += 1
+    if max_sum <= 0:
+        return 0.0
+    return float(min_sum / max_sum)
+
+
+def _sparse_weighted_containment(Mc, ci: int, cj: int) -> float:
+    """Generalized containment on two sparse CSC columns.
+
+    Same value as ``generalized_containment`` on the densified columns,
+    O(nnz_i + nnz_j).
+    """
+    a_start, a_end = int(Mc.indptr[ci]), int(Mc.indptr[ci + 1])
+    b_start, b_end = int(Mc.indptr[cj]), int(Mc.indptr[cj + 1])
+    a_rows = Mc.indices[a_start:a_end]
+    a_vals = Mc.data[a_start:a_end]
+    b_rows = Mc.indices[b_start:b_end]
+    b_vals = Mc.data[b_start:b_end]
+    a_sum = float(a_vals.sum())
+    b_sum = float(b_vals.sum())
+    denom = a_sum if a_sum < b_sum else b_sum
+    if denom <= 0:
+        return 0.0
+    i = j = 0
+    min_sum = 0.0
+    na, nb = len(a_rows), len(b_rows)
+    while i < na and j < nb:
+        ra, rb = a_rows[i], b_rows[j]
+        if ra < rb:
+            i += 1
+        elif ra > rb:
+            j += 1
+        else:
+            av, bv = a_vals[i], b_vals[j]
+            min_sum += av if av < bv else bv
+            i += 1
+            j += 1
+    return float(min_sum / denom)
+
+
 def kernel_mass_matrix(
     D_art_NN: np.ndarray,
     I_art_NN_global: np.ndarray,
@@ -589,9 +669,7 @@ def _confluence_components(
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
-                wi = np.asarray(Mc[:, ci].todense()).flatten()
-                wj = np.asarray(Mc[:, cj].todense()).flatten()
-                if generalized_jaccard(wi, wj) >= threshold:
+                if _sparse_weighted_jaccard(Mc, ci, cj) >= threshold:
                     union(ci, cj)
 
     comps: dict[int, list[int]] = {}
@@ -732,10 +810,8 @@ def section5_jaccard_vs_containment(
 
     rows = []
     for (ci, cj) in candidate_pairs:
-        wi = np.asarray(Mc[:, ci].todense()).flatten()
-        wj = np.asarray(Mc[:, cj].todense()).flatten()
-        J = generalized_jaccard(wi, wj)
-        C = generalized_containment(wi, wj)
+        J = _sparse_weighted_jaccard(Mc, ci, cj)
+        C = _sparse_weighted_containment(Mc, ci, cj)
         rows.append({"seed_a": seed_k_pairs[ci][0], "seed_b": seed_k_pairs[cj][0],
                      "k_a": seed_k_pairs[ci][1], "k_b": seed_k_pairs[cj][1],
                      "jaccard": J, "containment": C})
