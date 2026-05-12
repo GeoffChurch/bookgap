@@ -158,16 +158,32 @@ def compute_local_csls_posterior(
     nearest_book_per_member: np.ndarray,
     book_to_arts: dict[int, np.ndarray],
     n_total: int,
+    fuzzy_gap_membership: np.ndarray,
 ) -> np.ndarray:
-    """Local-CSLS-balanced per-member posterior (ported from gap_kball_cohesion_curve).
+    """Local-CSLS-balanced per-member posterior with fuzzy gap membership.
 
     For each gap member i, posterior is:
       post_i = K_G(i) / (K_G(i) + K_B(i))
-    where K_G is the self-tuning Gaussian kernel mass of i's K-NN that
-    are also in G, and K_B is the kernel mass of i's K-NN that are in
-    the local-CSLS-balanced background B (one book contributes f(b)
-    non-gap articles where f(b) = number of gap members whose 1-NN book
-    is b).
+
+    K_G is the *expected* self-tuning-Gaussian kernel mass from i to its
+    top-K neighbors, weighted by each neighbor's fuzzy membership in
+    THIS gap:
+        K_G(i) = Σ_j W_ij · μ_G(j) · 1[j ≠ i]
+
+    K_B is the kernel mass of i's K-NN that are in the local-CSLS-
+    balanced background B (one book contributes f(b) non-gap articles
+    where f(b) = number of gap members whose 1-NN book is b).
+
+    **K_G is fuzzy, K_B is hard.** This is intentional per
+    ``docs/cohesion_design_axes.md`` axis H: K_B is a **size-matched
+    bounding object**, not a competing-class likelihood. The local-CSLS
+    construction picks a comparator set whose size matches the gap and
+    whose hub-books are correctly discounted; that role doesn't admit a
+    fuzzy reformulation because there's no underlying "membership in
+    the bounding object" probability to soften. The asymmetry is by
+    design: K_G answers "expected gap pull on i" while K_B answers
+    "size-matched alternative pull on i." See the Phase 3.5 follow-up
+    discussion in ``docs/static_seed_cohesion_diagnostic_phase3_5.md``.
 
     members: list of global indices for the gap.
     D_NN: (n_members, K) squared L2 distances from each member to its
@@ -179,22 +195,25 @@ def compute_local_csls_posterior(
     book_to_arts: dict mapping global book index -> array of article
       global indices, sorted by distance from the book (closest first).
     n_total: total number of works in the topic (for bool-array sizing).
+    fuzzy_gap_membership: (n_total,) array of per-article fuzzy
+      memberships in THIS gap (in [0, 1]). Typically the gap's column
+      of a joint-normalized centroid-kernel-weight matrix; can also be
+      a boolean indicator for single-gap inspection.
 
     Returns posts: (n_members,) array of per-member posteriors in [0, 1].
     """
     from collections import Counter
     members_arr = np.asarray(members, dtype=np.int64)
-    k_query = D_NN.shape[1]
 
-    in_G = np.zeros(n_total, dtype=bool)
-    in_G[members_arr] = True
+    in_G_hard = np.zeros(n_total, dtype=bool)
+    in_G_hard[members_arr] = True
 
-    # Count books claimed by gap members
+    # Count books claimed by gap members (drives the CSLS-balanced background)
     book_counts: Counter = Counter()
     for b in nearest_book_per_member:
         book_counts[int(b)] += 1
 
-    # Build the background lookup
+    # Build the background lookup (hard, per axis H bounding-object semantics)
     in_B = np.zeros(n_total, dtype=bool)
     for b, f_b in book_counts.items():
         if b < 0:
@@ -206,18 +225,20 @@ def compute_local_csls_posterior(
             if taken >= f_b:
                 break
             a_int = int(a)
-            if not in_G[a_int]:
+            if not in_G_hard[a_int]:
                 in_B[a_int] = True
                 taken += 1
 
-    # Per-member kernel-weighted mass on G vs B
+    # Per-member kernel weights from i to its top-K neighbors
     sigma_seed = sigma[members_arr][:, None]
     sigma_n = sigma[I_NN]
     W = np.exp(-D_NN / (sigma_seed * sigma_n))
     self_mask = I_NN == members_arr[:, None]
-    G_mask = in_G[I_NN] & ~self_mask
+    # Fuzzy K_G: weight each neighbor by μ_G(j) and zero out self-contributions.
+    mu_at_neighbors = fuzzy_gap_membership[I_NN]
+    K_G = (W * mu_at_neighbors * (~self_mask)).sum(axis=1)
+    # Hard K_B (bounding object).
     B_mask = in_B[I_NN]
-    K_G = (W * G_mask).sum(axis=1)
     K_B = (W * B_mask).sum(axis=1)
     denom = K_G + K_B + 1e-30
     return K_G / denom
@@ -230,13 +251,18 @@ def compute_gap_stats(
     book_index,
     article_index,
     article_global_idx: np.ndarray,
+    fuzzy_gap_membership: np.ndarray,
     k_query: int = K_QUERY,
     k_per_book: int = K_QUERY,
 ) -> dict:
-    """Compute logit_sum, mean_logit, effective_size for a refined gap.
+    """Compute per-gap stats from the local-CSLS-balanced posterior.
 
-    Returns dict with keys: logit_sum, mean_logit, effective_size, min_post,
-    mean_post.
+    Per cohesion_design_axes.md axis H, K_G is fuzzy (weighted by
+    ``fuzzy_gap_membership``) while K_B is hard (the bounding-object
+    semantics don't admit fuzzification). See compute_local_csls_posterior.
+
+    Returns dict with: logit_sum, mean_logit, median_logit, min_logit,
+    effective_size, min_post, mean_post.
     """
     emb = state["emb"]
     sigma = state["sigma"]
@@ -280,6 +306,7 @@ def compute_gap_stats(
         nearest_book_per_member=nearest_book.astype(np.int64),
         book_to_arts=book_to_arts,
         n_total=n_total,
+        fuzzy_gap_membership=fuzzy_gap_membership,
     )
 
     # Clipped logits for size-extensive statistics (logit_sum / mean_logit).
@@ -287,17 +314,20 @@ def compute_gap_stats(
     # when a single member has post ≈ 0 or ≈ 1.
     post_clip = np.clip(posts, 1e-3, 1 - 1e-3)
     logits_clip = np.log(post_clip / (1 - post_clip))
-    # UN-clipped logits for the median, which is robust to ±inf in the tails
-    # without needing artificial clip thresholds. log(post / max(1-post, ε))
-    # avoids a divide-by-zero only when post is exactly 1; np.median handles
+    # UN-clipped logits for median / min, which are robust to ±inf in the
+    # tails without needing artificial clip thresholds. log(post / max(1-post, ε))
+    # avoids divide-by-zero only when post is exactly 1; np.median handles
     # remaining -inf in the lower tail by sort order.
     with np.errstate(divide="ignore"):
         logits_raw = np.log(posts) - np.log(np.maximum(1.0 - posts, 1e-30))
     median_logit = float(np.median(logits_raw))
+    finite_raw = logits_raw[np.isfinite(logits_raw)]
+    min_logit = float(finite_raw.min()) if finite_raw.size else 0.0
     return {
         "logit_sum": float(logits_clip.sum()),
         "mean_logit": float(logits_clip.mean()),
         "median_logit": median_logit,
+        "min_logit": min_logit,
         "effective_size": float(posts.sum()),
         "min_post": float(posts.min()),
         "mean_post": float(posts.mean()),
@@ -468,6 +498,66 @@ def _topic_id_from_path(path: Path) -> str:
     return stem
 
 
+def _build_fuzzy_jointnorm_memberships(
+    refined_gaps: list[dict],
+    state: dict,
+) -> "csc_matrix":
+    """Build joint-normalized fuzzy gap memberships from refined gap centroids.
+
+    For each refined gap, compute the centroid of its members and the
+    self-tuning-Gaussian kernel weight from that centroid to each member.
+    These per-(article, gap) weights form a sparse (n_total × n_gaps)
+    matrix; we then joint-normalize each row so each article's total gap
+    membership sums to 1 (or 0 if no gap claims it).
+
+    Returns the normalized matrix in CSC form for cheap per-gap column
+    extraction. To get the fuzzy gap membership vector for gap g:
+
+        mu_g = np.asarray(M_norm[:, g].todense()).flatten()
+    """
+    from scipy.sparse import csr_matrix, diags
+    emb = state["emb"]
+    sigma = state["sigma"]
+    n_total = state["sigma"].shape[0]
+    n_gaps = len(refined_gaps)
+
+    rows: list[int] = []
+    cols: list[int] = []
+    vals: list[float] = []
+    for g_idx, g in enumerate(refined_gaps):
+        members = np.asarray(
+            g["refined_member_indices"], dtype=np.int64,
+        )
+        if len(members) == 0:
+            continue
+        member_emb = emb[members]
+        centroid = member_emb.mean(axis=0)
+        norm = float(np.linalg.norm(centroid))
+        if norm < 1e-12:
+            # Degenerate centroid (shouldn't happen with normalized embeddings).
+            # Treat all members as equally-weighted.
+            for m in members:
+                rows.append(int(m))
+                cols.append(g_idx)
+                vals.append(1.0)
+            continue
+        centroid_unit = (centroid / norm).astype(np.float32)
+        d_sq = np.sum((member_emb - centroid_unit) ** 2, axis=1)
+        sigma_centroid = float(sigma[members].mean())
+        sigma_members = sigma[members]
+        w = np.exp(-d_sq / (sigma_centroid * sigma_members))
+        for m, wi in zip(members, w):
+            rows.append(int(m))
+            cols.append(g_idx)
+            vals.append(float(wi))
+
+    M = csr_matrix((vals, (rows, cols)), shape=(n_total, n_gaps))
+    row_sums = np.asarray(M.sum(axis=1)).flatten()
+    inv = np.where(row_sums > 0, 1.0 / np.where(row_sums > 0, row_sums, 1.0), 0.0)
+    M_norm = (diags(inv) @ M).tocsc()
+    return M_norm
+
+
 def _compute_corpus_null(
     state: dict,
     sample_size: int | None = 2000,
@@ -603,7 +693,8 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
     fieldnames = [
         "scope", "kball_gap_id", "kball_size", "refined_k_star",
         "refined_n_articles", "llr_peak", "llr_peak_at_k",
-        "logit_sum", "mean_logit", "median_logit", "effective_size",
+        "logit_sum", "mean_logit", "median_logit", "min_logit",
+        "effective_size",
         "kball_size_delta", "kball_jaccard",
         "survivor", "merged_into_gap_id", "dedup_reason",
         "article_indices_json",
@@ -623,6 +714,7 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
                 "logit_sum": g["logit_sum"],
                 "mean_logit": g["mean_logit"],
                 "median_logit": g["median_logit"],
+                "min_logit": g["min_logit"],
                 "effective_size": g["effective_size"],
                 "kball_size_delta": g["kball_size_delta"],
                 "kball_jaccard": g["kball_jaccard"],
@@ -723,11 +815,14 @@ def main() -> None:
     p.add_argument("--null-pilot-size", type=int, default=200,
                    help="Stein-only: pilot subsample size. Default 200.")
     p.add_argument("--rank-by",
-                   choices=["median_logit", "mean_logit", "logit_sum"],
+                   choices=["median_logit", "min_logit", "mean_logit", "logit_sum"],
                    default="median_logit",
-                   help="Column to rank survivors by (default median_logit, "
-                        "which is robust to extreme per-member posteriors "
-                        "and avoids the artificial clipping mean_logit needs)")
+                   help="Column to rank survivors by. median_logit (default) "
+                        "is robust to extreme per-member posteriors. "
+                        "min_logit promotes tight clusters most aggressively "
+                        "but is brittle to a single weak member. mean_logit "
+                        "uses post-clipping to bound ±inf. logit_sum is "
+                        "size-extensive (favors big clusters).")
     p.add_argument("--top-curves", type=int, default=20,
                    help="Plot LLR-vs-k for the top-N survivors by --rank-by")
     args = p.parse_args()
@@ -761,6 +856,10 @@ def main() -> None:
     book_emb = np.ascontiguousarray(state["emb"][state["book_global_idx"]])
     book_index = build_index(FlatL2(), book_emb)
 
+    # Phase 1: refine each K-ball gap (LLR-vs-k, optional re-centering).
+    # Stats deferred to phase 3 since fuzzy K_G requires joint-normalized
+    # memberships across the WHOLE refined gap set (cohesion-design-axes
+    # axis H).
     print(f"[refine] running LLR-vs-k refinement on {len(kball_rows)} gaps...",
           flush=True)
     refined: list[dict] = []
@@ -770,14 +869,6 @@ def main() -> None:
             state=state,
             null_log_mean=null_log_mean,
             recenter=not args.no_recenter,
-        )
-        stats = compute_gap_stats(
-            refined_member_indices=result["refined_member_indices"],
-            state=state,
-            book_global_idx=state["book_global_idx"],
-            book_index=book_index,
-            article_index=state["article_index"],
-            article_global_idx=state["article_global_idx"],
         )
         kball_set = set(row["article_indices"])
         refined_set = set(result["refined_member_indices"])
@@ -790,16 +881,46 @@ def main() -> None:
             "llr_peak": result["llr_peak"],
             "llr_peak_at_k": result["llr_peak_at_k"],
             "llr_curve": result["llr_curve"],
-            "logit_sum": stats["logit_sum"],
-            "mean_logit": stats["mean_logit"],
-            "median_logit": stats["median_logit"],
-            "effective_size": stats["effective_size"],
             "kball_size_delta": len(result["refined_member_indices"]) - row["gap_size"],
             "kball_jaccard": kball_jaccard,
             "refined_member_indices": result["refined_member_indices"],
         })
         if (i + 1) % 25 == 0:
             print(f"  refined {i + 1}/{len(kball_rows)}", flush=True)
+
+    # Phase 2: build joint-normalized fuzzy gap memberships across all
+    # refined gaps. Each article's per-gap membership sums to 1 across
+    # the gaps that claim it. This drives K_G in the per-member posterior.
+    print(f"[fuzzy] building joint-normalized fuzzy gap memberships...",
+          flush=True)
+    M_norm_csc = _build_fuzzy_jointnorm_memberships(refined, state)
+    n_total = state["sigma"].shape[0]
+
+    # Phase 3: compute per-gap stats with fuzzy K_G + hard CSLS K_B
+    # (per cohesion-design-axes axis H: K_B is a size-matched bounding
+    # object, NOT a competing-class likelihood, so it stays hard).
+    print(f"[stats] computing fuzzy-K_G posteriors for {len(refined)} gaps...",
+          flush=True)
+    for g_idx, g in enumerate(refined):
+        mu_g = np.asarray(M_norm_csc[:, g_idx].todense()).flatten()
+        stats = compute_gap_stats(
+            refined_member_indices=g["refined_member_indices"],
+            state=state,
+            book_global_idx=state["book_global_idx"],
+            book_index=book_index,
+            article_index=state["article_index"],
+            article_global_idx=state["article_global_idx"],
+            fuzzy_gap_membership=mu_g,
+        )
+        g.update({
+            "logit_sum": stats["logit_sum"],
+            "mean_logit": stats["mean_logit"],
+            "median_logit": stats["median_logit"],
+            "min_logit": stats["min_logit"],
+            "effective_size": stats["effective_size"],
+        })
+        if (g_idx + 1) % 50 == 0:
+            print(f"  stats {g_idx + 1}/{len(refined)}", flush=True)
 
     print(f"[dedup] containment ≥ {args.containment_threshold} (prune) "
           f"then Jaccard ≥ {args.jaccard_threshold} (merge); "

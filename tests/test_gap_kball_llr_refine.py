@@ -85,6 +85,8 @@ def test_local_csls_posterior_pure_gap_returns_post_near_one():
     # With only article indices [0..4] in gap and book = 5, the "non-gap" article set
     # is empty in our synthetic — so K_B = 0 ⇒ post = 1 for every member.
     book_to_arts = {5: np.array([], dtype=np.int64)}
+    # Hard membership case: μ_G(j) = 1 for gap members, 0 otherwise.
+    fuzzy_gap_membership = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=np.float64)
     posts = compute_local_csls_posterior(
         members=members,
         D_NN=D_NN,
@@ -93,8 +95,65 @@ def test_local_csls_posterior_pure_gap_returns_post_near_one():
         nearest_book_per_member=nearest_book_per_member,
         book_to_arts=book_to_arts,
         n_total=n_total,
+        fuzzy_gap_membership=fuzzy_gap_membership,
     )
     np.testing.assert_allclose(posts, np.ones(5), rtol=1e-3, atol=1e-3)
+
+
+def test_local_csls_posterior_half_fuzzy_membership():
+    """If μ_G is halved for all members, K_G is halved → post drops."""
+    from artifacts_scripts.gap_kball_llr_refine import compute_local_csls_posterior
+    members = [0, 1, 2, 3, 4]
+    n_total = 6
+    sigma = np.ones(n_total, dtype=np.float32)
+    D_NN = np.full((5, 4), 0.1, dtype=np.float32)
+    I_NN = np.array([
+        [1, 2, 3, 4],
+        [0, 2, 3, 4],
+        [0, 1, 3, 4],
+        [0, 1, 2, 4],
+        [0, 1, 2, 3],
+    ], dtype=np.int64)
+    nearest_book_per_member = np.array([5, 5, 5, 5, 5], dtype=np.int64)
+    # K_B will be zero (no non-gap articles). So with fuzzy=1, post=1.
+    # With fuzzy=0.5: K_G is halved but K_B still zero → post still 1
+    # (since the denominator is K_G + K_B = K_G_fuzzy + 0).
+    # Need to give K_B a nonzero value to see fuzzy's effect — add a
+    # non-gap article (idx 5 = book, but mark it as available background).
+    # Actually with our test fixture book_to_arts is empty, so K_B = 0.
+    # Let's instead use a 1.0 vs 0.5 comparison on a case where K_B > 0.
+    # To get K_B > 0: book_to_arts[5] = [new non-gap article].
+    n_total_2 = 7  # add article 6 as non-gap
+    sigma_2 = np.ones(n_total_2, dtype=np.float32)
+    # Members now have I_NN that ALSO points at article 6 (the bg article)
+    D_NN_2 = np.full((5, 5), 0.1, dtype=np.float32)
+    I_NN_2 = np.array([
+        [1, 2, 3, 4, 6],
+        [0, 2, 3, 4, 6],
+        [0, 1, 3, 4, 6],
+        [0, 1, 2, 4, 6],
+        [0, 1, 2, 3, 6],
+    ], dtype=np.int64)
+    book_to_arts_2 = {5: np.array([6], dtype=np.int64)}
+    # fuzzy_full = 1.0 for members, 0 for non-members
+    fuzzy_full = np.zeros(n_total_2)
+    fuzzy_full[:5] = 1.0
+    posts_full = compute_local_csls_posterior(
+        members=members, D_NN=D_NN_2, I_NN=I_NN_2, sigma=sigma_2,
+        nearest_book_per_member=nearest_book_per_member,
+        book_to_arts=book_to_arts_2, n_total=n_total_2,
+        fuzzy_gap_membership=fuzzy_full,
+    )
+    # fuzzy_half = 0.5 for members → K_G halves but K_B unchanged
+    fuzzy_half = fuzzy_full * 0.5
+    posts_half = compute_local_csls_posterior(
+        members=members, D_NN=D_NN_2, I_NN=I_NN_2, sigma=sigma_2,
+        nearest_book_per_member=nearest_book_per_member,
+        book_to_arts=book_to_arts_2, n_total=n_total_2,
+        fuzzy_gap_membership=fuzzy_half,
+    )
+    # With K_B > 0: halving K_G should strictly decrease the posterior
+    assert (posts_half < posts_full).all()
 
 
 def test_dedup_via_binary_jaccard_merges_near_duplicates():
