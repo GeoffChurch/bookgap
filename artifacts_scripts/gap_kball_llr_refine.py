@@ -282,11 +282,22 @@ def compute_gap_stats(
         n_total=n_total,
     )
 
+    # Clipped logits for size-extensive statistics (logit_sum / mean_logit).
+    # Clipping prevents log(0) and log of (1 - 1) from blowing the sum to ±inf
+    # when a single member has post ≈ 0 or ≈ 1.
     post_clip = np.clip(posts, 1e-3, 1 - 1e-3)
-    logits = np.log(post_clip / (1 - post_clip))
+    logits_clip = np.log(post_clip / (1 - post_clip))
+    # UN-clipped logits for the median, which is robust to ±inf in the tails
+    # without needing artificial clip thresholds. log(post / max(1-post, ε))
+    # avoids a divide-by-zero only when post is exactly 1; np.median handles
+    # remaining -inf in the lower tail by sort order.
+    with np.errstate(divide="ignore"):
+        logits_raw = np.log(posts) - np.log(np.maximum(1.0 - posts, 1e-30))
+    median_logit = float(np.median(logits_raw))
     return {
-        "logit_sum": float(logits.sum()),
-        "mean_logit": float(logits.mean()),
+        "logit_sum": float(logits_clip.sum()),
+        "mean_logit": float(logits_clip.mean()),
+        "median_logit": median_logit,
         "effective_size": float(posts.sum()),
         "min_post": float(posts.min()),
         "mean_post": float(posts.mean()),
@@ -364,16 +375,40 @@ def _topic_id_from_path(path: Path) -> str:
     return stem
 
 
-def _compute_corpus_null(state: dict) -> np.ndarray:
-    """Precompute mean(log(M_k)) over all article seeds at each k in K_GRID."""
+def _compute_corpus_null(
+    state: dict,
+    sample_size: int | None = 2000,
+    rng_seed: int = 0,
+) -> np.ndarray:
+    """Precompute mean(log(M_k)) over article seeds at each k in K_GRID.
+
+    The full-corpus null over N_articles seeds is the most-precise reference
+    but is the slow path when extending K_GRID past the cached top-K_QUERY
+    on large topics. Per the subsampling diagnostic
+    (``cache/null_subsampling_diagnostic/T11303.csv``), m=2000 random article
+    seeds gives relative SE ≤ 0.2% on every k in the current grid — orders
+    of magnitude smaller than the LLR signal we care about. Default to
+    sample_size=2000; pass ``sample_size=None`` to use every article seed.
+    """
     art_idx = state["article_global_idx"]
+    n_articles = len(art_idx)
+    if sample_size is None or sample_size >= n_articles:
+        seeds = art_idx
+        effective_m = n_articles
+    else:
+        rng = np.random.default_rng(rng_seed)
+        sample_local = rng.choice(n_articles, size=sample_size, replace=False)
+        seeds = art_idx[sample_local]
+        effective_m = sample_size
     M_null = kernel_mass_matrix(
-        D_art_NN=state["D_art_NN_all"][art_idx],
-        I_art_NN_global=state["I_art_NN_all_global"][art_idx],
+        D_art_NN=state["D_art_NN_all"][seeds],
+        I_art_NN_global=state["I_art_NN_all_global"][seeds],
         sigma=state["sigma"],
         k_grid=K_GRID,
-        seed_global_idx=art_idx,
+        seed_global_idx=seeds,
     )
+    print(f"  null computed from {effective_m} article seeds "
+          f"(out of {n_articles} total)", flush=True)
     return np.log(np.maximum(M_null, 1e-30)).mean(axis=0)
 
 
@@ -383,7 +418,7 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
     fieldnames = [
         "scope", "kball_gap_id", "kball_size", "refined_k_star",
         "refined_n_articles", "llr_peak", "llr_peak_at_k",
-        "logit_sum", "mean_logit", "effective_size",
+        "logit_sum", "mean_logit", "median_logit", "effective_size",
         "kball_size_delta", "kball_jaccard",
         "survivor", "merged_into_gap_id",
         "article_indices_json",
@@ -402,6 +437,7 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
                 "llr_peak_at_k": g["llr_peak_at_k"],
                 "logit_sum": g["logit_sum"],
                 "mean_logit": g["mean_logit"],
+                "median_logit": g["median_logit"],
                 "effective_size": g["effective_size"],
                 "kball_size_delta": g["kball_size_delta"],
                 "kball_jaccard": g["kball_jaccard"],
@@ -411,12 +447,15 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
             })
 
 
-def _plot_llr_curves(gaps: list[dict], top_n: int, out_path: Path) -> None:
-    """Small-multiples plot of LLR-vs-k curves for the top-N gaps by logit_sum."""
+def _plot_llr_curves(
+    gaps: list[dict], top_n: int, out_path: Path,
+    rank_by: str = "mean_logit",
+) -> None:
+    """Small-multiples plot of LLR-vs-k curves for the top-N gaps by ``rank_by``."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    top = sorted(gaps, key=lambda g: -g["logit_sum"])[:top_n]
+    top = sorted(gaps, key=lambda g: -g[rank_by])[:top_n]
     n = len(top)
     if n == 0:
         return
@@ -468,8 +507,20 @@ def main() -> None:
                    help="Disable the one-step re-centering after k* selection")
     p.add_argument("--jaccard-threshold", type=float, default=0.5,
                    help="Binary set Jaccard threshold for dedup merge (default 0.5)")
+    p.add_argument("--null-sample-size", type=int, default=2000,
+                   help="Article-seed subsample size for the corpus null. "
+                        "Per cache/null_subsampling_diagnostic/T11303.csv, "
+                        "m=2000 gives ≤0.2%% relative SE on every k in K_GRID. "
+                        "Pass 0 to use every article seed (full corpus). "
+                        "Default 2000.")
+    p.add_argument("--rank-by",
+                   choices=["mean_logit", "median_logit", "logit_sum"],
+                   default="mean_logit",
+                   help="Column to rank survivors by (default mean_logit; "
+                        "median_logit avoids the post-clipping the mean uses "
+                        "and is robust to a few low-confidence members)")
     p.add_argument("--top-curves", type=int, default=20,
-                   help="Plot LLR-vs-k for the top-N gaps by logit_sum")
+                   help="Plot LLR-vs-k for the top-N survivors by --rank-by")
     args = p.parse_args()
 
     print(f"[setup] loading scope {args.scope}...", flush=True)
@@ -480,7 +531,8 @@ def main() -> None:
           f"N_books={len(state['book_global_idx'])}", flush=True)
 
     print(f"[null] computing corpus-wide null log-mean per k...", flush=True)
-    null_log_mean = _compute_corpus_null(state)
+    null_sample = None if args.null_sample_size == 0 else args.null_sample_size
+    null_log_mean = _compute_corpus_null(state, sample_size=null_sample)
 
     print(f"[load] reading K-ball CSV {args.kball_csv}...", flush=True)
     kball_rows = load_kball_csv(args.kball_csv)
@@ -523,6 +575,7 @@ def main() -> None:
             "llr_curve": result["llr_curve"],
             "logit_sum": stats["logit_sum"],
             "mean_logit": stats["mean_logit"],
+            "median_logit": stats["median_logit"],
             "effective_size": stats["effective_size"],
             "kball_size_delta": len(result["refined_member_indices"]) - row["gap_size"],
             "kball_jaccard": kball_jaccard,
@@ -540,15 +593,19 @@ def main() -> None:
     n_survivors = sum(1 for g in refined if g["survivor"] == 1)
     print(f"  {n_survivors} survivors / {len(refined)} gaps", flush=True)
 
-    # Sort: survivors first by logit_sum desc, then non-survivors grouped by survivor.
-    refined.sort(key=lambda g: (-g["survivor"], -g["logit_sum"]))
+    # Sort: survivors first, then by chosen --rank-by column desc.
+    rank_key = args.rank_by
+    refined.sort(key=lambda g: (-g["survivor"], -g[rank_key]))
 
     _write_refined_csv(args.out, args.scope, refined)
     print(f"[write] refined CSV written to {args.out}", flush=True)
 
     if args.cache_dir is not None:
         args.cache_dir.mkdir(parents=True, exist_ok=True)
-        _plot_llr_curves(refined, args.top_curves, args.cache_dir / "llr_curves.png")
+        _plot_llr_curves(
+            refined, args.top_curves, args.cache_dir / "llr_curves.png",
+            rank_by=args.rank_by,
+        )
         _plot_size_delta_hist(refined, args.cache_dir / "size_delta_hist.png")
         print(f"[figures] written to {args.cache_dir}", flush=True)
 
