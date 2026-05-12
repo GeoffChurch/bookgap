@@ -633,16 +633,20 @@ def _confluence_components(
     seed_k_pairs: list[tuple[int, int]],
     M: csr_matrix,
     threshold: float,
-) -> list[list[int]]:
+    pair_cap: int = 500_000,
+) -> tuple[list[list[int]], dict]:
     """Union-find over (seed_col, seed_col') pairs with weighted Jaccard >= threshold.
 
-    Two seeds are candidates if they share at least one article. We compute
-    weighted Jaccard on the full weight columns and union the high-overlap pairs.
+    Two seeds are candidates if they share at least one article. Enumerates
+    unique candidate pairs by walking article rows; caps total unique pairs
+    examined at ``pair_cap`` so the seen-set memory stays bounded
+    (~80 bytes/entry: 500k pairs ≈ 40 MB). On T11303-scale inputs the
+    unique-pair count can otherwise reach ~10^8 and exhaust RAM.
+
+    Returns ``(components, stats)`` where stats tracks pair_cap hit / counts.
     """
     n = M.shape[1]
-    # Use CSC for per-column slicing.
     Mc = M.tocsc()
-    # For each article (row), list the seeds claiming it. Then enumerate pairs.
     Mr = M.tocsr()
     parent = list(range(n))
 
@@ -658,7 +662,11 @@ def _confluence_components(
             parent[rb] = ra
 
     seen_pairs: set[tuple[int, int]] = set()
-    for a in range(Mr.shape[0]):
+    pairs_checked = 0
+    pairs_unioned = 0
+    cap_hit = False
+    n_rows = Mr.shape[0]
+    for a in range(n_rows):
         col_idx = Mr.indices[Mr.indptr[a]: Mr.indptr[a + 1]]
         if len(col_idx) < 2:
             continue
@@ -669,18 +677,40 @@ def _confluence_components(
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
+                pairs_checked += 1
                 if _sparse_weighted_jaccard(Mc, ci, cj) >= threshold:
                     union(ci, cj)
+                    pairs_unioned += 1
+                if pairs_checked >= pair_cap:
+                    cap_hit = True
+                    break
+            if cap_hit:
+                break
+        if cap_hit:
+            break
+        if (a + 1) % 1000 == 0:
+            print(f"    confluence: article {a + 1}/{n_rows}, "
+                  f"{pairs_checked} unique pairs checked, "
+                  f"{pairs_unioned} unioned", flush=True)
+    if cap_hit:
+        print(f"    confluence: pair_cap={pair_cap} hit at article {a + 1}/{n_rows}; "
+              f"some pairs not examined", flush=True)
 
     comps: dict[int, list[int]] = {}
     for x in range(n):
         comps.setdefault(find(x), []).append(x)
-    return list(comps.values())
+    return list(comps.values()), {
+        "pairs_checked": pairs_checked,
+        "pairs_unioned": pairs_unioned,
+        "pair_cap": pair_cap,
+        "pair_cap_hit": cap_hit,
+    }
 
 
 def section4_joint_norm(
     state: dict, k_star_by_seed: dict[int, int], out_dir: Path,
     jaccard_threshold: float = 0.9,
+    pair_cap: int = 500_000,
 ) -> dict:
     """Run joint normalization on all seeds with a chosen k*; report
     effective-size distribution + confluence-merge survivor count.
@@ -696,16 +726,20 @@ def section4_joint_norm(
             json.dump(decision, f, indent=2)
         return decision
 
+    print(f"    building membership matrix: {len(seed_k_pairs)} seeds", flush=True)
     M, llrs = _build_membership_matrix(state, seed_k_pairs)
+    print(f"    M shape={M.shape}, nnz={M.nnz}; joint-normalizing", flush=True)
     M_norm, eff = joint_normalize(M)
 
-    # Confluence merge on the normalized matrix.
-    components = _confluence_components(seed_k_pairs, M_norm, threshold=jaccard_threshold)
+    print(f"    confluence merge (pair_cap={pair_cap})", flush=True)
+    components, conf_stats = _confluence_components(
+        seed_k_pairs, M_norm, threshold=jaccard_threshold, pair_cap=pair_cap)
     survivors: list[tuple[int, int]] = []  # (col, llr) of survivors
     for comp in components:
         # Keep highest-llr column in the component.
         best = max(comp, key=lambda c: llrs[c])
         survivors.append((best, llrs[best]))
+    print(f"    components={len(components)}, survivors={len(survivors)}", flush=True)
 
     # Plot effective-size histogram.
     import matplotlib
@@ -756,6 +790,7 @@ def section4_joint_norm(
         "median_effective_size": median_eff,
         "pct_top50_above_2x_median": pct_top50_above_2x_median,
         "top20_csv": str(top20_path),
+        "confluence_stats": conf_stats,
     }
     with open(out_dir / "decision.json", "w") as f:
         json.dump(decision, f, indent=2)
@@ -905,6 +940,11 @@ def main() -> None:
                    help="Source of stratified cohesive seeds for section 1")
     p.add_argument("--n-random-articles", type=int, default=50)
     p.add_argument("--jaccard-threshold", type=float, default=0.9)
+    p.add_argument("--pair-cap", type=int, default=500_000,
+                   help="Max unique seed-pairs to evaluate in section 4 "
+                        "confluence merge. Bounded to keep memory in check on "
+                        "T11303-scale inputs where the unique-pair count can "
+                        "exceed 10^8.")
     p.add_argument("--skip", default="",
                    help="Comma-separated section numbers to skip, e.g. '5'")
     args = p.parse_args()
@@ -951,7 +991,8 @@ def main() -> None:
         print("[section 4] joint normalization...")
         decisions["section4"] = section4_joint_norm(
             state, k_star_by_seed, args.out / "section4",
-            jaccard_threshold=args.jaccard_threshold)
+            jaccard_threshold=args.jaccard_threshold,
+            pair_cap=args.pair_cap)
     if 5 not in skip:
         print("[section 5] Jaccard vs containment...")
         decisions["section5"] = section5_jaccard_vs_containment(
