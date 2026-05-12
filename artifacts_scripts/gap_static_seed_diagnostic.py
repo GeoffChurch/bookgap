@@ -630,27 +630,28 @@ def _build_membership_matrix(
     return M, llrs
 
 
-@numba.njit(cache=True)
-def _confluence_union_find_numba(
+@numba.njit(parallel=True, cache=True)
+def _jaccard_passes_threshold_numba(
     indptr: np.ndarray,
     indices: np.ndarray,
     data: np.ndarray,
     overlap_row: np.ndarray,
     overlap_col: np.ndarray,
     threshold: float,
-    n_seeds: int,
-) -> tuple[np.ndarray, int]:
-    """Numba-JITted union-find over weighted-Jaccard-high pairs.
+) -> np.ndarray:
+    """Parallel Ruzicka (weighted-Jaccard) per overlapping pair.
 
-    Inlines ``_sparse_weighted_jaccard`` (merge-sort over two CSC columns)
-    plus a path-compressed union-find. The pure-Python version was the
-    bottleneck for T11303-scale runs (~4k pairs/sec → 7+ hours on 10^8
-    pairs); the JITted kernel runs at C speed.
+    For each pair (overlap_row[idx], overlap_col[idx]) of CSC column
+    indices, compute the merge-sort-style weighted Jaccard and emit a
+    boolean indicator for whether it crosses ``threshold``. Parallel
+    via ``numba.prange`` — each pair's computation is independent.
+    Caller does the (sequential) union-find pass over the True indices.
+
+    Returns ``passes`` (bool[N_pairs]).
     """
-    parent = np.arange(n_seeds, dtype=np.int64)
     n_pairs = overlap_row.shape[0]
-    n_unioned = 0
-    for idx in range(n_pairs):
+    passes = np.zeros(n_pairs, dtype=np.bool_)
+    for idx in numba.prange(n_pairs):
         ci = overlap_row[idx]
         cj = overlap_col[idx]
 
@@ -689,22 +690,41 @@ def _confluence_union_find_numba(
             max_sum += data[j]
             j += 1
 
-        if max_sum <= 0.0:
-            continue
-        jaccard = min_sum / max_sum
+        if max_sum > 0.0 and (min_sum / max_sum) >= threshold:
+            passes[idx] = True
+    return passes
 
-        if jaccard >= threshold:
-            ra = ci
-            while parent[ra] != ra:
-                parent[ra] = parent[parent[ra]]
-                ra = parent[ra]
-            rb = cj
-            while parent[rb] != rb:
-                parent[rb] = parent[parent[rb]]
-                rb = parent[rb]
-            if ra != rb:
-                parent[rb] = ra
-                n_unioned += 1
+
+@numba.njit(cache=True)
+def _union_find_from_passing_pairs_numba(
+    overlap_row: np.ndarray,
+    overlap_col: np.ndarray,
+    passes: np.ndarray,
+    n_seeds: int,
+) -> tuple[np.ndarray, int]:
+    """Sequential path-compressed union-find over the pairs marked True.
+
+    Returns ``(parent, n_unioned)``.
+    """
+    parent = np.arange(n_seeds, dtype=np.int64)
+    n_pairs = overlap_row.shape[0]
+    n_unioned = 0
+    for idx in range(n_pairs):
+        if not passes[idx]:
+            continue
+        ci = overlap_row[idx]
+        cj = overlap_col[idx]
+        ra = ci
+        while parent[ra] != ra:
+            parent[ra] = parent[parent[ra]]
+            ra = parent[ra]
+        rb = cj
+        while parent[rb] != rb:
+            parent[rb] = parent[parent[rb]]
+            rb = parent[rb]
+        if ra != rb:
+            parent[rb] = ra
+            n_unioned += 1
     return parent, n_unioned
 
 
@@ -718,9 +738,10 @@ def _confluence_components(
     Identifies all globally-overlapping seed pairs via the nonzero
     pattern of ``M.T @ M`` — entry (i, j) is nonzero iff seeds i and j
     share at least one article (both columns have a nonzero in the
-    same row). Iterates the upper triangle once via a numba-JITted
-    union-find kernel. Memory bounded by the sparse output of M.T @ M
-    (≈16 bytes per overlapping pair).
+    same row). The per-pair Ruzicka similarity is computed in a parallel
+    numba kernel (``prange`` across pairs); the (small) sequential union-
+    find then operates on just the threshold-passing pairs. Memory
+    bounded by the sparse output of M.T @ M plus a bool[N_pairs] mask.
     """
     import scipy.sparse as sp
     n = M.shape[1]
@@ -736,10 +757,18 @@ def _confluence_components(
     data = np.ascontiguousarray(Mc.data, dtype=np.float64)
     overlap_row = np.ascontiguousarray(overlap.row, dtype=np.int64)
     overlap_col = np.ascontiguousarray(overlap.col, dtype=np.int64)
+    # overlap.data is the inner-product values; we don't need them.
+    # Free the COO matrix to save memory on T10181-scale inputs (~13 GB).
+    del overlap
 
-    parent, n_unioned = _confluence_union_find_numba(
-        indptr, indices, data, overlap_row, overlap_col,
-        float(threshold), int(n),
+    print(f"    confluence: computing per-pair Ruzicka in parallel...", flush=True)
+    passes = _jaccard_passes_threshold_numba(
+        indptr, indices, data, overlap_row, overlap_col, float(threshold),
+    )
+    n_passing = int(passes.sum())
+    print(f"    confluence: {n_passing} pairs above threshold; running union-find", flush=True)
+    parent, n_unioned = _union_find_from_passing_pairs_numba(
+        overlap_row, overlap_col, passes, int(n),
     )
     print(f"    confluence: done, {n_unioned} pairs unioned", flush=True)
 
