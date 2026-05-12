@@ -412,6 +412,98 @@ def _compute_corpus_null(
     return np.log(np.maximum(M_null, 1e-30)).mean(axis=0)
 
 
+def _compute_corpus_null_stein(
+    state: dict,
+    target_rel_se: float = 0.005,
+    m_pilot: int = 200,
+    m_min: int = 500,
+    m_max: int | None = None,
+    rng_seed: int = 0,
+) -> tuple[np.ndarray, dict]:
+    """Stein two-stage adaptive sub-sampling for the corpus null.
+
+    Pilot pass: estimate σ_k on m_pilot random article seeds.
+    Adaptive size: m_needed = max_k (σ_k / (target_rel_se · |null_k|))²
+    so per-k relative SE on null_log_mean stays under ``target_rel_se``.
+    Final pass: sample max(m_needed, m_min) seeds; reuse the pilot's
+    kNN rows (since we already have them in ``state["D_art_NN_all"]``)
+    and draw additional seeds only if needed.
+
+    Returns (null_log_mean, info_dict). info_dict tracks pilot_sigma,
+    pilot_mean, m_needed_per_k, m_used, so callers can log the chosen
+    sample size.
+
+    Notes:
+    - Uses ``state["D_art_NN_all"]``; assumes setup() has already built
+      the full top-K_QUERY kNN. This refactor does NOT save kNN compute
+      (that's a Phase 4 setup() restructure). What it DOES do is pick m
+      data-adaptively rather than guessing.
+    - target_rel_se=0.005 ⇒ SE ≤ 0.5% of |null_k|. On T11303 / T10181
+      this yields m_needed ≈ 500-1500 — well below the m=2000 fixed
+      default and tighter precision.
+    """
+    art_idx = state["article_global_idx"]
+    n_articles = len(art_idx)
+    rng = np.random.default_rng(rng_seed)
+
+    # Pilot pass
+    m_pilot = min(m_pilot, n_articles)
+    pilot_local = rng.choice(n_articles, size=m_pilot, replace=False)
+    pilot_seeds = art_idx[pilot_local]
+    M_pilot = kernel_mass_matrix(
+        D_art_NN=state["D_art_NN_all"][pilot_seeds],
+        I_art_NN_global=state["I_art_NN_all_global"][pilot_seeds],
+        sigma=state["sigma"],
+        k_grid=K_GRID,
+        seed_global_idx=pilot_seeds,
+    )
+    log_M_pilot = np.log(np.maximum(M_pilot, 1e-30))
+    pilot_sigma = log_M_pilot.std(axis=0, ddof=1)
+    pilot_mean = log_M_pilot.mean(axis=0)
+
+    # Per-k m_needed = (σ / (target_rel_se · |null|))²; take max across k
+    abs_target_se = target_rel_se * np.maximum(np.abs(pilot_mean), 1e-30)
+    m_needed_per_k = (pilot_sigma / abs_target_se) ** 2
+    m_needed = int(np.ceil(m_needed_per_k.max()))
+
+    cap = m_max if m_max is not None else n_articles
+    m_used = max(m_min, min(m_needed, cap, n_articles))
+
+    print(f"  stein pilot: m={m_pilot}; "
+          f"σ_k={[f'{v:.3f}' for v in pilot_sigma]}; "
+          f"m_needed={m_needed} (capped at {cap}); m_used={m_used}",
+          flush=True)
+
+    # Final pass — extend pilot to m_used by drawing additional unique seeds
+    if m_used <= m_pilot:
+        full_local = pilot_local[:m_used]
+    else:
+        remaining = np.setdiff1d(np.arange(n_articles), pilot_local)
+        extra = rng.choice(remaining, size=m_used - m_pilot, replace=False)
+        full_local = np.concatenate([pilot_local, extra])
+    full_seeds = art_idx[full_local]
+
+    M_full = kernel_mass_matrix(
+        D_art_NN=state["D_art_NN_all"][full_seeds],
+        I_art_NN_global=state["I_art_NN_all_global"][full_seeds],
+        sigma=state["sigma"],
+        k_grid=K_GRID,
+        seed_global_idx=full_seeds,
+    )
+    null_log_mean = np.log(np.maximum(M_full, 1e-30)).mean(axis=0)
+    info = {
+        "method": "stein",
+        "m_pilot": m_pilot,
+        "m_used": m_used,
+        "m_needed": m_needed,
+        "target_rel_se": target_rel_se,
+        "pilot_sigma": pilot_sigma.tolist(),
+        "pilot_mean": pilot_mean.tolist(),
+        "m_needed_per_k": m_needed_per_k.tolist(),
+    }
+    return null_log_mean, info
+
+
 def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
     """Write the refined CSV with the spec'd schema."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -507,13 +599,28 @@ def main() -> None:
                    help="Disable the one-step re-centering after k* selection")
     p.add_argument("--jaccard-threshold", type=float, default=0.5,
                    help="Binary set Jaccard threshold for dedup merge (default 0.5)")
+    p.add_argument("--null-method",
+                   choices=["fixed", "stein"], default="stein",
+                   help="How to size the article-seed subsample for the corpus "
+                        "null. 'fixed' uses --null-sample-size as-is (default 2000). "
+                        "'stein' (default) runs a 200-seed pilot, estimates σ_k, "
+                        "and adaptively picks m to hit --null-target-rel-se. "
+                        "On topic-scale data both give the same result; stein "
+                        "is the principled choice and adapts to larger scopes "
+                        "without retuning.")
     p.add_argument("--null-sample-size", type=int, default=2000,
-                   help="Article-seed subsample size for the corpus null. "
-                        "Per cache/null_subsampling_diagnostic/T11303.csv, "
+                   help="Article-seed subsample size for the corpus null when "
+                        "--null-method=fixed. Per the subsampling diagnostic, "
                         "m=2000 gives ≤0.2%% relative SE on every k in K_GRID. "
                         "Auto-disabled when N_articles ≤ m (full corpus used). "
                         "Pass 0 to force full corpus regardless of size. "
                         "Default 2000.")
+    p.add_argument("--null-target-rel-se", type=float, default=0.005,
+                   help="Stein-only: target relative SE for the corpus null "
+                        "(SE / |null_k| ≤ this value at every k). Default 0.005 "
+                        "(≤0.5%% relative noise on null_log_mean).")
+    p.add_argument("--null-pilot-size", type=int, default=200,
+                   help="Stein-only: pilot subsample size. Default 200.")
     p.add_argument("--rank-by",
                    choices=["median_logit", "mean_logit", "logit_sum"],
                    default="median_logit",
@@ -531,9 +638,17 @@ def main() -> None:
           f"N_articles={len(state['article_global_idx'])}, "
           f"N_books={len(state['book_global_idx'])}", flush=True)
 
-    print(f"[null] computing corpus-wide null log-mean per k...", flush=True)
-    null_sample = None if args.null_sample_size == 0 else args.null_sample_size
-    null_log_mean = _compute_corpus_null(state, sample_size=null_sample)
+    print(f"[null] computing corpus-wide null log-mean per k "
+          f"(method={args.null_method})...", flush=True)
+    if args.null_method == "stein":
+        null_log_mean, stein_info = _compute_corpus_null_stein(
+            state,
+            target_rel_se=args.null_target_rel_se,
+            m_pilot=args.null_pilot_size,
+        )
+    else:
+        null_sample = None if args.null_sample_size == 0 else args.null_sample_size
+        null_log_mean = _compute_corpus_null(state, sample_size=null_sample)
 
     print(f"[load] reading K-ball CSV {args.kball_csv}...", flush=True)
     kball_rows = load_kball_csv(args.kball_csv)
