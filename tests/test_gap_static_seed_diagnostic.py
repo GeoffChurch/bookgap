@@ -249,10 +249,19 @@ def test_section4_joint_norm_returns_decision(tmp_path):
         "types": types_arr, "is_book": is_book,
     }
     k_star = {int(s): 8 for s in range(N)}
-    decision = section4_joint_norm(state, k_star, tmp_path, jaccard_threshold=0.9)
+    decision, survivors = section4_joint_norm(
+        state, k_star, tmp_path, jaccard_threshold=0.9)
     assert decision["section"] == 4
     assert "joint_norm_sufficient" in decision
+    assert "confluence_stats" not in decision  # removed in Phase 2
     assert (tmp_path / "eff_size_hist.png").exists()
+    # Survivors are global seed indices, one per confluence component.
+    assert isinstance(survivors, list)
+    assert all(isinstance(s, int) for s in survivors)
+    assert len(survivors) == decision["n_survivors_after_merge"]
+    # Sanity: every survivor is a key in k_star (i.e., a valid seed).
+    for s in survivors:
+        assert s in k_star
 
 
 def test_section5_jaccard_vs_containment_returns_decision(tmp_path):
