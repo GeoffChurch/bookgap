@@ -866,6 +866,89 @@ def section5_jaccard_vs_containment(
 
 
 # ============================================================
+# Section 6: survivors recentering (Phase 2 addition)
+# ============================================================
+
+def section6_survivors_recentering(
+    state: dict,
+    k_star_by_seed: dict[int, int],
+    survivors: list[int],
+    out_dir: Path,
+) -> dict:
+    """Section 3 restricted to confluence-merge survivors.
+
+    Answers: do dedup survivors (highest-LLR-per-component) need
+    recentering, or are they already near their local-density centers?
+
+    Writes:
+      out_dir/recenter_survivors_summary.csv — per-survivor seed, k_star,
+        intersection, jaccard.
+      out_dir/decision.json — section=6, recommended_step
+        ("skip-recentering-post-dedup" if median_jaccard >= 0.90 AND
+        p25 >= 0.80 else "one-recentering"), median_jaccard,
+        p25_jaccard, n_seeds, summary_csv.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sigma = state["sigma"]
+    article_index = state["article_index"]
+    article_global_idx = state["article_global_idx"]
+    emb = state["emb"]
+    is_book = state.get("is_book")
+
+    rows = []
+    for s in survivors:
+        k_star = k_star_by_seed.get(s)
+        if not k_star or k_star < 2:
+            continue
+        D_row = state["D_art_NN_all"][s, :k_star]
+        I_row = state["I_art_NN_all_global"][s, :k_star]
+        w = _gaussian_weights(D_row, float(sigma[s]), sigma[I_row])
+        members_emb = emb[I_row]
+        centroid = (w[:, None] * members_emb).sum(axis=0) / max(w.sum(), 1e-30)
+        n = float(np.linalg.norm(centroid))
+        if n < 1e-12:
+            continue
+        centroid = (centroid / n).astype(np.float32)
+        _, I_new_local = article_index.search(centroid[None, :], k=k_star)
+        I_new_global = article_global_idx[I_new_local[0]]
+        inter = len(set(I_row.tolist()) & set(I_new_global.tolist()))
+        jaccard = inter / (2 * k_star - inter)
+        kind = "book" if (is_book is not None and is_book[s]) else "article"
+        rows.append({
+            "kind": kind, "seed": int(s), "k_star": int(k_star),
+            "intersection": int(inter), "jaccard": float(jaccard),
+        })
+
+    summary_path = out_dir / "recenter_survivors_summary.csv"
+    with open(summary_path, "w", newline="") as f:
+        if rows:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+
+    if rows:
+        jaccards = np.array([r["jaccard"] for r in rows])
+        median_j = float(np.median(jaccards))
+        p25_j = float(np.percentile(jaccards, 25))
+    else:
+        median_j = p25_j = 1.0
+
+    skip_recenter = (median_j >= 0.90) and (p25_j >= 0.80)
+    decision = {
+        "section": 6,
+        "recommended_step": "skip-recentering-post-dedup" if skip_recenter else "one-recentering",
+        "median_jaccard": median_j,
+        "p25_jaccard": p25_j,
+        "n_seeds": len(rows),
+        "summary_csv": str(summary_path),
+    }
+    with open(out_dir / "decision.json", "w") as f:
+        json.dump(decision, f, indent=2)
+    return decision
+
+
+# ============================================================
 # Main driver
 # ============================================================
 
@@ -967,6 +1050,14 @@ def main() -> None:
         print("[section 5] Jaccard vs containment...")
         decisions["section5"] = section5_jaccard_vs_containment(
             state, k_star_by_seed, args.out / "section5")
+    if 6 not in skip:
+        if survivors_s4 is None:
+            print("[section 6] SKIPPED — section 4 was skipped; "
+                  "survivors not available")
+        else:
+            print("[section 6] survivors recentering...")
+            decisions["section6"] = section6_survivors_recentering(
+                state, k_star_by_seed, survivors_s4, args.out / "section6")
 
     summary_path = args.out / "decisions.json"
     with open(summary_path, "w") as f:

@@ -282,3 +282,34 @@ def test_section5_jaccard_vs_containment_returns_decision(tmp_path):
     decision = section5_jaccard_vs_containment(state, k_star, tmp_path)
     assert decision["section"] == 5
     assert (tmp_path / "pair_metrics.csv").exists()
+
+
+def test_section6_survivors_recentering_returns_decision(tmp_path):
+    """Survivors recentering: same shape as section 3 but only on the survivor list."""
+    from bookgap.index import build_index, FlatL2
+    from artifacts_scripts.gap_static_seed_diagnostic import (
+        section6_survivors_recentering, K_QUERY,
+    )
+    rng = np.random.default_rng(5)
+    N = 80
+    D = 16
+    emb = rng.standard_normal(size=(N, D)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    art_idx = np.arange(60)
+    article_index = build_index(FlatL2(), emb[art_idx])
+    sigma = rng.uniform(0.5, 1.5, size=N).astype(np.float32)
+    Dmat = rng.uniform(0.0, 2.0, size=(N, K_QUERY)).astype(np.float32); Dmat.sort(axis=1)
+    Imat = rng.integers(0, 60, size=(N, K_QUERY)).astype(np.int64)
+    state = {
+        "emb": emb, "sigma": sigma,
+        "D_art_NN_all": Dmat, "I_art_NN_all_global": art_idx[Imat % 60],
+        "article_global_idx": art_idx, "book_global_idx": np.arange(60, N),
+        "article_index": article_index,
+    }
+    k_star = {int(s): 15 for s in art_idx[:10]}
+    survivors = [int(s) for s in art_idx[:5]]  # half of the seeds survive
+    decision = section6_survivors_recentering(state, k_star, survivors, tmp_path)
+    assert decision["section"] == 6
+    assert decision["recommended_step"] in ("skip-recentering-post-dedup", "one-recentering")
+    assert decision["n_seeds"] == 5
+    assert (tmp_path / "recenter_survivors_summary.csv").exists()
