@@ -128,3 +128,24 @@ def test_section1_returns_decision_on_synthetic_state(tmp_path):
     assert decision["recommended_metric"] in ("LLR", "z-score")
     assert (tmp_path / "curves_summary.csv").exists()
     assert (tmp_path / "decision.json").exists()
+
+
+def test_section2_decay_comparison_returns_decision(tmp_path):
+    from artifacts_scripts.gap_static_seed_diagnostic import (
+        section2_decay_comparison, K_QUERY,
+    )
+    rng = np.random.default_rng(1)
+    N = 100
+    art_idx = np.arange(80)
+    sigma = rng.uniform(0.5, 1.5, size=N).astype(np.float32)
+    D = rng.uniform(0.0, 2.0, size=(N, K_QUERY)).astype(np.float32); D.sort(axis=1)
+    I = rng.integers(0, 80, size=(N, K_QUERY)).astype(np.int64)
+    state = {
+        "sigma": sigma, "D_art_NN_all": D, "I_art_NN_all_global": art_idx[I % 80],
+        "article_global_idx": art_idx, "book_global_idx": np.arange(80, 100),
+    }
+    sample_seeds = {"random": art_idx[:5].tolist()}
+    k_star = {int(s): 20 for s in art_idx[:5]}
+    decision = section2_decay_comparison(state, sample_seeds, k_star, tmp_path)
+    assert decision["section"] == 2
+    assert (tmp_path / "decay_summary.csv").exists()

@@ -357,6 +357,84 @@ def section1_surprise_curves(state: dict, sample_seeds: dict, out_dir: Path) -> 
     return decision
 
 
+# ============================================================
+# Section 2: decay function comparison
+# ============================================================
+
+def _gaussian_weights(D_row: np.ndarray, sigma_seed: float, sigma_n: np.ndarray) -> np.ndarray:
+    return np.exp(-D_row / (sigma_seed * sigma_n))
+
+
+def _triangular_weights(k: int) -> np.ndarray:
+    ranks = np.arange(k, dtype=np.float64)
+    return np.maximum(0.0, 1.0 - ranks / k)
+
+
+def _epanechnikov_weights(D_row: np.ndarray) -> np.ndarray:
+    d_max = float(D_row[-1])
+    if d_max <= 0:
+        return np.ones_like(D_row, dtype=np.float64)
+    return np.maximum(0.0, 1.0 - D_row / d_max)
+
+
+def section2_decay_comparison(
+    state: dict, sample_seeds: dict, k_star_by_seed: dict[int, int], out_dir: Path,
+) -> dict:
+    """Compare Gaussian / triangular / Epanechnikov weight vectors at each seed's k*.
+
+    All three share the same top-k* member set; only the weights differ.
+    We compare pairwise weighted Jaccard on the weight vectors.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sigma = state["sigma"]
+    rows = []
+    for kind, seeds in sample_seeds.items():
+        for s in seeds:
+            k_star = k_star_by_seed.get(s)
+            if not k_star or k_star < 2:
+                continue
+            D_row = state["D_art_NN_all"][s, :k_star]
+            I_row = state["I_art_NN_all_global"][s, :k_star]
+            w_g = _gaussian_weights(D_row, float(sigma[s]), sigma[I_row])
+            w_t = _triangular_weights(k_star)
+            w_e = _epanechnikov_weights(D_row)
+            rows.append({
+                "kind": kind, "seed": s, "k_star": k_star,
+                "wj_g_t": generalized_jaccard(w_g, w_t),
+                "wj_g_e": generalized_jaccard(w_g, w_e),
+                "wj_t_e": generalized_jaccard(w_t, w_e),
+                "gaussian_sum": float(w_g.sum()),
+                "triangular_sum": float(w_t.sum()),
+                "epanechnikov_sum": float(w_e.sum()),
+            })
+    summary_path = out_dir / "decay_summary.csv"
+    with open(summary_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    if rows:
+        wj_pairs = np.array([
+            [r["wj_g_t"], r["wj_g_e"], r["wj_t_e"]] for r in rows
+        ])
+        all_high = (wj_pairs >= 0.85).all(axis=1).mean()
+    else:
+        all_high = 0.0
+
+    recommended = "self-tuning-gaussian" if all_high >= 0.5 else "DEFER"
+    decision = {
+        "section": 2,
+        "recommended_decay": recommended,
+        "pct_seeds_all_pairs_wj_ge_0.85": float(all_high),
+        "n_seeds": len(rows),
+        "summary_csv": str(summary_path),
+    }
+    with open(out_dir / "decision.json", "w") as f:
+        json.dump(decision, f, indent=2)
+    return decision
+
+
 def main() -> None:
     raise NotImplementedError("main() wired in Task 7")
 
