@@ -684,6 +684,102 @@ def section4_joint_norm(
     return decision
 
 
+# ============================================================
+# Section 5: Jaccard vs containment
+# ============================================================
+
+def section5_jaccard_vs_containment(
+    state: dict, k_star_by_seed: dict[int, int], out_dir: Path,
+    pair_cap: int = 200_000,
+) -> dict:
+    """Compute generalized Jaccard and containment for every overlapping seed pair.
+
+    Identifies pairs where J < 0.5 but C >= 0.8 (candidate nested-distinct
+    pairs that containment would incorrectly merge).
+
+    pair_cap caps the number of candidate pairs evaluated to avoid blowups
+    on dense regions; pairs are sampled uniformly from the overlap graph.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seed_k_pairs = [
+        (s, k) for s, k in k_star_by_seed.items() if k is not None and k >= 2
+    ]
+    M, _ = _build_membership_matrix(state, seed_k_pairs)
+    Mc = M.tocsc()
+    Mr = M.tocsr()
+
+    candidate_pairs: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    rng = np.random.default_rng(0)
+    for a in range(Mr.shape[0]):
+        col_idx = Mr.indices[Mr.indptr[a]: Mr.indptr[a + 1]]
+        if len(col_idx) < 2:
+            continue
+        for i in range(len(col_idx)):
+            for j in range(i + 1, len(col_idx)):
+                ci, cj = int(col_idx[i]), int(col_idx[j])
+                key = (ci, cj) if ci < cj else (cj, ci)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidate_pairs.append(key)
+                if len(candidate_pairs) >= pair_cap:
+                    break
+            if len(candidate_pairs) >= pair_cap:
+                break
+        if len(candidate_pairs) >= pair_cap:
+            break
+
+    rows = []
+    for (ci, cj) in candidate_pairs:
+        wi = np.asarray(Mc[:, ci].todense()).flatten()
+        wj = np.asarray(Mc[:, cj].todense()).flatten()
+        J = generalized_jaccard(wi, wj)
+        C = generalized_containment(wi, wj)
+        rows.append({"seed_a": seed_k_pairs[ci][0], "seed_b": seed_k_pairs[cj][0],
+                     "k_a": seed_k_pairs[ci][1], "k_b": seed_k_pairs[cj][1],
+                     "jaccard": J, "containment": C})
+
+    summary_path = out_dir / "pair_metrics.csv"
+    with open(summary_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    # Scatter plot
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    Js = np.array([r["jaccard"] for r in rows])
+    Cs = np.array([r["containment"] for r in rows])
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(Js, Cs, s=4, alpha=0.3)
+    ax.axvline(0.5, color="red", linestyle="--", linewidth=0.7)
+    ax.axhline(0.8, color="red", linestyle="--", linewidth=0.7)
+    ax.set_xlabel("generalized Jaccard")
+    ax.set_ylabel("generalized containment")
+    ax.set_title("Pair overlap: Jaccard vs containment")
+    fig.tight_layout()
+    fig.savefig(out_dir / "jaccard_vs_containment.png", dpi=110)
+    plt.close(fig)
+
+    nested_pairs = [(r["seed_a"], r["seed_b"]) for r in rows
+                    if r["jaccard"] < 0.5 and r["containment"] >= 0.8]
+    decision = {
+        "section": 5,
+        "n_pairs_evaluated": len(rows),
+        "n_nested_candidates": len(nested_pairs),
+        "recommended_metric": "jaccard" if len(nested_pairs) >= 3 else (
+            "jaccard (default; no nested cases observed)"
+        ),
+        "summary_csv": str(summary_path),
+    }
+    with open(out_dir / "decision.json", "w") as f:
+        json.dump(decision, f, indent=2)
+    return decision
+
+
 def main() -> None:
     raise NotImplementedError("main() wired in Task 7")
 

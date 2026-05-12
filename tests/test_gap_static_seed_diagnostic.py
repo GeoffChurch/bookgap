@@ -202,3 +202,23 @@ def test_section4_joint_norm_returns_decision(tmp_path):
     assert decision["section"] == 4
     assert "joint_norm_sufficient" in decision
     assert (tmp_path / "eff_size_hist.png").exists()
+
+
+def test_section5_jaccard_vs_containment_returns_decision(tmp_path):
+    from artifacts_scripts.gap_static_seed_diagnostic import (
+        section5_jaccard_vs_containment, K_QUERY,
+    )
+    rng = np.random.default_rng(4)
+    N = 50
+    art_idx = np.arange(40)
+    sigma = rng.uniform(0.5, 1.5, size=N).astype(np.float32)
+    D = rng.uniform(0.0, 2.0, size=(N, K_QUERY)).astype(np.float32); D.sort(axis=1)
+    I = rng.integers(0, 40, size=(N, K_QUERY)).astype(np.int64)
+    state = {
+        "sigma": sigma, "D_art_NN_all": D, "I_art_NN_all_global": art_idx[I % 40],
+        "article_global_idx": art_idx, "book_global_idx": np.arange(40, 50),
+    }
+    k_star = {int(s): 6 for s in range(N)}
+    decision = section5_jaccard_vs_containment(state, k_star, tmp_path)
+    assert decision["section"] == 5
+    assert (tmp_path / "pair_metrics.csv").exists()
