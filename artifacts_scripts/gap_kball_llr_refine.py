@@ -174,16 +174,21 @@ def compute_local_csls_posterior(
     balanced background B (one book contributes f(b) non-gap articles
     where f(b) = number of gap members whose 1-NN book is b).
 
-    **K_G is fuzzy, K_B is hard.** This is intentional per
-    ``docs/cohesion_design_axes.md`` axis H: K_B is a **size-matched
-    bounding object**, not a competing-class likelihood. The local-CSLS
-    construction picks a comparator set whose size matches the gap and
-    whose hub-books are correctly discounted; that role doesn't admit a
-    fuzzy reformulation because there's no underlying "membership in
-    the bounding object" probability to soften. The asymmetry is by
-    design: K_G answers "expected gap pull on i" while K_B answers
-    "size-matched alternative pull on i." See the Phase 3.5 follow-up
-    discussion in ``docs/static_seed_cohesion_diagnostic_phase3_5.md``.
+    **Both K_G and K_B are fuzzy** via the same joint-normalized
+    membership matrix. K_G weights each neighbor by μ_G(j); K_B weights
+    each CSLS-background article by (1 − μ_G(j)) — i.e., a background
+    article that's partially claimed by THIS gap (because it's near the
+    centroid) contributes less to the bounding-object kernel mass. The
+    symmetric (1 − μ_G) form keeps K_B's role as a size-matched
+    alternative (per docs/cohesion_design_axes.md axis H) but avoids
+    the structural asymmetry of a fuzzy numerator over a hard denominator.
+
+    To make (1 − μ_G) meaningfully non-1 on background articles,
+    ``fuzzy_gap_membership`` must be computed over the extended
+    (top-K_QUERY around centroid) per-gap support, not just the gap's
+    hard k\*-member set. That extended joint-normalization is built by
+    ``_build_fuzzy_jointnorm_memberships``. See the Phase 3.5 follow-up
+    in ``docs/static_seed_cohesion_diagnostic_phase3_5.md``.
 
     members: list of global indices for the gap.
     D_NN: (n_members, K) squared L2 distances from each member to its
@@ -234,12 +239,13 @@ def compute_local_csls_posterior(
     sigma_n = sigma[I_NN]
     W = np.exp(-D_NN / (sigma_seed * sigma_n))
     self_mask = I_NN == members_arr[:, None]
-    # Fuzzy K_G: weight each neighbor by μ_G(j) and zero out self-contributions.
     mu_at_neighbors = fuzzy_gap_membership[I_NN]
+    # Fuzzy K_G: weight each neighbor by μ_G(j) and zero out self-contributions.
     K_G = (W * mu_at_neighbors * (~self_mask)).sum(axis=1)
-    # Hard K_B (bounding object).
+    # Fuzzy K_B: weight each CSLS-background article by (1 − μ_G(j)) so that
+    # a background article partially claimed by THIS gap contributes less.
     B_mask = in_B[I_NN]
-    K_B = (W * B_mask).sum(axis=1)
+    K_B = (W * B_mask * (1.0 - mu_at_neighbors)).sum(axis=1)
     denom = K_G + K_B + 1e-30
     return K_G / denom
 
@@ -502,22 +508,31 @@ def _build_fuzzy_jointnorm_memberships(
     refined_gaps: list[dict],
     state: dict,
 ) -> "csc_matrix":
-    """Build joint-normalized fuzzy gap memberships from refined gap centroids.
+    """Build joint-normalized fuzzy gap memberships over EXTENDED support.
 
-    For each refined gap, compute the centroid of its members and the
-    self-tuning-Gaussian kernel weight from that centroid to each member.
-    These per-(article, gap) weights form a sparse (n_total × n_gaps)
-    matrix; we then joint-normalize each row so each article's total gap
-    membership sums to 1 (or 0 if no gap claims it).
+    For each refined gap, compute the centroid of its members. Query the
+    article_index for the top-K_QUERY nearest articles to that centroid
+    (which includes the gap's hard members PLUS nearby non-members), and
+    use the self-tuning-Gaussian kernel weight from centroid to each of
+    those neighbors as the unnormalized μ_G value.
 
-    Returns the normalized matrix in CSC form for cheap per-gap column
-    extraction. To get the fuzzy gap membership vector for gap g:
+    The extended support is what makes the (1 − μ_G) factor in K_B
+    meaningful: a CSLS-background article that's also near our centroid
+    gets a nonzero μ_G in our gap (and thus a (1 − μ_G) < 1 weight in
+    K_B), so it contributes less to the bounding-object mass. Without
+    extending past hard members, μ_G is 0 on every background article
+    and (1 − μ_G) is identically 1 — no effect.
+
+    Returns the joint-normalized matrix in CSC form for cheap per-gap
+    column extraction. To get gap g's fuzzy membership vector:
 
         mu_g = np.asarray(M_norm[:, g].todense()).flatten()
     """
     from scipy.sparse import csr_matrix, diags
     emb = state["emb"]
     sigma = state["sigma"]
+    article_index = state["article_index"]
+    article_global_idx = state["article_global_idx"]
     n_total = state["sigma"].shape[0]
     n_gaps = len(refined_gaps)
 
@@ -535,19 +550,24 @@ def _build_fuzzy_jointnorm_memberships(
         norm = float(np.linalg.norm(centroid))
         if norm < 1e-12:
             # Degenerate centroid (shouldn't happen with normalized embeddings).
-            # Treat all members as equally-weighted.
+            # Fall back to equal weights on the hard member set.
             for m in members:
                 rows.append(int(m))
                 cols.append(g_idx)
                 vals.append(1.0)
             continue
         centroid_unit = (centroid / norm).astype(np.float32)
-        d_sq = np.sum((member_emb - centroid_unit) ** 2, axis=1)
+        # Extended support: top-K_QUERY articles near this gap's centroid.
+        D_centroid, I_centroid_local = article_index.search(
+            centroid_unit[None, :], k=K_QUERY,
+        )
+        D_centroid = D_centroid[0]
+        I_centroid_global = article_global_idx[I_centroid_local[0]]
         sigma_centroid = float(sigma[members].mean())
-        sigma_members = sigma[members]
-        w = np.exp(-d_sq / (sigma_centroid * sigma_members))
-        for m, wi in zip(members, w):
-            rows.append(int(m))
+        sigma_neighbors = sigma[I_centroid_global]
+        w = np.exp(-D_centroid / (sigma_centroid * sigma_neighbors))
+        for n_g, wi in zip(I_centroid_global, w):
+            rows.append(int(n_g))
             cols.append(g_idx)
             vals.append(float(wi))
 
