@@ -95,3 +95,36 @@ def test_kernel_mass_matrix_known_distances():
         [np.exp(-1.0), np.exp(-1.0) + np.exp(-1.0)],
     ])
     np.testing.assert_allclose(M, expected, rtol=1e-5)
+
+
+def test_section1_returns_decision_on_synthetic_state(tmp_path):
+    """End-to-end smoke: synthetic state -> section1 emits a decision JSON."""
+    from artifacts_scripts.gap_static_seed_diagnostic import (
+        section1_surprise_curves, K_GRID, K_QUERY,
+    )
+    rng = np.random.default_rng(0)
+    N = 200
+    art_idx = np.arange(150)
+    book_idx = np.arange(150, 200)
+    sigma = rng.uniform(0.5, 1.5, size=N).astype(np.float32)
+    # Each seed's top-K_QUERY neighbors: random article ids; distances random.
+    D = rng.uniform(0.0, 2.0, size=(N, K_QUERY)).astype(np.float32)
+    D.sort(axis=1)
+    I = rng.integers(0, 150, size=(N, K_QUERY)).astype(np.int64)
+    state = {
+        "sigma": sigma,
+        "D_art_NN_all": D,
+        "I_art_NN_all_global": art_idx[I % 150],
+        "article_global_idx": art_idx,
+        "book_global_idx": book_idx,
+    }
+    sample_seeds = {
+        "cohesive": art_idx[:5].tolist(),
+        "random": art_idx[5:15].tolist(),
+        "book": book_idx[:3].tolist(),
+    }
+    decision = section1_surprise_curves(state, sample_seeds, tmp_path)
+    assert decision["section"] == 1
+    assert decision["recommended_metric"] in ("LLR", "z-score")
+    assert (tmp_path / "curves_summary.csv").exists()
+    assert (tmp_path / "decision.json").exists()
