@@ -435,6 +435,77 @@ def section2_decay_comparison(
     return decision
 
 
+# ============================================================
+# Section 3: static vs one-step recentering
+# ============================================================
+
+def section3_recentering(
+    state: dict, sample_seeds: dict, k_star_by_seed: dict[int, int], out_dir: Path,
+) -> dict:
+    """For each seed, compute the new top-k* around the kernel-weighted centroid
+    of the seed's original top-k* members, then compare via Jaccard.
+
+    Writes:
+      out_dir/recenter_summary.csv — per-seed Jaccard and member counts.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sigma = state["sigma"]
+    article_index = state["article_index"]
+    article_global_idx = state["article_global_idx"]
+    emb = state["emb"]
+
+    rows = []
+    for kind, seeds in sample_seeds.items():
+        for s in seeds:
+            k_star = k_star_by_seed.get(s)
+            if not k_star or k_star < 2:
+                continue
+            D_row = state["D_art_NN_all"][s, :k_star]
+            I_row = state["I_art_NN_all_global"][s, :k_star]
+            w = _gaussian_weights(D_row, float(sigma[s]), sigma[I_row])
+            members_emb = emb[I_row]
+            centroid = (w[:, None] * members_emb).sum(axis=0) / max(w.sum(), 1e-30)
+            n = float(np.linalg.norm(centroid))
+            if n < 1e-12:
+                continue
+            centroid = (centroid / n).astype(np.float32)
+            _, I_new_local = article_index.search(centroid[None, :], k=k_star)
+            I_new_global = article_global_idx[I_new_local[0]]
+            inter = len(set(I_row.tolist()) & set(I_new_global.tolist()))
+            jaccard = inter / (2 * k_star - inter)
+            rows.append({
+                "kind": kind, "seed": s, "k_star": k_star,
+                "intersection": inter, "jaccard": jaccard,
+            })
+
+    summary_path = out_dir / "recenter_summary.csv"
+    with open(summary_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    if rows:
+        jaccards = np.array([r["jaccard"] for r in rows])
+        median_j = float(np.median(jaccards))
+        p25_j = float(np.percentile(jaccards, 25))
+    else:
+        median_j = p25_j = 1.0
+
+    recommend_recenter = (median_j < 0.90) or (p25_j < 0.80)
+    decision = {
+        "section": 3,
+        "recommended_step": "one-recentering" if recommend_recenter else "static",
+        "median_jaccard": median_j,
+        "p25_jaccard": p25_j,
+        "n_seeds": len(rows),
+        "summary_csv": str(summary_path),
+    }
+    with open(out_dir / "decision.json", "w") as f:
+        json.dump(decision, f, indent=2)
+    return decision
+
+
 def main() -> None:
     raise NotImplementedError("main() wired in Task 7")
 
