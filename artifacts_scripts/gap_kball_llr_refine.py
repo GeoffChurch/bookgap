@@ -353,8 +353,204 @@ def dedup_via_binary_jaccard(
     return annotated
 
 
+def _topic_id_from_path(path: Path) -> str:
+    """Derive a topic_id like 'T11303' from a K-ball CSV filename."""
+    stem = path.stem
+    parts = stem.split("__")[0].split("-")
+    if len(parts) >= 3 and parts[-1].startswith("T"):
+        return parts[-1]
+    if stem.startswith("T") and "_" in stem:
+        return stem.split("_")[0]
+    return stem
+
+
+def _compute_corpus_null(state: dict) -> np.ndarray:
+    """Precompute mean(log(M_k)) over all article seeds at each k in K_GRID."""
+    art_idx = state["article_global_idx"]
+    M_null = kernel_mass_matrix(
+        D_art_NN=state["D_art_NN_all"][art_idx],
+        I_art_NN_global=state["I_art_NN_all_global"][art_idx],
+        sigma=state["sigma"],
+        k_grid=K_GRID,
+        seed_global_idx=art_idx,
+    )
+    return np.log(np.maximum(M_null, 1e-30)).mean(axis=0)
+
+
+def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
+    """Write the refined CSV with the spec'd schema."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "scope", "kball_gap_id", "kball_size", "refined_k_star",
+        "refined_n_articles", "llr_peak", "llr_peak_at_k",
+        "logit_sum", "mean_logit", "effective_size",
+        "kball_size_delta", "kball_jaccard",
+        "survivor", "merged_into_gap_id",
+        "article_indices_json",
+    ]
+    with open(out_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for g in gaps:
+            w.writerow({
+                "scope": scope,
+                "kball_gap_id": g["kball_gap_id"],
+                "kball_size": g["kball_size"],
+                "refined_k_star": g["refined_k_star"],
+                "refined_n_articles": g["refined_n_articles"],
+                "llr_peak": g["llr_peak"],
+                "llr_peak_at_k": g["llr_peak_at_k"],
+                "logit_sum": g["logit_sum"],
+                "mean_logit": g["mean_logit"],
+                "effective_size": g["effective_size"],
+                "kball_size_delta": g["kball_size_delta"],
+                "kball_jaccard": g["kball_jaccard"],
+                "survivor": g["survivor"],
+                "merged_into_gap_id": g["merged_into_gap_id"],
+                "article_indices_json": json.dumps(g["refined_member_indices"]),
+            })
+
+
+def _plot_llr_curves(gaps: list[dict], top_n: int, out_path: Path) -> None:
+    """Small-multiples plot of LLR-vs-k curves for the top-N gaps by logit_sum."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    top = sorted(gaps, key=lambda g: -g["logit_sum"])[:top_n]
+    n = len(top)
+    if n == 0:
+        return
+    cols = 5
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 2.2 * rows), squeeze=False)
+    for j, g in enumerate(top):
+        ax = axes[j // cols][j % cols]
+        ax.plot(K_GRID, g["llr_curve"], color="tab:orange")
+        ax.axvline(g["refined_k_star"], color="red", linestyle="--", linewidth=0.7)
+        ax.set_xscale("log")
+        ax.set_title(f"kb-{g['kball_gap_id']} (k*={g['refined_k_star']})", fontsize=8)
+        ax.tick_params(labelsize=6)
+    for j in range(n, rows * cols):
+        axes[j // cols][j % cols].axis("off")
+    fig.suptitle(f"LLR-vs-k curves for top-{top_n} refined gaps by logit_sum")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+
+
+def _plot_size_delta_hist(gaps: list[dict], out_path: Path) -> None:
+    """Histogram of refined-vs-K-ball size delta."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    deltas = np.array([g["kball_size_delta"] for g in gaps])
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.hist(deltas, bins=50, color="tab:blue", alpha=0.7)
+    ax.axvline(0, color="black", linewidth=0.7)
+    ax.set_xlabel("refined_n_articles - kball_size")
+    ax.set_ylabel("count")
+    ax.set_title(f"K-ball -> LLR-refined size delta (n={len(deltas)} gaps)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+
+
 def main() -> None:
-    raise NotImplementedError("CLI driver wired in Task 3")
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--scope", required=True, help="e.g. 17/1702/T11303")
+    p.add_argument("--kball-csv", required=True, type=Path,
+                   help="Existing K-ball CSV path")
+    p.add_argument("--out", required=True, type=Path,
+                   help="Refined CSV output path")
+    p.add_argument("--cache-dir", type=Path, default=None,
+                   help="Optional directory for diagnostic figures")
+    p.add_argument("--no-recenter", action="store_true",
+                   help="Disable the one-step re-centering after k* selection")
+    p.add_argument("--jaccard-threshold", type=float, default=0.5,
+                   help="Binary set Jaccard threshold for dedup merge (default 0.5)")
+    p.add_argument("--top-curves", type=int, default=20,
+                   help="Plot LLR-vs-k for the top-N gaps by logit_sum")
+    args = p.parse_args()
+
+    print(f"[setup] loading scope {args.scope}...", flush=True)
+    state = setup(args.scope)
+    n_total = state["sigma"].shape[0]
+    print(f"  N_total={n_total}, "
+          f"N_articles={len(state['article_global_idx'])}, "
+          f"N_books={len(state['book_global_idx'])}", flush=True)
+
+    print(f"[null] computing corpus-wide null log-mean per k...", flush=True)
+    null_log_mean = _compute_corpus_null(state)
+
+    print(f"[load] reading K-ball CSV {args.kball_csv}...", flush=True)
+    kball_rows = load_kball_csv(args.kball_csv)
+    print(f"  {len(kball_rows)} K-ball gaps", flush=True)
+
+    # Build book_index for compute_gap_stats. setup() returns full_index +
+    # article_index already; book_index needs construction here.
+    from bookgap.index import build_index, FlatL2
+    book_emb = np.ascontiguousarray(state["emb"][state["book_global_idx"]])
+    book_index = build_index(FlatL2(), book_emb)
+
+    print(f"[refine] running LLR-vs-k refinement on {len(kball_rows)} gaps...",
+          flush=True)
+    refined: list[dict] = []
+    for i, row in enumerate(kball_rows):
+        result = refine_gap_via_llr(
+            member_indices=row["article_indices"],
+            state=state,
+            null_log_mean=null_log_mean,
+            recenter=not args.no_recenter,
+        )
+        stats = compute_gap_stats(
+            refined_member_indices=result["refined_member_indices"],
+            state=state,
+            book_global_idx=state["book_global_idx"],
+            book_index=book_index,
+            article_index=state["article_index"],
+            article_global_idx=state["article_global_idx"],
+        )
+        kball_set = set(row["article_indices"])
+        refined_set = set(result["refined_member_indices"])
+        kball_jaccard = binary_set_jaccard(kball_set, refined_set)
+        refined.append({
+            "kball_gap_id": row["gap_idx"],
+            "kball_size": row["gap_size"],
+            "refined_k_star": result["refined_k_star"],
+            "refined_n_articles": len(result["refined_member_indices"]),
+            "llr_peak": result["llr_peak"],
+            "llr_peak_at_k": result["llr_peak_at_k"],
+            "llr_curve": result["llr_curve"],
+            "logit_sum": stats["logit_sum"],
+            "mean_logit": stats["mean_logit"],
+            "effective_size": stats["effective_size"],
+            "kball_size_delta": len(result["refined_member_indices"]) - row["gap_size"],
+            "kball_jaccard": kball_jaccard,
+            "refined_member_indices": result["refined_member_indices"],
+        })
+        if (i + 1) % 25 == 0:
+            print(f"  refined {i + 1}/{len(kball_rows)}", flush=True)
+
+    print(f"[dedup] running binary set Jaccard dedup at threshold "
+          f"{args.jaccard_threshold}...", flush=True)
+    # The dedup function needs gap_idx; map kball_gap_id into that key.
+    for g in refined:
+        g["gap_idx"] = g["kball_gap_id"]
+    refined = dedup_via_binary_jaccard(refined, threshold=args.jaccard_threshold)
+    n_survivors = sum(1 for g in refined if g["survivor"] == 1)
+    print(f"  {n_survivors} survivors / {len(refined)} gaps", flush=True)
+
+    # Sort: survivors first by logit_sum desc, then non-survivors grouped by survivor.
+    refined.sort(key=lambda g: (-g["survivor"], -g["logit_sum"]))
+
+    _write_refined_csv(args.out, args.scope, refined)
+    print(f"[write] refined CSV written to {args.out}", flush=True)
+
+    if args.cache_dir is not None:
+        args.cache_dir.mkdir(parents=True, exist_ok=True)
+        _plot_llr_curves(refined, args.top_curves, args.cache_dir / "llr_curves.png")
+        _plot_size_delta_hist(refined, args.cache_dir / "size_delta_hist.png")
+        print(f"[figures] written to {args.cache_dir}", flush=True)
 
 
 if __name__ == "__main__":
