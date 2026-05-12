@@ -31,6 +31,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+import numba
 import numpy as np
 from scipy.sparse import csr_matrix
 
@@ -629,6 +630,84 @@ def _build_membership_matrix(
     return M, llrs
 
 
+@numba.njit(cache=True)
+def _confluence_union_find_numba(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    overlap_row: np.ndarray,
+    overlap_col: np.ndarray,
+    threshold: float,
+    n_seeds: int,
+) -> tuple[np.ndarray, int]:
+    """Numba-JITted union-find over weighted-Jaccard-high pairs.
+
+    Inlines ``_sparse_weighted_jaccard`` (merge-sort over two CSC columns)
+    plus a path-compressed union-find. The pure-Python version was the
+    bottleneck for T11303-scale runs (~4k pairs/sec → 7+ hours on 10^8
+    pairs); the JITted kernel runs at C speed.
+    """
+    parent = np.arange(n_seeds, dtype=np.int64)
+    n_pairs = overlap_row.shape[0]
+    n_unioned = 0
+    for idx in range(n_pairs):
+        ci = overlap_row[idx]
+        cj = overlap_col[idx]
+
+        a_start = indptr[ci]
+        a_end = indptr[ci + 1]
+        b_start = indptr[cj]
+        b_end = indptr[cj + 1]
+        i = a_start
+        j = b_start
+        min_sum = 0.0
+        max_sum = 0.0
+        while i < a_end and j < b_end:
+            ra = indices[i]
+            rb = indices[j]
+            if ra < rb:
+                max_sum += data[i]
+                i += 1
+            elif ra > rb:
+                max_sum += data[j]
+                j += 1
+            else:
+                av = data[i]
+                bv = data[j]
+                if av < bv:
+                    min_sum += av
+                    max_sum += bv
+                else:
+                    min_sum += bv
+                    max_sum += av
+                i += 1
+                j += 1
+        while i < a_end:
+            max_sum += data[i]
+            i += 1
+        while j < b_end:
+            max_sum += data[j]
+            j += 1
+
+        if max_sum <= 0.0:
+            continue
+        jaccard = min_sum / max_sum
+
+        if jaccard >= threshold:
+            ra = ci
+            while parent[ra] != ra:
+                parent[ra] = parent[parent[ra]]
+                ra = parent[ra]
+            rb = cj
+            while parent[rb] != rb:
+                parent[rb] = parent[parent[rb]]
+                rb = parent[rb]
+            if ra != rb:
+                parent[rb] = ra
+                n_unioned += 1
+    return parent, n_unioned
+
+
 def _confluence_components(
     seed_k_pairs: list[tuple[int, int]],
     M: csr_matrix,
@@ -639,9 +718,9 @@ def _confluence_components(
     Identifies all globally-overlapping seed pairs via the nonzero
     pattern of ``M.T @ M`` — entry (i, j) is nonzero iff seeds i and j
     share at least one article (both columns have a nonzero in the
-    same row). Iterates the upper triangle once; no per-article walk,
-    no seen-set, no pair cap. Memory bounded by the sparse output of
-    M.T @ M (≈16 bytes per overlapping pair).
+    same row). Iterates the upper triangle once via a numba-JITted
+    union-find kernel. Memory bounded by the sparse output of M.T @ M
+    (≈16 bytes per overlapping pair).
     """
     import scipy.sparse as sp
     n = M.shape[1]
@@ -649,37 +728,27 @@ def _confluence_components(
 
     overlap = (M.T @ M).tocsr()
     overlap = sp.triu(overlap, k=1).tocoo()
-
-    parent = list(range(n))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
     n_pairs = overlap.nnz
-    n_unioned = 0
     print(f"    confluence: {n_pairs} overlapping pairs from M.T @ M", flush=True)
-    for idx in range(n_pairs):
-        ci = int(overlap.row[idx])
-        cj = int(overlap.col[idx])
-        if _sparse_weighted_jaccard(Mc, ci, cj) >= threshold:
-            union(ci, cj)
-            n_unioned += 1
-        if (idx + 1) % 100_000 == 0:
-            print(f"    confluence: {idx + 1}/{n_pairs} pairs evaluated, "
-                  f"{n_unioned} unioned", flush=True)
 
+    indptr = np.ascontiguousarray(Mc.indptr, dtype=np.int64)
+    indices = np.ascontiguousarray(Mc.indices, dtype=np.int64)
+    data = np.ascontiguousarray(Mc.data, dtype=np.float64)
+    overlap_row = np.ascontiguousarray(overlap.row, dtype=np.int64)
+    overlap_col = np.ascontiguousarray(overlap.col, dtype=np.int64)
+
+    parent, n_unioned = _confluence_union_find_numba(
+        indptr, indices, data, overlap_row, overlap_col,
+        float(threshold), int(n),
+    )
     print(f"    confluence: done, {n_unioned} pairs unioned", flush=True)
+
     components: dict[int, list[int]] = {}
     for x in range(n):
-        components.setdefault(find(x), []).append(x)
+        r = int(x)
+        while parent[r] != r:
+            r = int(parent[r])
+        components.setdefault(r, []).append(x)
     return list(components.values())
 
 
