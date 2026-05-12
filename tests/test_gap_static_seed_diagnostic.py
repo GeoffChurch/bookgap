@@ -178,3 +178,27 @@ def test_section3_recentering_returns_decision(tmp_path):
     decision = section3_recentering(state, sample_seeds, k_star, tmp_path)
     assert decision["section"] == 3
     assert decision["recommended_step"] in ("static", "one-recentering")
+
+
+def test_section4_joint_norm_returns_decision(tmp_path):
+    from artifacts_scripts.gap_static_seed_diagnostic import (
+        section4_joint_norm, K_QUERY,
+    )
+    rng = np.random.default_rng(3)
+    N = 60
+    art_idx = np.arange(50)
+    sigma = rng.uniform(0.5, 1.5, size=N).astype(np.float32)
+    D = rng.uniform(0.0, 2.0, size=(N, K_QUERY)).astype(np.float32); D.sort(axis=1)
+    I = rng.integers(0, 50, size=(N, K_QUERY)).astype(np.int64)
+    types_arr = np.array(["article"] * 50 + ["book"] * 10)
+    is_book = types_arr == "book"
+    state = {
+        "sigma": sigma, "D_art_NN_all": D, "I_art_NN_all_global": art_idx[I % 50],
+        "article_global_idx": art_idx, "book_global_idx": np.arange(50, 60),
+        "types": types_arr, "is_book": is_book,
+    }
+    k_star = {int(s): 8 for s in range(N)}
+    decision = section4_joint_norm(state, k_star, tmp_path, jaccard_threshold=0.9)
+    assert decision["section"] == 4
+    assert "joint_norm_sufficient" in decision
+    assert (tmp_path / "eff_size_hist.png").exists()

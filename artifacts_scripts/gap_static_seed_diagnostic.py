@@ -506,6 +506,184 @@ def section3_recentering(
     return decision
 
 
+# ============================================================
+# Section 4: joint normalization + confluence merge
+# ============================================================
+
+def _build_membership_matrix(
+    state: dict,
+    seed_k_pairs: list[tuple[int, int]],
+) -> tuple[csr_matrix, np.ndarray]:
+    """Construct (N_articles, N_seeds) sparse membership matrix.
+
+    seed_k_pairs: list of (seed_global_idx, k_star). Each seed's top-k*
+    article neighbors get the Gaussian kernel weight in the seed's column.
+
+    Returns:
+      M: sparse matrix.
+      llr_per_seed: (N_seeds,) array of seed's LLR at k_star (computed
+        on the fly here so we can break confluence-merge ties later).
+    """
+    sigma = state["sigma"]
+    art_idx = state["article_global_idx"]
+    n_art = len(art_idx)
+    n_total = sigma.shape[0]
+    global_to_local = np.full(n_total, -1, dtype=np.int64)
+    global_to_local[art_idx] = np.arange(n_art)
+
+    rows: list[int] = []
+    cols: list[int] = []
+    vals: list[float] = []
+    llrs = np.zeros(len(seed_k_pairs), dtype=np.float64)
+    for col, (s, k_star) in enumerate(seed_k_pairs):
+        D_row = state["D_art_NN_all"][s, :k_star]
+        I_row = state["I_art_NN_all_global"][s, :k_star]
+        w = _gaussian_weights(D_row, float(sigma[s]), sigma[I_row])
+        local = global_to_local[I_row]
+        valid = local >= 0
+        rows.extend(local[valid].tolist())
+        cols.extend([col] * int(valid.sum()))
+        vals.extend(w[valid].tolist())
+        llrs[col] = float(np.log(max(w.sum(), 1e-30)))
+    M = csr_matrix((vals, (rows, cols)), shape=(n_art, len(seed_k_pairs)))
+    return M, llrs
+
+
+def _confluence_components(
+    seed_k_pairs: list[tuple[int, int]],
+    M: csr_matrix,
+    threshold: float,
+) -> list[list[int]]:
+    """Union-find over (seed_col, seed_col') pairs with weighted Jaccard >= threshold.
+
+    Two seeds are candidates if they share at least one article. We compute
+    weighted Jaccard on the full weight columns and union the high-overlap pairs.
+    """
+    n = M.shape[1]
+    # Use CSC for per-column slicing.
+    Mc = M.tocsc()
+    # For each article (row), list the seeds claiming it. Then enumerate pairs.
+    Mr = M.tocsr()
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    seen_pairs: set[tuple[int, int]] = set()
+    for a in range(Mr.shape[0]):
+        col_idx = Mr.indices[Mr.indptr[a]: Mr.indptr[a + 1]]
+        if len(col_idx) < 2:
+            continue
+        for i in range(len(col_idx)):
+            for j in range(i + 1, len(col_idx)):
+                ci, cj = int(col_idx[i]), int(col_idx[j])
+                key = (ci, cj) if ci < cj else (cj, ci)
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                wi = np.asarray(Mc[:, ci].todense()).flatten()
+                wj = np.asarray(Mc[:, cj].todense()).flatten()
+                if generalized_jaccard(wi, wj) >= threshold:
+                    union(ci, cj)
+
+    comps: dict[int, list[int]] = {}
+    for x in range(n):
+        comps.setdefault(find(x), []).append(x)
+    return list(comps.values())
+
+
+def section4_joint_norm(
+    state: dict, k_star_by_seed: dict[int, int], out_dir: Path,
+    jaccard_threshold: float = 0.9,
+) -> dict:
+    """Run joint normalization on all seeds with a chosen k*; report
+    effective-size distribution + confluence-merge survivor count.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seed_k_pairs = [
+        (s, k) for s, k in k_star_by_seed.items()
+        if k is not None and k >= 2
+    ]
+    if not seed_k_pairs:
+        decision = {"section": 4, "n_seeds": 0, "verdict": "no-seeds"}
+        with open(out_dir / "decision.json", "w") as f:
+            json.dump(decision, f, indent=2)
+        return decision
+
+    M, llrs = _build_membership_matrix(state, seed_k_pairs)
+    M_norm, eff = joint_normalize(M)
+
+    # Confluence merge on the normalized matrix.
+    components = _confluence_components(seed_k_pairs, M_norm, threshold=jaccard_threshold)
+    survivors: list[tuple[int, int]] = []  # (col, llr) of survivors
+    for comp in components:
+        # Keep highest-llr column in the component.
+        best = max(comp, key=lambda c: llrs[c])
+        survivors.append((best, llrs[best]))
+
+    # Plot effective-size histogram.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.hist(eff, bins=80, color="tab:blue", alpha=0.7)
+    ax.set_xlabel("effective_size")
+    ax.set_ylabel("count")
+    ax.set_title(f"Effective size distribution ({len(eff)} clusters)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "eff_size_hist.png", dpi=110)
+    plt.close(fig)
+
+    # Top-20 by effective_size.
+    top20_idx = np.argsort(-eff)[:20]
+    types_arr = state["types"]
+    is_book = state["is_book"]
+    rows = []
+    for i in top20_idx:
+        s, k = seed_k_pairs[i]
+        rows.append({
+            "rank": int(np.where(top20_idx == i)[0][0]) + 1,
+            "seed_global": int(s),
+            "seed_type": "book" if is_book[s] else "article",
+            "k_star": int(k),
+            "effective_size": float(eff[i]),
+            "llr": float(llrs[i]),
+        })
+    top20_path = out_dir / "top20_by_eff.csv"
+    with open(top20_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    # Top-50-by-eff vs median ratio for the decision rule.
+    median_eff = float(np.median(eff)) if len(eff) > 0 else 0.0
+    top50 = np.sort(eff)[-50:] if len(eff) >= 50 else eff
+    pct_top50_above_2x_median = float((top50 >= 2 * median_eff).mean()) if median_eff > 0 else 0.0
+
+    sufficient = (len(survivors) <= 500) and (pct_top50_above_2x_median >= 0.5)
+    decision = {
+        "section": 4,
+        "joint_norm_sufficient": sufficient,
+        "n_seeds_before_merge": len(seed_k_pairs),
+        "n_survivors_after_merge": len(survivors),
+        "median_effective_size": median_eff,
+        "pct_top50_above_2x_median": pct_top50_above_2x_median,
+        "top20_csv": str(top20_path),
+    }
+    with open(out_dir / "decision.json", "w") as f:
+        json.dump(decision, f, indent=2)
+    return decision
+
+
 def main() -> None:
     raise NotImplementedError("main() wired in Task 7")
 
