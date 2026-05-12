@@ -304,23 +304,84 @@ def compute_gap_stats(
     }
 
 
-def dedup_via_binary_jaccard(
+def dedup_via_containment_then_jaccard(
     gaps: list[dict],
-    threshold: float = 0.5,
+    jaccard_threshold: float = 0.5,
+    containment_threshold: float = 0.9,
+    rank_metric: str = "median_logit",
 ) -> list[dict]:
-    """Pairwise binary set Jaccard dedup over refined gaps.
+    """Two-stage dedup: containment pruning first, then Jaccard merging.
 
-    gaps: list of dicts, each with keys gap_idx, refined_member_indices,
-      logit_sum (used as tiebreak).
-    threshold: J >= threshold ⇒ merge.
+    Stage 1 (containment pruning): for each pair (A, B) where |A| > |B|,
+    containment(B in A) ≥ ``containment_threshold``, and B's
+    ``rank_metric`` is strictly greater than A's: drop A. This handles
+    the "diffuse saturator wrapping a tight inner core" pattern that
+    Jaccard misses (set-overlap is small, ~|B|/|A|, but B is fully
+    contained in A and the tight core is the more informative cluster).
 
-    Annotates each input gap with two new keys:
-      survivor: 1 if this gap is the survivor of its component, 0 otherwise.
-      merged_into_gap_id: gap_idx of the survivor it merged into (-1 if survivor).
+    Stage 2 (Jaccard merging): union-find on remaining gaps where
+    ``binary_set_jaccard ≥ jaccard_threshold``. Keeps highest-
+    ``rank_metric`` survivor per component. Handles symmetric near-
+    duplicates that containment misses when sizes / metrics are tied.
+
+    Empirical justification (cache/.../T10181_n1000_dedup_analysis):
+    the two stages are essentially orthogonal — only 2/421 firings
+    on T10181 1000-gap are caught by both criteria; the other 419
+    are caught by exactly one.
+
+    Uses an inverted index (article → gap indices) to enumerate only
+    pairs sharing at least one article. On T10181 1000-gap this drops
+    pair count from N²/2 = 500k (naive O(N²)) to 61k overlapping pairs
+    — ~8× speedup before any per-pair savings.
+
+    Annotates each input gap with:
+      survivor: 1 if this gap survives both stages, 0 otherwise.
+      merged_into_gap_id: gap_idx of the cluster this merged/pruned into
+        (-1 for survivors).
+      dedup_reason: "survivor" | "containment_pruned" | "jaccard_merged".
 
     Returns the annotated list (same order as input).
     """
+    from collections import defaultdict
+    from itertools import combinations
+
     n = len(gaps)
+    sets = [frozenset(g["refined_member_indices"]) for g in gaps]
+    sizes = [len(s) for s in sets]
+
+    # Inverted index: article -> gap indices containing it.
+    article_to_gap_indices: dict[int, list[int]] = defaultdict(list)
+    for gi, s in enumerate(sets):
+        for art in s:
+            article_to_gap_indices[art].append(gi)
+
+    # Enumerate unique overlapping pairs, accumulating intersection size.
+    inter_counts: dict[tuple[int, int], int] = defaultdict(int)
+    for glist in article_to_gap_indices.values():
+        if len(glist) < 2:
+            continue
+        for i, j in combinations(glist, 2):
+            key = (i, j) if i < j else (j, i)
+            inter_counts[key] += 1
+
+    # Stage 1: containment pruning.
+    dropped = [False] * n
+    pruned_by_gap_idx: list[int | None] = [None] * n
+    for (i, j), inter in inter_counts.items():
+        si, sj = sizes[i], sizes[j]
+        if si == sj:
+            # Containment pruning with strict-greater tiebreak doesn't
+            # fire on equal-size pairs; defer to Stage 2.
+            continue
+        smaller_idx, larger_idx = (i, j) if si < sj else (j, i)
+        cont = inter / min(si, sj)
+        if cont < containment_threshold:
+            continue
+        if gaps[smaller_idx][rank_metric] > gaps[larger_idx][rank_metric]:
+            dropped[larger_idx] = True
+            pruned_by_gap_idx[larger_idx] = gaps[smaller_idx]["gap_idx"]
+
+    # Stage 2: Jaccard union-find on non-dropped gaps.
     parent = list(range(n))
 
     def find(x: int) -> int:
@@ -334,34 +395,66 @@ def dedup_via_binary_jaccard(
         if ra != rb:
             parent[rb] = ra
 
-    sets = [set(g["refined_member_indices"]) for g in gaps]
-    for i in range(n):
-        for j in range(i + 1, n):
-            if binary_set_jaccard(sets[i], sets[j]) >= threshold:
-                union(i, j)
+    for (i, j), inter in inter_counts.items():
+        if dropped[i] or dropped[j]:
+            continue
+        union_size = sizes[i] + sizes[j] - inter
+        if union_size <= 0:
+            continue
+        if inter / union_size >= jaccard_threshold:
+            union(i, j)
 
     components: dict[int, list[int]] = {}
     for idx in range(n):
+        if dropped[idx]:
+            continue
         components.setdefault(find(idx), []).append(idx)
 
     survivor_of_comp: dict[int, int] = {}
     for root, comp in components.items():
-        best = max(comp, key=lambda i: gaps[i]["logit_sum"])
+        best = max(comp, key=lambda i: gaps[i][rank_metric])
         survivor_of_comp[root] = best
 
     annotated: list[dict] = []
     for idx, g in enumerate(gaps):
-        root = find(idx)
-        survivor_idx = survivor_of_comp[root]
         g_out = dict(g)
-        if idx == survivor_idx:
-            g_out["survivor"] = 1
-            g_out["merged_into_gap_id"] = -1
-        else:
+        if dropped[idx]:
             g_out["survivor"] = 0
-            g_out["merged_into_gap_id"] = gaps[survivor_idx]["gap_idx"]
+            g_out["merged_into_gap_id"] = int(pruned_by_gap_idx[idx])
+            g_out["dedup_reason"] = "containment_pruned"
+        else:
+            root = find(idx)
+            survivor_idx = survivor_of_comp[root]
+            if idx == survivor_idx:
+                g_out["survivor"] = 1
+                g_out["merged_into_gap_id"] = -1
+                g_out["dedup_reason"] = "survivor"
+            else:
+                g_out["survivor"] = 0
+                g_out["merged_into_gap_id"] = gaps[survivor_idx]["gap_idx"]
+                g_out["dedup_reason"] = "jaccard_merged"
         annotated.append(g_out)
     return annotated
+
+
+def dedup_via_binary_jaccard(
+    gaps: list[dict],
+    threshold: float = 0.5,
+    rank_metric: str = "logit_sum",
+) -> list[dict]:
+    """Backward-compat shim: Jaccard-only dedup (no containment pruning).
+
+    Calls ``dedup_via_containment_then_jaccard`` with
+    ``containment_threshold=2.0`` (above the max possible value) so the
+    containment stage never fires. Default ``rank_metric="logit_sum"``
+    preserves the pre-Phase-3.5 tiebreak.
+    """
+    return dedup_via_containment_then_jaccard(
+        gaps,
+        jaccard_threshold=threshold,
+        containment_threshold=2.0,
+        rank_metric=rank_metric,
+    )
 
 
 def _topic_id_from_path(path: Path) -> str:
@@ -512,7 +605,7 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
         "refined_n_articles", "llr_peak", "llr_peak_at_k",
         "logit_sum", "mean_logit", "median_logit", "effective_size",
         "kball_size_delta", "kball_jaccard",
-        "survivor", "merged_into_gap_id",
+        "survivor", "merged_into_gap_id", "dedup_reason",
         "article_indices_json",
     ]
     with open(out_path, "w", newline="") as f:
@@ -535,6 +628,7 @@ def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
                 "kball_jaccard": g["kball_jaccard"],
                 "survivor": g["survivor"],
                 "merged_into_gap_id": g["merged_into_gap_id"],
+                "dedup_reason": g.get("dedup_reason", ""),
                 "article_indices_json": json.dumps(g["refined_member_indices"]),
             })
 
@@ -598,7 +692,14 @@ def main() -> None:
     p.add_argument("--no-recenter", action="store_true",
                    help="Disable the one-step re-centering after k* selection")
     p.add_argument("--jaccard-threshold", type=float, default=0.5,
-                   help="Binary set Jaccard threshold for dedup merge (default 0.5)")
+                   help="Binary set Jaccard threshold for stage-2 dedup merge "
+                        "(default 0.5; catches symmetric same-size near-"
+                        "duplicates)")
+    p.add_argument("--containment-threshold", type=float, default=0.9,
+                   help="Stage-1 containment-pruning threshold (default 0.9; "
+                        "catches the diffuse-saturator-wrapping-tight-inner "
+                        "pattern). Pass 2.0 to disable containment pruning "
+                        "and revert to Jaccard-only dedup.")
     p.add_argument("--null-method",
                    choices=["fixed", "stein"], default="stein",
                    help="How to size the article-seed subsample for the corpus "
@@ -700,14 +801,24 @@ def main() -> None:
         if (i + 1) % 25 == 0:
             print(f"  refined {i + 1}/{len(kball_rows)}", flush=True)
 
-    print(f"[dedup] running binary set Jaccard dedup at threshold "
-          f"{args.jaccard_threshold}...", flush=True)
+    print(f"[dedup] containment ≥ {args.containment_threshold} (prune) "
+          f"then Jaccard ≥ {args.jaccard_threshold} (merge); "
+          f"rank_metric={args.rank_by}", flush=True)
     # The dedup function needs gap_idx; map kball_gap_id into that key.
     for g in refined:
         g["gap_idx"] = g["kball_gap_id"]
-    refined = dedup_via_binary_jaccard(refined, threshold=args.jaccard_threshold)
+    refined = dedup_via_containment_then_jaccard(
+        refined,
+        jaccard_threshold=args.jaccard_threshold,
+        containment_threshold=args.containment_threshold,
+        rank_metric=args.rank_by,
+    )
     n_survivors = sum(1 for g in refined if g["survivor"] == 1)
-    print(f"  {n_survivors} survivors / {len(refined)} gaps", flush=True)
+    n_jaccard_merged = sum(1 for g in refined if g.get("dedup_reason") == "jaccard_merged")
+    n_containment_pruned = sum(1 for g in refined if g.get("dedup_reason") == "containment_pruned")
+    print(f"  {n_survivors} survivors / {len(refined)} gaps "
+          f"(jaccard-merged: {n_jaccard_merged}, "
+          f"containment-pruned: {n_containment_pruned})", flush=True)
 
     # Sort: survivors first, then by chosen --rank-by column desc.
     rank_key = args.rank_by

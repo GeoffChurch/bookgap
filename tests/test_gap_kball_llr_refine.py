@@ -118,3 +118,66 @@ def test_dedup_via_binary_jaccard_merges_near_duplicates():
     # gap 2 is disjoint; survivor on its own.
     assert by_idx[2]["survivor"] == 1
     assert by_idx[2]["merged_into_gap_id"] == -1
+
+
+def test_dedup_containment_drops_saturator_when_tight_inner_exists():
+    """Small tight cluster fully contained in big diffuse cluster ⇒ drop the big one."""
+    from artifacts_scripts.gap_kball_llr_refine import (
+        dedup_via_containment_then_jaccard,
+    )
+    gaps = [
+        # gap 0: big diffuse cluster, members 0..99, low median_logit
+        {"gap_idx": 0, "refined_member_indices": list(range(100)),
+         "median_logit": 0.5, "logit_sum": 50.0},
+        # gap 1: tight inner cluster, members 0..9 (all 10 ⊂ gap 0), high median_logit
+        {"gap_idx": 1, "refined_member_indices": list(range(10)),
+         "median_logit": 3.0, "logit_sum": 30.0},
+        # gap 2: disjoint, neutral
+        {"gap_idx": 2, "refined_member_indices": list(range(500, 510)),
+         "median_logit": 1.0, "logit_sum": 10.0},
+    ]
+    annotated = dedup_via_containment_then_jaccard(
+        gaps,
+        jaccard_threshold=0.5,
+        containment_threshold=0.9,
+        rank_metric="median_logit",
+    )
+    by_idx = {g["gap_idx"]: g for g in annotated}
+    # Containment(gap 1 in gap 0) = 10/10 = 1.0 ≥ 0.9, and gap 1's median_logit
+    # > gap 0's, so gap 0 gets pruned.
+    assert by_idx[0]["survivor"] == 0
+    assert by_idx[0]["dedup_reason"] == "containment_pruned"
+    assert by_idx[0]["merged_into_gap_id"] == 1
+    assert by_idx[1]["survivor"] == 1
+    assert by_idx[1]["dedup_reason"] == "survivor"
+    assert by_idx[1]["merged_into_gap_id"] == -1
+    assert by_idx[2]["survivor"] == 1
+    assert by_idx[2]["dedup_reason"] == "survivor"
+
+
+def test_dedup_containment_skips_equal_size_pairs():
+    """Two same-size highly-overlapping clusters fall through to Jaccard."""
+    from artifacts_scripts.gap_kball_llr_refine import (
+        dedup_via_containment_then_jaccard,
+    )
+    gaps = [
+        # Two equal-size clusters sharing 9 of 10 members.
+        {"gap_idx": 0, "refined_member_indices": list(range(10)),
+         "median_logit": 2.0, "logit_sum": 20.0},
+        {"gap_idx": 1, "refined_member_indices": list(range(9)) + [100],
+         "median_logit": 1.5, "logit_sum": 15.0},
+    ]
+    annotated = dedup_via_containment_then_jaccard(
+        gaps,
+        jaccard_threshold=0.5,
+        containment_threshold=0.9,
+        rank_metric="median_logit",
+    )
+    by_idx = {g["gap_idx"]: g for g in annotated}
+    # Equal sizes ⇒ containment-stage skips. Jaccard = 9/11 ≈ 0.82 ≥ 0.5 ⇒ merge.
+    # Higher median_logit (gap 0) wins.
+    assert by_idx[0]["survivor"] == 1
+    assert by_idx[0]["dedup_reason"] == "survivor"
+    assert by_idx[1]["survivor"] == 0
+    assert by_idx[1]["dedup_reason"] == "jaccard_merged"
+    assert by_idx[1]["merged_into_gap_id"] == 0
