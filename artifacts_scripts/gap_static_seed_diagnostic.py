@@ -780,8 +780,111 @@ def section5_jaccard_vs_containment(
     return decision
 
 
+# ============================================================
+# Main driver
+# ============================================================
+
+def _compute_k_star(state: dict, metric: str = "LLR") -> dict[int, int]:
+    """For every seed (article + book), compute k* by argmax of the chosen
+    surprise metric over K_GRID. Used as input to sections 2–5.
+    """
+    sigma = state["sigma"]
+    art_idx = state["article_global_idx"]
+    M_null = kernel_mass_matrix(
+        D_art_NN=state["D_art_NN_all"][art_idx],
+        I_art_NN_global=state["I_art_NN_all_global"][art_idx],
+        sigma=sigma,
+        k_grid=K_GRID,
+        seed_global_idx=art_idx,
+    )
+    null_mean = M_null.mean(axis=0)
+    null_std = M_null.std(axis=0)
+    null_log_mean = np.log(np.maximum(M_null, 1e-30)).mean(axis=0)
+
+    n_total = state["sigma"].shape[0]
+    all_seeds = np.arange(n_total)
+    M_all = kernel_mass_matrix(
+        D_art_NN=state["D_art_NN_all"],
+        I_art_NN_global=state["I_art_NN_all_global"],
+        sigma=sigma,
+        k_grid=K_GRID,
+        seed_global_idx=all_seeds,
+    )
+    if metric == "LLR":
+        curves = np.log(np.maximum(M_all, 1e-30)) - null_log_mean[None, :]
+    else:
+        curves = (M_all - null_mean[None, :]) / np.maximum(null_std[None, :], 1e-30)
+    argmax_idx = np.argmax(curves, axis=1)
+    return {int(s): int(K_GRID[argmax_idx[s]]) for s in range(n_total)}
+
+
 def main() -> None:
-    raise NotImplementedError("main() wired in Task 7")
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--scope", required=True,
+                   help="e.g. 17/1702/T11303")
+    p.add_argument("--out", required=True, type=Path,
+                   help="Output directory, e.g. cache/static_seed_diagnostic/T11303")
+    p.add_argument("--article-seed-csv", type=Path,
+                   default=Path("artifacts/gap_article_as_seed/T11303__article_seed.csv"),
+                   help="Source of stratified cohesive seeds for section 1")
+    p.add_argument("--n-random-articles", type=int, default=50)
+    p.add_argument("--jaccard-threshold", type=float, default=0.9)
+    p.add_argument("--skip", default="",
+                   help="Comma-separated section numbers to skip, e.g. '5'")
+    args = p.parse_args()
+
+    skip = {int(x) for x in args.skip.split(",") if x.strip()}
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    print(f"[setup] loading scope {args.scope}...")
+    state = setup(args.scope)
+    print(f"  N_total={state['sigma'].shape[0]}, "
+          f"N_articles={len(state['article_global_idx'])}, "
+          f"N_books={len(state['book_global_idx'])}")
+
+    print("[k_star] computing k* per seed via LLR argmax (will be overridden by section 1's decision)")
+    k_star_by_seed = _compute_k_star(state, metric="LLR")
+
+    sample_seeds = sample_diagnostic_seeds(
+        state,
+        args.article_seed_csv if args.article_seed_csv.exists() else None,
+        n_random_articles=args.n_random_articles,
+    )
+    print(f"  cohesive={len(sample_seeds['cohesive'])}, "
+          f"random={len(sample_seeds['random'])}, "
+          f"book={len(sample_seeds['book'])}")
+
+    decisions: dict[str, dict] = {}
+    if 1 not in skip:
+        print("[section 1] surprise curves...")
+        decisions["section1"] = section1_surprise_curves(
+            state, sample_seeds, args.out / "section1")
+        # If LLR not preferred, recompute k_star with z-score.
+        if decisions["section1"].get("recommended_metric") == "z-score":
+            print("  section 1 prefers z-score; recomputing k* with z-score")
+            k_star_by_seed = _compute_k_star(state, metric="z-score")
+    if 2 not in skip:
+        print("[section 2] decay comparison...")
+        decisions["section2"] = section2_decay_comparison(
+            state, sample_seeds, k_star_by_seed, args.out / "section2")
+    if 3 not in skip:
+        print("[section 3] recentering...")
+        decisions["section3"] = section3_recentering(
+            state, sample_seeds, k_star_by_seed, args.out / "section3")
+    if 4 not in skip:
+        print("[section 4] joint normalization...")
+        decisions["section4"] = section4_joint_norm(
+            state, k_star_by_seed, args.out / "section4",
+            jaccard_threshold=args.jaccard_threshold)
+    if 5 not in skip:
+        print("[section 5] Jaccard vs containment...")
+        decisions["section5"] = section5_jaccard_vs_containment(
+            state, k_star_by_seed, args.out / "section5")
+
+    summary_path = args.out / "decisions.json"
+    with open(summary_path, "w") as f:
+        json.dump(decisions, f, indent=2)
+    print(f"[done] decisions written to {summary_path}")
 
 
 if __name__ == "__main__":
