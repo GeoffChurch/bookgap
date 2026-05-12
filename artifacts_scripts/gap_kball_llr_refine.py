@@ -511,7 +511,8 @@ def main() -> None:
                    help="Article-seed subsample size for the corpus null. "
                         "Per cache/null_subsampling_diagnostic/T11303.csv, "
                         "m=2000 gives ≤0.2%% relative SE on every k in K_GRID. "
-                        "Pass 0 to use every article seed (full corpus). "
+                        "Auto-disabled when N_articles ≤ m (full corpus used). "
+                        "Pass 0 to force full corpus regardless of size. "
                         "Default 2000.")
     p.add_argument("--rank-by",
                    choices=["median_logit", "mean_logit", "logit_sum"],
