@@ -514,11 +514,11 @@ def main() -> None:
                         "Pass 0 to use every article seed (full corpus). "
                         "Default 2000.")
     p.add_argument("--rank-by",
-                   choices=["mean_logit", "median_logit", "logit_sum"],
-                   default="mean_logit",
-                   help="Column to rank survivors by (default mean_logit; "
-                        "median_logit avoids the post-clipping the mean uses "
-                        "and is robust to a few low-confidence members)")
+                   choices=["median_logit", "mean_logit", "logit_sum"],
+                   default="median_logit",
+                   help="Column to rank survivors by (default median_logit, "
+                        "which is robust to extreme per-member posteriors "
+                        "and avoids the artificial clipping mean_logit needs)")
     p.add_argument("--top-curves", type=int, default=20,
                    help="Plot LLR-vs-k for the top-N survivors by --rank-by")
     args = p.parse_args()
