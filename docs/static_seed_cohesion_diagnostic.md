@@ -56,7 +56,7 @@ Weighted Jaccard between the three decay families, computed at each seed's own `
 
 **0/219 seeds** had all three pairwise WJ ≥ 0.85 (the spec's pre-registered "agreement" threshold). Only 10/219 had any pair clear it. The three decay shapes produce meaningfully different weight vectors at the chosen `k*`. The Gaussian↔Epanechnikov pair (both distance-based, just different tail shapes) is the most agreeable; triangular-in-rank disagrees with both of the distance-based decays because its weights ignore distance scale entirely.
 
-**Recommendation:** DEFER. Downstream prototype should sweep the decay family alongside other ablations rather than commit. Provisional default: self-tuning Gaussian, consistent with `docs/cohesion_design_axes.md` axis G ("kernel weighting"), which has held up across T10181 / T11303 / T13734 cohesion-analysis work.
+**Recommendation:** DEFER. Downstream prototype should sweep the decay family alongside other ablations rather than commit. Provisional default: self-tuning Gaussian, consistent with `docs/cohesion_design_axes.md` axis I ("kernel form") and axis J ("bandwidth source"), where self-tuning Gaussian has held up across T10181 / T11303 / T13734 cohesion-analysis work.
 
 ## Section 3 — Static vs one-recentering
 
