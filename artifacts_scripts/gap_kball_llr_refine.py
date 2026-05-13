@@ -871,10 +871,18 @@ def main() -> None:
                         "size-extensive (favors big clusters).")
     p.add_argument("--top-curves", type=int, default=20,
                    help="Plot LLR-vs-k for the top-N survivors by --rank-by")
+    p.add_argument("--index-type", choices=["flat", "hnsw"], default="hnsw",
+                   help="FAISS index type for setup's full_index + "
+                        "article_index. 'hnsw' (default) is approximate "
+                        "but much faster at subfield/field/domain scale; "
+                        "'flat' is exact but O(N²). Empirically HNSW "
+                        "M=32/efc=400/efs=max(K_QUERY,2000) gives recall "
+                        "≥99% on test topics.")
     args = p.parse_args()
 
-    print(f"[setup] loading scope {args.scope}...", flush=True)
-    state = setup(args.scope)
+    print(f"[setup] loading scope {args.scope} "
+          f"(index_type={args.index_type})...", flush=True)
+    state = setup(args.scope, index_type=args.index_type)
     n_total = state["sigma"].shape[0]
     print(f"  N_total={n_total}, "
           f"N_articles={len(state['article_global_idx'])}, "

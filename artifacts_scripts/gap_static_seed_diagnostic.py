@@ -206,7 +206,8 @@ def kernel_mass_matrix(
 # Setup
 # ============================================================
 
-def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY) -> dict:
+def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY,
+          index_type: str = "flat") -> dict:
     """Build the shared kernel/index state used by all five sections.
 
     Returns a dict with keys:
@@ -217,6 +218,16 @@ def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY) -> dict:
     All seeds (every article + every book) get a (k_query,)-row of nearest-
     article neighbors — these are the candidate cluster members under the
     static-seed variant's "articles-only" rule.
+
+    ``index_type`` selects the FAISS index for ``full_index`` and
+    ``article_index``:
+
+    - "flat" (default): exact FlatL2. Suitable for topic-scale (≤10⁵
+      works) where the full setup is a few minutes.
+    - "hnsw": approximate HNSW (M=32, efConstruction=400,
+      efSearch=max(k_query, 2000)). Recall is ≥99% empirically at this
+      efSearch setting. Saves substantial time at subfield/field/domain
+      scale where the FlatL2 setup would otherwise dominate runtime.
     """
     # Local imports keep the script importable without these (for unit tests).
     from artifacts_scripts.hdbscan_gap_probe import load_scope
@@ -233,9 +244,21 @@ def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY) -> dict:
     emb = (emb / np.where(norms > 0, norms, 1.0)).astype(np.float32)
     emb = np.ascontiguousarray(emb)
 
-    full_index = build_index(FlatL2(), emb)
     article_emb = np.ascontiguousarray(emb[article_global_idx])
-    article_index = build_index(FlatL2(), article_emb)
+
+    if index_type == "hnsw":
+        from bookgap.index import HNSW
+        efs = max(k_query, 2000)
+        print(f"  building HNSW indices (M=32, efc=400, efs={efs})...", flush=True)
+        full_index = build_index(HNSW(hnsw_m=32, hnsw_efc=400, hnsw_efs=efs), emb)
+        article_index = build_index(
+            HNSW(hnsw_m=32, hnsw_efc=400, hnsw_efs=efs), article_emb)
+    elif index_type == "flat":
+        full_index = build_index(FlatL2(), emb)
+        article_index = build_index(FlatL2(), article_emb)
+    else:
+        raise ValueError(f"unknown index_type={index_type!r} "
+                         "(expected 'flat' or 'hnsw')")
 
     D_sigma, _ = full_index.search(emb, k=k_sigma + 1)
     sigma_sq = np.median(D_sigma[:, 1: k_sigma + 1], axis=1)
