@@ -1,14 +1,15 @@
 # K-ball + LLR refinement — Phase 3.5 follow-ups
 
 Follow-up to Phase 3 (`docs/static_seed_cohesion_diagnostic_phase3.md`)
-that lands four additions:
+that lands six additions:
 
 1. Scaling K-ball seed pool from 200 to 1000 candidates per topic.
 2. Empirical validation of corpus-null sub-sampling, with σ_k measured
    on T11303 and T10181.
-3. New per-member logit-distribution diagnostic, validating that
-   median_logit and mean_logit produce the same answer in practice.
+3. New per-member logit-distribution diagnostic.
 4. Stein two-stage adaptive sub-sampling for the corpus null.
+5. Two-stage dedup: containment-pruning + Jaccard merging.
+6. Fuzzy-jointnorm K_G and K_B as the new default posterior.
 
 Run date: 2026-05-12. All commits land on `main`.
 
@@ -168,15 +169,102 @@ Not extending further than 5120 in the first cut. If the post-
 extension saturator fraction is still meaningfully nonzero, double
 again to 10240. Each doubling is cheap given the K_QUERY decoupling.
 
+## Two-stage dedup: containment-pruning + Jaccard merging
+
+Phase 3 used single-stage Jaccard ≥ 0.5 union-find dedup. Phase 3.5
+splits this into:
+
+- **Stage 1 — containment pruning.** For each pair (A, B) with
+  |A| > |B|, containment(B in A) ≥ 0.9, and B's median_logit > A's:
+  drop A. Catches the "diffuse saturator wrapping a tight inner core"
+  pattern.
+- **Stage 2 — Jaccard merging.** Union-find at J ≥ 0.5 on survivors.
+  Catches symmetric same-size near-duplicates.
+
+Per-pair enumeration uses an inverted index (article → gap indices)
+to skip non-overlapping pairs — ~8× speedup vs naive O(N²) at 1000
+gaps. CSV gains a `dedup_reason` column with values `"survivor"` /
+`"containment_pruned"` / `"jaccard_merged"`.
+
+Post-hoc analysis on T10181 1000-gap showed the two stages are
+near-orthogonal: of 421 firings, only 2 are caught by both; 327
+Jaccard-only (same-size near-duplicates) and 92 containment-only
+(saturator-wraps-tight-inner). Both stages are needed.
+
+## Fuzzy K_G + fuzzy K_B (FF) as default posterior
+
+Phase 3 used hard-boolean per-member gap membership for K_G and
+hard-CSLS-balanced K_B. The "Frankenstein" worry was: under K_G_fuzzy
+(members-only joint-normalized) + K_B_hard, big clusters whose members
+are shared with tighter peers get their K_G strongly diluted while
+their K_B isn't, structurally biasing the posterior toward tight
+clusters in a topic-dependent way.
+
+Concretely, on T11303 the saturator kb-453 ("Bayesian network
+learning" broadly) went from median_logit = +2.00 under HARD to
+**−3.38 under members-only FJ + hard K_B** — a structural collapse,
+not a semantic finding. T10181's saturators stayed near +2.0 under the
+same setup. The asymmetry produces very different behavior across
+topic scales.
+
+The FF (Fully Fuzzy) formulation fixes this by:
+
+- Computing μ_G(j) over **extended support**: top-K_QUERY ≈ 1500
+  nearest articles to each gap's centroid (not just hard k\* members).
+- Joint-normalizing across gaps so Σ_g μ_G_g(j) = 1 for every article
+  claimed by any gap.
+- K_G(i) = Σ_j W_ij · μ_G(j) · 1[j ≠ i] (kernel-weighted expected
+  fuzzy gap membership)
+- **K_B(i) = Σ_{j ∈ B_CSLS} W_ij · (1 − μ_G(j))**: a CSLS background
+  article that's partially claimed by this gap contributes less to the
+  bounding-object mass.
+
+Cross-topic comparison of the tight–broad median_logit gap:
+
+| topic | HARD baseline | members-only FJ | **FF (default)** |
+|---|---|---|---|
+| T11303 (kb-327 tight vs kb-453 broad) | 1.46 | 6.84 | **5.14** |
+| T10181 (kb-144 tight vs kb-373 broad) | 3.31 | ~5 | **3.66** |
+
+FF retains strong tight-promotion (5.14 logit gap) without the
+topic-dependent extreme of members-only FJ (6.84 on T11303 vs ~5 on
+T10181).
+
+Final pipeline results at 1000 K-ball gaps:
+
+| | T11303 | T10181 |
+|---|---|---|
+| Survivors | 363 | 706 |
+| Containment-pruned | 602 | 258 |
+| Jaccard-merged | 35 | 36 |
+| Saturators (k\*=1280) | 0 | 58 |
+| Top-1 by median_logit | kb-327 (k=5, ml=3.42) | kb-144 (k=20, ml=5.89) |
+
+T10181's 58 surviving saturators all have **negative** median_logit
+(top is −1.48). These are the genuinely isolated diffuse subspecialties
+— broad clusters with no tight inner core to be pruned by. Negative
+median is the correct FF semantics for such clusters: under joint-
+normalized fuzzy membership, a 1280-article cluster with no internal
+structure has many members with weak fuzzy claim. Downstream consumers
+can post-filter on `median_logit > 0` to drop them.
+
+The 58 T10181 saturators correspond to broad subspecialties without
+matrioshka structure (no K-ball seed found a tight inner core for
+them). T11303 has zero such cases because every K-ball saturator there
+has at least one tight inner cluster.
+
 ## Open follow-ons
 
-- **Grid extension implementation** — split `K_QUERY` into setup and
-  grid variants; add 2560 and 5120 to `K_GRID`; re-run T10181 to
-  measure how many of its 108 saturators move below 5120.
+- **K_GRID extension** — original plan was to add 2560 and 5120 to
+  handle saturator truncation. Under FF this matters less: T11303 has
+  zero saturator survivors, T10181's 58 surviving saturators all rank
+  below 0 in median_logit anyway. Extension would only help if we
+  cared about resolving the LLR peaks of the very-broad-no-inner
+  subspecialties — probably not urgent.
 - **setup() restructure** — Phase 4 work: instead of building
   `D_art_NN_all` for every work, do kNN on demand for the K-ball gap
   centroids and the null subsample. Unlocks deployment at field /
-  domain scale where the current `O(N²)` kNN is the bottleneck.
+  domain scale where the current O(N²) kNN is the bottleneck.
 - **Templated-leak filter** — `kb-144` (T10181 Filipino names) keeps
   surfacing at #1 by median_logit, exactly as desired for algorithm
   validation. Downstream consumers that don't want artifacts need a

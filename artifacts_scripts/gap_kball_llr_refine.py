@@ -37,6 +37,25 @@ from artifacts_scripts.gap_static_seed_diagnostic import (
     setup,
 )
 
+try:
+    from bookgap.jobs import stop_requested as _stop_requested
+except Exception:  # bookgap.jobs may not be importable in tests / one-offs
+    def _stop_requested() -> bool:
+        return False
+
+
+def _abort_if_stop_requested(stage: str, i: int, n: int) -> None:
+    """Raise SystemExit if the bookgap.jobs watchdog has flipped stop_requested.
+
+    Inner loops should call this between iterations so the watchdog's
+    RAM/disk thresholds can actually fire before the kernel OOMs us. See
+    ``CLAUDE.md`` for the watchdog's default thresholds (80% RAM RLIMIT_AS
+    with 95% inner ceiling; 90% disk).
+    """
+    if _stop_requested():
+        print(f"[abort] stop_requested at {stage} {i}/{n}; exiting", flush=True)
+        raise SystemExit(0)
+
 
 def binary_set_jaccard(a: set, b: set) -> float:
     """Set Jaccard |a ∩ b| / |a ∪ b|. Returns 0.0 when both sets are empty."""
@@ -393,7 +412,12 @@ def dedup_via_containment_then_jaccard(
 
     # Enumerate unique overlapping pairs, accumulating intersection size.
     inter_counts: dict[tuple[int, int], int] = defaultdict(int)
+    n_articles_seen = 0
     for glist in article_to_gap_indices.values():
+        n_articles_seen += 1
+        if n_articles_seen % 50_000 == 0:
+            _abort_if_stop_requested(
+                "dedup-pair-enum", n_articles_seen, len(article_to_gap_indices))
         if len(glist) < 2:
             continue
         for i, j in combinations(glist, 2):
@@ -540,6 +564,8 @@ def _build_fuzzy_jointnorm_memberships(
     cols: list[int] = []
     vals: list[float] = []
     for g_idx, g in enumerate(refined_gaps):
+        if g_idx % 100 == 0:
+            _abort_if_stop_requested("fuzzy-build", g_idx, len(refined_gaps))
         members = np.asarray(
             g["refined_member_indices"], dtype=np.int64,
         )
@@ -884,6 +910,8 @@ def main() -> None:
           flush=True)
     refined: list[dict] = []
     for i, row in enumerate(kball_rows):
+        if i % 25 == 0:
+            _abort_if_stop_requested("refine", i, len(kball_rows))
         result = refine_gap_via_llr(
             member_indices=row["article_indices"],
             state=state,
@@ -922,6 +950,8 @@ def main() -> None:
     print(f"[stats] computing fuzzy-K_G posteriors for {len(refined)} gaps...",
           flush=True)
     for g_idx, g in enumerate(refined):
+        if g_idx % 25 == 0:
+            _abort_if_stop_requested("stats", g_idx, len(refined))
         mu_g = np.asarray(M_norm_csc[:, g_idx].todense()).flatten()
         stats = compute_gap_stats(
             refined_member_indices=g["refined_member_indices"],
