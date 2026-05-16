@@ -300,4 +300,4 @@ def run_refine_pipeline(
     )
 
     # Return only survivors (dedup marks all gaps; filter to survivor==1).
-    return [g for g in refined if g.get("survivor", 1) == 1]
+    return [g for g in refined if g["survivor"] == 1]
