@@ -15,6 +15,7 @@ from artifacts_scripts.hdbscan_gap_probe import (
     _denoise_lip,
     _denoise_cclip,
 )
+from artifacts_scripts.kball_gap_probe import _greedy_kball_gaps_inline
 
 
 def build_scatter_context(
@@ -86,9 +87,6 @@ def solve_arm(arm: str, ctx: _ProbeDenoiserContext, n_keep: int):
     raise ValueError(f"unknown arm {arm!r}")
 
 
-from artifacts_scripts.kball_gap_probe import _greedy_kball_gaps_inline
-
-
 def kball_seeds_from_state(
     state: dict,
     radius_fraction: float = 0.75,
@@ -99,7 +97,7 @@ def kball_seeds_from_state(
 
     Mirrors the dicts gap_kball_llr_refine.load_kball_csv yields:
     gap_idx, gap_size, topic_id, article_indices (global article idx).
-    K-ball defaults: k=1, is_intra_cloud=False (standalone-validated).
+    K-ball defaults: k=1, no self-match +1 correction (article-querying-article space; matches the standalone-validated kball_gap_probe path).
     """
     emb = state["emb"]
     art_gidx = np.asarray(state["article_global_idx"])
