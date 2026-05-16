@@ -655,8 +655,11 @@ def main() -> None:
     if args.index_type == "flat":
         os.environ["BOOKGAP_EXACT_INDEX"] = "1"
     else:
-        # HNSW: best-effort determinism — single OMP thread reduces (but does
-        # not eliminate) build variance; results remain approximate.
+        # hnsw mode is the scale escape hatch and remains APPROXIMATE. Forcing 1
+        # OMP thread reduces (not eliminates) HNSW build variance, but ALSO
+        # serializes every downstream FAISS search/range_search for the whole
+        # process — a real throughput cost at subfield/domain scale. Accept it
+        # as the price of partial reproducibility; remove if speed > repro at scale.
         import faiss as _faiss
         _faiss.omp_set_num_threads(1)
 

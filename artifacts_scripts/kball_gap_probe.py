@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -246,14 +247,13 @@ def _apply_denoiser(
 def _build_topic_index(topic_emb: np.ndarray):
     """Build a FAISS index for topic_emb.  HNSW for n >= 100, FlatL2 otherwise.
 
-    If env BOOKGAP_EXACT_INDEX is truthy (e.g. "1"), always use exact
-    FlatL2 regardless of n — used by the denoiser bake-off for fully
+    If env BOOKGAP_EXACT_INDEX is set to "1", always use exact FlatL2
+    regardless of n — used by the denoiser bake-off for fully
     deterministic, approximation-free K-ball seeds. Default behavior
-    (env unset) is unchanged for all other callers.
+    (env unset or any value other than "1") is unchanged for all other callers.
     """
-    import os
     n = len(topic_emb)
-    if os.environ.get("BOOKGAP_EXACT_INDEX", "") not in ("", "0", "false", "False"):
+    if os.environ.get("BOOKGAP_EXACT_INDEX", "0") == "1":
         return build_index(FlatL2(), topic_emb)
     if n >= 100:
         return build_index(HNSW(hnsw_m=32, hnsw_efc=200, hnsw_efs=128), topic_emb)

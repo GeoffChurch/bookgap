@@ -210,6 +210,10 @@ def test_end_to_end_scorecard_shape(tmp_path, monkeypatch):
     Expected shape: 1 topic x (Phase-0: 4 cells + Phase-1: 7 arms incl. none)
     = 11 rows.
     """
+    # Snapshot BOOKGAP_EXACT_INDEX before bk.main() sets it, so monkeypatch
+    # teardown restores the original (unset) state even though main() writes it.
+    monkeypatch.delenv("BOOKGAP_EXACT_INDEX", raising=False)
+
     import numpy as np
     import artifacts_scripts.gap_denoiser_bakeoff as bk
 
