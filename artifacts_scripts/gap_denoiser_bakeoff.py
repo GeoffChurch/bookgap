@@ -424,20 +424,16 @@ def scorecard_row(*, phase, topic, cell_or_arm, self_loops, row_normalize,
                   titles_by_global_idx=None):
     """Compute one scorecard row dict from a list of survivor gap dicts.
 
-    Key reconciliation note (2026-05-15): ``compute_gap_stats`` currently
-    emits only ``effective_size`` (overall), with NO separate
-    ``effective_size_books``, ``effective_size_chapters``, or
-    ``books_below_rate_pval`` keys.  Those are planned dual-landmark keys
-    (spec §4, backlog/cohesion-metric-design/dual-landmark-eff-size-
-    reporting.md) but not yet wired in.  This function uses ``.get()``
-    with safe defaults for all three missing keys so it works today AND
-    will pick up the real values once dual-landmark is implemented:
+    Key reconciliation note (2026-05-15, updated): ``run_refine_pipeline``
+    now emits all three dual-landmark keys per gap dict — ``effective_size_books``,
+    ``effective_size_chapters``, and ``books_below_rate_pval`` — so the
+    four-corner cross-tab is fully populated for dual-landmark callers.
+    The ``.get()`` defaults below remain as defensive no-ops for non-dual
+    callers (e.g. plain ``compute_gap_stats``) that do not produce the
+    split keys:
       - ``effective_size_books``  → falls back to ``effective_size``
       - ``effective_size_chapters`` → falls back to ``0.0``
       - ``books_below_rate_pval``  → falls back to ``1.0`` (not significant)
-    The four-corner cross-tab therefore collapses to a single column
-    (all gaps book-dim=effective_size, chapter-dim=0) until the real keys
-    arrive; this is intentional and explicitly documented here.
     """
     ranked = sorted(survivors,
                     key=lambda g: g.get("effective_size", 0.0),
