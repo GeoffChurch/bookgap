@@ -199,6 +199,106 @@ def test_phase0_winner_is_deterministic():
     assert winner == (True, True)
 
 
+def test_end_to_end_scorecard_shape(tmp_path, monkeypatch):
+    """Driver emits the right scorecard shape on a stubbed scope.
+
+    Stubs load_scope + setup + run_refine_pipeline + kball_seeds_from_state
+    so the test stays unit-speed.  All four heavy/IO boundaries are stubbed;
+    build_scatter_context, solve_arm, scorecard_row, and write_scorecard run
+    for real so the wiring is exercised.
+
+    Expected shape: 1 topic x (Phase-0: 4 cells + Phase-1: 6 arms incl. none)
+    = 10 rows.
+    """
+    import numpy as np
+    import artifacts_scripts.gap_denoiser_bakeoff as bk
+
+    rs = np.random.RandomState(7)
+    N, D = 300, 12
+    emb = rs.randn(N, D).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    ids = [f"W{i}" for i in range(N)]
+    refs = [[f"W{(i + 3) % N}"] for i in range(N)]
+    types = (["article"] * 260) + (["book"] * 40)
+    titles = [f"title {i % 7} extra" for i in range(N)]
+
+    def fake_load_scope(scope, with_refs=False):
+        return emb, ids, types, titles, ["T_SYN"] * N, refs
+
+    # load_scope is imported lazily inside main() via
+    # "from artifacts_scripts.hdbscan_gap_probe import load_scope"
+    # so we must patch the source attribute, not bk.load_scope.
+    monkeypatch.setattr(
+        "artifacts_scripts.hdbscan_gap_probe.load_scope",
+        fake_load_scope, raising=True)
+
+    def fake_setup(scope, **kw):
+        e = emb.copy()
+        proj = kw.get("projection")
+        if proj is not None:
+            e = ((e - e.mean(0)) @ proj).astype(np.float32)
+        norms = np.linalg.norm(e, axis=1, keepdims=True)
+        e = e / np.where(norms > 0, norms, 1.0)
+        return {
+            "emb": e,
+            "article_global_idx": np.arange(0, 260),
+            "book_global_idx": np.arange(260, 300),
+            "sigma": np.full(N, 0.5, dtype=np.float32),
+            "topic_id": "T_SYN",
+        }
+
+    # setup is imported lazily inside _run_one via
+    # "from artifacts_scripts.gap_static_seed_diagnostic import setup"
+    # so patch the source attribute.
+    monkeypatch.setattr(
+        "artifacts_scripts.gap_static_seed_diagnostic.setup",
+        fake_setup, raising=True)
+
+    def fake_refine(state, seeds, **kw):
+        """Two trivial survivors so all scorecard math runs."""
+        return [
+            {"effective_size": 50.0, "effective_size_books": 50.0,
+             "effective_size_chapters": 5.0,
+             "refined_member_indices": list(range(0, 30)),
+             "books_below_rate_pval": 1e-4},
+            {"effective_size": 20.0, "effective_size_books": 20.0,
+             "effective_size_chapters": 40.0,
+             "refined_member_indices": list(range(25, 45)),
+             "books_below_rate_pval": 5e-2},
+        ]
+
+    # run_refine_pipeline and kball_seeds_from_state are module-level in bk,
+    # so bk.<name> patching works (driver calls them as globals).
+    monkeypatch.setattr(bk, "run_refine_pipeline", fake_refine)
+    monkeypatch.setattr(bk, "kball_seeds_from_state",
+                        lambda *a, **k: [{"gap_idx": 0, "gap_size": 30,
+                                          "topic_id": "T_SYN",
+                                          "article_indices": list(range(30))}])
+
+    out = tmp_path / "bk"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["prog", "--scopes", "T_SYN", "--n-keep", "6",
+         "--out", str(out)])
+    bk.main()
+
+    import csv
+    with open(out / "scorecard.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    # 1 topic: Phase-0 = 4 cells (all with arm=lip), Phase-1 = 6 arms
+    # (none + pca + lip + cclip_auto + cclip_norm_0.5 + cclip_norm_0) = 10 rows
+    assert len(rows) == 10, (
+        f"Expected 10 rows, got {len(rows)}; phases={[r['phase'] for r in rows]}")
+    assert {r["phase"] for r in rows} == {"p0", "p1"}, (
+        f"Expected both phases; got {sorted({r['phase'] for r in rows})}")
+    for r in rows:
+        for col in ("sig_count_p1e3", "top25_jaccard_vs_ref"):
+            assert r[col] not in ("", "nan"), (
+                f"Row phase={r['phase']} arm={r['cell_or_arm']} "
+                f"has empty/nan {col}={r[col]!r}")
+
+
 def test_main_guard_is_last_toplevel_statement():
     """The `if __name__ == '__main__'` guard must follow every top-level
     def, else `python -m` NameErrors on functions defined after it."""
