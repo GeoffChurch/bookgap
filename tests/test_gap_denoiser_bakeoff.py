@@ -100,3 +100,41 @@ def test_kball_seeds_change_under_projection(monkeypatch):
     for s in seeds_raw:
         assert set(s) >= {"gap_idx", "gap_size", "topic_id",
                           "article_indices"}
+
+
+def test_scorecard_metrics_basic():
+    import numpy as np
+    from artifacts_scripts.gap_denoiser_bakeoff import scorecard_row
+
+    # Synthetic survivor dicts using real compute_gap_stats key "effective_size"
+    # plus the dual-landmark keys (effective_size_books, effective_size_chapters,
+    # books_below_rate_pval) that are planned but not yet emitted by
+    # compute_gap_stats.  scorecard_row uses .get() with safe defaults for
+    # those three keys so it works both now (missing keys) and after dual-
+    # landmark is wired in (present keys).  The test exercises the forward-
+    # compatible path by supplying the keys explicitly.
+    survivors = [
+        {"effective_size": 120.0, "effective_size_books": 120.0,
+         "effective_size_chapters": 5.0,
+         "refined_member_indices": list(range(0, 60)),
+         "books_below_rate_pval": 1e-5},
+        {"effective_size": 40.0, "effective_size_books": 40.0,
+         "effective_size_chapters": 80.0,
+         "refined_member_indices": list(range(50, 90)),
+         "books_below_rate_pval": 1e-2},
+    ]
+    ref_top = [set(range(0, 60)), set(range(200, 260))]
+    row = scorecard_row(
+        phase="p1", topic="T_SYN", cell_or_arm="lip",
+        self_loops=True, row_normalize=True, n_keep=8,
+        alpha_used=float("nan"), survivors=survivors,
+        ref_top_member_sets=ref_top, runtime_s=12.3,
+        eff_low_high_split=50.0,
+    )
+    assert row["phase"] == "p1"
+    assert row["sig_count_p1e3"] == 1
+    assert 0.0 <= row["top25_jaccard_vs_ref"] <= 1.0
+    fc = (row["fourcorner_bb"] + row["fourcorner_bC"]
+          + row["fourcorner_Bc"] + row["fourcorner_BC"])
+    assert fc == 2
+    assert "runtime_s" in row

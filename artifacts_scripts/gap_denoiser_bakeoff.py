@@ -6,6 +6,9 @@ See docs/superpowers/specs/2026-05-15-denoiser-bakeoff-llr-design.md.
 """
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
 import numpy as np
 from bookgap.index import build_index, FlatL2
 
@@ -301,3 +304,124 @@ def run_refine_pipeline(
 
     # Return only survivors (dedup marks all gaps; filter to survivor==1).
     return [g for g in refined if g["survivor"] == 1]
+
+
+# ---------------------------------------------------------------------------
+# Scorecard metrics + CSV writer
+# ---------------------------------------------------------------------------
+
+SCORECARD_FIELDS = [
+    "phase", "topic", "cell_or_arm", "self_loops", "row_normalize",
+    "n_keep", "alpha_used", "sig_count_p1e3", "top10_artifact_leaks",
+    "top25_jaccard_vs_ref", "fourcorner_bb", "fourcorner_bC",
+    "fourcorner_Bc", "fourcorner_BC", "runtime_s",
+]
+
+
+def _mean_jaccard_top(a_sets, b_sets, top_n=25):
+    """Mean best-match Jaccard of top-N gaps in a against top-N in b."""
+    a = a_sets[:top_n]
+    b = b_sets[:top_n]
+    if not a or not b:
+        return 0.0
+    out = []
+    for sa in a:
+        best = 0.0
+        for sb in b:
+            u = len(sa | sb)
+            best = max(best, (len(sa & sb) / u) if u else 0.0)
+        out.append(best)
+    return float(np.mean(out)) if out else 0.0
+
+
+def _title_homogeneity_leak(members, titles_by_global_idx):
+    """Approximate artifact screen: shared 3-token title prefix fraction.
+
+    Flagged if >60% of members share the same first-3-token title
+    prefix (templated dataset/language artifacts). Approximate by
+    design; a screening signal, not ground truth.
+    """
+    if titles_by_global_idx is None or not members:
+        return False
+    from collections import Counter
+    prefixes = []
+    for gi in members:
+        t = (titles_by_global_idx.get(gi) or "").lower().split()
+        prefixes.append(" ".join(t[:3]))
+    if not prefixes:
+        return False
+    top = Counter(prefixes).most_common(1)[0][1]
+    return (top / len(prefixes)) > 0.6
+
+
+def scorecard_row(*, phase, topic, cell_or_arm, self_loops, row_normalize,
+                  n_keep, alpha_used, survivors, ref_top_member_sets,
+                  runtime_s, eff_low_high_split,
+                  titles_by_global_idx=None):
+    """Compute one scorecard row dict from a list of survivor gap dicts.
+
+    Key reconciliation note (2026-05-15): ``compute_gap_stats`` currently
+    emits only ``effective_size`` (overall), with NO separate
+    ``effective_size_books``, ``effective_size_chapters``, or
+    ``books_below_rate_pval`` keys.  Those are planned dual-landmark keys
+    (spec §4, backlog/cohesion-metric-design/dual-landmark-eff-size-
+    reporting.md) but not yet wired in.  This function uses ``.get()``
+    with safe defaults for all three missing keys so it works today AND
+    will pick up the real values once dual-landmark is implemented:
+      - ``effective_size_books``  → falls back to ``effective_size``
+      - ``effective_size_chapters`` → falls back to ``0.0``
+      - ``books_below_rate_pval``  → falls back to ``1.0`` (not significant)
+    The four-corner cross-tab therefore collapses to a single column
+    (all gaps book-dim=effective_size, chapter-dim=0) until the real keys
+    arrive; this is intentional and explicitly documented here.
+    """
+    ranked = sorted(survivors,
+                    key=lambda g: g.get("effective_size", 0.0),
+                    reverse=True)
+    top10 = ranked[:10]
+    sig = sum(1 for g in survivors
+              if g.get("books_below_rate_pval", 1.0) < 1e-3)
+    leaks = sum(1 for g in top10
+                if _title_homogeneity_leak(
+                    g.get("refined_member_indices", []),
+                    titles_by_global_idx))
+    this_top = [set(g.get("refined_member_indices", []))
+                for g in ranked[:25]]
+    jacc = _mean_jaccard_top(this_top, ref_top_member_sets, 25)
+
+    # Dual-landmark four-corner.  Falls back gracefully when book/chapter
+    # split keys are absent (effective_size_books → effective_size,
+    # effective_size_chapters → 0.0) until dual-landmark is wired in.
+    fc = {"bb": 0, "bC": 0, "Bc": 0, "BC": 0}
+    s = eff_low_high_split
+    for g in survivors:
+        b_hi = g.get("effective_size_books",
+                     g.get("effective_size", 0.0)) >= s
+        c_hi = g.get("effective_size_chapters", 0.0) >= s
+        key = ("B" if b_hi else "b") + ("C" if c_hi else "c")
+        fc[key] += 1
+
+    return {
+        "phase": phase, "topic": topic, "cell_or_arm": cell_or_arm,
+        "self_loops": self_loops, "row_normalize": row_normalize,
+        "n_keep": n_keep, "alpha_used": alpha_used,
+        "sig_count_p1e3": sig, "top10_artifact_leaks": leaks,
+        "top25_jaccard_vs_ref": round(jacc, 4),
+        "fourcorner_bb": fc["bb"], "fourcorner_bC": fc["bC"],
+        "fourcorner_Bc": fc["Bc"], "fourcorner_BC": fc["BC"],
+        "runtime_s": round(runtime_s, 1),
+    }
+
+
+def write_scorecard(rows: list[dict], out_path: Path) -> None:
+    """Write scorecard rows to a CSV at ``out_path``, always writing header.
+
+    Creates parent directories as needed.  Handles an empty ``rows`` list
+    correctly — the header is always written.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SCORECARD_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
