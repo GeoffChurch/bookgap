@@ -588,7 +588,8 @@ def main() -> None:
     """
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scopes", required=True,
-                   help="comma-separated, e.g. T11303,T10181,T10462")
+                   help="comma-separated F/SF/T scope keys, "
+                        "e.g. 17/1702/T11303,17/1702/T10181,17/1702/T10462")
     p.add_argument("--arms", default=",".join(ARMS))
     p.add_argument("--n-keep", type=int, default=370)
     p.add_argument("--out", type=Path, required=True)
