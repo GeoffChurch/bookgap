@@ -654,14 +654,14 @@ def main() -> None:
     # _build_topic_index (called inside kball_seeds_from_state) honours it.
     if args.index_type == "flat":
         os.environ["BOOKGAP_EXACT_INDEX"] = "1"
-    else:
-        # hnsw mode is the scale escape hatch and remains APPROXIMATE. Forcing 1
-        # OMP thread reduces (not eliminates) HNSW build variance, but ALSO
-        # serializes every downstream FAISS search/range_search for the whole
-        # process — a real throughput cost at subfield/domain scale. Accept it
-        # as the price of partial reproducibility; remove if speed > repro at scale.
-        import faiss as _faiss
-        _faiss.omp_set_num_threads(1)
+    # hnsw path intentionally leaves FAISS OMP at its multi-threaded
+    # default. Forcing 1 thread serialized ALL downstream FAISS search
+    # process-wide (~14x slowdown — as slow as exact FlatL2, defeating
+    # the point of hnsw). With the fixed _build_topic_index params
+    # (efc=512, efs=2000) recall is high enough that runs are materially
+    # stable run-to-run WITHOUT single-thread construction; bit-level
+    # thread determinism is explicitly not a requirement here. Use
+    # --index-type flat for the exact ground-truth confirmation.
 
     from artifacts_scripts.hdbscan_gap_probe import load_scope
 
