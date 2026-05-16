@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -293,16 +294,21 @@ def _greedy_kball_gaps_inline(
     radius_fraction: float,
     k: int,
     num_gaps: int,
-) -> List[Tuple[int, int]]:
+    min_gap_size: int = 0,
+) -> List[Tuple[int, int, np.ndarray]]:
     """Greedy gap-finding on articles mirroring ``KballAlgorithm.kball_gaps``.
 
-    Returns a list of (gap_idx, gap_size) tuples, at most ``num_gaps`` long.
+    Returns a list of (gap_idx, gap_size, member_ids) tuples, at most
+    ``num_gaps`` long. ``member_ids`` is the ``article_emb``-local index
+    array of articles in the gap (the seed itself is included).
 
     Algorithm (near-copy of kball_algorithm.py:46-73):
     1. For each article, compute k-ball coverage = articles within
        radius_fraction * dist_to_kth_book.  is_intra_cloud=False so no +1.
     2. Greedy: pick highest-coverage article → yield gap; prune its
        article ids from every other article's coverage set; repeat.
+    3. Stop once the largest remaining ball has size < ``min_gap_size``
+       (skip the cutoff with ``min_gap_size <= 0``).
     """
     book_index = _build_topic_index(book_emb)
     article_index = _build_topic_index(article_emb)
@@ -330,7 +336,7 @@ def _greedy_kball_gaps_inline(
         for c in coverage
     ]
 
-    gaps: List[Tuple[int, int]] = []
+    gaps: List[Tuple[int, int, np.ndarray]] = []
     for gap_idx in range(num_gaps):
         if not any(len(ids) > 0 for _dists, ids in covered):
             break
@@ -339,7 +345,9 @@ def _greedy_kball_gaps_inline(
         if len(best_ids) == 0:
             break
         gap_size = int(len(best_ids))
-        gaps.append((gap_idx, gap_size))
+        if min_gap_size > 0 and gap_size < min_gap_size:
+            break
+        gaps.append((gap_idx, gap_size, best_ids.copy()))
         # Prune the gap's article ids from all coverages
         pruned_set = set(best_ids.tolist())
         for i, (d, ids) in enumerate(covered):
@@ -360,6 +368,9 @@ def run_with_denoiser(
     drop_k_graph: int = 2,
     algorithm: str = "kball",
     snapshot_date: str = "2025-11-06",
+    min_gap_size: int = 0,
+    article_types: tuple[str, ...] = ("article",),
+    book_types: tuple[str, ...] = ("book",),
 ) -> None:
     """K-ball gap probe with scope-restricted denoising (bypass path).
 
@@ -420,8 +431,13 @@ def run_with_denoiser(
 
     topic_ids_arr = np.array(topic_ids)
     types_arr = np.array(types)
-    is_book_arr = types_arr == "book"
-    is_article_arr = types_arr == "article"
+    is_book_arr = np.isin(types_arr, np.asarray(book_types))
+    is_article_arr = np.isin(types_arr, np.asarray(article_types))
+    print(
+        f"  work-type partition: is_article={int(is_article_arr.sum())} "
+        f"(types={list(article_types)}), is_book={int(is_book_arr.sum())} "
+        f"(types={list(book_types)}), other={int((~is_book_arr & ~is_article_arr).sum())}"
+    )
 
     unique_topics = sorted(set(topic_ids))
     print(f"Topics in scope: {len(unique_topics)}")
@@ -442,6 +458,10 @@ def run_with_denoiser(
 
         book_emb = emb[book_mask].astype(np.float32, copy=False)
         article_emb = emb[article_mask].astype(np.float32, copy=False)
+        # Map from article_emb-local index → scope-global (load_scope) index.
+        # Used to record gap membership in the same indexing as the
+        # max-bookless extractor, so set-overlap analyses are direct.
+        article_local_to_scope = np.where(article_mask)[0]
 
         topic_name: str = topic
         if pinned_tax is not None:
@@ -479,6 +499,7 @@ def run_with_denoiser(
             radius_fraction=radius_fraction,
             k=k,
             num_gaps=num_gaps,
+            min_gap_size=min_gap_size,
         )
 
         if not gaps:
@@ -486,12 +507,13 @@ def run_with_denoiser(
             continue
 
         total_gaps += len(gaps)
-        for gap_idx, gap_size in gaps:
+        for gap_idx, gap_size, member_local_ids in gaps:
             pct, z, shapiro = compute_gap_statistics(gap_size, book_gap_sizes)
             print(f"  Gap {gap_idx}: size={gap_size}, "
                   f"pctile={pct:.3f}, "
                   f"z={z:.2f}, "
                   f"shapiro_log10p={shapiro:.2f}")
+            scope_ids = [int(article_local_to_scope[j]) for j in member_local_ids]
             csv_rows.append({
                 "scope": scope,
                 "algorithm": algorithm,
@@ -507,6 +529,7 @@ def run_with_denoiser(
                 "gap_size_percentile": float(pct),
                 "gap_zscore": float(z),
                 "shapiro_log10_pval": float(shapiro),
+                "article_indices_json": json.dumps(scope_ids),
             })
 
     print(f"\n=== Total gaps: {total_gaps} across {len(unique_topics)} topic(s) ===")
@@ -514,13 +537,23 @@ def run_with_denoiser(
     csv_dir = Path("artifacts/kball_gap_probe")
     csv_dir.mkdir(parents=True, exist_ok=True)
     safe_scope = scope.replace("/", "-")
-    csv_path = csv_dir / f"{safe_scope}__{denoiser}__drop{drop_k}.csv"
+    # Include work-type suffix only when non-default, to avoid breaking
+    # existing book-only paths.
+    if article_types == ("article",) and book_types == ("book",):
+        wt_suffix = ""
+    else:
+        wt_suffix = (
+            "__a-" + "+".join(article_types).replace("-", "")
+            + "__b-" + "+".join(book_types).replace("-", "")
+        )
+    csv_path = csv_dir / f"{safe_scope}__{denoiser}__drop{drop_k}{wt_suffix}.csv"
     fieldnames = [
         "scope", "algorithm", "denoiser", "drop_k", "class_axis",
         "radius_fraction", "num_gaps_per_topic",
         "topic_id", "topic_name",
         "gap_idx", "gap_size",
         "gap_size_percentile", "gap_zscore", "shapiro_log10_pval",
+        "article_indices_json",
     ]
     with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -657,7 +690,26 @@ def main():
         "--drop-k-graph", type=int, default=2,
         help="Laplacian-step drop_k for hierarchical/criteria_union",
     )
+    parser.add_argument(
+        "--min-gap-size", type=int, default=0,
+        help="Stop greedy K-ball once the largest remaining ball is smaller "
+             "than this. 0 disables the cutoff (default).",
+    )
+    parser.add_argument(
+        "--article-types", default="article",
+        help="Comma-separated work types treated as ambient/query set "
+             "(default: article). Example: 'article,preprint'.",
+    )
+    parser.add_argument(
+        "--book-types", default="book",
+        help="Comma-separated work types treated as landmark set "
+             "(default: book). Example: 'book,book-chapter' or "
+             "'book-chapter' to use only chapters.",
+    )
     args = parser.parse_args()
+
+    article_types = tuple(t.strip() for t in args.article_types.split(",") if t.strip())
+    book_types = tuple(t.strip() for t in args.book_types.split(",") if t.strip())
 
     if args.denoiser == "none":
         _run_cloud_path(args)
@@ -673,6 +725,9 @@ def main():
             drop_k_graph=args.drop_k_graph,
             algorithm=args.algorithm,
             snapshot_date=args.snapshot_date,
+            min_gap_size=args.min_gap_size,
+            article_types=article_types,
+            book_types=book_types,
         )
 
 

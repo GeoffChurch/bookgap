@@ -178,6 +178,7 @@ def compute_local_csls_posterior(
     book_to_arts: dict[int, np.ndarray],
     n_total: int,
     fuzzy_gap_membership: np.ndarray,
+    aggregate_member_indices: np.ndarray | None = None,
 ) -> np.ndarray:
     """Local-CSLS-balanced per-member posterior with fuzzy gap membership.
 
@@ -223,8 +224,17 @@ def compute_local_csls_posterior(
       memberships in THIS gap (in [0, 1]). Typically the gap's column
       of a joint-normalized centroid-kernel-weight matrix; can also be
       a boolean indicator for single-gap inspection.
+    aggregate_member_indices: when provided, ``D_NN``/``I_NN`` rows
+      correspond to a SUBSET of ``members`` (specifically the members at
+      these indices). ``in_G_hard`` and the CSLS background are still
+      built from the FULL ``members`` / ``nearest_book_per_member``, so
+      a partial aggregation gets the same background context as a full
+      one — only the per-member aggregation loop is restricted. Used by
+      ``compute_gap_stats`` for member subsampling on large gaps.
 
-    Returns posts: (n_members,) array of per-member posteriors in [0, 1].
+    Returns posts: per-member posteriors in [0, 1]. Shape matches
+    D_NN.shape[0] — i.e., ``len(aggregate_member_indices)`` when subset
+    aggregation is in use, otherwise ``len(members)``.
     """
     from collections import Counter
     members_arr = np.asarray(members, dtype=np.int64)
@@ -232,7 +242,9 @@ def compute_local_csls_posterior(
     in_G_hard = np.zeros(n_total, dtype=bool)
     in_G_hard[members_arr] = True
 
-    # Count books claimed by gap members (drives the CSLS-balanced background)
+    # Count books claimed by gap members (drives the CSLS-balanced background).
+    # Always uses the FULL nearest_book_per_member so the background sizing
+    # reflects the full gap context, even when aggregating over a subset.
     book_counts: Counter = Counter()
     for b in nearest_book_per_member:
         book_counts[int(b)] += 1
@@ -253,11 +265,17 @@ def compute_local_csls_posterior(
                 in_B[a_int] = True
                 taken += 1
 
+    # Which members do D_NN / I_NN rows correspond to?
+    if aggregate_member_indices is None:
+        seed_members = members_arr
+    else:
+        seed_members = members_arr[np.asarray(aggregate_member_indices, dtype=np.int64)]
+
     # Per-member kernel weights from i to its top-K neighbors
-    sigma_seed = sigma[members_arr][:, None]
+    sigma_seed = sigma[seed_members][:, None]
     sigma_n = sigma[I_NN]
     W = np.exp(-D_NN / (sigma_seed * sigma_n))
-    self_mask = I_NN == members_arr[:, None]
+    self_mask = I_NN == seed_members[:, None]
     mu_at_neighbors = fuzzy_gap_membership[I_NN]
     # Fuzzy K_G: weight each neighbor by μ_G(j) and zero out self-contributions.
     K_G = (W * mu_at_neighbors * (~self_mask)).sum(axis=1)
@@ -279,12 +297,23 @@ def compute_gap_stats(
     fuzzy_gap_membership: np.ndarray,
     k_query: int = K_QUERY,
     k_per_book: int = K_QUERY,
+    member_subsample_size: int | None = None,
+    rng_seed: int | None = None,
 ) -> dict:
     """Compute per-gap stats from the local-CSLS-balanced posterior.
 
     Per cohesion_design_axes.md axis H, K_G is fuzzy (weighted by
     ``fuzzy_gap_membership``) while K_B is hard (the bounding-object
     semantics don't admit fuzzification). See compute_local_csls_posterior.
+
+    When ``member_subsample_size`` is set and the gap has more members
+    than that, a uniform random subset of that many members is used for
+    the expensive per-member HNSW query + posterior aggregation. The CSLS
+    background is still built from ALL members' nearest books, so the
+    sampled members get the same context they would in a full pass —
+    only the aggregation domain shrinks. ``median_logit`` and
+    ``min_logit`` are subsample-unbiased; ``logit_sum`` and
+    ``effective_size`` are subsample-scaled (not extrapolated).
 
     Returns dict with: logit_sum, mean_logit, median_logit, min_logit,
     effective_size, min_post, mean_post.
@@ -297,20 +326,18 @@ def compute_gap_stats(
     if len(members) < 2:
         return {
             "logit_sum": 0.0, "mean_logit": 0.0,
+            "median_logit": 0.0, "min_logit": 0.0,
             "effective_size": 0.0,
             "min_post": 0.0, "mean_post": 0.0,
         }
 
-    member_emb = np.ascontiguousarray(emb[members])
-    D_NN, I_NN_full = full_index.search(member_emb, k=k_query + 1)
-    D_NN = D_NN[:, 1:]
-    I_NN_full = I_NN_full[:, 1:]
-
-    # Find 1-NN book per member
-    _, I_book = book_index.search(member_emb, k=1)
+    # Always use ALL members to build the CSLS background — subsampling only
+    # changes which members get per-member kNN + posterior aggregation, not
+    # the background sizing.
+    all_member_emb = np.ascontiguousarray(emb[members])
+    _, I_book = book_index.search(all_member_emb, k=1)
     nearest_book = book_global_idx[I_book[:, 0]]
 
-    # Build book -> nearby-articles lookup for unique books only
     unique_books = np.unique(nearest_book)
     if len(unique_books) > 0:
         book_emb_q = np.ascontiguousarray(emb[unique_books])
@@ -322,6 +349,24 @@ def compute_gap_stats(
     else:
         book_to_arts = {}
 
+    # Decide which members to aggregate over
+    if member_subsample_size is not None and len(members) > member_subsample_size:
+        rng = np.random.default_rng(rng_seed if rng_seed is not None else 0)
+        agg_indices = np.sort(
+            rng.choice(len(members), member_subsample_size, replace=False),
+        )
+    else:
+        agg_indices = None
+
+    if agg_indices is None:
+        agg_member_emb = all_member_emb
+    else:
+        agg_member_emb = np.ascontiguousarray(emb[members[agg_indices]])
+
+    D_NN, I_NN_full = full_index.search(agg_member_emb, k=k_query + 1)
+    D_NN = D_NN[:, 1:]
+    I_NN_full = I_NN_full[:, 1:]
+
     n_total = sigma.shape[0]
     posts = compute_local_csls_posterior(
         members=list(map(int, members)),
@@ -332,6 +377,7 @@ def compute_gap_stats(
         book_to_arts=book_to_arts,
         n_total=n_total,
         fuzzy_gap_membership=fuzzy_gap_membership,
+        aggregate_member_indices=agg_indices,
     )
 
     # Clipped logits for size-extensive statistics (logit_sum / mean_logit).
@@ -733,6 +779,371 @@ def _compute_corpus_null_stein(
     return null_log_mean, info
 
 
+def _compute_corpus_null_stein_stratified(
+    state: dict,
+    n_bins: int = 10,
+    target_rel_se: float = 0.005,
+    m_pilot_per_bin: int = 200,
+    m_min_per_bin: int = 200,
+    rng_seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """σ-stratified Stein two-stage null: condition on local density bin.
+
+    Each article has σ_i = distance to its k_sigma-th NN; small σ = dense
+    local neighborhood, large σ = sparse. Binning σ into deciles (or
+    n_bins quantile bins) gives a "local density" stratification. We then
+    run Stein's two-stage adaptive sampling separately inside each bin to
+    estimate ``null_log_mean[k, b] = E[log mass(i, k) | σ_i ∈ bin b]``.
+
+    For a gap at phase 1, the appropriate null is the conditional
+    expectation given the gap's σ distribution — either via a single-bin
+    lookup using the gap's mean σ (``"bin"`` mode in ``_null_for_gap``)
+    or via a σ-histogram weighted average (``"dist"`` mode), with the
+    latter being a strict refinement of the former.
+
+    Returns ``(null_strat, bin_edges, info)`` where:
+      - ``null_strat`` is ``(len(K_GRID), n_bins)``
+      - ``bin_edges`` is ``(n_bins + 1,)`` σ quantile edges
+        (``bin_edges[0]`` = min σ, ``bin_edges[-1]`` = max σ).
+      - ``info`` has per-bin diagnostics.
+    """
+    art_idx = state["article_global_idx"]
+    sigma_full = state["sigma"]
+    sigma_arts = sigma_full[art_idx]
+    n_articles = len(art_idx)
+    rng = np.random.default_rng(rng_seed)
+
+    # Quantile bin edges over articles' σ
+    quantiles = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_edges = np.quantile(sigma_arts, quantiles)
+    # Assign each article to a bin in [0, n_bins-1]
+    # interior edges = bin_edges[1:-1] (length n_bins-1)
+    bins_per_article = np.digitize(sigma_arts, bin_edges[1:-1], right=False)
+
+    null_strat = np.zeros((len(K_GRID), n_bins), dtype=np.float64)
+    info_per_bin: dict[int, dict] = {}
+
+    for b in range(n_bins):
+        in_bin_local = np.flatnonzero(bins_per_article == b)
+        n_in_bin = len(in_bin_local)
+        if n_in_bin < 2:
+            print(f"  bin {b}: only {n_in_bin} articles — skipping "
+                  f"(falling back to global mean)", flush=True)
+            info_per_bin[b] = {"n_in_bin": n_in_bin, "m_used": 0,
+                               "sigma_lo": float(bin_edges[b]),
+                               "sigma_hi": float(bin_edges[b + 1])}
+            continue
+
+        # Pilot
+        m_pilot_actual = min(m_pilot_per_bin, n_in_bin)
+        pilot_local = rng.choice(in_bin_local, size=m_pilot_actual, replace=False)
+        pilot_seeds = art_idx[pilot_local]
+        M_pilot = kernel_mass_matrix(
+            D_art_NN=state["D_art_NN_all"][pilot_seeds],
+            I_art_NN_global=state["I_art_NN_all_global"][pilot_seeds],
+            sigma=sigma_full,
+            k_grid=K_GRID,
+            seed_global_idx=pilot_seeds,
+        )
+        log_M_pilot = np.log(np.maximum(M_pilot, 1e-30))
+        pilot_sigma = log_M_pilot.std(axis=0, ddof=1)
+        pilot_mean = log_M_pilot.mean(axis=0)
+
+        # Stein step
+        abs_target_se = target_rel_se * np.maximum(np.abs(pilot_mean), 1e-30)
+        m_needed_per_k = (pilot_sigma / abs_target_se) ** 2
+        m_needed = int(np.ceil(m_needed_per_k.max()))
+        m_used = max(m_min_per_bin, min(m_needed, n_in_bin))
+
+        # Final pass — extend pilot if needed
+        if m_used <= m_pilot_actual:
+            full_local = pilot_local[:m_used]
+        else:
+            remaining = np.setdiff1d(in_bin_local, pilot_local)
+            take_extra = min(m_used - m_pilot_actual, len(remaining))
+            extra = rng.choice(remaining, size=take_extra, replace=False)
+            full_local = np.concatenate([pilot_local, extra])
+        full_seeds = art_idx[full_local]
+        M_full = kernel_mass_matrix(
+            D_art_NN=state["D_art_NN_all"][full_seeds],
+            I_art_NN_global=state["I_art_NN_all_global"][full_seeds],
+            sigma=sigma_full,
+            k_grid=K_GRID,
+            seed_global_idx=full_seeds,
+        )
+        null_strat[:, b] = np.log(np.maximum(M_full, 1e-30)).mean(axis=0)
+        info_per_bin[b] = {
+            "n_in_bin": n_in_bin,
+            "m_used": int(len(full_seeds)),
+            "m_needed": m_needed,
+            "sigma_lo": float(bin_edges[b]),
+            "sigma_hi": float(bin_edges[b + 1]),
+        }
+        print(f"  bin {b}: n={n_in_bin}, m_used={len(full_seeds)}, "
+              f"σ∈[{bin_edges[b]:.3f}, {bin_edges[b + 1]:.3f}], "
+              f"null[k=80]={null_strat[3, b]:.3f}",
+              flush=True)
+
+    # Fill missing bins with the closest populated bin's nulls
+    populated = [b for b in range(n_bins) if info_per_bin[b]["m_used"] > 0]
+    for b in range(n_bins):
+        if info_per_bin[b]["m_used"] == 0:
+            nearest = min(populated, key=lambda x: abs(x - b))
+            null_strat[:, b] = null_strat[:, nearest]
+
+    info = {
+        "method": "stein_stratified",
+        "n_bins": n_bins,
+        "bin_edges": bin_edges.tolist(),
+        "per_bin": info_per_bin,
+    }
+    return null_strat, bin_edges, info
+
+
+def _null_for_gap(
+    member_indices: list[int],
+    sigma: np.ndarray,
+    null_strat: np.ndarray,
+    bin_edges: np.ndarray,
+    mode: str = "bin",
+) -> np.ndarray:
+    """Per-gap null_log_mean of shape (len(K_GRID),).
+
+    ``mode="bin"``: look up by the gap's MEAN σ (single bin).
+    ``mode="dist"``: weight by the gap's σ histogram across bins (strict
+        refinement of "bin" — each member casts its own vote).
+    """
+    member_sigma = sigma[np.asarray(member_indices, dtype=np.int64)]
+    n_bins = null_strat.shape[1]
+    if mode == "bin":
+        mean_sigma = float(np.mean(member_sigma))
+        bin_id = int(np.digitize(mean_sigma, bin_edges[1:-1], right=False))
+        bin_id = max(0, min(bin_id, n_bins - 1))
+        return null_strat[:, bin_id]
+    if mode == "dist":
+        bin_ids = np.digitize(member_sigma, bin_edges[1:-1], right=False)
+        bin_ids = np.clip(bin_ids, 0, n_bins - 1)
+        weights = (np.bincount(bin_ids, minlength=n_bins)
+                   / len(member_sigma)).astype(np.float64)
+        return (null_strat * weights[None, :]).sum(axis=1)
+    raise ValueError(f"unknown null mode: {mode}")
+
+
+def _calibrate_stats_params(
+    refined_gaps: list[dict],
+    state: dict,
+    M_norm_csc,
+    book_index,
+    candidates_k: list[int],
+    candidates_m: list[int | None],
+    tolerance_delta: float,
+    tolerance_alpha: float,
+    pilot_size: int,
+    rng_seed: int = 42,
+) -> tuple[int, int | None, list[dict]]:
+    """Pilot-based joint calibration of (k_query_stats, member_subsample).
+
+    Strategy: pick ``pilot_size`` random gaps. For each, compute the full
+    top-``K_max`` per-member NN once at ``K_max = max(candidates_k)``,
+    along with the full CSLS background. Treat
+    ``(K=K_max, m=all)`` as ground truth for ``median_logit``. Then sweep
+    candidate (K', m') pairs in increasing cost; for each candidate,
+    truncate the cached top-K_max NN to top-K' and aggregate over a
+    random m'-subsample of members (or all if m' is None). Pick the
+    smallest (K', m') such that
+
+        P_{g ∈ pilot}(|median_logit(K', m') - median_logit(K_max, all)| > δ) ≤ α
+
+    Same statistical framing as the Stein two-stage we use for the
+    corpus null: pilot estimates the truncation/subsampling error
+    distribution, adoption is data-driven, no hand-tuned scale factors.
+
+    The clever bit is that once you have D_NN/I_NN at K_max for one gap,
+    every smaller K' truncation is array-slicing (no extra HNSW work),
+    and every m' subsample is a row-select on the same array. So the
+    pilot cost is dominated by the K_max baseline computation, not the
+    sweep — total ≈ ``pilot_size × HNSW(k* members, K_max)``.
+
+    Returns ``(k_query_chosen, m_chosen, sweep_table)`` where
+    ``sweep_table`` is a list of dicts describing the realized tolerance
+    distribution at each candidate, suitable for logging.
+    """
+    emb = state["emb"]
+    sigma = state["sigma"]
+    full_index = state["full_index"]
+    book_global_idx = state["book_global_idx"]
+    article_index = state["article_index"]
+    article_global_idx = state["article_global_idx"]
+    n_total = sigma.shape[0]
+
+    K_max = max(candidates_k)
+    # Sort candidates by ascending cost — prefer smaller m (linear cost in
+    # HNSW queries), then smaller K (cheaper post-processing).
+    pairs: list[tuple[int, int | None]] = []
+    for m_p in sorted(candidates_m, key=lambda x: float("inf") if x is None else x):
+        for K_p in sorted(candidates_k):
+            if K_p == K_max and (m_p is None):
+                continue  # this IS the baseline
+            pairs.append((K_p, m_p))
+
+    n_gaps = len(refined_gaps)
+    rng = np.random.default_rng(rng_seed)
+    # Stratify pilot by gap size so we cover small/medium/large/saturator
+    # rather than oversampling tiny gaps (which are abundant and uninformative).
+    sizes = np.array([len(g["refined_member_indices"]) for g in refined_gaps])
+    # Drop trivially small gaps (<2 members produce degenerate stats).
+    eligible = np.flatnonzero(sizes >= 2)
+    if len(eligible) <= pilot_size:
+        pilot_idxs = eligible.tolist()
+    else:
+        # Decile stratification on sizes
+        deciles = np.quantile(sizes[eligible], np.linspace(0, 1, 11))
+        per_decile = max(1, pilot_size // 10)
+        pilot_idxs: list[int] = []
+        for lo, hi in zip(deciles[:-1], deciles[1:]):
+            in_decile = eligible[(sizes[eligible] >= lo) & (sizes[eligible] <= hi)]
+            if len(in_decile) == 0:
+                continue
+            take = min(per_decile, len(in_decile))
+            pilot_idxs.extend(rng.choice(in_decile, take, replace=False).tolist())
+        # Fill to pilot_size with random eligible
+        remaining = pilot_size - len(pilot_idxs)
+        if remaining > 0:
+            extras = rng.choice(
+                np.setdiff1d(eligible, np.array(pilot_idxs)),
+                min(remaining, len(eligible) - len(pilot_idxs)),
+                replace=False,
+            )
+            pilot_idxs.extend(extras.tolist())
+    pilot_idxs = sorted(set(pilot_idxs))[:pilot_size]
+    print(f"[calibrate] pilot of {len(pilot_idxs)} gaps "
+          f"(size range {sizes[pilot_idxs].min()}–{sizes[pilot_idxs].max()}, "
+          f"median {int(np.median(sizes[pilot_idxs]))})",
+          flush=True)
+
+    # Phase A: compute baseline (K_max, m=all) per pilot gap + cache D_NN/I_NN
+    # and CSLS background so the sweep can reuse them without re-querying HNSW.
+    print(f"[calibrate] computing baseline at K={K_max}, m=all on pilot...",
+          flush=True)
+    pilot_cache: list[dict] = []
+    baselines: list[float] = []
+    for pi, g_idx in enumerate(pilot_idxs):
+        if (pi + 1) % 25 == 0:
+            print(f"  pilot baseline {pi + 1}/{len(pilot_idxs)}", flush=True)
+        g = refined_gaps[g_idx]
+        members = np.asarray(g["refined_member_indices"], dtype=np.int64)
+        mu_g = np.asarray(M_norm_csc[:, g_idx].todense()).flatten()
+
+        all_member_emb = np.ascontiguousarray(emb[members])
+        _, I_book = book_index.search(all_member_emb, k=1)
+        nearest_book = book_global_idx[I_book[:, 0]].astype(np.int64)
+        unique_books = np.unique(nearest_book)
+        if len(unique_books) > 0:
+            book_emb_q = np.ascontiguousarray(emb[unique_books])
+            _, I_bart_local = article_index.search(book_emb_q, k=K_max)
+            book_to_arts = {
+                int(b): article_global_idx[I_bart_local[r]]
+                for r, b in enumerate(unique_books)
+            }
+        else:
+            book_to_arts = {}
+
+        D_NN_max, I_NN_max = full_index.search(all_member_emb, k=K_max + 1)
+        D_NN_max = D_NN_max[:, 1:].astype(np.float32)
+        I_NN_max = I_NN_max[:, 1:].astype(np.int64)
+
+        posts_baseline = compute_local_csls_posterior(
+            members=list(map(int, members)),
+            D_NN=D_NN_max, I_NN=I_NN_max, sigma=sigma,
+            nearest_book_per_member=nearest_book,
+            book_to_arts=book_to_arts, n_total=n_total,
+            fuzzy_gap_membership=mu_g,
+        )
+        with np.errstate(divide="ignore"):
+            logits = np.log(posts_baseline) - np.log(
+                np.maximum(1 - posts_baseline, 1e-30),
+            )
+        baselines.append(float(np.median(logits)))
+        pilot_cache.append({
+            "members": members, "mu_g": mu_g,
+            "D_NN": D_NN_max, "I_NN": I_NN_max,
+            "nearest_book": nearest_book, "book_to_arts": book_to_arts,
+        })
+    baselines_arr = np.array(baselines)
+
+    # Phase B: sweep (K', m') candidates in ascending cost
+    print(f"[calibrate] sweeping {len(pairs)} (K', m') pairs "
+          f"(δ={tolerance_delta}, α={tolerance_alpha})...",
+          flush=True)
+    sweep: list[dict] = []
+    chosen: tuple[int, int | None] | None = None
+    for K_p, m_p in pairs:
+        deltas: list[float] = []
+        for pi, pc in enumerate(pilot_cache):
+            members = pc["members"]
+            mu_g = pc["mu_g"]
+            D_NN_full = pc["D_NN"]
+            I_NN_full = pc["I_NN"]
+            nearest_book = pc["nearest_book"]
+            book_to_arts = pc["book_to_arts"]
+            # Truncate to top-K' (array slice; no HNSW)
+            D_NN_p = D_NN_full[:, :K_p]
+            I_NN_p = I_NN_full[:, :K_p]
+            # Subsample members
+            if m_p is not None and len(members) > m_p:
+                rng_g = np.random.default_rng(
+                    rng_seed + 7919 * pilot_idxs[pi],
+                )
+                agg_idx = np.sort(rng_g.choice(len(members), m_p, replace=False))
+                D_NN_pa = D_NN_p[agg_idx]
+                I_NN_pa = I_NN_p[agg_idx]
+            else:
+                agg_idx = None
+                D_NN_pa = D_NN_p
+                I_NN_pa = I_NN_p
+            posts = compute_local_csls_posterior(
+                members=list(map(int, members)),
+                D_NN=D_NN_pa, I_NN=I_NN_pa, sigma=sigma,
+                nearest_book_per_member=nearest_book,
+                book_to_arts=book_to_arts, n_total=n_total,
+                fuzzy_gap_membership=mu_g,
+                aggregate_member_indices=agg_idx,
+            )
+            with np.errstate(divide="ignore"):
+                logits = np.log(posts) - np.log(
+                    np.maximum(1 - posts, 1e-30),
+                )
+            deltas.append(abs(float(np.median(logits)) - baselines_arr[pi]))
+        deltas_arr = np.array(deltas)
+        p_high = float(np.quantile(deltas_arr, 1 - tolerance_alpha))
+        passes = p_high <= tolerance_delta
+        sweep.append({
+            "k_query": K_p, "member_subsample": m_p,
+            "p_high_abs_delta": p_high,
+            "p_median_abs_delta": float(np.median(deltas_arr)),
+            "p_max_abs_delta": float(deltas_arr.max()),
+            "passes": passes,
+        })
+        print(f"  K={K_p:>4}  m={'all' if m_p is None else m_p:>4}  "
+              f"p{int((1 - tolerance_alpha) * 100)}|Δ|={p_high:.4f}  "
+              f"max|Δ|={deltas_arr.max():.3f}  "
+              f"{'PASS' if passes else 'fail'}", flush=True)
+        if passes and chosen is None:
+            chosen = (K_p, m_p)
+            # First pass in cost-ascending order is the adopted choice;
+            # keep sweeping to log the full table.
+
+    if chosen is None:
+        print(f"[calibrate] no candidate met tolerance; falling back to "
+              f"(K={K_max}, m=all)", flush=True)
+        chosen = (K_max, None)
+
+    print(f"[calibrate] CHOSEN: k_query_stats={chosen[0]}, "
+          f"member_subsample={'all' if chosen[1] is None else chosen[1]}",
+          flush=True)
+    return chosen[0], chosen[1], sweep
+
+
 def _write_refined_csv(out_path: Path, scope: str, gaps: list[dict]) -> None:
     """Write the refined CSV with the spec'd schema."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -860,6 +1271,21 @@ def main() -> None:
                         "(≤0.5%% relative noise on null_log_mean).")
     p.add_argument("--null-pilot-size", type=int, default=200,
                    help="Stein-only: pilot subsample size. Default 200.")
+    p.add_argument("--null-stratify",
+                   choices=["none", "bin", "dist"], default="dist",
+                   help="σ-stratified null baseline. 'dist' (default) "
+                        "weights each gap's null by the gap's σ histogram "
+                        "across bins — i.e. conditional on the gap's "
+                        "actual local density distribution. 'bin' is the "
+                        "single-bin reduction (uses the gap's mean σ to "
+                        "pick one bin). 'none' is the global Stein null "
+                        "(pre-stratification). Empirically dist rescues "
+                        "secret-saturator gaps in dense regions; runtime "
+                        "overhead is <2s. Only affects phase 1 (k* "
+                        "selection); phase 3 stats unchanged.")
+    p.add_argument("--null-stratify-bins", type=int, default=10,
+                   help="Number of σ quantile bins for --null-stratify={bin,dist}. "
+                        "Default 10 (deciles).")
     p.add_argument("--rank-by",
                    choices=["median_logit", "min_logit", "mean_logit", "logit_sum"],
                    default="median_logit",
@@ -878,19 +1304,85 @@ def main() -> None:
                         "'flat' is exact but O(N²). Empirically HNSW "
                         "M=32/efc=400/efs=max(K_QUERY,2000) gives recall "
                         "≥99% on test topics.")
+    p.add_argument("--k-query-stats", default="auto",
+                   help="Per-member top-K used by phase-3 stats. Integer "
+                        "sets it explicitly; 'auto' (default) runs the "
+                        "[calibrate] phase to pick it jointly with "
+                        "--member-subsample from a Stein-style pilot.")
+    p.add_argument("--member-subsample", default="auto",
+                   help="When a gap has more than this many refined members, "
+                        "phase-3 stats aggregates over a random subsample of "
+                        "this size instead of all members (CSLS background "
+                        "is still built from the full member set, so the "
+                        "median_logit estimate is subsample-unbiased). "
+                        "Integer or 'all' sets it explicitly; 'auto' (default) "
+                        "runs the [calibrate] phase. Big saturator-style gaps "
+                        "are the cost driver at phase-3 — capping them at "
+                        "100-200 buys ~5-10× speedup with negligible "
+                        "median_logit error.")
+    p.add_argument("--calibrate-tolerance", type=float, default=0.1,
+                   help="δ: maximum |median_logit| deviation from the "
+                        "K_max/m=all baseline tolerated at the chosen "
+                        "(K', m'). Calibration picks the smallest (K', m') "
+                        "such that the (1-α)-quantile of |Δ| across the "
+                        "pilot is ≤ δ. Default 0.1 logits.")
+    p.add_argument("--calibrate-alpha", type=float, default=0.05,
+                   help="α: exceedance rate for the pilot tolerance interval "
+                        "(see --calibrate-tolerance). Default 0.05.")
+    p.add_argument("--calibrate-pilot-size", type=int, default=100,
+                   help="Number of gaps in the calibration pilot. Stratified "
+                        "by gap size so small/medium/large/saturator gaps "
+                        "are all represented. Default 100.")
+    p.add_argument("--calibrate-k-grid", default="200,400,800,1500",
+                   help="Comma-separated candidate K' values for the "
+                        "calibration sweep. Default 200,400,800,1500.")
+    p.add_argument("--calibrate-m-grid", default="25,50,100,200,all",
+                   help="Comma-separated candidate member-subsample values "
+                        "(use 'all' for no subsampling). Default "
+                        "25,50,100,200,all.")
+    p.add_argument("--article-types", default="article",
+                   help="Comma-separated OpenAlex work-types treated as "
+                        "ambient/query set (default: 'article'). Pass "
+                        "'article,preprint' to include preprints.")
+    p.add_argument("--book-types", default="book",
+                   help="Comma-separated OpenAlex work-types treated as "
+                        "landmark set (default: 'book'). Pass "
+                        "'book-chapter' to use only chapters or "
+                        "'book,book-chapter' to combine.")
     args = p.parse_args()
+
+    article_types = tuple(t.strip() for t in args.article_types.split(",") if t.strip())
+    book_types = tuple(t.strip() for t in args.book_types.split(",") if t.strip())
 
     print(f"[setup] loading scope {args.scope} "
           f"(index_type={args.index_type})...", flush=True)
-    state = setup(args.scope, index_type=args.index_type)
+    state = setup(
+        args.scope, index_type=args.index_type,
+        article_types=article_types, book_types=book_types,
+    )
     n_total = state["sigma"].shape[0]
     print(f"  N_total={n_total}, "
           f"N_articles={len(state['article_global_idx'])}, "
           f"N_books={len(state['book_global_idx'])}", flush=True)
 
     print(f"[null] computing corpus-wide null log-mean per k "
-          f"(method={args.null_method})...", flush=True)
-    if args.null_method == "stein":
+          f"(method={args.null_method}, stratify={args.null_stratify})...",
+          flush=True)
+    null_strat: np.ndarray | None = None
+    null_bin_edges: np.ndarray | None = None
+    if args.null_stratify in ("bin", "dist"):
+        null_strat, null_bin_edges, _strat_info = (
+            _compute_corpus_null_stein_stratified(
+                state,
+                n_bins=args.null_stratify_bins,
+                target_rel_se=args.null_target_rel_se,
+                m_pilot_per_bin=args.null_pilot_size,
+            )
+        )
+        # Provide a global fallback null in case downstream code expects it
+        # (also used when --null-stratify=none on the same run).
+        null_log_mean = null_strat.mean(axis=1)
+    elif args.null_method == "stein":
         null_log_mean, stein_info = _compute_corpus_null_stein(
             state,
             target_rel_se=args.null_target_rel_se,
@@ -920,10 +1412,18 @@ def main() -> None:
     for i, row in enumerate(kball_rows):
         if i % 25 == 0:
             _abort_if_stop_requested("refine", i, len(kball_rows))
+        if null_strat is not None and args.null_stratify in ("bin", "dist"):
+            gap_null = _null_for_gap(
+                row["article_indices"], state["sigma"],
+                null_strat, null_bin_edges,
+                mode=args.null_stratify,
+            )
+        else:
+            gap_null = null_log_mean
         result = refine_gap_via_llr(
             member_indices=row["article_indices"],
             state=state,
-            null_log_mean=null_log_mean,
+            null_log_mean=gap_null,
             recenter=not args.no_recenter,
         )
         kball_set = set(row["article_indices"])
@@ -952,10 +1452,50 @@ def main() -> None:
     M_norm_csc = _build_fuzzy_jointnorm_memberships(refined, state)
     n_total = state["sigma"].shape[0]
 
+    # Resolve k_query_stats and member_subsample. 'auto' → run calibration.
+    k_query_resolved: int
+    m_resolved: int | None
+    needs_calibration = (args.k_query_stats == "auto") or (
+        args.member_subsample == "auto"
+    )
+    if needs_calibration:
+        candidates_k = [int(x) for x in args.calibrate_k_grid.split(",")]
+        candidates_m_raw = [x.strip() for x in args.calibrate_m_grid.split(",")]
+        candidates_m: list[int | None] = [
+            None if x.lower() == "all" else int(x) for x in candidates_m_raw
+        ]
+        k_query_resolved, m_resolved, _sweep = _calibrate_stats_params(
+            refined_gaps=refined,
+            state=state,
+            M_norm_csc=M_norm_csc,
+            book_index=book_index,
+            candidates_k=candidates_k,
+            candidates_m=candidates_m,
+            tolerance_delta=args.calibrate_tolerance,
+            tolerance_alpha=args.calibrate_alpha,
+            pilot_size=args.calibrate_pilot_size,
+        )
+        # Manual overrides win against calibration if specified.
+        if args.k_query_stats != "auto":
+            k_query_resolved = int(args.k_query_stats)
+        if args.member_subsample != "auto":
+            m_resolved = (
+                None if args.member_subsample.lower() == "all"
+                else int(args.member_subsample)
+            )
+    else:
+        k_query_resolved = int(args.k_query_stats)
+        m_resolved = (
+            None if args.member_subsample.lower() == "all"
+            else int(args.member_subsample)
+        )
+
     # Phase 3: compute per-gap stats with fuzzy K_G + hard CSLS K_B
     # (per cohesion-design-axes axis H: K_B is a size-matched bounding
     # object, NOT a competing-class likelihood, so it stays hard).
-    print(f"[stats] computing fuzzy-K_G posteriors for {len(refined)} gaps...",
+    print(f"[stats] computing fuzzy-K_G posteriors for {len(refined)} gaps "
+          f"(k_query_stats={k_query_resolved}, "
+          f"member_subsample={'all' if m_resolved is None else m_resolved})...",
           flush=True)
     for g_idx, g in enumerate(refined):
         if g_idx % 25 == 0:
@@ -969,6 +1509,10 @@ def main() -> None:
             article_index=state["article_index"],
             article_global_idx=state["article_global_idx"],
             fuzzy_gap_membership=mu_g,
+            k_query=k_query_resolved,
+            k_per_book=k_query_resolved,
+            member_subsample_size=m_resolved,
+            rng_seed=g["kball_gap_id"],
         )
         g.update({
             "logit_sum": stats["logit_sum"],

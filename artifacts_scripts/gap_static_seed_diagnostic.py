@@ -207,7 +207,9 @@ def kernel_mass_matrix(
 # ============================================================
 
 def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY,
-          index_type: str = "flat") -> dict:
+          index_type: str = "flat",
+          article_types: tuple[str, ...] = ("article",),
+          book_types: tuple[str, ...] = ("book",)) -> dict:
     """Build the shared kernel/index state used by all five sections.
 
     Returns a dict with keys:
@@ -228,6 +230,16 @@ def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY,
       efSearch=max(k_query, 2000)). Recall is ≥99% empirically at this
       efSearch setting. Saves substantial time at subfield/field/domain
       scale where the FlatL2 setup would otherwise dominate runtime.
+
+    ``article_types`` and ``book_types`` choose which OpenAlex work-types
+    are treated as the ambient/query set ("articles") and the landmark
+    set ("books") respectively. Defaults match the historical behavior
+    of "article"-only ambient and "book"-only landmarks; pass e.g.
+    ``article_types=("article", "preprint")`` and
+    ``book_types=("book-chapter",)`` to run with combined research
+    content and chapter-form landmarks. Records whose type is in
+    neither set are dropped (sigma and full_index still include all
+    rows of the loaded scope, but they aren't seeds or landmarks).
     """
     # Local imports keep the script importable without these (for unit tests).
     from artifacts_scripts.hdbscan_gap_probe import load_scope
@@ -235,8 +247,14 @@ def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY,
 
     emb, ids, types, _t, topic_ids, _refs = load_scope(scope, with_refs=False)
     types_arr = np.array(types)
-    is_book = types_arr == "book"
-    is_article = types_arr == "article"
+    is_book = np.isin(types_arr, np.asarray(book_types))
+    is_article = np.isin(types_arr, np.asarray(article_types))
+    print(
+        f"  work-type partition: is_article={int(is_article.sum())} "
+        f"(types={list(article_types)}), is_book={int(is_book.sum())} "
+        f"(types={list(book_types)}), other={int((~is_book & ~is_article).sum())}",
+        flush=True,
+    )
     book_global_idx = np.where(is_book)[0]
     article_global_idx = np.where(is_article)[0]
 

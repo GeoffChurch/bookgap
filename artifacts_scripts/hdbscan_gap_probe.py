@@ -738,14 +738,14 @@ def run(scope: str, min_cluster_size: int, min_samples: int,
         state_dir = Path(save_state_dir)
         state_dir.mkdir(parents=True, exist_ok=True)
         np.save(state_dir / "labels.npy", labels)
-        # fast_hdbscan exposes both single-linkage and condensed trees as
-        # numpy arrays; condensed is the post-min_cluster_size pruning,
-        # single-linkage is the full agglomerative hierarchy. Save both
-        # so downstream analyses can pick the right granularity.
+        # fast_hdbscan's public `single_linkage_tree_` and
+        # `condensed_tree_` properties wrap the private ndarrays in
+        # objects that fail to import in some installations (NameError
+        # on SingleLinkageTree). The underlying ndarrays are stable.
         np.save(state_dir / "single_linkage_tree.npy",
-                clusterer.single_linkage_tree_)
+                clusterer._single_linkage_tree)
         np.save(state_dir / "condensed_tree.npy",
-                clusterer.condensed_tree_)
+                clusterer._condensed_tree)
         with open(state_dir / "ids.json", "w") as f:
             json.dump(ids, f)
         with open(state_dir / "types.json", "w") as f:
