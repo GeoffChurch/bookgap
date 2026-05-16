@@ -492,6 +492,173 @@ def write_scorecard(rows: list[dict], out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 7: Phase-0 deterministic selector, Phase-1 per-arm runner, CLI
+# ---------------------------------------------------------------------------
+
+import argparse
+import time
+from collections import Counter
+
+GRAPH_CELLS = [(False, False), (False, True),
+               (True, False), (True, True)]
+
+
+def pick_phase0_winner(p0_rows: list[dict]) -> tuple[bool, bool]:
+    """Deterministic: per-topic rank cells, majority-vote across topics.
+
+    Order key per topic (best first): higher sig_count_p1e3, then fewer
+    artifact_leaks, then higher (Bc + bc) four-corner mass.  Ties break
+    toward simpler construction: self_loops=False before True, then
+    row_normalize=False before True.
+    """
+    by_topic: dict[str, list[dict]] = {}
+    for r in p0_rows:
+        by_topic.setdefault(r["topic"], []).append(r)
+
+    votes: Counter = Counter()
+    for _topic, rows in by_topic.items():
+        def rank_key(r):
+            return (
+                -r["sig_count_p1e3"],
+                r["top10_artifact_leaks"],
+                -(r["fourcorner_Bc"] + r["fourcorner_bc"]),
+                bool(r["self_loops"]),    # False (0) sorts before True (1)
+                bool(r["row_normalize"]),
+            )
+        best = sorted(rows, key=rank_key)[0]
+        votes[(bool(best["self_loops"]), bool(best["row_normalize"]))] += 1
+
+    # Majority vote; tie -> simpler construction (self_loops=False first, then row_normalize=False).
+    return min(votes.items(),
+               key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[0]
+
+
+def _run_one(scope, topic, emb, ids, refs, labels, titles_map,
+             self_loops, row_normalize, arm, n_keep,
+             phase, ref_top_member_sets):
+    """One (graph, arm) evaluation -> (scorecard_row_dict, ranked_member_sets).
+
+    Builds the scatter context, solves the arm basis, rebuilds state via
+    setup() with the projection, regenerates K-ball seeds in projected
+    space, runs the refine pipeline, and formats one scorecard row.
+    """
+    from artifacts_scripts.gap_static_seed_diagnostic import setup
+    t0 = time.time()
+    ctx = build_scatter_context(emb, ids, refs, labels,
+                                self_loops=self_loops,
+                                row_normalize=row_normalize)
+    Q, alpha_used = solve_arm(arm, ctx, n_keep)
+    state = setup(scope, index_type="hnsw",
+                  article_types=("article",), book_types=("book",),
+                  projection=Q)
+    state["topic_id"] = topic
+    seeds = kball_seeds_from_state(state, radius_fraction=0.75,
+                                   num_gaps=1000, min_gap_size=30)
+    survivors = run_refine_pipeline(state, seeds)
+    eff_books = [g.get("effective_size_books", 0.0) for g in survivors]
+    split = float(np.median(eff_books)) if eff_books else 0.0
+    ranked = sorted(survivors,
+                    key=lambda g: g.get("effective_size", 0.0),
+                    reverse=True)
+    ranked_sets = [set(g.get("refined_member_indices", []))
+                   for g in ranked[:25]]
+    row = scorecard_row(
+        phase=phase, topic=topic, cell_or_arm=arm,
+        self_loops=self_loops, row_normalize=row_normalize,
+        n_keep=(n_keep if Q is not None else emb.shape[1]),
+        alpha_used=alpha_used, survivors=survivors,
+        ref_top_member_sets=ref_top_member_sets,
+        runtime_s=time.time() - t0, eff_low_high_split=split,
+        titles_by_global_idx=titles_map,
+    )
+    return row, ranked_sets
+
+
+def main() -> None:
+    """Two-phase denoiser bake-off driver.
+
+    Phase 0: graph shootout across four (self_loops x row_normalize) cells
+    using LIP, judged by the geometric/dual-landmark scorecard.  The winner
+    cell is selected deterministically.
+
+    Phase 1: six-arm denoiser comparison (none, pca, lip, cclip_auto,
+    cclip_norm_0.5, cclip_norm_0) on the frozen graph construction chosen
+    in Phase 0.  'none' runs first as the Jaccard reference.
+    """
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--scopes", required=True,
+                   help="comma-separated, e.g. T11303,T10181,T10462")
+    p.add_argument("--arms", default=",".join(ARMS))
+    p.add_argument("--n-keep", type=int, default=370)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--freeze-graph", default=None,
+                   help="skip Phase 0, e.g. 'self=T,rownorm=T'")
+    args = p.parse_args()
+
+    from artifacts_scripts.hdbscan_gap_probe import load_scope
+
+    scopes = [s.strip() for s in args.scopes.split(",") if s.strip()]
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    all_rows: list[dict] = []
+
+    # Load each scope once (with refs); cache the heavy inputs.
+    loaded: dict[str, tuple] = {}
+    for scope in scopes:
+        emb, ids, types, titles, topic_ids, refs = load_scope(
+            scope, with_refs=True)
+        labels = list(types)
+        titles_map = {i: titles[i] for i in range(len(titles))}
+        loaded[scope] = (emb, ids, refs, labels, titles_map, topic_ids)
+
+    # ---- Phase 0: graph shootout on LIP ----
+    if args.freeze_graph:
+        kv = dict(x.split("=") for x in args.freeze_graph.split(","))
+        frozen = (kv["self"].upper().startswith("T"),
+                  kv["rownorm"].upper().startswith("T"))
+    else:
+        p0_rows: list[dict] = []
+        for scope in scopes:
+            emb, ids, refs, labels, titles_map, _tids = loaded[scope]
+            for sl, rn in GRAPH_CELLS:
+                row, _ = _run_one(
+                    scope, scope, emb, ids, refs, labels, titles_map,
+                    sl, rn, "lip", args.n_keep, "p0",
+                    ref_top_member_sets=[])
+                p0_rows.append(row)
+        all_rows.extend(p0_rows)
+        frozen = pick_phase0_winner(p0_rows)
+    print(f"[phase0] frozen graph = self_loops={frozen[0]}, "
+          f"row_normalize={frozen[1]}", flush=True)
+
+    # ---- Phase 1: arm bake-off on the frozen graph ----
+    for scope in scopes:
+        emb, ids, refs, labels, titles_map, _tids = loaded[scope]
+        # 'none' runs first as the Jaccard reference for other arms.
+        ref_row, ref_sets = _run_one(
+            scope, scope, emb, ids, refs, labels, titles_map,
+            frozen[0], frozen[1], "none", args.n_keep, "p1",
+            ref_top_member_sets=[])
+        all_rows.append(ref_row)
+        for arm in arms:
+            if arm == "none":
+                continue
+            row, _ = _run_one(
+                scope, scope, emb, ids, refs, labels, titles_map,
+                frozen[0], frozen[1], arm, args.n_keep, "p1",
+                ref_top_member_sets=ref_sets)
+            all_rows.append(row)
+
+    out_path = Path(args.out)
+    write_scorecard(all_rows, out_path / "scorecard.csv")
+    print(f"[done] wrote {out_path / 'scorecard.csv'} "
+          f"({len(all_rows)} rows)", flush=True)
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ---------------------------------------------------------------------------
 # Task 6B: dual-landmark effective_size + per-gap binomial depletion helpers
 # ---------------------------------------------------------------------------
 

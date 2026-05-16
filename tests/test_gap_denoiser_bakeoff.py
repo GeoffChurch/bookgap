@@ -171,3 +171,29 @@ def test_depletion_pvalue_basic():
     assert p_mid > 1e-2
     # guard: size 0 -> 1.0 (non-significant)
     assert _depletion_pvalue(size=0, target_count=0, base_rate=0.05) == 1.0
+
+
+def test_phase0_winner_is_deterministic():
+    from artifacts_scripts.gap_denoiser_bakeoff import pick_phase0_winner
+
+    # Per-topic rows; cell (T,T) dominates on sig then leaks.
+    rows = [
+        {"topic": "A", "self_loops": False, "row_normalize": False,
+         "sig_count_p1e3": 2, "top10_artifact_leaks": 3,
+         "fourcorner_Bc": 1, "fourcorner_bc": 1,
+         "top25_jaccard_vs_ref": 1.0},
+        {"topic": "A", "self_loops": True, "row_normalize": True,
+         "sig_count_p1e3": 5, "top10_artifact_leaks": 1,
+         "fourcorner_Bc": 4, "fourcorner_bc": 2,
+         "top25_jaccard_vs_ref": 0.4},
+        {"topic": "B", "self_loops": False, "row_normalize": False,
+         "sig_count_p1e3": 1, "top10_artifact_leaks": 2,
+         "fourcorner_Bc": 0, "fourcorner_bc": 1,
+         "top25_jaccard_vs_ref": 1.0},
+        {"topic": "B", "self_loops": True, "row_normalize": True,
+         "sig_count_p1e3": 4, "top10_artifact_leaks": 0,
+         "fourcorner_Bc": 3, "fourcorner_bc": 2,
+         "top25_jaccard_vs_ref": 0.5},
+    ]
+    winner = pick_phase0_winner(rows)
+    assert winner == (True, True)
