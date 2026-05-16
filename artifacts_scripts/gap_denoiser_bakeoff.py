@@ -313,7 +313,7 @@ def run_refine_pipeline(
 SCORECARD_FIELDS = [
     "phase", "topic", "cell_or_arm", "self_loops", "row_normalize",
     "n_keep", "alpha_used", "sig_count_p1e3", "top10_artifact_leaks",
-    "top25_jaccard_vs_ref", "fourcorner_bb", "fourcorner_bC",
+    "top25_jaccard_vs_ref", "fourcorner_bc", "fourcorner_bC",
     "fourcorner_Bc", "fourcorner_BC", "runtime_s",
 ]
 
@@ -348,6 +348,7 @@ def _title_homogeneity_leak(members, titles_by_global_idx):
     for gi in members:
         t = (titles_by_global_idx.get(gi) or "").lower().split()
         prefixes.append(" ".join(t[:3]))
+    prefixes = [p for p in prefixes if p]
     if not prefixes:
         return False
     top = Counter(prefixes).most_common(1)[0][1]
@@ -392,7 +393,7 @@ def scorecard_row(*, phase, topic, cell_or_arm, self_loops, row_normalize,
     # Dual-landmark four-corner.  Falls back gracefully when book/chapter
     # split keys are absent (effective_size_books → effective_size,
     # effective_size_chapters → 0.0) until dual-landmark is wired in.
-    fc = {"bb": 0, "bC": 0, "Bc": 0, "BC": 0}
+    fc = {"bc": 0, "bC": 0, "Bc": 0, "BC": 0}
     s = eff_low_high_split
     for g in survivors:
         b_hi = g.get("effective_size_books",
@@ -407,7 +408,7 @@ def scorecard_row(*, phase, topic, cell_or_arm, self_loops, row_normalize,
         "n_keep": n_keep, "alpha_used": alpha_used,
         "sig_count_p1e3": sig, "top10_artifact_leaks": leaks,
         "top25_jaccard_vs_ref": round(jacc, 4),
-        "fourcorner_bb": fc["bb"], "fourcorner_bC": fc["bC"],
+        "fourcorner_bc": fc["bc"], "fourcorner_bC": fc["bC"],
         "fourcorner_Bc": fc["Bc"], "fourcorner_BC": fc["BC"],
         "runtime_s": round(runtime_s, 1),
     }

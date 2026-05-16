@@ -122,6 +122,11 @@ def test_scorecard_metrics_basic():
          "effective_size_chapters": 80.0,
          "refined_member_indices": list(range(50, 90)),
          "books_below_rate_pval": 1e-2},
+        # Third survivor: both book and chapter dims BELOW split → lands in bc bucket.
+        {"effective_size": 15.0, "effective_size_books": 10.0,
+         "effective_size_chapters": 10.0,
+         "refined_member_indices": list(range(100, 130)),
+         "books_below_rate_pval": 0.5},
     ]
     ref_top = [set(range(0, 60)), set(range(200, 260))]
     row = scorecard_row(
@@ -134,7 +139,8 @@ def test_scorecard_metrics_basic():
     assert row["phase"] == "p1"
     assert row["sig_count_p1e3"] == 1
     assert 0.0 <= row["top25_jaccard_vs_ref"] <= 1.0
-    fc = (row["fourcorner_bb"] + row["fourcorner_bC"]
+    fc = (row["fourcorner_bc"] + row["fourcorner_bC"]
           + row["fourcorner_Bc"] + row["fourcorner_BC"])
-    assert fc == 2
+    assert fc == 3
+    assert row["fourcorner_bc"] == 1
     assert "runtime_s" in row
