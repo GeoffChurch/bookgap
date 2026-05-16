@@ -209,7 +209,8 @@ def kernel_mass_matrix(
 def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY,
           index_type: str = "flat",
           article_types: tuple[str, ...] = ("article",),
-          book_types: tuple[str, ...] = ("book",)) -> dict:
+          book_types: tuple[str, ...] = ("book",),
+          projection: "np.ndarray | None" = None) -> dict:
     """Build the shared kernel/index state used by all five sections.
 
     Returns a dict with keys:
@@ -257,6 +258,13 @@ def setup(scope: str, k_sigma: int = K_SIGMA, k_query: int = K_QUERY,
     )
     book_global_idx = np.where(is_book)[0]
     article_global_idx = np.where(is_article)[0]
+
+    if projection is not None:
+        # Center then project, matching the validated probe path
+        # (_project_via_basis in hdbscan_gap_probe.py). The existing
+        # L2 renormalization below runs afterward.
+        emb = ((emb.astype(np.float64) - emb.astype(np.float64).mean(axis=0))
+               @ projection).astype(np.float32)
 
     norms = np.linalg.norm(emb, axis=1, keepdims=True)
     emb = (emb / np.where(norms > 0, norms, 1.0)).astype(np.float32)
