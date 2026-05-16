@@ -654,10 +654,6 @@ def main() -> None:
           f"({len(all_rows)} rows)", flush=True)
 
 
-if __name__ == "__main__":
-    main()
-
-
 # ---------------------------------------------------------------------------
 # Task 6B: dual-landmark effective_size + per-gap binomial depletion helpers
 # ---------------------------------------------------------------------------
@@ -689,3 +685,7 @@ def _depletion_pvalue(size: int, target_count: int,
         base_rate=float(base_rate),
     )
     return float(rs.p_value)
+
+
+if __name__ == "__main__":
+    main()

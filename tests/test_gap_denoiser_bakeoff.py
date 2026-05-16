@@ -197,3 +197,24 @@ def test_phase0_winner_is_deterministic():
     ]
     winner = pick_phase0_winner(rows)
     assert winner == (True, True)
+
+
+def test_main_guard_is_last_toplevel_statement():
+    """The `if __name__ == '__main__'` guard must follow every top-level
+    def, else `python -m` NameErrors on functions defined after it."""
+    import ast, pathlib
+    src = pathlib.Path(
+        "artifacts_scripts/gap_denoiser_bakeoff.py").read_text()
+    mod = ast.parse(src)
+    guard_idx = None
+    for i, node in enumerate(mod.body):
+        if (isinstance(node, ast.If)
+                and ast.dump(node.test).count("__name__")
+                and "__main__" in ast.dump(node.test)):
+            guard_idx = i
+    assert guard_idx is not None, "no __main__ guard found"
+    after = [n for n in mod.body[guard_idx + 1:]
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef))]
+    assert not after, (
+        f"defs after __main__ guard: {[n.name for n in after]}")
