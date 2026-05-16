@@ -144,3 +144,30 @@ def test_scorecard_metrics_basic():
     assert fc == 3
     assert row["fourcorner_bc"] == 1
     assert "runtime_s" in row
+
+
+def test_corpus_book_rate_and_landmark_idx():
+    import numpy as np
+    from artifacts_scripts.gap_denoiser_bakeoff import (
+        _corpus_book_rate, _landmark_global_idx,
+    )
+    types = np.array(["book", "article", "book-chapter", "article", "book"])
+    state = {"types": types}
+    assert abs(_corpus_book_rate(state) - 2 / 5) < 1e-9
+    np.testing.assert_array_equal(
+        _landmark_global_idx(state, "book"), np.array([0, 4]))
+    np.testing.assert_array_equal(
+        _landmark_global_idx(state, "book-chapter"), np.array([2]))
+
+
+def test_depletion_pvalue_basic():
+    import numpy as np
+    from artifacts_scripts.gap_denoiser_bakeoff import _depletion_pvalue
+    # 100-work region, 0 books, base rate 5% -> strongly depleted (tiny p)
+    p_dep = _depletion_pvalue(size=100, target_count=0, base_rate=0.05)
+    assert p_dep < 1e-2
+    # region at base rate -> p ~ 0.5-ish, certainly not significant
+    p_mid = _depletion_pvalue(size=100, target_count=5, base_rate=0.05)
+    assert p_mid > 1e-2
+    # guard: size 0 -> 1.0 (non-significant)
+    assert _depletion_pvalue(size=0, target_count=0, base_rate=0.05) == 1.0

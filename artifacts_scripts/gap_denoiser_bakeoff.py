@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from bookgap.index import build_index, FlatL2
+from bookgap.depletion_test import score_region_depletion
 
 from bookgap.util import build_citation_adjacency_from_ids
 from artifacts_scripts.hdbscan_gap_probe import (
@@ -263,16 +264,28 @@ def run_refine_pipeline(
     )
 
     # Phase 3: per-gap stats with fuzzy K_G + hard CSLS K_B.
-    # main() passes k_per_book=k_query_resolved (same value as k_query).
-    # main() passes book_global_idx=state["book_global_idx"] (array from state).
-    # main() passes article_global_idx=state["article_global_idx"] (from state).
-    # main() passes rng_seed=g["kball_gap_id"].
+    # Dual-landmark: book-type landmarks first (canonical effective_size),
+    # then book-chapter-type landmarks (effective_size_chapters).
+    # Per-gap binomial depletion: enclosing-ball region via full_index.
+    book_gidx = np.asarray(state["book_global_idx"])
+    chap_gidx = _landmark_global_idx(state, "book-chapter")
+    has_chapters = chap_gidx.size > 0
+    if has_chapters:
+        chap_emb = np.ascontiguousarray(state["emb"][chap_gidx])
+        chap_index = build_index(FlatL2(), chap_emb)
+    book_rate = _corpus_book_rate(state, "book")
+    full_index = state["full_index"]
+    types_arr = np.asarray(state["types"])
+    is_book_type = types_arr == "book"
+
     for g_idx, g in enumerate(refined):
         mu_g = np.asarray(M_norm_csc[:, g_idx].todense()).flatten()
-        stats = compute_gap_stats(
+
+        # First call: book-type landmarks (canonical path, same as original).
+        stats_book = compute_gap_stats(
             refined_member_indices=g["refined_member_indices"],
             state=state,
-            book_global_idx=state["book_global_idx"],
+            book_global_idx=book_gidx,
             book_index=book_index,
             article_index=state["article_index"],
             article_global_idx=state["article_global_idx"],
@@ -283,12 +296,56 @@ def run_refine_pipeline(
             rng_seed=g["kball_gap_id"],
         )
         g.update({
-            "logit_sum": stats["logit_sum"],
-            "mean_logit": stats["mean_logit"],
-            "median_logit": stats["median_logit"],
-            "min_logit": stats["min_logit"],
-            "effective_size": stats["effective_size"],
+            "logit_sum": stats_book["logit_sum"],
+            "mean_logit": stats_book["mean_logit"],
+            "median_logit": stats_book["median_logit"],
+            "min_logit": stats_book["min_logit"],
+            "effective_size": stats_book["effective_size"],
         })
+        g["effective_size_books"] = stats_book["effective_size"]
+
+        # Second call: book-chapter-type landmarks (only landmark args differ).
+        if has_chapters:
+            stats_chap = compute_gap_stats(
+                refined_member_indices=g["refined_member_indices"],
+                state=state,
+                book_global_idx=chap_gidx,
+                book_index=chap_index,
+                article_index=state["article_index"],
+                article_global_idx=state["article_global_idx"],
+                fuzzy_gap_membership=mu_g,
+                k_query=k_query_resolved,
+                k_per_book=k_query_resolved,
+                member_subsample_size=m_resolved,
+                rng_seed=g["kball_gap_id"],
+            )
+            g["effective_size_chapters"] = stats_chap["effective_size"]
+        else:
+            g["effective_size_chapters"] = 0.0
+
+        # Per-gap binomial depletion: enclosing-ball around the gap centroid.
+        # Region = works within centroid->1-NN-book radius (FAISS L2 = squared).
+        # Uses FlatL2 full_index which supports range_search natively.
+        members = np.asarray(g["refined_member_indices"], dtype=np.int64)
+        if members.size:
+            centroid = state["emb"][members].mean(axis=0).astype(
+                np.float32)[None, :]
+            d_book, _ = book_index.search(np.ascontiguousarray(centroid), k=1)
+            radius2 = float(d_book[0, 0])          # FAISS L2 distance = squared
+            if radius2 > 0.0:
+                lims, _D, I = full_index.range_search(
+                    np.ascontiguousarray(centroid), radius2)
+                region = I[lims[0]:lims[1]]
+                size = int(region.size)
+                target = int(is_book_type[region].sum()) if size else 0
+            else:
+                # Zero radius (degenerate: centroid coincides with a book) → guard.
+                size = 0
+                target = 0
+            g["books_below_rate_pval"] = _depletion_pvalue(
+                size, target, book_rate)
+        else:
+            g["books_below_rate_pval"] = 1.0
 
     # Phase 4: containment+Jaccard dedup.
     # main() sets g["gap_idx"] = g["kball_gap_id"] before calling dedup
@@ -426,3 +483,36 @@ def write_scorecard(rows: list[dict], out_path: Path) -> None:
         w.writeheader()
         for r in rows:
             w.writerow(r)
+
+
+# ---------------------------------------------------------------------------
+# Task 6B: dual-landmark effective_size + per-gap binomial depletion helpers
+# ---------------------------------------------------------------------------
+
+def _corpus_book_rate(state: dict, book_type: str = "book") -> float:
+    """Fraction of corpus works that are of ``book_type``."""
+    types = np.asarray(state["types"])
+    n = len(types)
+    return float((types == book_type).sum()) / n if n else 0.0
+
+
+def _landmark_global_idx(state: dict, work_type: str) -> np.ndarray:
+    """Global indices of all works whose type matches ``work_type``."""
+    return np.where(np.asarray(state["types"]) == work_type)[0]
+
+
+def _depletion_pvalue(size: int, target_count: int,
+                      base_rate: float) -> float:
+    """Left-tail binomial depletion p-value via the shared module.
+
+    Guards: size <= 0 -> 1.0 (non-significant, degenerate region).
+    """
+    if size <= 0:
+        return 1.0
+    rs = score_region_depletion(
+        region_id=0,
+        size=int(size),
+        target_count=int(target_count),
+        base_rate=float(base_rate),
+    )
+    return float(rs.p_value)
