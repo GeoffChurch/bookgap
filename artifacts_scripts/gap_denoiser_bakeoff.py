@@ -7,6 +7,7 @@ See docs/superpowers/specs/2026-05-15-denoiser-bakeoff-llr-design.md.
 from __future__ import annotations
 
 import numpy as np
+from bookgap.index import build_index, FlatL2
 
 from bookgap.util import build_citation_adjacency_from_ids
 from artifacts_scripts.hdbscan_gap_probe import (
@@ -124,3 +125,179 @@ def kball_seeds_from_state(
             "article_indices": global_ids,
         })
     return seeds
+
+
+from artifacts_scripts.gap_kball_llr_refine import (  # noqa: E402
+    refine_gap_via_llr,
+    binary_set_jaccard,
+    _build_fuzzy_jointnorm_memberships,
+    _calibrate_stats_params,
+    compute_gap_stats,
+    dedup_via_containment_then_jaccard,
+    _compute_corpus_null_stein_stratified,
+    _null_for_gap,
+)
+
+
+def run_refine_pipeline(
+    state: dict,
+    seeds: list[dict],
+    *,
+    null_stratify_bins: int = 10,
+    null_target_rel_se: float = 0.005,
+    null_pilot_size: int = 200,
+    calibrate_k_grid: tuple = (200, 400, 800, 1500),
+    calibrate_m_grid: tuple = (25, 50, 100, 200, None),
+    calibrate_tolerance_delta: float = 0.1,
+    calibrate_tolerance_alpha: float = 0.05,
+    calibrate_pilot_size: int = 100,
+    null_mode: str = "dist",
+    jaccard_threshold: float = 0.5,
+    containment_threshold: float = 0.9,
+    rank_by: str = "effective_size",
+) -> list[dict]:
+    """Run refine -> fuzzy -> calibrate -> stats -> dedup; return survivors.
+
+    Mirrors gap_kball_llr_refine.main() between setup() and CSV writing,
+    but takes a pre-built (already projected) ``state`` and in-process
+    ``seeds`` instead of loading from disk.
+
+    Parameters
+    ----------
+    state:
+        Shared state dict as returned by gap_kball_llr_refine.setup() or
+        an equivalent dict assembled by the bakeoff driver.
+    seeds:
+        List of K-ball seed dicts (keys: gap_idx, gap_size, topic_id,
+        article_indices) as produced by kball_seeds_from_state().
+    null_stratify_bins:
+        Number of sigma-stratification bins for the corpus null.
+    null_target_rel_se:
+        Stein two-stage target relative SE for corpus null estimation.
+    null_pilot_size:
+        Pilot samples per bin for the corpus null Stein estimator.
+    calibrate_k_grid:
+        Candidate k_query values for _calibrate_stats_params.
+    calibrate_m_grid:
+        Candidate member_subsample values (None = "all") for calibration.
+    calibrate_tolerance_delta:
+        Absolute tolerance delta (δ) for calibration acceptance criterion.
+    calibrate_tolerance_alpha:
+        Max exceedance probability (α) for calibration acceptance criterion.
+    calibrate_pilot_size:
+        Number of pilot gaps for calibration.
+    null_mode:
+        Mode for _null_for_gap: "dist" (σ-histogram weighted, default) or
+        "bin" (mean-σ single-bin lookup).
+    jaccard_threshold:
+        Jaccard overlap threshold for Jaccard-merge dedup step.
+    containment_threshold:
+        Containment threshold for containment-prune dedup step.
+    rank_by:
+        Gap stat key to rank by inside dedup (ties broken by this metric).
+    """
+    # Corpus-wide sigma-stratified null (returns null_strat, bin_edges, info).
+    null_strat, null_bin_edges, _strat_info = _compute_corpus_null_stein_stratified(
+        state,
+        n_bins=null_stratify_bins,
+        target_rel_se=null_target_rel_se,
+        m_pilot_per_bin=null_pilot_size,
+    )
+
+    # Build book_index (article_index already lives in state; book_index
+    # needs explicit construction, matching main()'s pattern).
+    book_emb = np.ascontiguousarray(state["emb"][state["book_global_idx"]])
+    book_index = build_index(FlatL2(), book_emb)
+
+    # Phase 1: per-seed LLR refine.
+    refined: list[dict] = []
+    for row in seeds:
+        gap_null = _null_for_gap(
+            row["article_indices"],
+            state["sigma"],
+            null_strat,
+            null_bin_edges,
+            mode=null_mode,
+        )
+        result = refine_gap_via_llr(
+            member_indices=row["article_indices"],
+            state=state,
+            null_log_mean=gap_null,
+            recenter=True,
+        )
+        kball_set = set(row["article_indices"])
+        refined_set = set(result["refined_member_indices"])
+        refined.append({
+            "kball_gap_id": row["gap_idx"],
+            "kball_size": row["gap_size"],
+            "refined_k_star": result["refined_k_star"],
+            "refined_n_articles": len(result["refined_member_indices"]),
+            "llr_peak": result["llr_peak"],
+            "llr_peak_at_k": result["llr_peak_at_k"],
+            "llr_curve": result["llr_curve"],
+            "kball_size_delta": len(result["refined_member_indices"]) - row["gap_size"],
+            "kball_jaccard": binary_set_jaccard(kball_set, refined_set),
+            "refined_member_indices": result["refined_member_indices"],
+        })
+
+    # Phase 2: joint-normalized fuzzy gap memberships.
+    M_norm_csc = _build_fuzzy_jointnorm_memberships(refined, state)
+
+    # Phase 2b: calibrate (k_query, member_subsample) via pilot.
+    # Real _calibrate_stats_params params: candidates_k, candidates_m,
+    # tolerance_delta, tolerance_alpha, pilot_size (NOT k_grid/m_grid/tolerance/alpha).
+    # It also requires book_index explicitly.
+    k_query_resolved, m_resolved, _sweep = _calibrate_stats_params(
+        refined_gaps=refined,
+        state=state,
+        M_norm_csc=M_norm_csc,
+        book_index=book_index,
+        candidates_k=list(calibrate_k_grid),
+        candidates_m=list(calibrate_m_grid),
+        tolerance_delta=calibrate_tolerance_delta,
+        tolerance_alpha=calibrate_tolerance_alpha,
+        pilot_size=calibrate_pilot_size,
+    )
+
+    # Phase 3: per-gap stats with fuzzy K_G + hard CSLS K_B.
+    # main() passes k_per_book=k_query_resolved (same value as k_query).
+    # main() passes book_global_idx=state["book_global_idx"] (array from state).
+    # main() passes article_global_idx=state["article_global_idx"] (from state).
+    # main() passes rng_seed=g["kball_gap_id"].
+    for g_idx, g in enumerate(refined):
+        mu_g = np.asarray(M_norm_csc[:, g_idx].todense()).flatten()
+        stats = compute_gap_stats(
+            refined_member_indices=g["refined_member_indices"],
+            state=state,
+            book_global_idx=state["book_global_idx"],
+            book_index=book_index,
+            article_index=state["article_index"],
+            article_global_idx=state["article_global_idx"],
+            fuzzy_gap_membership=mu_g,
+            k_query=k_query_resolved,
+            k_per_book=k_query_resolved,
+            member_subsample_size=m_resolved,
+            rng_seed=g["kball_gap_id"],
+        )
+        g.update({
+            "logit_sum": stats["logit_sum"],
+            "mean_logit": stats["mean_logit"],
+            "median_logit": stats["median_logit"],
+            "min_logit": stats["min_logit"],
+            "effective_size": stats["effective_size"],
+        })
+
+    # Phase 4: containment+Jaccard dedup.
+    # main() sets g["gap_idx"] = g["kball_gap_id"] before calling dedup
+    # (dedup_via_containment_then_jaccard reads "gap_idx" internally).
+    for g in refined:
+        g["gap_idx"] = g["kball_gap_id"]
+    refined = dedup_via_containment_then_jaccard(
+        refined,
+        jaccard_threshold=jaccard_threshold,
+        containment_threshold=containment_threshold,
+        rank_metric=rank_by,
+    )
+
+    # Return only survivors (dedup marks all gaps; filter to survivor==1).
+    return [g for g in refined if g.get("survivor", 1) == 1]
