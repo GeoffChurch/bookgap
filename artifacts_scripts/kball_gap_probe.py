@@ -245,18 +245,22 @@ def _apply_denoiser(
 
 
 def _build_topic_index(topic_emb: np.ndarray):
-    """Build a FAISS index for topic_emb.  HNSW for n >= 100, FlatL2 otherwise.
+    """Build a FAISS index for topic_emb.  HNSW(efc=512, efs=2000) for n >= 100, FlatL2 otherwise.
 
     If env BOOKGAP_EXACT_INDEX is set to "1", always use exact FlatL2
     regardless of n — used by the denoiser bake-off for fully
     deterministic, approximation-free K-ball seeds. Default behavior
     (env unset or any value other than "1") is unchanged for all other callers.
+
+    efs sized to exceed typical K-ball gap neighborhoods (was 128, far below
+    gap sizes → recall collapse).  Matches setup()'s proven recall floor
+    (efc=512, efs=2000).
     """
     n = len(topic_emb)
     if os.environ.get("BOOKGAP_EXACT_INDEX", "0") == "1":
         return build_index(FlatL2(), topic_emb)
     if n >= 100:
-        return build_index(HNSW(hnsw_m=32, hnsw_efc=200, hnsw_efs=128), topic_emb)
+        return build_index(HNSW(hnsw_m=32, hnsw_efc=512, hnsw_efs=2000), topic_emb)
     else:
         return build_index(FlatL2(), topic_emb)
 

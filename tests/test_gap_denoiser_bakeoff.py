@@ -363,6 +363,24 @@ def test_index_type_flag_default_flat():
         f"_run_one index_type default should be 'flat', got {default!r}")
 
 
+def test_build_topic_index_hnsw_params(monkeypatch):
+    """n=300, BOOKGAP_EXACT_INDEX unset -> HNSW with efc=512, efs=2000."""
+    import numpy as np
+    import faiss
+    from artifacts_scripts.kball_gap_probe import _build_topic_index
+
+    monkeypatch.delenv("BOOKGAP_EXACT_INDEX", raising=False)
+    data = np.random.RandomState(0).randn(300, 8).astype("float32")
+    idx = _build_topic_index(data)
+
+    assert isinstance(idx, faiss.IndexHNSWFlat), (
+        f"Expected IndexHNSWFlat, got {type(idx).__name__}")
+    assert idx.hnsw.efConstruction == 512, (
+        f"Expected efConstruction=512, got {idx.hnsw.efConstruction}")
+    assert idx.hnsw.efSearch == 2000, (
+        f"Expected efSearch=2000, got {idx.hnsw.efSearch}")
+
+
 def test_main_guard_is_last_toplevel_statement():
     """The `if __name__ == '__main__'` guard must follow every top-level
     def, else `python -m` NameErrors on functions defined after it."""
