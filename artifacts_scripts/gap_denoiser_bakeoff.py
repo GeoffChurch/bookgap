@@ -9,7 +9,12 @@ from __future__ import annotations
 import numpy as np
 
 from bookgap.util import build_citation_adjacency_from_ids
-from artifacts_scripts.hdbscan_gap_probe import _ProbeDenoiserContext
+from artifacts_scripts.hdbscan_gap_probe import (
+    _ProbeDenoiserContext,
+    _solve_keep_smallest_gep,
+    _denoise_lip,
+    _denoise_cclip,
+)
 
 
 def build_scatter_context(
@@ -33,3 +38,48 @@ def build_scatter_context(
         normalize=row_normalize,
     )
     return _ProbeDenoiserContext(emb, class_labels, A)
+
+
+ARMS = ("none", "pca", "lip", "cclip_auto",
+        "cclip_norm_0.5", "cclip_norm_0")
+
+
+def _thin_qr(basis: np.ndarray) -> np.ndarray:
+    """Orthonormalize columns via thin QR (paper's 'Applying Denoising')."""
+    Q, _R = np.linalg.qr(basis)
+    return Q.astype(np.float64)
+
+
+def solve_arm(arm: str, ctx: _ProbeDenoiserContext, n_keep: int):
+    """Return (Q, alpha_used). Q is (d, n_keep) orthonormal, or None for 'none'.
+
+    'none' -> (None, nan): the driver passes projection=None (full dim).
+    """
+    if arm == "none":
+        return None, float("nan")
+    if arm == "pca":
+        S_T = ctx.S_T()
+        S_T = 0.5 * (S_T + S_T.T)
+        import scipy.linalg
+        _w, V = scipy.linalg.eigh(S_T)
+        basis = V[:, ::-1][:, :n_keep]
+        return _thin_qr(basis), float("nan")
+    if arm == "lip":
+        basis = _denoise_lip(ctx, n_keep)
+        return _thin_qr(basis), float("nan")
+    if arm == "cclip_auto":
+        S_B = ctx.S_B_multi(list(range(ctx.num_subsets())))
+        S_L = ctx.S_L()
+        S_T = ctx.S_T()
+        tr_B, tr_L = float(np.trace(S_B)), float(np.trace(S_L))
+        alpha = tr_B / (tr_B + tr_L) if (tr_B + tr_L) > 0 else 0.5
+        A = (1.0 - alpha) * S_B + alpha * S_L
+        basis = _solve_keep_smallest_gep(A, S_T, n_keep)
+        return _thin_qr(basis), alpha
+    if arm == "cclip_norm_0.5":
+        basis, alpha = _denoise_cclip(ctx, n_keep, alpha=0.5)
+        return _thin_qr(basis), alpha
+    if arm == "cclip_norm_0":
+        basis, alpha = _denoise_cclip(ctx, n_keep, alpha=0.0)
+        return _thin_qr(basis), alpha
+    raise ValueError(f"unknown arm {arm!r}")
