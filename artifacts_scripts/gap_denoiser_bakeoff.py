@@ -528,6 +528,11 @@ def pick_phase0_winner(p0_rows: list[dict]) -> tuple[bool, bool]:
         best = sorted(rows, key=rank_key)[0]
         votes[(bool(best["self_loops"]), bool(best["row_normalize"]))] += 1
 
+    if not votes:
+        raise RuntimeError(
+            "Phase 0: no successful cell evaluations across any scope; "
+            "cannot pick a graph winner (check earlier [ERROR] lines)")
+
     # Majority vote; tie -> simpler construction (self_loops=False first, then row_normalize=False).
     return min(votes.items(),
                key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[0]
@@ -600,8 +605,12 @@ def main() -> None:
     scopes = [s.strip() for s in args.scopes.split(",") if s.strip()]
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     all_rows: list[dict] = []
+    out_path = Path(args.out)
 
-    # Load each scope once (with refs); cache the heavy inputs.
+    # Load raw emb/ids/refs once (refs are expensive). NOTE: setup() still
+    # re-loads from disk and rebuilds the index on every _run_one call
+    # (projection differs per call, so index rebuild is unavoidable) — this
+    # pre-load only amortizes the refs read + titles_map, not the index build.
     loaded: dict[str, tuple] = {}
     for scope in scopes:
         emb, ids, types, titles, topic_ids, refs = load_scope(
@@ -616,39 +625,66 @@ def main() -> None:
         frozen = (kv["self"].upper().startswith("T"),
                   kv["rownorm"].upper().startswith("T"))
     else:
+        import traceback as _traceback
         p0_rows: list[dict] = []
         for scope in scopes:
             emb, ids, refs, labels, titles_map, _tids = loaded[scope]
             for sl, rn in GRAPH_CELLS:
-                row, _ = _run_one(
-                    scope, scope, emb, ids, refs, labels, titles_map,
-                    sl, rn, "lip", args.n_keep, "p0",
-                    ref_top_member_sets=[])
-                p0_rows.append(row)
+                try:
+                    row, _ = _run_one(
+                        scope, scope, emb, ids, refs, labels, titles_map,
+                        sl, rn, "lip", args.n_keep, "p0",
+                        ref_top_member_sets=[])
+                    p0_rows.append(row)
+                except Exception as exc:
+                    print(f"[ERROR] p0 scope={scope} cell_or_arm=lip "
+                          f"self_loops={sl} row_normalize={rn}: {exc}",
+                          flush=True)
+                    _traceback.print_exc()
+                    continue
         all_rows.extend(p0_rows)
         frozen = pick_phase0_winner(p0_rows)
     print(f"[phase0] frozen graph = self_loops={frozen[0]}, "
           f"row_normalize={frozen[1]}", flush=True)
 
     # ---- Phase 1: arm bake-off on the frozen graph ----
+    import traceback as _traceback
     for scope in scopes:
         emb, ids, refs, labels, titles_map, _tids = loaded[scope]
         # 'none' runs first as the Jaccard reference for other arms.
-        ref_row, ref_sets = _run_one(
-            scope, scope, emb, ids, refs, labels, titles_map,
-            frozen[0], frozen[1], "none", args.n_keep, "p1",
-            ref_top_member_sets=[])
-        all_rows.append(ref_row)
+        ref_sets: list = []
+        try:
+            ref_row, ref_sets = _run_one(
+                scope, scope, emb, ids, refs, labels, titles_map,
+                frozen[0], frozen[1], "none", args.n_keep, "p1",
+                ref_top_member_sets=[])
+            all_rows.append(ref_row)
+        except Exception as exc:
+            print(f"[ERROR] p1 scope={scope} cell_or_arm=none "
+                  f"self_loops={frozen[0]} row_normalize={frozen[1]}: {exc}",
+                  flush=True)
+            _traceback.print_exc()
+            # ref_sets stays [] — subsequent arms still run; their
+            # top25_jaccard_vs_ref will degrade to 0.0, which is acceptable.
         for arm in arms:
             if arm == "none":
                 continue
-            row, _ = _run_one(
-                scope, scope, emb, ids, refs, labels, titles_map,
-                frozen[0], frozen[1], arm, args.n_keep, "p1",
-                ref_top_member_sets=ref_sets)
-            all_rows.append(row)
+            try:
+                row, _ = _run_one(
+                    scope, scope, emb, ids, refs, labels, titles_map,
+                    frozen[0], frozen[1], arm, args.n_keep, "p1",
+                    ref_top_member_sets=ref_sets)
+                all_rows.append(row)
+            except Exception as exc:
+                print(f"[ERROR] p1 scope={scope} cell_or_arm={arm} "
+                      f"self_loops={frozen[0]} row_normalize={frozen[1]}: {exc}",
+                      flush=True)
+                _traceback.print_exc()
+                continue
+        write_scorecard(all_rows, out_path / "scorecard.csv")
+        print(f"[checkpoint] wrote {len(all_rows)} rows after scope={scope}",
+              flush=True)
 
-    out_path = Path(args.out)
     write_scorecard(all_rows, out_path / "scorecard.csv")
     print(f"[done] wrote {out_path / 'scorecard.csv'} "
           f"({len(all_rows)} rows)", flush=True)
