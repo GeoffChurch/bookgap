@@ -84,3 +84,45 @@ def solve_arm(arm: str, ctx: _ProbeDenoiserContext, n_keep: int):
         basis, alpha = _denoise_cclip(ctx, n_keep, alpha=0.0)
         return _thin_qr(basis), alpha
     raise ValueError(f"unknown arm {arm!r}")
+
+
+from artifacts_scripts.kball_gap_probe import _greedy_kball_gaps_inline
+
+
+def kball_seeds_from_state(
+    state: dict,
+    radius_fraction: float = 0.75,
+    num_gaps: int = 1000,
+    min_gap_size: int = 0,
+) -> list[dict]:
+    """Regenerate K-ball seeds in the projected space.
+
+    Mirrors the dicts gap_kball_llr_refine.load_kball_csv yields:
+    gap_idx, gap_size, topic_id, article_indices (global article idx).
+    K-ball defaults: k=1, is_intra_cloud=False (standalone-validated).
+    """
+    emb = state["emb"]
+    art_gidx = np.asarray(state["article_global_idx"])
+    bk_gidx = np.asarray(state["book_global_idx"])
+    article_emb = np.ascontiguousarray(emb[art_gidx])
+    book_emb = np.ascontiguousarray(emb[bk_gidx])
+
+    gaps = _greedy_kball_gaps_inline(
+        book_emb=book_emb,
+        article_emb=article_emb,
+        radius_fraction=radius_fraction,
+        k=1,
+        num_gaps=num_gaps,
+        min_gap_size=min_gap_size,
+    )
+    topic_id = state.get("topic_id", "")
+    seeds: list[dict] = []
+    for gap_idx, gap_size, local_ids in gaps:
+        global_ids = art_gidx[np.asarray(local_ids)].tolist()
+        seeds.append({
+            "gap_idx": int(gap_idx),
+            "gap_size": int(gap_size),
+            "topic_id": topic_id,
+            "article_indices": global_ids,
+        })
+    return seeds

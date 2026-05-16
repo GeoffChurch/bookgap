@@ -66,3 +66,37 @@ def test_solve_arm_shapes_and_auto_alpha():
     expected = tr_B / (tr_B + tr_L)
     _, alpha_auto = solve_arm("cclip_auto", ctx, n_keep=5)
     assert abs(alpha_auto - expected) < 1e-9
+
+
+def test_kball_seeds_change_under_projection(monkeypatch):
+    import numpy as np
+    from artifacts_scripts.gap_denoiser_bakeoff import kball_seeds_from_state
+
+    rs = np.random.RandomState(2)
+    N = 200
+    emb = rs.randn(N, 16).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    art = np.arange(0, 170)
+    bk = np.arange(170, 200)
+    state = {
+        "emb": emb,
+        "article_global_idx": art,
+        "book_global_idx": bk,
+        "topic_id": "T_SYN",
+    }
+    seeds_raw = kball_seeds_from_state(state, radius_fraction=0.75,
+                                       num_gaps=5, min_gap_size=0)
+
+    Q = np.linalg.qr(rs.randn(16, 8))[0]
+    emb_p = (emb - emb.mean(0)) @ Q
+    emb_p /= np.linalg.norm(emb_p, axis=1, keepdims=True)
+    state_p = dict(state, emb=emb_p.astype(np.float32))
+    seeds_p = kball_seeds_from_state(state_p, radius_fraction=0.75,
+                                     num_gaps=5, min_gap_size=0)
+
+    set_raw = {tuple(sorted(s["article_indices"])) for s in seeds_raw}
+    set_p = {tuple(sorted(s["article_indices"])) for s in seeds_p}
+    assert set_raw != set_p
+    for s in seeds_raw:
+        assert set(s) >= {"gap_idx", "gap_size", "topic_id",
+                          "article_indices"}
