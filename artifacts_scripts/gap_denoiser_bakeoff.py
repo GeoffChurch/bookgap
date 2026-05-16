@@ -62,7 +62,7 @@ def solve_arm(arm: str, ctx: _ProbeDenoiserContext, n_keep: int):
         S_T = 0.5 * (S_T + S_T.T)
         import scipy.linalg
         _w, V = scipy.linalg.eigh(S_T)
-        basis = V[:, ::-1][:, :n_keep]
+        basis = V[:, ::-1][:, :n_keep]  # keep largest-variance directions (contrast to the min-scatter lip/cclip arms)
         return _thin_qr(basis), float("nan")
     if arm == "lip":
         basis = _denoise_lip(ctx, n_keep)
@@ -73,6 +73,7 @@ def solve_arm(arm: str, ctx: _ProbeDenoiserContext, n_keep: int):
         S_T = ctx.S_T()
         tr_B, tr_L = float(np.trace(S_B)), float(np.trace(S_L))
         alpha = tr_B / (tr_B + tr_L) if (tr_B + tr_L) > 0 else 0.5
+        # raw (un-normalized) trace weighting — deliberately distinct from cclip_norm_* which trace-normalizes each matrix first
         A = (1.0 - alpha) * S_B + alpha * S_L
         basis = _solve_keep_smallest_gep(A, S_T, n_keep)
         return _thin_qr(basis), alpha
