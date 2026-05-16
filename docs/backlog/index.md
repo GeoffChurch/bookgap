@@ -43,3 +43,4 @@ Performance, indexing, refactoring.
 - [gpu-kball-brute-force-knn](infrastructure/gpu-kball-brute-force-knn.md) — GPU brute-force kNN + manual radius filter to replace HNSW range search
 - [cuml-hdbscan-pynndescent](infrastructure/cuml-hdbscan-pynndescent.md) — RAPIDS cuml.HDBSCAN or PyNNDescent for HDBSCAN speedup
 - [cloud-denoiser-path-port](infrastructure/cloud-denoiser-path-port.md) — eliminate the `load_scope` bypass; route everything through Cloud(filter_pair, denoiser_config)
+- [share-fullindex-knn-dual-landmark](infrastructure/share-fullindex-knn-dual-landmark.md) — factor full-corpus member kNN out of compute_gap_stats so dual-landmark calls don't duplicate it (~2×→~1.2×)
