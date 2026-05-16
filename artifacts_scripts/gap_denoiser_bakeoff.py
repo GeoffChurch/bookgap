@@ -534,9 +534,52 @@ def pick_phase0_winner(p0_rows: list[dict]) -> tuple[bool, bool]:
                key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[0]
 
 
+def _write_leaderboard(out_dir, topic, arm, ranked, titles_by_global_idx,
+                       top_n: int = 20) -> None:
+    """Per-(topic,arm) qualitative leaderboard: top-N gaps by effective_size
+    with sampled in-gap article titles + member ids, for eyeballing what
+    each gap is actually about. ``ranked`` is the effective_size-desc
+    survivor list. No-op if ``out_dir`` is None.
+    """
+    if out_dir is None:
+        return
+    import csv as _csv
+    import json as _json
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_topic = str(topic).replace("/", "_")
+    path = out_dir / f"{safe_topic}__{arm}__leaderboard.csv"
+    cols = ["rank", "kball_gap_id", "refined_k_star", "n_members",
+            "effective_size", "effective_size_books",
+            "effective_size_chapters", "books_below_rate_pval",
+            "sample_titles", "member_indices"]
+    with open(path, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(cols)
+        for rank, g in enumerate(ranked[:top_n], start=1):
+            members = list(g.get("refined_member_indices", []))
+            titles = []
+            for gi in members[:8]:
+                t = (titles_by_global_idx or {}).get(gi) or ""
+                t = " ".join(str(t).split())  # collapse whitespace/newlines
+                if t:
+                    titles.append(t)
+            w.writerow([
+                rank,
+                g.get("kball_gap_id", ""),
+                g.get("refined_k_star", ""),
+                len(members),
+                round(float(g.get("effective_size", 0.0)), 3),
+                round(float(g.get("effective_size_books", 0.0)), 3),
+                round(float(g.get("effective_size_chapters", 0.0)), 3),
+                g.get("books_below_rate_pval", ""),
+                " || ".join(titles),
+                _json.dumps(members[:50]),
+            ])
+
+
 def _run_one(scope, topic, emb, ids, refs, labels, titles_map,
              self_loops, row_normalize, arm, n_keep,
-             phase, ref_top_member_sets):
+             phase, ref_top_member_sets, leaderboard_dir=None):
     """One (graph, arm) evaluation -> (scorecard_row_dict, ranked_member_sets).
 
     Builds the scatter context, solves the arm basis, rebuilds state via
@@ -563,6 +606,7 @@ def _run_one(scope, topic, emb, ids, refs, labels, titles_map,
                     reverse=True)
     ranked_sets = [set(g.get("refined_member_indices", []))
                    for g in ranked[:25]]
+    _write_leaderboard(leaderboard_dir, topic, arm, ranked, titles_map)
     row = scorecard_row(
         phase=phase, topic=topic, cell_or_arm=arm,
         self_loops=self_loops, row_normalize=row_normalize,
@@ -631,7 +675,8 @@ def main() -> None:
                     row, _ = _run_one(
                         scope, scope, emb, ids, refs, labels, titles_map,
                         sl, rn, "lip", args.n_keep, "p0",
-                        ref_top_member_sets=[])
+                        ref_top_member_sets=[],
+                        leaderboard_dir=out_path / "leaderboards")
                     p0_rows.append(row)
                 except Exception as exc:
                     print(f"[ERROR] p0 scope={scope} cell_or_arm=lip "
@@ -654,7 +699,8 @@ def main() -> None:
             ref_row, ref_sets = _run_one(
                 scope, scope, emb, ids, refs, labels, titles_map,
                 frozen[0], frozen[1], "none", args.n_keep, "p1",
-                ref_top_member_sets=[])
+                ref_top_member_sets=[],
+                leaderboard_dir=out_path / "leaderboards")
             all_rows.append(ref_row)
         except Exception as exc:
             print(f"[ERROR] p1 scope={scope} cell_or_arm=none "
@@ -670,7 +716,8 @@ def main() -> None:
                 row, _ = _run_one(
                     scope, scope, emb, ids, refs, labels, titles_map,
                     frozen[0], frozen[1], arm, args.n_keep, "p1",
-                    ref_top_member_sets=ref_sets)
+                    ref_top_member_sets=ref_sets,
+                    leaderboard_dir=out_path / "leaderboards")
                 all_rows.append(row)
             except Exception as exc:
                 print(f"[ERROR] p1 scope={scope} cell_or_arm={arm} "
