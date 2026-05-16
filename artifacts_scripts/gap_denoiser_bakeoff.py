@@ -276,6 +276,8 @@ def run_refine_pipeline(
     book_rate = _corpus_book_rate(state, "book")
     full_index = state["full_index"]
     types_arr = np.asarray(state["types"])
+    # "book" is hardcoded for the depletion test (numerator+denominator
+    # share the predicate); would need updating if setup() book_types differ.
     is_book_type = types_arr == "book"
 
     for g_idx, g in enumerate(refined):
@@ -325,9 +327,13 @@ def run_refine_pipeline(
 
         # Per-gap binomial depletion: enclosing-ball around the gap centroid.
         # Region = works within centroid->1-NN-book radius (FAISS L2 = squared).
-        # Uses FlatL2 full_index which supports range_search natively.
+        # full_index supports range_search for both FlatL2 (topic-scale) and
+        # HNSW (subfield/domain-scale); radius threshold is L2-squared in both.
         members = np.asarray(g["refined_member_indices"], dtype=np.int64)
         if members.size:
+            # Non-unit centroid is intentional: defines an L2 enclosing ball (not
+            # cosine); the SAME centroid is used for both the 1-NN-book radius and
+            # the full_index region query, so radius and ball are consistent.
             centroid = state["emb"][members].mean(axis=0).astype(
                 np.float32)[None, :]
             d_book, _ = book_index.search(np.ascontiguousarray(centroid), k=1)
