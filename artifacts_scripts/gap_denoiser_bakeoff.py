@@ -7,6 +7,7 @@ See docs/superpowers/specs/2026-05-15-denoiser-bakeoff-llr-design.md.
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from artifacts_scripts.hdbscan_gap_probe import (
     _ProbeDenoiserContext,
     _solve_keep_smallest_gep,
     _denoise_lip,
+    _denoise_lpp,
     _denoise_cclip,
 )
 from artifacts_scripts.kball_gap_probe import _greedy_kball_gaps_inline
@@ -46,7 +48,7 @@ def build_scatter_context(
     return _ProbeDenoiserContext(emb, class_labels, A)
 
 
-ARMS = ("none", "pca", "lip", "cclip_auto",
+ARMS = ("none", "pca", "lip", "lpp", "cclip_auto",
         "cclip_norm_0.5", "cclip_norm_0")
 
 
@@ -72,6 +74,9 @@ def solve_arm(arm: str, ctx: _ProbeDenoiserContext, n_keep: int):
         return _thin_qr(basis), float("nan")
     if arm == "lip":
         basis = _denoise_lip(ctx, n_keep)
+        return _thin_qr(basis), float("nan")
+    if arm == "lpp":
+        basis = _denoise_lpp(ctx, n_keep)
         return _thin_qr(basis), float("nan")
     if arm == "cclip_auto":
         S_B = ctx.S_B_multi(list(range(ctx.num_subsets())))
@@ -579,7 +584,8 @@ def _write_leaderboard(out_dir, topic, arm, ranked, titles_by_global_idx,
 
 def _run_one(scope, topic, emb, ids, refs, labels, titles_map,
              self_loops, row_normalize, arm, n_keep,
-             phase, ref_top_member_sets, leaderboard_dir=None):
+             phase, ref_top_member_sets, leaderboard_dir=None,
+             index_type: str = "flat"):
     """One (graph, arm) evaluation -> (scorecard_row_dict, ranked_member_sets).
 
     Builds the scatter context, solves the arm basis, rebuilds state via
@@ -592,7 +598,7 @@ def _run_one(scope, topic, emb, ids, refs, labels, titles_map,
                                 self_loops=self_loops,
                                 row_normalize=row_normalize)
     Q, alpha_used = solve_arm(arm, ctx, n_keep)
-    state = setup(scope, index_type="hnsw",
+    state = setup(scope, index_type=index_type,
                   article_types=("article",), book_types=("book",),
                   projection=Q)
     state["topic_id"] = topic
@@ -639,7 +645,20 @@ def main() -> None:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--freeze-graph", default=None,
                    help="skip Phase 0, e.g. 'self=T,rownorm=T'")
+    p.add_argument("--index-type", choices=["flat", "hnsw"], default="flat",
+                   help="flat = exact + deterministic (topic scale, default); "
+                        "hnsw = approximate, for subfield/domain scale")
     args = p.parse_args()
+
+    # Set index-type environment knob BEFORE Phase-0/Phase-1 loops so that
+    # _build_topic_index (called inside kball_seeds_from_state) honours it.
+    if args.index_type == "flat":
+        os.environ["BOOKGAP_EXACT_INDEX"] = "1"
+    else:
+        # HNSW: best-effort determinism — single OMP thread reduces (but does
+        # not eliminate) build variance; results remain approximate.
+        import faiss as _faiss
+        _faiss.omp_set_num_threads(1)
 
     from artifacts_scripts.hdbscan_gap_probe import load_scope
 
@@ -676,7 +695,8 @@ def main() -> None:
                         scope, scope, emb, ids, refs, labels, titles_map,
                         sl, rn, "lip", args.n_keep, "p0",
                         ref_top_member_sets=[],
-                        leaderboard_dir=out_path / "leaderboards")
+                        leaderboard_dir=out_path / "leaderboards",
+                        index_type=args.index_type)
                     p0_rows.append(row)
                 except Exception as exc:
                     print(f"[ERROR] p0 scope={scope} cell_or_arm=lip "
@@ -700,7 +720,8 @@ def main() -> None:
                 scope, scope, emb, ids, refs, labels, titles_map,
                 frozen[0], frozen[1], "none", args.n_keep, "p1",
                 ref_top_member_sets=[],
-                leaderboard_dir=out_path / "leaderboards")
+                leaderboard_dir=out_path / "leaderboards",
+                index_type=args.index_type)
             all_rows.append(ref_row)
         except Exception as exc:
             print(f"[ERROR] p1 scope={scope} cell_or_arm=none "
@@ -717,7 +738,8 @@ def main() -> None:
                     scope, scope, emb, ids, refs, labels, titles_map,
                     frozen[0], frozen[1], arm, args.n_keep, "p1",
                     ref_top_member_sets=ref_sets,
-                    leaderboard_dir=out_path / "leaderboards")
+                    leaderboard_dir=out_path / "leaderboards",
+                    index_type=args.index_type)
                 all_rows.append(row)
             except Exception as exc:
                 print(f"[ERROR] p1 scope={scope} cell_or_arm={arm} "

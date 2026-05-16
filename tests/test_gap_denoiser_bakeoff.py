@@ -207,8 +207,8 @@ def test_end_to_end_scorecard_shape(tmp_path, monkeypatch):
     build_scatter_context, solve_arm, scorecard_row, and write_scorecard run
     for real so the wiring is exercised.
 
-    Expected shape: 1 topic x (Phase-0: 4 cells + Phase-1: 6 arms incl. none)
-    = 10 rows.
+    Expected shape: 1 topic x (Phase-0: 4 cells + Phase-1: 7 arms incl. none)
+    = 11 rows.
     """
     import numpy as np
     import artifacts_scripts.gap_denoiser_bakeoff as bk
@@ -286,10 +286,10 @@ def test_end_to_end_scorecard_shape(tmp_path, monkeypatch):
     with open(out / "scorecard.csv") as f:
         rows = list(csv.DictReader(f))
 
-    # 1 topic: Phase-0 = 4 cells (all with arm=lip), Phase-1 = 6 arms
-    # (none + pca + lip + cclip_auto + cclip_norm_0.5 + cclip_norm_0) = 10 rows
-    assert len(rows) == 10, (
-        f"Expected 10 rows, got {len(rows)}; phases={[r['phase'] for r in rows]}")
+    # 1 topic: Phase-0 = 4 cells (all with arm=lip), Phase-1 = 7 arms
+    # (none + pca + lip + lpp + cclip_auto + cclip_norm_0.5 + cclip_norm_0) = 11 rows
+    assert len(rows) == 11, (
+        f"Expected 11 rows, got {len(rows)}; phases={[r['phase'] for r in rows]}")
     assert {r["phase"] for r in rows} == {"p0", "p1"}, (
         f"Expected both phases; got {sorted({r['phase'] for r in rows})}")
     for r in rows:
@@ -297,6 +297,66 @@ def test_end_to_end_scorecard_shape(tmp_path, monkeypatch):
             assert r[col] not in ("", "nan"), (
                 f"Row phase={r['phase']} arm={r['cell_or_arm']} "
                 f"has empty/nan {col}={r[col]!r}")
+
+
+def test_build_topic_index_exact_env(monkeypatch):
+    """BOOKGAP_EXACT_INDEX=1 -> FlatL2; unset + n>=100 -> HNSW."""
+    import numpy as np
+    import faiss
+    from artifacts_scripts.kball_gap_probe import _build_topic_index
+
+    rng = np.random.RandomState(0)
+    data = rng.randn(300, 8).astype("float32")
+
+    # With env var set: should use FlatL2 regardless of n.
+    monkeypatch.setenv("BOOKGAP_EXACT_INDEX", "1")
+    idx_flat = _build_topic_index(data)
+    assert isinstance(idx_flat, faiss.IndexFlatL2), (
+        f"Expected FlatL2 with BOOKGAP_EXACT_INDEX=1, got {type(idx_flat).__name__}")
+
+    # Without env var (n=300 >= 100): should use HNSW.
+    monkeypatch.delenv("BOOKGAP_EXACT_INDEX", raising=False)
+    idx_hnsw = _build_topic_index(data)
+    assert "HNSW" in type(idx_hnsw).__name__, (
+        f"Expected HNSW for n=300 without env var, got {type(idx_hnsw).__name__}")
+
+
+def test_solve_arm_lpp():
+    """lpp arm returns orthonormal (d, n_keep) basis with nan alpha; lpp in ARMS."""
+    import numpy as np
+    from artifacts_scripts.gap_denoiser_bakeoff import (
+        build_scatter_context, solve_arm, ARMS,
+    )
+    assert "lpp" in ARMS, f"'lpp' not in ARMS: {ARMS}"
+
+    rs = np.random.RandomState(1)
+    ids = [f"W{i}" for i in range(40)]
+    refs = [[f"W{(i + 1) % 40}"] for i in range(40)]
+    emb = rs.randn(40, 8).astype(np.float32)
+    labels = (["article"] * 30) + (["book"] * 10)
+    ctx = build_scatter_context(emb, ids, refs, labels,
+                                self_loops=False, row_normalize=False)
+    d = emb.shape[1]
+    n_keep = 5
+    Q, a = solve_arm("lpp", ctx, n_keep)
+    assert Q.shape == (d, n_keep), f"Q.shape={Q.shape}, expected ({d},{n_keep})"
+    assert np.allclose(Q.T @ Q, np.eye(n_keep), atol=1e-6), "Q not orthonormal"
+    assert np.isnan(a), f"alpha should be nan for lpp, got {a}"
+
+
+def test_index_type_flag_default_flat():
+    """_run_one has index_type param defaulting to 'flat'; lpp in ARMS."""
+    import inspect
+    import artifacts_scripts.gap_denoiser_bakeoff as bk
+
+    assert "lpp" in bk.ARMS, f"'lpp' not in ARMS: {bk.ARMS}"
+
+    sig = inspect.signature(bk._run_one)
+    assert "index_type" in sig.parameters, (
+        "_run_one missing index_type parameter")
+    default = sig.parameters["index_type"].default
+    assert default == "flat", (
+        f"_run_one index_type default should be 'flat', got {default!r}")
 
 
 def test_main_guard_is_last_toplevel_statement():
