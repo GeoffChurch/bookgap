@@ -390,13 +390,23 @@ def _fl_bookdemand(
 ) -> list[tuple[int, int, np.ndarray]]:
     """Facility-location deflation over BOOK-anchored demand.
 
-    Coverage sim(g,b) = |members_g ∩ Nb[b]| / k_book — pure set overlap.
-    No sigma/kernel used, which sidesteps the global-vs-article-local sigma
+    Coverage cov(g,b) = Jaccard(members_g, Nb[b])
+        = |members_g ∩ Nb[b]| / (|members_g| + k_b − |members_g ∩ Nb[b]|)
+
+    Using Jaccard (rather than |intersection|/k_book) makes coverage
+    saturation-resistant: a 500-member background ball overlapping a 10-article
+    Nb scores ≤ 10/500 ≈ 0.02 and cannot dominate; a tight ball that IS the
+    book's neighborhood scores near 1.  The submodular FL structure is
+    unchanged: F(S) = Σ_b max_{g∈S} cov(g,b), greedy marginal gain, monotone
+    non-increasing.
+
+    No sigma/kernel used — sidesteps the global-vs-article-local sigma
     index-space bug class entirely (sigma is accepted but ignored).
 
     Memory-bounded: inverted index maps article-local id → candidate list;
-    per-candidate coverage stored as sparse dicts {book_idx: count/k_book}.
-    No dense (B,K) or (A,K) matrix is ever built.
+    per-candidate coverage stored as sparse dicts {book_idx: jaccard_score}.
+    |union| = |members_g| + k_b − |intersection| is computed O(1) from the
+    existing intersection count — no new dense structure.
     """
     # Edge cases
     if book_emb is None:
@@ -425,17 +435,23 @@ def _fl_bookdemand(
                 inv[a] = []
             inv[a].append(g)
 
-    # Accumulate coverage counts: cand_cov[g] = {book_b: overlap_count}
+    # Accumulate intersection counts: cand_isect[g] = {book_b: intersection_count}
     # Process each book's neighborhood; accumulate into sparse per-candidate dicts
-    cand_cov: list[dict[int, float]] = [{} for _ in range(len(cands))]
+    cand_isect: list[dict[int, int]] = [{} for _ in range(len(cands))]
     for b in range(B):
         for a in Nb[b].tolist():
             for g in inv.get(int(a), []):
-                cand_cov[g][b] = cand_cov[g].get(b, 0) + 1
-    # Normalise counts by k_b to get fractional coverage ∈ [0, 1]
+                cand_isect[g][b] = cand_isect[g].get(b, 0) + 1
+
+    # Convert intersection counts to Jaccard scores:
+    #   cov(g,b) = isect / (|members_g| + k_b − isect)
+    # |union| = |members_g| + k_b − isect (inclusion-exclusion, O(1) per entry)
+    cand_cov: list[dict[int, float]] = [{} for _ in range(len(cands))]
     for g in range(len(cands)):
-        for b in cand_cov[g]:
-            cand_cov[g][b] /= k_b
+        mem_size = len(cands[g].members)
+        for b, isect in cand_isect[g].items():
+            union = mem_size + k_b - isect
+            cand_cov[g][b] = isect / union if union > 0 else 0.0
 
     # Greedy facility-location: pick candidates to maximise Σ_b max(best_cov[b], cov(g,b))
     best_cov = np.zeros(B, dtype=np.float64)
@@ -464,7 +480,11 @@ def _fl_bookdemand(
 
         ids = cands[best_j].members.astype(np.int64)
         if min_gap_size > 0 and ids.size < min_gap_size:
-            break
+            # Skip undersized candidate (mark consumed so it isn't re-picked),
+            # but do NOT emit and do NOT update best_cov — continue to next round.
+            # This matches _greedy_hard/_submodular_fl peer behavior.
+            picked.add(best_j)
+            continue
 
         _FL_GAINS_BD.append(best_gain)
         gaps.append((emitted, int(ids.size), ids))
@@ -597,7 +617,7 @@ from pathlib import Path
 DEFLATION_SCORECARD_FIELDS = [
     "deflation", "scope",
     "mean_pairwise_jaccard_top20", "unique_coverage_at_20",
-    "heldout_book_recall_at_20", "heldout_spread", "runtime_s",
+    "heldout_book_recall_at_20", "heldout_spread", "gaps_emitted", "runtime_s",
 ]
 
 
@@ -696,6 +716,7 @@ def run_arm(
         **m,
         "heldout_book_recall_at_20": rec,
         "heldout_spread": spread,
+        "gaps_emitted": len(ranked),   # survivors after refine; low count (e.g. 1) signals saturation
         "runtime_s": round(time.time() - t0, 1),
     }
 

@@ -340,3 +340,53 @@ def test_fl_bookdemand_monotone_and_nobook_edge():
     import numpy as _np
     assert deflate(c,"fl_bookdemand",a,num_gaps=5,min_gap_size=0,
                    book_emb=_np.zeros((0,8),_np.float32))==[]
+
+
+def test_fl_bookdemand_no_saturation_with_background():
+    """Regression guard for the saturation defect: a diffuse background ball
+    with large members-count must NOT exhaust all book-demand in a single
+    greedy pick (which collapses output to ~1 gap).
+
+    Fixture: 3 tight clusters (noise=0.1) at axis-aligned corners + a diffuse
+    background (120 articles near origin).  One book just outside each cluster
+    + 5 far decoy books.  The background articles have large k-balls that span
+    many books' Nb sets → with the unnormalized cov = |intersection|/k_book
+    the background ball dominates and only 1 gap is emitted.  Jaccard cov
+    = |intersection|/|union| caps this at ≤10/500≈0.02 and lets all 3 tight
+    cluster balls win.
+
+    MUST FAIL on pre-fix (unnormalized) cov; MUST PASS after Jaccard fix.
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import build_kball_candidates, deflate
+    rs = np.random.RandomState(31); d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))  # diffuse background near origin
+    art = np.vstack(parts).astype(np.float32)
+    # One book just outside each cluster + 5 far decoy books
+    bk = np.vstack([cen * 1.2, 40.0 + rs.randn(5, d).astype(np.float32)]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, "fl_bookdemand", art, num_gaps=3, min_gap_size=10, book_emb=bk)
+    # Must NOT collapse to ~1 gap — saturation defect would give len(gaps)==1
+    assert len(gaps) == 3, (
+        f"SATURATION: expected 3 gaps (one per cluster), got {len(gaps)}. "
+        "Pre-fix unnormalized cov causes background ball to dominate."
+    )
+    # Each gap should map to a distinct cluster (check via centroid argmax)
+    centers = np.zeros((3, d), np.float32)
+    for i in range(3):
+        centers[i, i] = 10.0
+    cluster_labels = []
+    for _rank, _sz, ids in gaps:
+        if len(ids) == 0:
+            cluster_labels.append(-1)
+            continue
+        gap_centroid = art[ids].mean(axis=0)
+        dists = np.linalg.norm(centers - gap_centroid, axis=1)
+        cluster_labels.append(int(np.argmin(dists)))
+    assert len(set(cluster_labels)) == 3, (
+        f"Gaps did not map to 3 distinct clusters; labels={cluster_labels}"
+    )
