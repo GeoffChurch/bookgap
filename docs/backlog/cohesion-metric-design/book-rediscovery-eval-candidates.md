@@ -71,9 +71,14 @@ tested: no constant s wins everywhere (dense peaks s≈0–.3, sparse
 peaks s≈.5) BUT (a) **s30 is a strong single no-branch method**
 (~95% of dense ceiling; fixes collapse .125→.375) and (b) the
 universal-winner **shrinkage schedule `s=f(n_books/A)` is now
-empirically pinned** (≈.2 dense, ≈.5 sparse). **Status: frontier
-mapped & conclusive; next is the one-function schedule. Feeds
-`gap-deflation-formulation.md`.**
+empirically pinned** (≈.2 dense, ≈.5 sparse). Intrinsic no-knob
+`fl_bookdemand_resid` (orphan-density-per-book; commits
+`744b93b`/`6d845fc`) then tested: best *principled* no-branch method
+(near-matches fl_bookdemand on dense, fixes the collapse .125→.375)
+but **NOT universal** — book-sparse T10462 .375 vs submodular_fl .500.
+**TERMINAL: the book-vs-manifold tension is fundamental; no no-branch
+demand objective recovers both dense wins AND submodular_fl's sparse
+.500. Feeds `gap-deflation-formulation.md` (final conclusion there).**
 
 ### P2 — Denoiser × deflation interaction
 Both bake-offs froze the *other* axis (deflation frozen at

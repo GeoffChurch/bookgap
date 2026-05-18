@@ -246,3 +246,56 @@ design. Standing recommendation: regime-gated fl_bookdemand OR s30
 (no-branch, near-equivalent). Next experiment (one-function, not a
 redesign): the book-density shrinkage schedule. Pending sign-off:
 pursue the schedule, adopt s30 and freeze, or keep regime-gated.**
+
+### fl_bookdemand_resid (2026-05-18) — intrinsic, no knob, no fit — TERMINAL
+
+A hardcoded `s=f(book-density)` schedule would overfit (0.5 rests on
+one sparse topic; calibrating to held-out recall is circular). The
+intrinsic answer: background coreset over **book-orphan articles
+only**, `M_bg = clip(|O| // max(k_book·n_books, k_book), 0, 4000)` —
+operating point set by orphan density *per book*, zero tuned
+constants, no held-out knowledge. Arm commits `744b93b`/`6d845fc`
+(code review caught + fixed an A-keyed-equivalence defect:
+`|O|//k_book` reduces to the refuted A-keyed EB for clustered books;
+per-book normalization fixes it). 5-arm × 4-topic
+(`resid_*`, baselines reproduced byte-identical).
+
+| topic | n_books | orphan_frac | M_bg | fl_bd | s30 | **resid** | sub_fl |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| T11303 book-rich | 116 | .934 | 11 | **.655** | .621 | .621 | .379 |
+| T10820 book-rich | 183 | .940 | 11 | **.609** | .630 | .565 | .326 |
+| T10320 modern | 660 | .934 | 10 | **.630** | .588 | .618 | .248 |
+| T10462 sparse | 34 | .975 | 36 | .125 | .375 | .375 | **.500** |
+
+Diag confirms the mechanism is exactly right: orphan_frac ≈ .93–.98
+everywhere (books cluster, never blanket — as predicted) yet per-book
+normalization keeps M_bg tiny → shrinkage ≈ .06–.09 dense, ≈.51
+sparse (the projected universal-winner profile). It cleanly escaped
+the A-keyed failure.
+
+**But it is NOT a universal winner.** Near-matches fl_bookdemand on
+dense (.621/.565/.618 vs .655/.609/.630; on T10320 numerically
+*identical*) and fixes the sparse collapse (.125→.375, healthy
+spread, no gaps collapse) — yet falls ~.03–.04 short of the dense
+ceiling AND leaves book-sparse T10462 at .375, **0.125 below
+submodular_fl's .500**. With only 34 books, pure-manifold coverage
+beats *any* book-anchored-demand construction however the background
+is regulated.
+
+**FINAL CONCLUSION (whole investigation): the book-vs-manifold
+tension is FUNDAMENTAL, not a bad-knob artifact.** No single
+no-branch demand objective — A-keyed, constant-s, or
+intrinsic-residual — recovers both the full dense wins AND
+submodular_fl's sparse .500. fl_bookdemand_resid is the best
+*principled* no-branch method (intrinsic, zero fitted constants,
+mechanism validated) and is the scientifically preferable no-branch
+default over the fitted s30 (≈equal numbers, no magic constant).
+Regime-gated fl_bookdemand/submodular_fl still wins the absolute
+numbers (full dense + .500 sparse) at the cost of the branch.
+
+**Status: TERMINAL — investigation conclusive. Choices: (1) adopt
+fl_bookdemand_resid as the no-branch default (principled,
+near-best, zero knobs); (2) keep regime-gated for absolute-best
+numbers (retains branch); (3) freeze as-is. Migration to
+docs/gap_deflation_results.md + dead_ends transitions pending
+sign-off on which.**
