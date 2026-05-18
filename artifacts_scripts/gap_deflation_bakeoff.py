@@ -507,6 +507,23 @@ _FL_DIAG_EB: dict = {"n_books": 0, "M": 0, "ratio_bg_book": 0.0,
                      "shrinkage": 0.0, "s_target": None, "mode": "A-keyed"}
 
 
+def _eb_diag_mode(eb_target_shrinkage: float | None, n_books: int) -> str:
+    """3-way diag `mode` label (single source of truth; can't drift).
+
+    - "nbooks-keyed"     : s given AND n_books > 0 (M from n_books·s/(1−s)).
+    - "A-keyed"          : s is None — the deliberate refuted A-keyed control
+                           (the `fl_bookdemand_eb` strategy).
+    - "A-keyed-fallback" : s given BUT n_books == 0 — a variant silently
+                           degraded to the A-keyed M because the topic has
+                           no books to anchor the ratio to.
+    """
+    if eb_target_shrinkage is not None and n_books == 0:
+        return "A-keyed-fallback"
+    if eb_target_shrinkage is None:
+        return "A-keyed"
+    return "nbooks-keyed"
+
+
 def _fl_bookdemand_eb_trace() -> list[float]:
     return list(_FL_GAINS_EB)
 
@@ -566,14 +583,19 @@ def _fl_bookdemand_eb(
 
     A = len(article_emb)
     if not cands or A == 0:
+        # n_books unresolved here (no FL ran); derive it from book_emb so the
+        # 3-way mode rule is identical to the finalization path.
+        _n_books_early = (0 if book_emb is None
+                          else len(np.asarray(book_emb, dtype=np.float32)))
+        _eb_mode = _eb_diag_mode(eb_target_shrinkage, _n_books_early)
         _FL_GAINS_EB.clear()
         _FL_DIAG_EB.update(n_books=0, M=0, ratio_bg_book=0.0,
                            shrinkage=0.0, s_target=eb_target_shrinkage,
-                           mode="A-keyed")
+                           mode=_eb_mode)
         print(f"[fl_bookdemand_eb diag] EARLY-RETURN "
               f"reason={'no_cands' if not cands else 'A==0'} "
               f"n_books=0 M=0 ratio_bg_book=0 shrinkage=0 "
-              f"s_target={eb_target_shrinkage} mode=A-keyed ngaps=0",
+              f"s_target={eb_target_shrinkage} mode={_eb_mode} ngaps=0",
               flush=True)
         return []
 
@@ -607,18 +629,17 @@ def _fl_bookdemand_eb(
     # n_books-keyed (eb_target_shrinkage = s, 0<s<1, AND n_books > 0):
     #   M = round(n_books * s/(1-s)), clamped to [8, min(4000, A)] — pins
     #   bg:book = s/(1-s) and shrinkage M/(M+n_books) ≈ s INDEPENDENT of A.
+    _eb_mode = _eb_diag_mode(eb_target_shrinkage, n_books)
     if eb_target_shrinkage is not None and n_books > 0:
         s = float(eb_target_shrinkage)
         M = int(round(n_books * (s / (1.0 - s))))
         M = max(8, min(M, 4000, A))
-        _eb_mode = "nbooks-keyed"
     else:
         # eb_target_shrinkage None, or set but n_books == 0 → A-keyed
         # fallback (no book signal to anchor the ratio to; preserves the
         # no-book graceful contract).
         M = int(np.clip(A // k_book, 64, 4000))
         M = min(M, A)
-        _eb_mode = "A-keyed"
     # Unreachable in practice (A>=1 guaranteed above; clip lower bound 64);
     # kept defensively.
     if M < 1:

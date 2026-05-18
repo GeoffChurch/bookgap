@@ -659,7 +659,9 @@ def test_eb_target_shrinkage_pins_ratio():
 
 def test_eb_target_shrinkage_nbooks0_fallback():
     """s set but n_books == 0 → fall back to A-keyed M, run
-    background-only, emit >= 3 gaps (NOT []), diag mode A-keyed."""
+    background-only, emit >= 3 gaps (NOT []), diag mode
+    "A-keyed-fallback" (a variant silently degraded — distinct from the
+    deliberate s-is-None "A-keyed" control)."""
     import numpy as np
     from artifacts_scripts.gap_deflation_bakeoff import (
         build_kball_candidates, deflate, _fl_bookdemand_eb_diag,
@@ -682,10 +684,49 @@ def test_eb_target_shrinkage_nbooks0_fallback():
     assert len(g) >= 3, f"expected >=3 gaps, got {len(g)}"
     diag = _fl_bookdemand_eb_diag()
     assert diag["n_books"] == 0, diag
-    assert diag["mode"] == "A-keyed", diag
+    assert diag["mode"] == "A-keyed-fallback", diag
     M_akeyed = min(int(np.clip(A // 10, 64, 4000)), A)
     assert diag["M"] == M_akeyed, (
         f"fallback M={diag['M']} != A-keyed {M_akeyed}")
+
+
+def test_eb_diag_mode_three_way_reachable():
+    """All THREE diag `mode` values are reachable and correct on one
+    fixture:
+      (i)   fl_bookdemand_eb_s50 + books>0  → "nbooks-keyed"
+      (ii)  fl_bookdemand_eb (None) + books>0 → "A-keyed"
+      (iii) fl_bookdemand_eb_s50 + book_emb=None → "A-keyed-fallback"
+    The s-given/no-books case must NOT collapse onto the deliberate
+    s-is-None A-keyed control — that conflation is the spec bug."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_eb_diag,
+    )
+    rs = np.random.RandomState(9)
+    d = 20
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 12.0
+    art = np.vstack([cen[i] + 0.1 * rs.randn(60, d).astype(np.float32)
+                     for i in range(3)]).astype(np.float32)
+    bk = np.vstack([cen[i] * 1.2 for i in range(3)
+                    for _ in range(8)]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+
+    deflate(cands, "fl_bookdemand_eb_s50", art, num_gaps=10,
+            min_gap_size=3, book_emb=bk)
+    assert _fl_bookdemand_eb_diag()["mode"] == "nbooks-keyed", \
+        _fl_bookdemand_eb_diag()
+
+    deflate(cands, "fl_bookdemand_eb", art, num_gaps=10,
+            min_gap_size=3, book_emb=bk)
+    assert _fl_bookdemand_eb_diag()["mode"] == "A-keyed", \
+        _fl_bookdemand_eb_diag()
+
+    deflate(cands, "fl_bookdemand_eb_s50", art, num_gaps=10,
+            min_gap_size=3, book_emb=None)
+    assert _fl_bookdemand_eb_diag()["mode"] == "A-keyed-fallback", \
+        _fl_bookdemand_eb_diag()
 
 
 def test_eb_variants_registered_and_distinct():
