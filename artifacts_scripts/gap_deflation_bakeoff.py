@@ -1050,6 +1050,217 @@ def _fl_bookdemand_resid(
     return gaps
 
 
+# --- best-of-both reframes (Addendum 3, 2026-05-18) -------------------------
+# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
+# A mixed book/manifold demand objective dilutes — no proportion
+# (constant or intrinsic) is best at both regimes (resid proved this).
+# Escape the box: stop mixing. Arm A unions the two PURE signals; arm B
+# uses _submodular_fl as a robust GENERATOR then RANKS by book demand.
+# Both are additive — they reuse _fl_bookdemand / _submodular_fl verbatim
+# and never modify deflate/run_arm/kball_seeds_from_state or any arm.
+
+
+def _fl_union_bd_sub(
+    cands: list[Candidate],
+    article_emb: np.ndarray,
+    *,
+    num_gaps: int,
+    min_gap_size: int,
+    sigma=None,
+    **params,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Arm A — UNION (not mixture) of _fl_bookdemand and _submodular_fl.
+
+    g1 = _fl_bookdemand(...) (book_emb flows via **params; book-anchored).
+    g2 = _submodular_fl(...) (ignores book_emb; manifold coverage).
+    Return g1 ++ g2 with element-0 renumbered 0..N-1 over the
+    concatenation; each tuple's (size, member_ids) is left intact. No
+    dedup here — the downstream run_refine_pipeline does containment+
+    Jaccard dedup + effective_size ranking, which surfaces the
+    book-anchored winners on dense and the manifold-coverage gaps on
+    sparse automatically. No knob, no branch, no fitted constant.
+
+    Edges: `not cands or A==0` → [] (both sub-arms already return [];
+    the concat of [] is []). `sigma` is passed through to _submodular_fl
+    (which needs it) and ignored by _fl_bookdemand (set-overlap only).
+    """
+    g1 = _fl_bookdemand(
+        cands, article_emb, num_gaps=num_gaps,
+        min_gap_size=min_gap_size, sigma=sigma, **params)
+    g2 = _submodular_fl(
+        cands, article_emb, num_gaps=num_gaps,
+        min_gap_size=min_gap_size, sigma=sigma, **params)
+    out: list[tuple[int, int, np.ndarray]] = []
+    for r, (_old_rank, sz, ids) in enumerate(list(g1) + list(g2)):
+        out.append((r, sz, ids))
+    return out
+
+
+# fl_gen_rank diag — SEPARATE globals (no cross-contamination with eb/resid).
+_FL_DIAG_GENRANK: dict = {"n_books": 0, "pool_size": 0, "n_book_shaped": 0,
+                          "mode": "gen-only", "ngaps": 0}
+
+
+def _genrank_mode(n_books: int) -> str:
+    """diag `mode` label (single source of truth; can't drift).
+
+    - "gen-rank" : n_books > 0 — book demand re-ranks the submodular pool.
+    - "gen-only" : n_books == 0 — bd is uninformative → pure submodular
+                   order (graceful = the robust generator, no collapse).
+    """
+    return "gen-rank" if n_books > 0 else "gen-only"
+
+
+def _fl_gen_rank_diag() -> dict:
+    return dict(_FL_DIAG_GENRANK)
+
+
+def _fl_gen_rank(
+    cands: list[Candidate],
+    article_emb: np.ndarray,
+    *,
+    num_gaps: int,
+    min_gap_size: int,
+    sigma=None,          # forwarded to _submodular_fl (the generator) which
+                          # needs it; gen-rank's own scoring is pure
+                          # set-overlap (no kernel/sigma) — see _fl_bookdemand
+    book_emb=None,
+    k_book: int = 10,
+    **params,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Arm B — decouple GENERATION from SELECTION.
+
+    1. GENERATE the candidate pool P with _submodular_fl (robust,
+       regime-agnostic, never collapses — its recall is the FLOOR).
+    2. SCORE each pool gap g by book-anchored demand
+         bd(g) = Σ_b Jaccard(members_g, Nb[b])
+       Nb[b] = the k_b = min(k_book, A) nearest article-local articles to
+       book b (exact FlatL2 over article_emb, queried with book_emb) —
+       REUSE _fl_bookdemand's exact Jaccard form
+         isect / (|members_g| + k_b − isect)
+       and its sparse inverted-index pattern (article→which-pool-gaps;
+       per-gap sparse {book: isect}). NO dense (A,K)/(C,K)/(A,K,d) array.
+    3. EMIT: gaps with bd>0 sorted by bd DESC (stable; ties keep the
+       original submodular order), THEN gaps with bd==0 in original
+       submodular order (coverage backfill — NOT dropped, so sparse
+       coverage is preserved). element-0 = this emission order; cap to
+       num_gaps. Each tuple's (size, member_ids) is left intact.
+
+    Self-weakening intrinsic property: book-sparse → bd ≈ noise → emit ≈
+    submodular pool → ≈ submodular_fl's floor (no collapse). Book-dense →
+    bd surfaces the book-shaped regions from the rich manifold pool → ≈
+    fl_bookdemand. Best-of-both by separation of concerns — no mixing
+    constant, no branch; the book signal self-attenuates exactly when it
+    should.
+
+    Edges: book_emb None/empty → all bd=0 → emit = P in submodular order
+    (graceful = pure generator), mode "gen-only". `not cands or A==0` →
+    [] (the submodular pool is [] and the concat is []). `sigma` is
+    unused by gen-rank's own scoring (pure set-overlap, sidesteps the
+    global-vs-article-local index-space bug class as in _fl_bookdemand);
+    it IS forwarded to the _submodular_fl generator, which requires it.
+
+    Determinism: _submodular_fl is deterministic; the rank uses a STABLE
+    sort key (-bd[i], i) so ties fall back to the original submodular
+    order. No RNG.
+
+    Memory-bounded (mirrors _fl_bookdemand): one exact FlatL2 (built
+    once), an inverted index article→pool-gap-index, a per-gap sparse
+    {book: isect} dict, and a 1-D length-|P| `bd` vector. No dense
+    (A,K)/(C,K)/(A,K,d) array anywhere.
+
+    Diag is computed/printed IN-FUNCTION (dual-module-safe under
+    `python -m`, per the Addendum-1 fix) at finalization AND at every
+    early return.
+    """
+    A = len(article_emb)
+
+    # Step 1: GENERATE the pool with the robust submodular generator.
+    pool = _submodular_fl(
+        cands, article_emb, num_gaps=num_gaps,
+        min_gap_size=min_gap_size, sigma=sigma, **params)
+
+    # Resolve book count (used by the 3-way mode rule everywhere).
+    if book_emb is None:
+        book_arr = np.zeros((0,), dtype=np.float32)
+    else:
+        book_arr = np.asarray(book_emb, dtype=np.float32)
+    n_books = 0 if book_arr.size == 0 else len(book_arr)
+    _mode = _genrank_mode(n_books)
+
+    if not cands or A == 0 or not pool:
+        _FL_DIAG_GENRANK.update(n_books=int(n_books), pool_size=len(pool),
+                                n_book_shaped=0, mode=_mode, ngaps=0)
+        print(f"[fl_gen_rank diag] EARLY-RETURN "
+              f"reason={'no_cands' if not cands else ('A==0' if A == 0 else 'empty_pool')} "
+              f"n_books={int(n_books)} pool_size={len(pool)} "
+              f"n_book_shaped=0 mode={_mode} ngaps=0", flush=True)
+        return []
+
+    pool_size = len(pool)
+    # member_ids array per pool gap (article-local; left intact on emit).
+    pool_members = [np.asarray(ids, dtype=np.int64) for _, _, ids in pool]
+
+    bd = np.zeros(pool_size, dtype=np.float64)   # 1-D length-|P| score vec
+
+    if n_books > 0:
+        from bookgap.index import build_index, FlatL2
+
+        k_b = min(k_book, A)
+        # ONE exact article index; query books for k_b nearest articles.
+        art_idx = build_index(
+            FlatL2(), np.ascontiguousarray(article_emb.astype(np.float32)))
+        _Db, Nb = art_idx.search(
+            np.ascontiguousarray(book_arr.astype(np.float32)), k=k_b)
+
+        # Inverted index: article-local id → list of pool-gap indices.
+        # O(Σ|members_p|) — bounded by pool member mass, no dense alloc.
+        inv: dict[int, list[int]] = {}
+        for p, mem in enumerate(pool_members):
+            for a in mem.tolist():
+                inv.setdefault(int(a), []).append(p)
+
+        # Per-pool-gap sparse intersection counts {book: isect}.
+        pool_isect: list[dict[int, int]] = [{} for _ in range(pool_size)]
+        for b in range(n_books):
+            for a in Nb[b].tolist():
+                for p in inv.get(int(a), []):
+                    d = pool_isect[p]
+                    d[b] = d.get(b, 0) + 1
+
+        # bd(g) = Σ_b Jaccard(members_g, Nb[b]), reusing _fl_bookdemand's
+        # exact form: isect / (|members_g| + k_b − isect) [O(1) per entry].
+        for p in range(pool_size):
+            mem_size = int(pool_members[p].size)
+            acc = 0.0
+            for b, isect in pool_isect[p].items():
+                union = mem_size + k_b - isect
+                if union > 0:
+                    acc += isect / union
+            bd[p] = acc
+
+    n_book_shaped = int(np.count_nonzero(bd > 0.0))
+
+    # Step 3: EMIT. Stable sort by -bd (ties → original submodular order).
+    order = sorted(range(pool_size), key=lambda i: (-bd[i], i))
+    # bd>0 first (sorted desc, stable), then bd==0 in original order —
+    # the (-bd, i) key already yields exactly this (all bd>0 sort ahead
+    # of all bd==0, and within bd==0 the secondary key i preserves the
+    # submodular order; backfill kept, nothing dropped).
+    gaps: list[tuple[int, int, np.ndarray]] = []
+    for rank, i in enumerate(order[:num_gaps]):
+        _old_rank, sz, ids = pool[i]
+        gaps.append((rank, sz, ids))
+
+    _FL_DIAG_GENRANK.update(
+        n_books=int(n_books), pool_size=int(pool_size),
+        n_book_shaped=n_book_shaped, mode=_mode, ngaps=len(gaps))
+    print(f"[fl_gen_rank diag] n_books={int(n_books)} "
+          f"pool_size={int(pool_size)} n_book_shaped={n_book_shaped} "
+          f"mode={_mode} ngaps={len(gaps)}", flush=True)
+    return gaps
+
+
 def heldout_book_split(n_books: int, frac: float = 0.2,
                        seed: int = 42) -> np.ndarray:
     """Deterministic held-out book indices (sorted, no replacement)."""
@@ -1147,6 +1358,10 @@ def _make_eb_s(s: float) -> DeflateFn:
 _STRATEGIES["fl_bookdemand_eb_s30"] = _make_eb_s(0.30)
 _STRATEGIES["fl_bookdemand_eb_s50"] = _make_eb_s(0.50)
 _STRATEGIES["fl_bookdemand_eb_s70"] = _make_eb_s(0.70)
+
+# best-of-both reframes (Addendum 3): union (A) and gen→rank (B).
+_STRATEGIES["fl_union_bd_sub"] = _fl_union_bd_sub
+_STRATEGIES["fl_gen_rank"] = _fl_gen_rank
 
 
 def deflate(

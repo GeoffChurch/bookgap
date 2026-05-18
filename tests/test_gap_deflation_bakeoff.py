@@ -1325,3 +1325,373 @@ def test_resid_memory_bounded():
         f"dense_AK={dense_AK} dense_CK={dense_CK} — a dense (A,K)/(C,K) "
         f"allocation likely crept into the sparse-FL machinery"
     )
+
+
+# ---------------------------------------------------------------------------
+# best-of-both reframes: fl_union_bd_sub (union, not mixture) and
+# fl_gen_rank (decouple generation from selection).
+# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
+#       (Addendum 3, 2026-05-18). A mixed demand objective dilutes; these
+#       arms stop mixing — A unions the two pure signals, B uses
+#       submodular_fl as a robust generator then ranks by book demand.
+# ---------------------------------------------------------------------------
+
+def _gr_key(gaps):
+    """Order-stable key: list of (rank, size, sorted-member-tuple)."""
+    return [(int(r), int(s), tuple(sorted(int(x) for x in ids)))
+            for r, s, ids in gaps]
+
+
+def _gr_setkey(gaps):
+    """Order-agnostic key: list of frozenset member sets."""
+    return [frozenset(int(x) for x in ids) for _, _, ids in gaps]
+
+
+def test_union_is_concatenation():
+    """fl_union_bd_sub returns exactly the _fl_bookdemand gaps followed
+    by the _submodular_fl gaps: count == |bd|+|sub|, the bd-half member
+    sets equal _fl_bookdemand's output (in order), the sub-half equal
+    _submodular_fl's output (in order), element-0 renumbered 0..N-1."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand, _submodular_fl,
+    )
+    rs = np.random.RandomState(17)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 12.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32)
+             for i in range(3)]
+    parts.append(0.1 * rs.randn(150, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[i] * 1.2 for i in range(3) for _ in range(6)]
+                   ).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    sigma = np.ones(len(art), dtype=np.float64)
+
+    g_bd = _fl_bookdemand(cands, art, num_gaps=200, min_gap_size=3,
+                          book_emb=bk)
+    g_sub = _submodular_fl(cands, art, num_gaps=200, min_gap_size=3,
+                           sigma=sigma)
+    g_union = deflate(cands, "fl_union_bd_sub", art, num_gaps=200,
+                      min_gap_size=3, sigma=sigma, book_emb=bk)
+
+    assert len(g_union) == len(g_bd) + len(g_sub)
+    # element-0 renumbered 0..N-1 over the concatenation
+    assert [x[0] for x in g_union] == list(range(len(g_union)))
+    n_bd = len(g_bd)
+    # bd-half member sets equal _fl_bookdemand output, IN ORDER
+    assert _gr_setkey(g_union[:n_bd]) == _gr_setkey(g_bd)
+    # sub-half member sets equal _submodular_fl output, IN ORDER
+    assert _gr_setkey(g_union[n_bd:]) == _gr_setkey(g_sub)
+    # sizes preserved per tuple
+    assert [x[1] for x in g_union[:n_bd]] == [x[1] for x in g_bd]
+    assert [x[1] for x in g_union[n_bd:]] == [x[1] for x in g_sub]
+
+
+def test_genrank_no_book_is_submodular_order():
+    """book_emb=None → fl_gen_rank emits the _submodular_fl pool in
+    submodular order (member sets AND order identical), mode 'gen-only',
+    NOT []."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _submodular_fl, _fl_gen_rank_diag,
+    )
+    rs = np.random.RandomState(17)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 12.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32)
+             for i in range(3)]
+    parts.append(0.1 * rs.randn(150, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[i] * 1.2 for i in range(3) for _ in range(6)]
+                   ).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    sigma = np.ones(len(art), dtype=np.float64)
+
+    g_sub = _submodular_fl(cands, art, num_gaps=200, min_gap_size=3,
+                           sigma=sigma)
+    g_gr = deflate(cands, "fl_gen_rank", art, num_gaps=200,
+                   min_gap_size=3, sigma=sigma, book_emb=None)
+
+    assert len(g_gr) > 0
+    # member sets AND order identical to the submodular pool
+    assert _gr_setkey(g_gr) == _gr_setkey(g_sub)
+    # element-0 = emission order 0..N-1
+    assert [x[0] for x in g_gr] == list(range(len(g_gr)))
+    diag = _fl_gen_rank_diag()
+    assert diag["mode"] == "gen-only", diag
+    assert diag["n_books"] == 0, diag
+    assert diag["pool_size"] == len(g_sub), diag
+    assert diag["n_book_shaped"] == 0, diag
+
+
+def test_genrank_prioritizes_book_shaped():
+    """Fixture = book-aligned clusters + a book-free coverage region.
+    Gaps overlapping book neighborhoods are emitted before the
+    book-free ones; diag.n_book_shaped>0; backfill (bd==0) gaps are
+    still present (len unchanged vs the submodular pool — none dropped).
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _submodular_fl, _fl_gen_rank_diag,
+    )
+    from bookgap.index import build_index, FlatL2
+    rs = np.random.RandomState(23)
+    d = 24
+    # 3 book-aligned clusters + 1 large book-free coverage region.
+    cen = np.zeros((4, d), np.float32)
+    for i in range(4):
+        cen[i, i] = 14.0
+    parts = [cen[i] + 0.10 * rs.randn(70, d).astype(np.float32)
+             for i in range(3)]               # book-aligned clusters
+    parts.append(cen[3] + 0.10 * rs.randn(200, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    # Books only near the first 3 cluster centroids (NONE near cen[3]).
+    bk = np.vstack([cen[i] * 1.15 + 0.03 * rs.randn(6, d).astype(np.float32)
+                    for i in range(3)]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    sigma = np.ones(len(art), dtype=np.float64)
+
+    g_sub = _submodular_fl(cands, art, num_gaps=400, min_gap_size=3,
+                           sigma=sigma)
+    g_gr = deflate(cands, "fl_gen_rank", art, num_gaps=400,
+                   min_gap_size=3, sigma=sigma, book_emb=bk)
+
+    diag = _fl_gen_rank_diag()
+    assert diag["mode"] == "gen-rank", diag
+    assert diag["n_book_shaped"] > 0, diag
+    assert diag["pool_size"] == len(g_sub), diag
+    # backfill kept: nothing dropped vs the submodular pool
+    assert len(g_gr) == len(g_sub), (len(g_gr), len(g_sub))
+
+    # Determine which emitted gaps overlap a book neighborhood.
+    aidx = build_index(FlatL2(), np.ascontiguousarray(art.astype(np.float32)))
+    _D, Nb = aidx.search(np.ascontiguousarray(bk.astype(np.float32)), k=10)
+    book_articles = set(int(x) for x in np.asarray(Nb).reshape(-1).tolist())
+
+    def _is_book_shaped(ids):
+        return len(set(int(x) for x in ids) & book_articles) > 0
+
+    flags = [_is_book_shaped(ids) for _, _, ids in g_gr]
+    # No book-free gap may precede a book-shaped one (book-shaped first,
+    # then backfill in submodular order).
+    last_true = max((i for i, f in enumerate(flags) if f), default=-1)
+    first_false = next((i for i, f in enumerate(flags) if not f),
+                       len(flags))
+    assert last_true < first_false or last_true == -1, (
+        f"book-shaped gap appears after a book-free one: flags={flags}")
+    assert any(flags), "no book-shaped gap surfaced at all"
+
+
+def test_genrank_determinism():
+    """Two fl_gen_rank runs are byte-identical (ranks, sizes, member
+    order)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate,
+    )
+    rs = np.random.RandomState(17)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 12.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32)
+             for i in range(3)]
+    parts.append(0.1 * rs.randn(150, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[i] * 1.2 for i in range(3) for _ in range(6)]
+                   ).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    sigma = np.ones(len(art), dtype=np.float64)
+
+    def _run():
+        g = deflate(cands, "fl_gen_rank", art, num_gaps=200,
+                    min_gap_size=3, sigma=sigma, book_emb=bk)
+        return [(int(r), int(s), tuple(int(x) for x in ids))
+                for r, s, ids in g]
+
+    assert _run() == _run()
+
+
+def test_genrank_memory_bounded():
+    """GENUINE memory guard, mirroring test_fl_bookdemand_eb_memory_bounded.
+
+    Many tight, well-separated micro-clusters so the gen-rank working
+    set — the POOL member mass Sp = Σ_p|pool_members_p| (NOT the full
+    candidate mass S; gen-rank's inverted index/per-gap dicts are keyed
+    by the tiny submodular pool, not all candidates) — is ≪ A*K and ≪
+    A*pool_size. The forbidden dense baselines are 8*A*K (article×
+    candidate) and 8*A*pool_size (article×pool scoring) float64 matrices
+    (NO spurious `d` factor; 8*C*K is NOT meaningful here — C is the
+    tiny pool count, not a k-means coreset as in the eb/resid family).
+    The tight sparse threshold is constructed to sit STRICTLY below
+    BOTH, so any dense (A,K)/(A,pool_size) allocation in the gen-rank
+    scoring machinery necessarily pushes peak above it and fails.
+    """
+    import tracemalloc
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_gen_rank_diag,
+    )
+
+    rs = np.random.RandomState(181)
+    d = 16
+    n_clusters, pts_per = 5000, 4
+    centers = (rs.randn(n_clusters, d).astype(np.float32)) * 80.0
+    parts = [centers[i] + 0.02 * rs.randn(pts_per, d).astype(np.float32)
+             for i in range(n_clusters)]
+    art = np.vstack(parts).astype(np.float32)            # A = 20000
+    seed_bk = (centers + 0.3).astype(np.float32)
+    cands = build_kball_candidates(art, seed_bk, 0.75, 1)
+    A = len(art)
+    K = len(cands)
+    # A SMALL clustered customer-book subset (real books cluster).
+    bk = (centers[:4] + 0.3).astype(np.float32)
+
+    S = sum(int(len(c.members)) for c in cands)
+    assert S < 0.05 * A * K, (
+        f"sparsity precondition violated: S={S} not << A*K={A * K} "
+        f"(S/(A*K)={S / (A * K):.5f}); fixture k-balls are not sparse"
+    )
+
+    # sigma is ALWAYS supplied on the production path
+    # (kball_seeds_from_state passes state['sigma']); the embedded
+    # _submodular_fl generator requires it.
+    sigma = np.ones(A, dtype=np.float64)
+    tracemalloc.start()
+    deflate(cands, "fl_gen_rank", art, num_gaps=50,
+            min_gap_size=3, sigma=sigma, book_emb=bk)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    # gen-rank's genuine working set is the POOL member mass, NOT the
+    # full candidate mass S: the inverted index is article→pool-gap and
+    # the per-gap sparse {book:isect} dict is keyed by the (tiny) pool,
+    # so the true sparse footprint scales with
+    #   Sp = Σ_p |pool_members_p|  (≤ num_gaps · ball-size ≪ S ≪ A·K).
+    # Re-derive the pool exactly as gen-rank does (deterministic) to get
+    # Sp and pool_size — C = pool_size + n_books is correspondingly tiny.
+    from artifacts_scripts.gap_deflation_bakeoff import _submodular_fl
+    pool = _submodular_fl(cands, art, num_gaps=50, min_gap_size=3,
+                          sigma=sigma)
+    Sp = sum(int(len(ids)) for _, _, ids in pool)
+    diag = _fl_gen_rank_diag()
+    n_books = len(bk)
+    pool_size = int(diag["pool_size"])
+    assert pool_size == len(pool)
+    C = pool_size + n_books
+
+    # Sparse precondition: the gen-rank working set is O(pool mass),
+    # vastly below any dense article×candidate or article×pool matrix.
+    assert Sp < 0.05 * A * K, (
+        f"gen-rank sparsity precondition violated: Sp={Sp} not << "
+        f"A*K={A * K} (Sp/(A*K)={Sp / (A * K):.6f})"
+    )
+
+    DICT_OVERHEAD = 80                       # bytes per sparse dict entry
+    SPARSE_MULT = 6                          # modest multiplicative slack
+    # Fixed slack absorbs the legitimately-bounded _submodular_fl
+    # generator working set (one FlatL2 index over (A,d) float32, the
+    # length-A best_cov vector, and the per-candidate sim_vecs whose
+    # TOTAL is Σ|cand.members|=S — sparse, bounded by ball mass, NOT a
+    # dense A×K matrix) plus interpreter/import noise. It stays FAR
+    # below the forbidden dense (A,pool_size) ceiling (8·A·pool_size).
+    FIXED_MB = 6 * 1024 * 1024               # fixed slack: index + gen pool
+    # Sparse footprint: the inverted index + per-pool-gap {book:isect}
+    # dicts (≤ Sp + pool_size·n_books entries) + the 1-D length-pool_size
+    # `bd` vector. Bounded by Sp (NOT S, NOT A·K, NOT A·pool_size).
+    sparse_bytes = (Sp + pool_size * n_books) * (8 + DICT_OVERHEAD) + C * 8
+    threshold = SPARSE_MULT * sparse_bytes + FIXED_MB
+
+    # Forbidden dense regressions (NO spurious `d` factor): a dense
+    # article×candidate (A,K) float64 matrix = 8·A·K bytes, and a dense
+    # article×pool scoring (A,pool_size) float64 matrix = 8·A·pool_size
+    # bytes. (8·C·K is NOT a meaningful baseline for gen-rank: C is the
+    # tiny pool count, not a k-means coreset as in the eb/resid family.)
+    dense_AK = 8 * A * K
+    dense_Apool = 8 * A * pool_size
+
+    # Self-documenting catch proof: the threshold sits STRICTLY below
+    # both forbidden dense allocations, so any code path materialising a
+    # dense (A,K) or (A,pool_size) float64 array necessarily pushes peak
+    # above `threshold` and fails the primary assert.
+    assert threshold < dense_AK and threshold < dense_Apool, (
+        f"guard not below both dense allocs: Sp={Sp} C={C} "
+        f"threshold={threshold} dense_AK={dense_AK} "
+        f"dense_Apool={dense_Apool}"
+    )
+
+    assert peak < threshold, (
+        f"fl_gen_rank peak={peak} exceeds tight sparse budget "
+        f"threshold={threshold} (Sp={Sp} C={C} A={A} K={K} "
+        f"pool_size={pool_size}); dense_AK={dense_AK} "
+        f"dense_Apool={dense_Apool} — a dense (A,K)/(A,pool) "
+        f"allocation likely crept into gen-rank"
+    )
+
+
+def test_union_genrank_registered_distinct():
+    """Both names are in _STRATEGIES, each deterministic, and each
+    differs from plain submodular_fl AND fl_bookdemand on a fixture
+    where the difference must show (union longer than either; gen_rank
+    order != submodular order when books are present)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _STRATEGIES,
+        _fl_bookdemand, _submodular_fl,
+    )
+    assert "fl_union_bd_sub" in _STRATEGIES
+    assert "fl_gen_rank" in _STRATEGIES
+
+    rs = np.random.RandomState(17)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 12.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32)
+             for i in range(3)]
+    parts.append(0.1 * rs.randn(150, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[i] * 1.2 for i in range(3) for _ in range(6)]
+                   ).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    sigma = np.ones(len(art), dtype=np.float64)
+
+    def _u():
+        return deflate(cands, "fl_union_bd_sub", art, num_gaps=200,
+                       min_gap_size=3, sigma=sigma, book_emb=bk)
+
+    def _r():
+        return deflate(cands, "fl_gen_rank", art, num_gaps=200,
+                       min_gap_size=3, sigma=sigma, book_emb=bk)
+
+    # deterministic
+    assert _gr_key(_u()) == _gr_key(_u())
+    assert _gr_key(_r()) == _gr_key(_r())
+
+    g_bd = _fl_bookdemand(cands, art, num_gaps=200, min_gap_size=3,
+                          book_emb=bk)
+    g_sub = _submodular_fl(cands, art, num_gaps=200, min_gap_size=3,
+                           sigma=sigma)
+    g_u = _u()
+    g_r = _r()
+
+    # union strictly longer than either pure arm
+    assert len(g_u) > len(g_bd)
+    assert len(g_u) > len(g_sub)
+    assert _gr_key(g_u) != _gr_key(g_bd)
+    assert _gr_key(g_u) != _gr_key(g_sub)
+
+    # gen_rank is a PERMUTATION of the submodular pool (same BAG of
+    # member sets — gen_rank keeps each pool gap's members intact, only
+    # the emission ORDER changes when book demand re-ranks).
+    assert sorted(_gr_setkey(g_r), key=lambda s: sorted(s)) == \
+        sorted(_gr_setkey(g_sub), key=lambda s: sorted(s))
+    # ...but the ORDER differs from plain submodular order (books rerank).
+    assert [t[2] for t in _gr_key(g_r)] != [t[2] for t in _gr_key(g_sub)], (
+        "gen_rank order identical to submodular order despite books")
+    assert _gr_key(g_r) != _gr_key(g_bd)
