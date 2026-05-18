@@ -1610,27 +1610,37 @@ def test_genrank_memory_bounded():
     # Forbidden dense regressions (NO spurious `d` factor): a dense
     # article×candidate (A,K) float64 matrix = 8·A·K bytes, and a dense
     # article×pool scoring (A,pool_size) float64 matrix = 8·A·pool_size
-    # bytes. (8·C·K is NOT a meaningful baseline for gen-rank: C is the
-    # tiny pool count, not a k-means coreset as in the eb/resid family.)
+    # bytes. Spec Addendum 3 additionally pins the canonical 8·C·K pair
+    # (C = pool_size + n_books, same K = |build_kball_candidates|): even
+    # though C is the tiny pool+books count here (not a k-means coreset
+    # as in the eb/resid family), the (C,K) dense matrix is still a
+    # spec-required forbidden baseline the sparse guard must undercut.
     dense_AK = 8 * A * K
+    dense_CK = 8 * C * K
     dense_Apool = 8 * A * pool_size
 
     # Self-documenting catch proof: the threshold sits STRICTLY below
-    # both forbidden dense allocations, so any code path materialising a
-    # dense (A,K) or (A,pool_size) float64 array necessarily pushes peak
+    # ALL THREE forbidden dense allocations — the spec-required pair
+    # (8·A·K, 8·C·K) plus the extra, stricter arm-relevant
+    # 8·A·pool_size — so any code path materialising a dense (A,K),
+    # (C,K), or (A,pool_size) float64 array necessarily pushes peak
     # above `threshold` and fails the primary assert.
-    assert threshold < dense_AK and threshold < dense_Apool, (
-        f"guard not below both dense allocs: Sp={Sp} C={C} "
+    assert (
+        threshold < dense_AK
+        and threshold < dense_CK
+        and threshold < dense_Apool
+    ), (
+        f"guard not below all dense allocs: Sp={Sp} C={C} K={K} "
         f"threshold={threshold} dense_AK={dense_AK} "
-        f"dense_Apool={dense_Apool}"
+        f"dense_CK={dense_CK} dense_Apool={dense_Apool}"
     )
 
     assert peak < threshold, (
         f"fl_gen_rank peak={peak} exceeds tight sparse budget "
         f"threshold={threshold} (Sp={Sp} C={C} A={A} K={K} "
         f"pool_size={pool_size}); dense_AK={dense_AK} "
-        f"dense_Apool={dense_Apool} — a dense (A,K)/(A,pool) "
-        f"allocation likely crept into gen-rank"
+        f"dense_CK={dense_CK} dense_Apool={dense_Apool} — a dense "
+        f"(A,K)/(C,K)/(A,pool) allocation likely crept into gen-rank"
     )
 
 
