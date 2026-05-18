@@ -27,6 +27,7 @@ Per-gap quality measurement and filtering.
 - [gap-deflation-formulation](cohesion-metric-design/gap-deflation-formulation.md) — **living**: bake-off of 5 deflation strategies (greedy-hard/geom, submodular-FL, DPP, softmax-mc) with held-out-book validation
 - [dual-landmark-eff-size-reporting](cohesion-metric-design/dual-landmark-eff-size-reporting.md) — report `eff_size_books`/`eff_size_chapters` per gap; **validated in the bake-off harness** (drives the LIP/LPP mirror-image result), production integration pending
 - [data-quality-artifact-prefilter](cohesion-metric-design/data-quality-artifact-prefilter.md) — drop structural data debris (N3C, taxonomy, …); **bake-off reinforced**: genuine debris, binomial p discriminates it, raw sig/size ranking does not
+- [book-rediscovery-eval-candidates](cohesion-metric-design/book-rediscovery-eval-candidates.md) — **living tracker**: every method/experiment worth running through the held-out-book-rediscovery eval (P1 denoiser-bakeoff+held-out & Soft-EM; cross-topic deflation in-progress; + the explicit don't-retry list)
 
 ## Keyword extraction
 
