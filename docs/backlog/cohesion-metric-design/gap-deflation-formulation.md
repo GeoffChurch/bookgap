@@ -63,3 +63,36 @@ triangulation not oracle.
 **Status: investigation conclusive across 3 topics. Pending: sign-off
 to migrate to `docs/gap_deflation_results.md` + transition this entry
 per the validated/refuted convention.**
+
+### 5-topic regime map (2026-05-18) — CONCLUSIVE
+
+Added T10320 (Neural Nets, modern/article-dense) + T10820 (Fuzzy/Control,
+classical/book-rich). greedy_hard vs submodular_fl held-out recall@20:
+
+| topic | regime | g_hard | sub_fl | winner |
+|---|---|---|---|---|
+| T11303 Bayesian | classical/book-rich | 0.483 | 0.379 | g_hard +0.10 |
+| T10820 Fuzzy/Ctrl | classical/book-rich | 0.457 | 0.326 | g_hard +0.13 |
+| T10181 NLP | modern/article-dense | 0.128 | 0.156 | sub_fl +0.03 (marginal) |
+| T10320 Neural Nets | modern/article-dense | 0.236 | 0.248 | ~tie +0.01 |
+| T10462 RL | book-sparse | 0.375 | 0.500 | sub_fl +0.13 |
+
+**Discriminating axis = subfield maturity / book density.** Classical
+book-rich theory subfields → greedy_hard wins decisively. Modern
+article-dense → wash. Book-sparse → submodular_fl wins decisively (its
+only clear-win regime). Qualitatively all arms produce coherent
+on-topic book-shaped gaps on all 5 (verified) → recall deltas are real
+book-alignment, not artifacts. dpp worst/near-worst on all 5
+(refuted for book-gaps). greedy_geom inert (byte-identical; dropped).
+
+**FINAL recommendation:** greedy_hard = robust default (never
+decisively beaten); submodular_fl = regime-specific, use ONLY for
+book-sparse subfields; never dpp/softmax_mc/greedy_geom. Original
+"greedy hard-subtraction unsatisfying" premise refuted at output
+level. Caveat: proxy not LLM-coverage; a confirmatory LLM-coverage
+run on a book-sparse topic (where submodular_fl wins) would be the
+single highest-value pre-paper check.
+
+**Status: CONCLUSIVE (5 topics, regime axis identified, qualitatively
+validated). Ready to migrate to docs/gap_deflation_results.md +
+transition this entry — pending sign-off.**
