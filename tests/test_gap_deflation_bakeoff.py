@@ -925,3 +925,345 @@ def test_fl_bookdemand_eb_memory_bounded():
         f"dense_AK={dense_AK} dense_CK={dense_CK} — a dense (A,K)/(C,K) "
         f"allocation likely crept into the sparse-FL machinery"
     )
+
+
+# ---------------------------------------------------------------------------
+# fl_bookdemand_resid — intrinsic residual demand (no `s`, no fitted constant)
+# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
+#       (Addendum 2, 2026-05-18). Background coreset built ONLY over
+#       book-orphan articles, so the operating point falls out of orphan
+#       mass with zero tuned knobs.
+# ---------------------------------------------------------------------------
+
+def test_resid_book_rich_reduces_to_bookdemand():
+    """Book-rich limit: 3 tight clusters, dense books per cluster, NO
+    diffuse background → books cover the manifold, |O|≈0 → M_bg==0,
+    mode 'book-only', 3 distinct cluster-aligned gaps (fl_bookdemand-like).
+
+    Geometry caveat: 3 tight 60-pt clusters (0.1 jitter); sparse books at
+    cen*1.2 give the cluster-spanning k-balls (the proven ball-forming
+    layout from the eb suite). DENSE per-article coverage books (sampled
+    at every article position) make the union of book k_book-NN cover ALL
+    articles → |O|==0 → M_bg==0 → mode 'book-only' (fl_bookdemand limit).
+    5 far decoy books produce no candidates of their own."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_diag,
+    )
+    rs = np.random.RandomState(121)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32)
+             for i in range(3)]
+    art = np.vstack(parts).astype(np.float32)
+    # Coverage books: one per article (slightly perturbed) so every
+    # article is within some book's k_book nearest → orphan set empty.
+    coverage_books = (art + 0.3 * rs.randn(*art.shape).astype(np.float32)
+                      ).astype(np.float32)
+    bk = np.vstack([
+        cen[0] * 1.2 + 0.05 * rs.randn(8, d).astype(np.float32),
+        cen[1] * 1.2 + 0.05 * rs.randn(8, d).astype(np.float32),
+        cen[2] * 1.2 + 0.05 * rs.randn(8, d).astype(np.float32),
+        coverage_books,
+        40.0 + rs.randn(5, d).astype(np.float32),
+    ]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, "fl_bookdemand_resid", art, num_gaps=3,
+                   min_gap_size=10, book_emb=bk)
+    diag = _fl_bookdemand_resid_diag()
+    assert diag["M_bg"] == 0, diag
+    assert diag["mode"] == "book-only", diag
+    assert len(gaps) == 3, f"expected 3 gaps, got {len(gaps)}"
+    assert [g[0] for g in gaps] == [0, 1, 2]      # emission rank
+    labels = [_eb_cluster_labels(art, ids, cen) for _i, _s, ids in gaps]
+    assert len(set(labels)) == 3, f"labels not distinct: {labels}"
+
+
+def test_resid_book_sparse_no_collapse():
+    """CORE HYPOTHESIS: 3 clusters + 120-article diffuse background +
+    only 1 book → most articles orphaned → orphan_frac high, M_bg>0,
+    emits >= 3 gaps mapping to 3 distinct clusters (does NOT collapse).
+
+    Contrast: plain fl_bookdemand collapses to < 3 here because the
+    single book's demand is exhausted in one pick (asserted — it is
+    stable on this seeded geometry)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_diag,
+    )
+    rs = np.random.RandomState(131)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))  # diffuse bg
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[0] * 1.2]).astype(np.float32)         # ONLY 1 book
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+
+    # Contrast: plain fl_bookdemand collapses (< 3) on this exact geometry.
+    g_bd = deflate(cands, "fl_bookdemand", art, num_gaps=10,
+                   min_gap_size=5, book_emb=bk)
+    assert len(g_bd) < 3, (
+        f"contrast precondition: fl_bookdemand should collapse <3, got {len(g_bd)}"
+    )
+
+    g_resid = deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+                      min_gap_size=5, book_emb=bk)
+    diag = _fl_bookdemand_resid_diag()
+    assert diag["M_bg"] > 0, diag
+    assert diag["orphan_frac"] > 0.5, diag
+    assert diag["mode"] == "residual", diag
+    assert len(g_resid) >= 3, f"resid collapsed: got {len(g_resid)} gaps"
+    labels = {_eb_cluster_labels(art, ids, cen) for _i, _s, ids in g_resid}
+    assert len({l for l in labels if l >= 0}) >= 3, (
+        f"resid gaps did not map to 3 distinct clusters; labels={labels}"
+    )
+
+
+def test_resid_no_book_graceful():
+    """0 books (book_emb None AND empty) → O = all articles →
+    background-only, emits >= 3 gaps, NOT []. mode 'background-only'."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_diag,
+    )
+    rs = np.random.RandomState(141)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    art = np.vstack(parts).astype(np.float32)
+    # Candidates still need SOME book to seed k-balls; the strategy is run
+    # with book_emb None / empty so there are zero book customers.
+    bk_for_cands = np.vstack([cen[0] * 1.2, cen[1] * 1.2,
+                              cen[2] * 1.2]).astype(np.float32)
+    cands = build_kball_candidates(art, bk_for_cands, 0.75, 1)
+
+    for be in (None, np.zeros((0, d), np.float32)):
+        g = deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+                    min_gap_size=5, book_emb=be)
+        diag = _fl_bookdemand_resid_diag()
+        assert diag["mode"] == "background-only", (be is None, diag)
+        assert diag["n_books"] == 0, diag
+        assert len(g) >= 3, f"no-book run collapsed: {len(g)} gaps (be={be!r})"
+        labels = {_eb_cluster_labels(art, ids, cen) for _i, _s, ids in g}
+        assert len({l for l in labels if l >= 0}) >= 3, (
+            f"no-book gaps not distinct; labels={labels}"
+        )
+
+
+def test_resid_orphan_monotone():
+    """Vary ONLY book count (dense vs sparse) on the same geometry. The
+    intrinsic regulator must be monotone in book sparsity with NO fitted
+    constant: orphan_frac(sparse) > orphan_frac(dense) AND M_bg strictly
+    larger for sparse."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_diag,
+    )
+    rs = np.random.RandomState(151)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+
+    bk_dense = np.vstack([
+        cen[0] * 1.2 + 0.05 * rs.randn(20, d).astype(np.float32),
+        cen[1] * 1.2 + 0.05 * rs.randn(20, d).astype(np.float32),
+        cen[2] * 1.2 + 0.05 * rs.randn(20, d).astype(np.float32),
+    ]).astype(np.float32)
+    bk_sparse = np.vstack([cen[0] * 1.2]).astype(np.float32)
+
+    c_dense = build_kball_candidates(art, bk_dense, 0.75, 1)
+    deflate(c_dense, "fl_bookdemand_resid", art, num_gaps=10,
+            min_gap_size=5, book_emb=bk_dense)
+    diag_dense = _fl_bookdemand_resid_diag()
+
+    c_sparse = build_kball_candidates(art, bk_sparse, 0.75, 1)
+    deflate(c_sparse, "fl_bookdemand_resid", art, num_gaps=10,
+            min_gap_size=5, book_emb=bk_sparse)
+    diag_sparse = _fl_bookdemand_resid_diag()
+
+    assert diag_sparse["n_books"] < diag_dense["n_books"]
+    assert diag_sparse["orphan_frac"] > diag_dense["orphan_frac"], (
+        diag_sparse, diag_dense)
+    assert diag_sparse["M_bg"] > diag_dense["M_bg"], (
+        diag_sparse, diag_dense)
+
+
+def test_resid_no_s_knob():
+    """Parameter-free: the signature has NO eb_target_shrinkage / s-style
+    operating-point parameter, and a stray such kwarg passed via **params
+    is harmless/ignored (output byte-identical with vs without it)."""
+    import inspect
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid,
+    )
+    sig = inspect.signature(_fl_bookdemand_resid)
+    forbidden = {"eb_target_shrinkage", "s", "s_target", "target_shrinkage",
+                 "shrinkage", "lam", "lambda_"}
+    assert not (forbidden & set(sig.parameters)), (
+        f"resid must be parameter-free; found {forbidden & set(sig.parameters)}"
+    )
+    rs = np.random.RandomState(161)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[0] * 1.2]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+
+    g0 = deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+                 min_gap_size=5, book_emb=bk)
+    g1 = deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+                 min_gap_size=5, book_emb=bk, eb_target_shrinkage=0.5)
+    assert len(g0) == len(g1)
+    for (r0, s0, m0), (r1, s1, m1) in zip(g0, g1):
+        assert r0 == r1 and s0 == s1
+        assert np.array_equal(np.asarray(m0), np.asarray(m1)), (
+            "stray eb_target_shrinkage kwarg changed output"
+        )
+
+
+def test_resid_determinism():
+    """Two runs must be byte-identical (FlatL2 exact, KMeans seeded
+    random_state=0 n_init=1, deterministic argmax tie-break)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate,
+    )
+    rs = np.random.RandomState(171)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[0] * 1.2, cen[1] * 1.2]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+
+    g1 = deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+                 min_gap_size=3, book_emb=bk)
+    g2 = deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+                 min_gap_size=3, book_emb=bk)
+    assert len(g1) == len(g2)
+    for (r1, s1, m1), (r2, s2, m2) in zip(g1, g2):
+        assert r1 == r2 and s1 == s2
+        assert np.array_equal(np.asarray(m1), np.asarray(m2)), (
+            "resid not deterministic across runs"
+        )
+
+
+def test_resid_monotone_gains():
+    """Greedy marginal gains (submodular FL) must be non-increasing."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_trace,
+    )
+    rs = np.random.RandomState(181)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[0] * 1.2]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    deflate(cands, "fl_bookdemand_resid", art, num_gaps=10,
+            min_gap_size=3, book_emb=bk)
+    gn = _fl_bookdemand_resid_trace()
+    assert len(gn) >= 2, f"need >=2 gains to check monotonicity, got {gn}"
+    for a, b in zip(gn, gn[1:]):
+        assert b <= a + 1e-9, f"gains not non-increasing: {gn}"
+
+
+def test_resid_memory_bounded():
+    """GENUINE memory guard, mirroring test_fl_bookdemand_eb_memory_bounded.
+
+    Many tight, well-separated micro-clusters so the candidate member
+    mass S = Σ|members| is O(A) and ≪ A*K and ≪ C*K (C = n_books+M_bg).
+    The forbidden dense baselines are 8*A*K and 8*C*K float64 matrices
+    (NO spurious `d` factor). The tight sparse threshold is constructed
+    to sit STRICTLY below BOTH, so any dense (A,K)/(C,K) allocation in
+    the sparse-FL machinery necessarily pushes peak above it and fails.
+    """
+    import tracemalloc
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_diag,
+    )
+
+    rs = np.random.RandomState(181)
+    d = 16
+    n_clusters, pts_per = 1000, 8
+    centers = (rs.randn(n_clusters, d).astype(np.float32)) * 80.0   # far apart
+    parts = [centers[i] + 0.02 * rs.randn(pts_per, d).astype(np.float32)
+             for i in range(n_clusters)]
+    art = np.vstack(parts).astype(np.float32)            # A = 8000
+    # One book per cluster, offset just enough that a p=0.75 ball captures
+    # its own (and only its own) tight cluster → per-candidate ball ~= 8.
+    # Books cover only HALF the clusters so the other half is fully
+    # orphaned → a substantial M_bg (∝ |O|) — this both exercises the
+    # orphan-coreset path and makes C = n_books + M_bg large enough that
+    # 8*C*K stays comfortably above the tight sparse threshold (so the
+    # "guard below both dense allocs" self-proof holds, and any real
+    # dense (C,K) allocation would still fail the primary assert).
+    bk = (centers[: n_clusters // 2] + 0.3).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    A = len(art)
+    K = len(cands)
+
+    S = sum(int(len(c.members)) for c in cands)
+    assert S < 0.05 * A * K, (
+        f"sparsity precondition violated: S={S} not << A*K={A * K} "
+        f"(S/(A*K)={S / (A * K):.5f}); fixture k-balls are not sparse"
+    )
+
+    tracemalloc.start()
+    deflate(cands, "fl_bookdemand_resid", art, num_gaps=50,
+            min_gap_size=5, book_emb=bk)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    # Customer count C = n_books + M_bg, taken from the diag the run just
+    # wrote (M_bg is intrinsic to orphan mass — cannot be precomputed
+    # without re-deriving the orphan set, so read it back).
+    diag = _fl_bookdemand_resid_diag()
+    n_books = len(bk)
+    M_bg = int(diag["M_bg"])
+    C = n_books + M_bg
+
+    DICT_OVERHEAD = 80                       # bytes per sparse dict entry
+    SPARSE_MULT = 6                          # modest multiplicative slack
+    FIXED_MB = 4 * 1024 * 1024               # fixed slack: index + coreset
+    sparse_bytes = S * (8 + DICT_OVERHEAD) + C * 8
+    threshold = SPARSE_MULT * sparse_bytes + FIXED_MB
+
+    dense_AK = 8 * A * K
+    dense_CK = 8 * C * K
+
+    assert threshold < dense_AK and threshold < dense_CK, (
+        f"guard not below both dense allocs: S={S} C={C} "
+        f"threshold={threshold} dense_AK={dense_AK} dense_CK={dense_CK}"
+    )
+
+    assert peak < threshold, (
+        f"fl_bookdemand_resid peak={peak} exceeds tight sparse budget "
+        f"threshold={threshold} (S={S} C={C} A={A} K={K} M_bg={M_bg}); "
+        f"dense_AK={dense_AK} dense_CK={dense_CK} — a dense (A,K)/(C,K) "
+        f"allocation likely crept into the sparse-FL machinery"
+    )
