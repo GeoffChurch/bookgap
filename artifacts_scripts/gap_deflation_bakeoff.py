@@ -261,6 +261,49 @@ def _dpp(cands, article_emb, *, num_gaps, min_gap_size, sigma=None,
     return gaps
 
 
+def heldout_book_split(n_books: int, frac: float = 0.2,
+                       seed: int = 42) -> np.ndarray:
+    """Deterministic held-out book indices (sorted, no replacement)."""
+    rng = np.random.RandomState(seed)
+    n_hold = int(round(n_books * frac))
+    return np.sort(rng.choice(n_books, size=n_hold, replace=False))
+
+
+def heldout_recall_spread(heldout_book_emb, article_emb, gaps_members,
+                          k_near: int = 10, cover_frac: float = 0.5):
+    """recall = fraction of held-out books whose `k_near` nearest
+    articles are >= `cover_frac` inside SOME gap's member set.
+    spread = Shannon entropy of which gap claims each recalled book
+    (0 when all recalled books map to one gap)."""
+    from bookgap.index import build_index, FlatL2
+    if len(heldout_book_emb) == 0 or len(article_emb) == 0 or not gaps_members:
+        return 0.0, 0.0
+    aidx = build_index(FlatL2(), np.ascontiguousarray(
+        article_emb.astype(np.float32)))
+    kk = min(k_near, len(article_emb))
+    _D, I = aidx.search(np.ascontiguousarray(
+        heldout_book_emb.astype(np.float32)), k=kk)
+    member_sets = [set(int(x) for x in m) for m in gaps_members]
+    claimed_by = []
+    for nn in I:
+        nnset = set(int(x) for x in nn)
+        best_g, best_cov = -1, 0.0
+        for gi, ms in enumerate(member_sets):
+            cov = len(nnset & ms) / max(len(nnset), 1)
+            if cov > best_cov:
+                best_cov, best_g = cov, gi
+        claimed_by.append(best_g if best_cov >= cover_frac else -1)
+    recalled = [c for c in claimed_by if c >= 0]
+    recall = len(recalled) / max(len(claimed_by), 1)
+    if recalled:
+        _, cnt = np.unique(recalled, return_counts=True)
+        p = cnt / cnt.sum()
+        spread = float(-(p * np.log(p)).sum())
+    else:
+        spread = 0.0
+    return float(recall), spread
+
+
 def inter_gap_metrics(survivors: list[dict], top_k: int = 20) -> dict:
     sets = [set(g.get("refined_member_indices", [])) for g in survivors[:top_k]]
     js = [len(a & b)/len(a | b) for i,a in enumerate(sets) for b in sets[i+1:] if (a|b)]

@@ -119,3 +119,26 @@ def test_inter_gap_metrics_basic():
     m = inter_gap_metrics(survivors, top_k=20)
     assert 0.0 <= m["mean_pairwise_jaccard_top20"] <= 1.0
     assert m["unique_coverage_at_20"] == len(set(range(0,90)) | set(range(200,260)))
+
+
+def test_heldout_mask_deterministic_and_recall():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        heldout_book_split, heldout_recall_spread,
+    )
+    a = heldout_book_split(100, frac=0.2, seed=42)
+    b = heldout_book_split(100, frac=0.2, seed=42)
+    np.testing.assert_array_equal(a, b)        # deterministic
+    assert len(a) == 20
+    assert np.all((a >= 0) & (a < 100)) and len(set(a.tolist())) == 20
+
+    heldout_books_emb = np.zeros((2, 4), dtype=np.float32)
+    article_emb = np.zeros((30, 4), dtype=np.float32)
+    article_emb[:10] = 0.01                    # 10 articles near book 0
+    article_emb[10:] = 10.0                    # articles 10-29 far from book 0
+    gaps_members = [list(range(10)), list(range(20, 30))]
+    rec, spread = heldout_recall_spread(
+        heldout_books_emb[:1], article_emb, gaps_members,
+        k_near=10, cover_frac=0.5)
+    assert rec == 1.0
+    assert spread == 0.0                        # 1 recalled book → entropy 0
