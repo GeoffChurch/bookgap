@@ -256,3 +256,38 @@ def test_synthetic_implant_recovers_clusters(strategy):
             u = len(sets[i] | sets[j])
             jac = (len(sets[i] & sets[j]) / u) if u else 0.0
             assert jac < 0.2, f"{strategy}: gaps {i},{j} overlap jac={jac:.2f}"
+
+
+def test_kball_seeds_passes_article_sliced_sigma(monkeypatch):
+    """BLOCKER 1 regression: deflate must receive sigma sliced to the
+    article space (length A, == state['sigma'][article_global_idx]),
+    not the raw global N_total sigma."""
+    import numpy as np
+    import artifacts_scripts.gap_denoiser_bakeoff as gdb
+    captured = {}
+    def fake_deflate(cands, strategy, article_emb, *, num_gaps,
+                     min_gap_size, sigma=None, **kw):
+        captured["sigma"] = None if sigma is None else np.asarray(sigma).copy()
+        return []
+    monkeypatch.setattr(gdb, "deflate", fake_deflate)
+    N = 60
+    art_gi = np.arange(0, 40)            # 40 articles at global 0..39
+    bk_gi = np.arange(40, 60)            # 20 books at global 40..59
+    emb = np.random.RandomState(0).randn(N, 6).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    sig = (np.arange(N) * 0.01 + 0.1).astype(np.float32)  # NON-constant
+    state = {"emb": emb, "article_global_idx": art_gi,
+             "book_global_idx": bk_gi, "sigma": sig, "topic_id": "T"}
+    gdb.kball_seeds_from_state(state, deflation="submodular_fl")
+    got = captured["sigma"]
+    assert got is not None and len(got) == 40
+    np.testing.assert_array_equal(got, sig[art_gi])   # article-sliced, not raw
+
+
+def test_global_to_article_local_maps_and_drops():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _global_to_article_local
+    agi = np.array([10, 20, 30, 40])      # global ids of 4 articles
+    # gm has global ids; 99 is a non-article id and must be dropped
+    out = _global_to_article_local([[20, 40, 99], [10]], agi)
+    assert out == [[1, 3], [0]]

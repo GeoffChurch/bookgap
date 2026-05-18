@@ -413,6 +413,16 @@ def heldout_recall_spread(heldout_book_emb, article_emb, gaps_members,
     return float(recall), spread
 
 
+def _global_to_article_local(member_lists, article_global_idx):
+    """Map GLOBAL work indices -> ARTICLE-LOCAL positions (0..A-1).
+    Drops any id not in article_global_idx (non-article works)."""
+    g2l = {int(g): i for i, g in enumerate(np.asarray(article_global_idx))}
+    out = []
+    for ml in member_lists:
+        out.append([g2l[int(x)] for x in ml if int(x) in g2l])
+    return out
+
+
 def inter_gap_metrics(survivors: list[dict], top_k: int = 20) -> dict:
     sets = [set(g.get("refined_member_indices", [])) for g in survivors[:top_k]]
     js = [len(a & b)/len(a | b) for i,a in enumerate(sets) for b in sets[i+1:] if (a|b)]
@@ -562,10 +572,11 @@ def run_arm(
     m = inter_gap_metrics(ranked)
     gm = [list(g.get("refined_member_indices", [])) for g in ranked]
     art_gidx = np.asarray(state["article_global_idx"])
+    gm_local = _global_to_article_local(gm, art_gidx)
     rec, spread = heldout_recall_spread(
         heldout_book_emb,
         state["emb"][art_gidx],
-        gm,
+        gm_local,
         k_near=10,
         cover_frac=0.5,
     )

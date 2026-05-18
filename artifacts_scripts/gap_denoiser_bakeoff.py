@@ -23,6 +23,7 @@ from artifacts_scripts.hdbscan_gap_probe import (
     _denoise_cclip,
 )
 from artifacts_scripts.kball_gap_probe import _greedy_kball_gaps_inline
+from artifacts_scripts.gap_deflation_bakeoff import build_kball_candidates, deflate
 
 
 def build_scatter_context(
@@ -119,10 +120,13 @@ def kball_seeds_from_state(
     article_emb = np.ascontiguousarray(emb[art_gidx])
     book_emb = np.ascontiguousarray(emb[bk_gidx])
 
-    from artifacts_scripts.gap_deflation_bakeoff import build_kball_candidates, deflate
     cands = build_kball_candidates(article_emb, book_emb, radius_fraction=radius_fraction, k=1)
+    _sig = state.get("sigma")
+    # sigma sliced to article space (A,), positionally aligned with Candidate.members — arms index it article-local (spec §1 index-space contract)
+    _sig_art = (np.asarray(_sig)[np.asarray(state["article_global_idx"])]
+                if _sig is not None else None)
     gaps = deflate(cands, deflation, article_emb, num_gaps=num_gaps,
-                   min_gap_size=min_gap_size, sigma=state.get("sigma"),
+                   min_gap_size=min_gap_size, sigma=_sig_art,
                    book_emb=book_emb, radius_fraction=radius_fraction)
     topic_id = state.get("topic_id", "")
     seeds: list[dict] = []
