@@ -117,6 +117,7 @@ def _greedy_geom(cands, article_emb, *, num_gaps, min_gap_size,
     alive = [c.members.copy() for c in cands]
     claimed: set[int] = set()
     gaps = []
+    emitted = 0
     for _ in range(num_gaps):
         sizes = [len(ids) for ids in alive]
         if not any(sizes):
@@ -125,7 +126,9 @@ def _greedy_geom(cands, article_emb, *, num_gaps, min_gap_size,
         best_ids = alive[best]
         if len(best_ids) == 0 or (min_gap_size > 0 and len(best_ids) < min_gap_size):
             break
-        gaps.append((best, int(len(best_ids)), best_ids.copy()))
+        # element-0 = sequential emission rank (uniform across arms; matches greedy_hard/oracle convention)
+        gaps.append((emitted, int(len(best_ids)), best_ids.copy()))
+        emitted += 1
         claimed |= set(best_ids.tolist())
         for i in range(len(alive)):
             if alive[i].size:
