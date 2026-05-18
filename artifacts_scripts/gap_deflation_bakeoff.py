@@ -499,6 +499,195 @@ def _fl_bookdemand(
     return gaps
 
 
+# --- fl_bookdemand_eb: empirical-Bayes shrinkage demand ---------------------
+# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
+# Module-global trace/diag stores (last call wins). # not thread-safe
+_FL_GAINS_EB: list[float] = []
+_FL_DIAG_EB: dict = {"n_books": 0, "M": 0, "ratio_bg_book": 0.0, "shrinkage": 0.0}
+
+
+def _fl_bookdemand_eb_trace() -> list[float]:
+    return list(_FL_GAINS_EB)
+
+
+def _fl_bookdemand_eb_diag() -> dict:
+    return dict(_FL_DIAG_EB)
+
+
+def _fl_bookdemand_eb(
+    cands: list[Candidate],
+    article_emb: np.ndarray,
+    *,
+    num_gaps: int,
+    min_gap_size: int,
+    sigma=None,          # deliberately unused — see _fl_bookdemand: sidesteps
+                          # the global-vs-article-local index-space bug class
+    book_emb=None,
+    k_book: int = 10,
+    eb_book_weight: float = 1.0,   # exposed-but-untuned: >1 up-weights books
+    **params,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Facility-location deflation over BOOK ∪ BACKGROUND-coreset demand.
+
+    One greedy-FL objective with a *mixed* customer set so the regime
+    adaptation is emergent (no `if`):
+
+    - Book customers (one per training book b): demand Nb[b] = k_book
+      nearest article-local articles to book_emb[b] — exactly as
+      _fl_bookdemand.
+    - Background customers (one per k-means centroid, count M): demand
+      Nc[c] = k_book nearest article-local articles to centroid c.
+      Centroids = KMeans(n_clusters=M, random_state=0, n_init=10).
+    - M = clip(A // k_book, 64, 4000), clamped M <= A.
+
+    cov(g,c) = Jaccard(members_g, demand(c)) — REUSED verbatim from
+    _fl_bookdemand: isect / (|members_g| + k_b - isect).  Every customer
+    weight 1.0; book customers carry eb_book_weight (default 1.0).
+    Greedy maximises Σ_c w_c · max(0, cov(g,c) - best_cov[c]); stop when
+    best gain <= 0 or num_gaps reached; min_gap_size -> continue
+    (peer-consistent with _fl_bookdemand, NOT break).
+
+    The shrinkage M/(M+n_books) falls out of the customer mixture: no
+    tuned λ. No-books → background-only (graceful, NOT []). sigma unused.
+
+    Memory-bounded (mirrors _fl_bookdemand exactly): one exact FlatL2
+    over article_emb (built once, reused for book & background queries);
+    inverted index article→candidate; per-candidate sparse
+    {customer_id: cov} dict; best_cov is a 1-D dense vector length
+    n_books+M (NOT a matrix). No dense (A,K)/(C,K)/(A,K,d) array.
+    """
+    A = len(article_emb)
+    if not cands or A == 0:
+        _FL_GAINS_EB.clear()
+        _FL_DIAG_EB.update(n_books=0, M=0, ratio_bg_book=0.0, shrinkage=0.0)
+        return []
+
+    from bookgap.index import build_index, FlatL2
+    from sklearn.cluster import KMeans
+
+    k_b = min(k_book, A)
+    emb_f32 = np.ascontiguousarray(article_emb.astype(np.float32))
+
+    # ONE exact article index, reused for BOTH book and background queries.
+    art_idx = build_index(FlatL2(), emb_f32)
+
+    # --- Book customers (demand = Nb[b], k_b nearest article-local) ---------
+    if book_emb is None:
+        book_arr = np.zeros((0, article_emb.shape[1]), dtype=np.float32)
+    else:
+        book_arr = np.asarray(book_emb, dtype=np.float32)
+    n_books = 0 if book_arr.size == 0 else len(book_arr)
+    if n_books:
+        _Db, Nb = art_idx.search(
+            np.ascontiguousarray(book_arr.astype(np.float32)), k=k_b)
+    else:
+        Nb = np.zeros((0, k_b), dtype=np.int64)
+
+    # --- Background customers (k-means coreset over article_emb) ------------
+    # M tiles the manifold at ~book-neighborhood granularity (data-driven).
+    M = int(np.clip(A // k_book, 64, 4000))
+    M = min(M, A)
+    if M < 1:
+        _FL_GAINS_EB.clear()
+        _FL_DIAG_EB.update(n_books=n_books, M=0, ratio_bg_book=0.0,
+                           shrinkage=0.0)
+        return []
+    km = KMeans(n_clusters=M, random_state=0, n_init=10).fit(emb_f32)
+    centroids = km.cluster_centers_.astype(np.float32)
+    _Dc, Nc = art_idx.search(np.ascontiguousarray(centroids), k=k_b)
+
+    # Customer ids: [0 .. n_books-1] = books, [n_books .. n_books+M-1] = bg.
+    C = n_books + M
+    cust_weight = np.ones(C, dtype=np.float64)
+    if n_books:
+        cust_weight[:n_books] = float(eb_book_weight)
+
+    # Diagnostics (last call wins). # not thread-safe
+    _FL_DIAG_EB.update(
+        n_books=int(n_books),
+        M=int(M),
+        ratio_bg_book=float(M / max(n_books, 1)),
+        shrinkage=float(M / (M + n_books)),
+    )
+
+    # Inverted index: article-local id -> list of candidate indices.
+    # O(Σ|members_g|) — bounded by total ball mass, no dense allocation.
+    inv: dict[int, list[int]] = {}
+    for g, c in enumerate(cands):
+        for a in c.members.tolist():
+            inv.setdefault(a, []).append(g)
+
+    # Accumulate intersection counts per (candidate, customer) sparsely.
+    cand_isect: list[dict[int, int]] = [{} for _ in range(len(cands))]
+
+    def _accumulate(neighbor_rows, cust_offset):
+        for ci, row in enumerate(neighbor_rows):
+            cust = cust_offset + ci
+            for a in row.tolist():
+                for g in inv.get(int(a), []):
+                    d = cand_isect[g]
+                    d[cust] = d.get(cust, 0) + 1
+
+    if n_books:
+        _accumulate(Nb, 0)
+    _accumulate(Nc, n_books)
+
+    # Convert counts -> Jaccard (REUSED form from _fl_bookdemand):
+    #   cov(g,c) = isect / (|members_g| + k_b - isect)   [O(1) per entry]
+    cand_cov: list[dict[int, float]] = [{} for _ in range(len(cands))]
+    for g in range(len(cands)):
+        mem_size = len(cands[g].members)
+        for cust, isect in cand_isect[g].items():
+            union = mem_size + k_b - isect
+            cand_cov[g][cust] = isect / union if union > 0 else 0.0
+
+    # Greedy facility-location over the mixed customer set.
+    best_cov = np.zeros(C, dtype=np.float64)   # 1-D dense, length n_books+M
+    picked: set[int] = set()
+    _FL_GAINS_EB.clear()
+    gaps: list[tuple[int, int, np.ndarray]] = []
+    emitted = 0
+
+    for _ in range(num_gaps):
+        best_gain = -np.inf
+        best_j = -1
+        # Candidate-index order; strict > → lowest index wins ties.
+        for g in range(len(cands)):
+            if g in picked or not cand_cov[g]:
+                continue
+            gain_g = 0.0
+            for cust, v in cand_cov[g].items():
+                delta = v - best_cov[cust]
+                if delta > 0.0:
+                    gain_g += cust_weight[cust] * delta
+            if gain_g > best_gain:
+                best_gain = gain_g
+                best_j = g
+
+        if best_j < 0 or not np.isfinite(best_gain) or best_gain <= 0:
+            break
+
+        ids = cands[best_j].members.astype(np.int64)
+        if min_gap_size > 0 and ids.size < min_gap_size:
+            # Skip undersized candidate (mark consumed so it isn't re-picked),
+            # but do NOT emit and do NOT update best_cov — continue to next
+            # round.  Peer-consistent with _fl_bookdemand (continue, not break).
+            picked.add(best_j)
+            continue
+
+        _FL_GAINS_EB.append(best_gain)
+        gaps.append((emitted, int(ids.size), ids))
+        emitted += 1
+
+        # Update best_cov only over the customers this candidate touches.
+        for cust, v in cand_cov[best_j].items():
+            if v > best_cov[cust]:
+                best_cov[cust] = v
+        picked.add(best_j)
+
+    return gaps
+
+
 def heldout_book_split(n_books: int, frac: float = 0.2,
                        seed: int = 42) -> np.ndarray:
     """Deterministic held-out book indices (sorted, no replacement)."""
@@ -570,6 +759,7 @@ _STRATEGIES: dict[str, DeflateFn] = {
 _STRATEGIES["dpp"] = _dpp
 _STRATEGIES["softmax_mc"] = _softmax_mc
 _STRATEGIES["fl_bookdemand"] = _fl_bookdemand
+_STRATEGIES["fl_bookdemand_eb"] = _fl_bookdemand_eb
 
 
 def deflate(
