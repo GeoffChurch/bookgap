@@ -604,26 +604,65 @@ def test_fl_bookdemand_eb_determinism():
 
 
 def test_fl_bookdemand_eb_memory_bounded():
-    """No dense (A,K)/(C,K)/(A,K,d) matrix; sub-quadratic peak/elements
-    ratio.  Mirrors the sparse-machinery contract of fl_bookdemand."""
+    """The EB peak must be incompatible with a dense (A,K) or (C,K)
+    float64 allocation — the exact regression this guard exists for.
+
+    The previous guard (peak < 0.25*8*A*K*d, and peak < 4*peak_bd) could
+    NOT catch that regression: the spurious `d` factor inflated the
+    ceiling d-fold (a dense (A,K) float64 matrix is only 8*A*K bytes,
+    which sails under 0.25*8*A*K*d), and the 4*peak_bd factor was
+    calibrated to pass current code, not to fail a concrete dense alloc.
+
+    This rewrite makes the k-ball mass *genuinely* sparse, so a TIGHT
+    byte budget can sit strictly below BOTH forbidden dense allocations.
+    The test then asserts its own threshold sits below 8*A*K and 8*C*K,
+    so by construction any dense (A,K)/(C,K) allocation in the sparse-FL
+    family would push peak_eb above the threshold and fail this test.
+
+    Fixture: ~600 tight tiny clusters of 8 points each, spaced far apart
+    (sep=80, intra-cluster jitter=0.02), one book per cluster offset by
+    0.3 so a p=0.75 k-ball ≈ exactly one cluster (8 members). Total
+    candidate member mass S = sum(len(c.members)) is therefore O(A) and
+    ≪ A*K and ≪ C*K — an explicit, self-checked sparsity precondition.
+    Deterministic (seeded), no network, ~17s.
+    """
     import tracemalloc
     import numpy as np
     from artifacts_scripts.gap_deflation_bakeoff import (
         build_kball_candidates, deflate,
     )
+
+    # --- small-ball fixture: many tight, well-separated micro-clusters ----
     rs = np.random.RandomState(81)
     d = 16
-    cen = np.zeros((4, d), np.float32)
-    for i in range(4):
-        cen[i, i] = 10.0
-    parts = [cen[i] + 0.1 * rs.randn(150, d).astype(np.float32)
-             for i in range(4)]
-    parts.append(0.1 * rs.randn(400, d).astype(np.float32))
-    art = np.vstack(parts).astype(np.float32)          # A = 1000
-    bk = np.vstack([cen * 1.2]).astype(np.float32)
+    n_clusters, pts_per = 600, 8
+    centers = (rs.randn(n_clusters, d).astype(np.float32)) * 80.0   # far apart
+    parts = [centers[i] + 0.02 * rs.randn(pts_per, d).astype(np.float32)
+             for i in range(n_clusters)]
+    art = np.vstack(parts).astype(np.float32)            # A = 4800
+    # One book per cluster, offset just enough that a p=0.75 ball captures
+    # its own (and only its own) tight cluster -> per-candidate ball ~= 8.
+    bk = (centers + 0.3).astype(np.float32)
     cands = build_kball_candidates(art, bk, 0.75, 1)
     A = len(art)
     K = len(cands)
+
+    # Total candidate member mass (the true working-set size of the
+    # sparse machinery). Must be ≪ A*K and ≪ C*K for the tight guard to
+    # cleanly separate legit-sparse from a dense (A,K)/(C,K) allocation.
+    S = sum(int(len(c.members)) for c in cands)
+    assert S < 0.05 * A * K, (
+        f"sparsity precondition violated: S={S} not << A*K={A * K} "
+        f"(S/(A*K)={S / (A * K):.5f}); fixture k-balls are not sparse"
+    )
+
+    # Customer count C mirrors _fl_bookdemand_eb exactly:
+    #   M = clip(A // k_book, 64, 4000), clamped M <= A;  C = n_books + M.
+    k_book = 10
+    M = int(np.clip(A // k_book, 64, 4000))
+    M = min(M, A)
+    n_books = len(bk)
+    C = n_books + M
 
     tracemalloc.start()
     deflate(cands, "fl_bookdemand_eb", art, num_gaps=50,
@@ -631,27 +670,40 @@ def test_fl_bookdemand_eb_memory_bounded():
     peak_eb = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
 
-    # The forbidden dense structure is the (A,K,d) kernel tensor; a dense
-    # (A,K) float64 matrix is 8*A*K bytes. The sparse machinery
-    # (inverted index + per-candidate dicts + 1-D best_cov, length
-    # n_books+M) plus a bounded KMeans coreset must stay far below the
-    # genuinely quadratic dense (A,K,d) tensor and well under 8*A*K*d.
-    dense_AKd = 8 * A * K * art.shape[1]
-    assert peak_eb < 0.25 * dense_AKd, (
-        f"peak={peak_eb} not sub-quadratic vs dense (A,K,d)={dense_AKd}"
+    # Expected sparse footprint: S sparse {customer:cov} entries (8 bytes
+    # value + a generous per-entry Python dict overhead) + the 1-D dense
+    # best_cov / cust_weight vectors of length C. DICT_OVERHEAD is a
+    # deliberately generous slack for CPython dict-entry + boxed-int/float
+    # bookkeeping; SPARSE_MULT and FIXED_MB absorb the FlatL2 index, the
+    # bounded KMeans coreset over (A,d), and interpreter/import noise.
+    DICT_OVERHEAD = 80                       # bytes per sparse dict entry
+    SPARSE_MULT = 6                          # modest multiplicative slack
+    FIXED_MB = 4 * 1024 * 1024               # fixed slack: index + coreset
+    sparse_bytes = S * (8 + DICT_OVERHEAD) + C * 8
+    threshold = SPARSE_MULT * sparse_bytes + FIXED_MB
+
+    # The two forbidden dense regressions (NO spurious `d` factor): a
+    # dense (A,K) float64 matrix = 8*A*K bytes, a dense (C,K) float64
+    # matrix = 8*C*K bytes.
+    dense_AK = 8 * A * K
+    dense_CK = 8 * C * K
+
+    # Self-documenting catch proof: the threshold sits STRICTLY below
+    # both forbidden dense allocations. Hence any code path that
+    # materialises a dense (A,K) or (C,K) float64 array necessarily
+    # pushes peak_eb above `threshold` and fails the primary assert
+    # below — this is exactly the "would FAIL on a real dense (A,K) or
+    # (C,K) allocation" property the spec requires.
+    assert threshold < dense_AK and threshold < dense_CK, (
+        f"guard not below both dense allocs: S={S} C={C} "
+        f"threshold={threshold} dense_AK={dense_AK} dense_CK={dense_CK}"
     )
 
-    # EB shares fl_bookdemand's sparse contract; its only extra cost is a
-    # bounded background coreset (M <= 4000 customers) + a seeded KMeans
-    # over (A,d). Its peak must stay within a small constant factor of
-    # the fl_bookdemand peak on the IDENTICAL candidate pool — i.e. no
-    # new quadratic (A,K)/(C,K) allocation crept in.
-    tracemalloc.start()
-    deflate(cands, "fl_bookdemand", art, num_gaps=50,
-            min_gap_size=5, book_emb=bk)
-    peak_bd = tracemalloc.get_traced_memory()[1]
-    tracemalloc.stop()
-    assert peak_eb < 4.0 * peak_bd, (
-        f"EB peak={peak_eb} >> fl_bookdemand peak={peak_bd} "
-        "(possible new dense allocation)"
+    # Primary memory assertion: the real sparse run stays under the tight
+    # budget (and therefore far under either dense allocation).
+    assert peak_eb < threshold, (
+        f"fl_bookdemand_eb peak={peak_eb} exceeds tight sparse budget "
+        f"threshold={threshold} (S={S} C={C} A={A} K={K}); "
+        f"dense_AK={dense_AK} dense_CK={dense_CK} — a dense (A,K)/(C,K) "
+        f"allocation likely crept into the sparse-FL machinery"
     )
