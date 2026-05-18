@@ -80,3 +80,22 @@ def test_submodular_fl_monotone_nonincreasing_gains():
     assert len(gaps) >= 1
     # element-0 is the sequential emission rank
     assert [g[0] for g in gaps] == list(range(len(gaps)))
+
+
+def test_dpp_picks_diverse_capped():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate,
+    )
+    rs = np.random.RandomState(9)
+    art = rs.randn(300, 8).astype(np.float32); art /= np.linalg.norm(art,axis=1,keepdims=True)
+    bk = rs.randn(20, 8).astype(np.float32); bk /= np.linalg.norm(bk,axis=1,keepdims=True)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, "dpp", art, num_gaps=10, min_gap_size=0,
+                   dpp_pool_cap=200)
+    assert [g[0] for g in gaps] == list(range(len(gaps)))   # emission rank
+    sets = [set(ids.tolist()) for _i, _s, ids in gaps]
+    if len(sets) >= 2:
+        js = [len(a & b)/len(a | b) for i,a in enumerate(sets)
+              for b in sets[i+1:] if (a|b)]
+        assert np.mean(js) < 0.5     # DPP suppresses heavy overlap

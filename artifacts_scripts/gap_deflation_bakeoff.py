@@ -213,6 +213,54 @@ def _submodular_fl(cands, article_emb, *, num_gaps, min_gap_size,
     return gaps
 
 
+def _jaccard_sim_capped(member_sets):
+    n = len(member_sets)
+    S = np.eye(n, dtype=np.float64)
+    for i in range(n):
+        si = member_sets[i]
+        for j in range(i + 1, n):
+            sj = member_sets[j]
+            u = len(si | sj)
+            v = (len(si & sj) / u) if u else 0.0
+            S[i, j] = S[j, i] = v
+    return S
+
+
+def _dpp(cands, article_emb, *, num_gaps, min_gap_size, sigma=None,
+         dpp_pool_cap=4000, **params):
+    # 1-2: cap the candidate pool (mandatory; dense K×K is O(corpus²))
+    idxs = [i for i, c in enumerate(cands) if len(c.members) >= max(min_gap_size, 1)]
+    if not idxs:
+        return []
+    idxs.sort(key=lambda i: (-len(cands[i].members), i))
+    idxs = idxs[:dpp_pool_cap]
+    msets = [set(cands[i].members.tolist()) for i in idxs]
+    q = np.array([np.log1p(len(cands[i].members)) for i in idxs], dtype=np.float64)
+    S = _jaccard_sim_capped(msets)
+    L = (q[:, None] * q[None, :]) * S            # Diag(q) S Diag(q)
+    n = L.shape[0]
+    # Greedy MAP-DPP (Chen et al. 2018 fast Cholesky)
+    cis = np.zeros((min(num_gaps, n), n))
+    di2 = np.diag(L).astype(np.float64).copy()
+    gaps = []
+    emitted = 0
+    for it in range(min(num_gaps, n)):
+        j = int(np.argmax(np.where(di2 > 1e-12, di2, -np.inf)))
+        if not np.isfinite(di2[j]) or di2[j] <= 1e-12:
+            break
+        orig = idxs[j]
+        ids = cands[orig].members.astype(np.int64)
+        if min_gap_size > 0 and ids.size < min_gap_size:
+            break
+        gaps.append((emitted, int(ids.size), ids))   # element-0 = emission rank
+        emitted += 1
+        eis = (L[j, :] - cis[:it].T @ cis[:it, j]) / np.sqrt(di2[j])
+        cis[it, :] = eis
+        di2 = di2 - eis ** 2
+        di2[j] = -np.inf
+    return gaps
+
+
 # Every strategy: (cands, article_emb, *, num_gaps, min_gap_size, sigma, **params) -> list[(seed_idx, size, member_ids)]
 DeflateFn = Callable[..., list]
 _STRATEGIES: dict[str, DeflateFn] = {
@@ -220,6 +268,7 @@ _STRATEGIES: dict[str, DeflateFn] = {
     "greedy_geom": _greedy_geom,
     "submodular_fl": _submodular_fl,
 }
+_STRATEGIES["dpp"] = _dpp
 
 
 def deflate(
