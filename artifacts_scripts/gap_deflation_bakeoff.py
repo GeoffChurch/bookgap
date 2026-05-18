@@ -12,7 +12,7 @@ from bookgap.index import kballs_with
 from artifacts_scripts.kball_gap_probe import _build_topic_index
 
 
-@dataclass
+@dataclass(frozen=True)
 class Candidate:
     idx: int                 # article-local index of the ball's seed
     members: np.ndarray      # article-local indices in the k-ball (int64)
@@ -52,6 +52,7 @@ def build_kball_candidates(
         else:
             members = cov[1].astype(np.int64)
         if members.size:
+            # np.mean upcasts float32→float64; cast back to match article_emb dtype
             centroid = article_emb[members].mean(axis=0).astype(np.float32)
         else:
             centroid = article_emb[i].astype(np.float32)
