@@ -151,3 +151,34 @@ the 3 wins.
 the book-density gate location + sparse-fallback question are the
 natural next experiments before a results doc is frozen. Pending
 sign-off.**
+
+### fl_bookdemand_eb (2026-05-18) — emergent shrinkage; PROVISIONAL
+
+Attempt to remove the regime branch: one FL objective over books ∪ a
+data-driven k-means background coreset (`M = clip(A//k_book,64,4000)`);
+shrinkage `M/(M+n_books)` emergent from the customer-count ratio, no
+tuned λ. Spec
+`docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md`;
+arm commits `ba234d3`/`a04abcc`/`845d54a`; diag-instrument dual-module
+fix `41ce35d`.
+
+First run (held-out recall@20): T11303 0.483 · T10820 0.500 · T10320
+0.285 · **T10462 0.500** (no gaps_emitted collapse: 730 vs
+fl_bookdemand's 30). **EB fixes the book-sparse collapse but regresses
+to ~submodular_fl everywhere — it sacrifices ALL THREE of
+fl_bookdemand's standout wins** (0.655/0.609/0.630 → 0.483/0.500/
+0.285). Apparent **over-shrinkage / book-rich dilution** (the exact
+risk the spec's success criteria named): background customers dominate
+even when books are plentiful because `M` floors at 64 and scales with
+A regardless of book density. Caveat: the first run's diag readout was
+blind (a `python -m` dual-module `_FL_DIAG_EB` split, fixed in
+`41ce35d`); a confirmatory re-run with valid per-topic shrinkage
+logging is in progress (`flbdeb2_*`) before this is certified.
+
+If confirmed: emergent-shrinkage-as-specified does NOT yield a
+universal winner; the lever is `eb_book_weight` > 1 (up-weight book
+customers) and/or making `M` shrink with book density rather than
+floor at 64 — i.e. the prior resolution must itself depend on book
+density, not just corpus size. **Status: PROVISIONAL pending the
+diag-valid re-run; regime-gated fl_bookdemand remains the standing
+recommendation until EB is shown to beat it.**
