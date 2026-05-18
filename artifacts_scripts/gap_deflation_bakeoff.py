@@ -58,3 +58,80 @@ def build_kball_candidates(
             centroid = article_emb[i].astype(np.float32)
         cands.append(Candidate(idx=i, members=members, centroid=centroid))
     return cands
+
+
+# ---------------------------------------------------------------------------
+# Deflation strategies
+# ---------------------------------------------------------------------------
+
+def _greedy_hard(
+    cands: list[Candidate],
+    num_gaps: int,
+    min_gap_size: int,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Greedy-prune deflation — byte-anchored to _greedy_kball_gaps_inline.
+
+    The oracle iterates `for gap_idx in range(num_gaps)` and emits
+    `(gap_idx, gap_size, best_ids.copy())` where `gap_idx` is the loop
+    counter (0, 1, 2, …), NOT the argmax index.  That is matched here.
+
+    Covered is maintained as a list of mutable id arrays, one per candidate,
+    mirroring the oracle's list of (dists, ids) pairs — but since greedy
+    ranking uses only `len(ids)`, the dists are irrelevant and we drop them.
+    """
+    # Mutable copy of each candidate's member set; ordering matches cands list
+    covered = [c.members.copy() for c in cands]
+    gaps: list[tuple[int, int, np.ndarray]] = []
+    for gap_idx in range(num_gaps):
+        if not any(len(ids) > 0 for ids in covered):
+            break
+        best = int(np.argmax([len(ids) for ids in covered]))
+        best_ids = covered[best]
+        if len(best_ids) == 0:
+            break
+        gap_size = int(len(best_ids))
+        if min_gap_size > 0 and gap_size < min_gap_size:
+            break
+        gaps.append((gap_idx, gap_size, best_ids.copy()))
+        pruned_set = set(best_ids.tolist())
+        for i, ids in enumerate(covered):
+            if ids.size:
+                m = np.array([x not in pruned_set for x in ids.tolist()], dtype=bool)
+                covered[i] = ids[m]
+    return gaps
+
+
+_STRATEGIES: dict[str, object] = {"greedy_hard": _greedy_hard}
+
+
+def deflate(
+    cands: list[Candidate],
+    strategy: str,
+    article_emb: np.ndarray,
+    *,
+    num_gaps: int = 1000,
+    min_gap_size: int = 0,
+    sigma: float | None = None,
+    **params,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Dispatch to a named deflation strategy.
+
+    Args:
+        cands:        Candidate pool from build_kball_candidates.
+        strategy:     One of the registered strategy names (e.g. "greedy_hard").
+        article_emb:  Article embeddings array (passed to soft strategies).
+        num_gaps:     Maximum gaps to emit.
+        min_gap_size: Stop when the largest remaining ball < this (0 = off).
+        sigma:        Smoothing bandwidth (soft strategies only).
+        **params:     Extra keyword arguments forwarded to the strategy fn.
+
+    Returns:
+        List of (gap_idx, gap_size, member_ids) tuples.
+    """
+    if strategy not in _STRATEGIES:
+        raise ValueError(f"unknown deflation strategy {strategy!r}")
+    fn = _STRATEGIES[strategy]
+    if strategy == "greedy_hard":
+        return fn(cands, num_gaps, min_gap_size)
+    return fn(cands, article_emb, num_gaps=num_gaps,
+              min_gap_size=min_gap_size, sigma=sigma, **params)
