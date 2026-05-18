@@ -560,6 +560,10 @@ def _fl_bookdemand_eb(
     if not cands or A == 0:
         _FL_GAINS_EB.clear()
         _FL_DIAG_EB.update(n_books=0, M=0, ratio_bg_book=0.0, shrinkage=0.0)
+        print(f"[fl_bookdemand_eb diag] EARLY-RETURN "
+              f"reason={'no_cands' if not cands else 'A==0'} "
+              f"n_books=0 M=0 ratio_bg_book=0 shrinkage=0 ngaps=0",
+              flush=True)
         return []
 
     from bookgap.index import build_index, FlatL2
@@ -593,6 +597,9 @@ def _fl_bookdemand_eb(
         _FL_GAINS_EB.clear()
         _FL_DIAG_EB.update(n_books=n_books, M=0, ratio_bg_book=0.0,
                            shrinkage=0.0)
+        print(f"[fl_bookdemand_eb diag] EARLY-RETURN reason=M<1 "
+              f"n_books={n_books} M=0 ratio_bg_book=0 shrinkage=0 ngaps=0",
+              flush=True)
         return []
     # n_init=1 is deliberate: these are manifold-tiling probe centroids, not a
     # production clustering — they don't need global optimality (measured
@@ -692,6 +699,10 @@ def _fl_bookdemand_eb(
                 best_cov[cust] = v
         picked.add(best_j)
 
+    print(f"[fl_bookdemand_eb diag] n_books={int(n_books)} M={int(M)} "
+          f"ratio_bg_book={float(M / max(n_books, 1)):.4g} "
+          f"shrinkage={float(M / (M + n_books)):.4g} "
+          f"ngaps={len(gaps)}", flush=True)
     return gaps
 
 
@@ -884,9 +895,6 @@ def run_arm(
 
     # Step 4: K-ball seeds using the masked book set
     seeds = kball_seeds_from_state(state2, deflation=deflation)
-    if deflation == "fl_bookdemand_eb":
-        print(f"[fl_bookdemand_eb diag] scope={scope} "
-              f"{_fl_bookdemand_eb_diag()}", flush=True)
 
     # Step 5: full refine pipeline
     survivors = run_refine_pipeline(state2, seeds)
