@@ -503,7 +503,8 @@ def _fl_bookdemand(
 # Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
 # Module-global trace/diag stores (last call wins). # not thread-safe
 _FL_GAINS_EB: list[float] = []
-_FL_DIAG_EB: dict = {"n_books": 0, "M": 0, "ratio_bg_book": 0.0, "shrinkage": 0.0}
+_FL_DIAG_EB: dict = {"n_books": 0, "M": 0, "ratio_bg_book": 0.0,
+                     "shrinkage": 0.0, "s_target": None, "mode": "A-keyed"}
 
 
 def _fl_bookdemand_eb_trace() -> list[float]:
@@ -525,6 +526,7 @@ def _fl_bookdemand_eb(
     book_emb=None,
     k_book: int = 10,
     eb_book_weight: float = 1.0,   # exposed-but-untuned: >1 up-weights books
+    eb_target_shrinkage: float | None = None,
     **params,
 ) -> list[tuple[int, int, np.ndarray]]:
     """Facility-location deflation over BOOK ∪ BACKGROUND-coreset demand.
@@ -556,13 +558,22 @@ def _fl_bookdemand_eb(
     {customer_id: cov} dict; best_cov is a 1-D dense vector length
     n_books+M (NOT a matrix). No dense (A,K)/(C,K)/(A,K,d) array.
     """
+    if eb_target_shrinkage is not None and not (
+            0.0 < eb_target_shrinkage < 1.0):
+        raise ValueError(
+            f"eb_target_shrinkage must be in the open interval (0, 1); "
+            f"got {eb_target_shrinkage!r}")
+
     A = len(article_emb)
     if not cands or A == 0:
         _FL_GAINS_EB.clear()
-        _FL_DIAG_EB.update(n_books=0, M=0, ratio_bg_book=0.0, shrinkage=0.0)
+        _FL_DIAG_EB.update(n_books=0, M=0, ratio_bg_book=0.0,
+                           shrinkage=0.0, s_target=eb_target_shrinkage,
+                           mode="A-keyed")
         print(f"[fl_bookdemand_eb diag] EARLY-RETURN "
               f"reason={'no_cands' if not cands else 'A==0'} "
-              f"n_books=0 M=0 ratio_bg_book=0 shrinkage=0 ngaps=0",
+              f"n_books=0 M=0 ratio_bg_book=0 shrinkage=0 "
+              f"s_target={eb_target_shrinkage} mode=A-keyed ngaps=0",
               flush=True)
         return []
 
@@ -588,17 +599,36 @@ def _fl_bookdemand_eb(
         Nb = np.zeros((0, k_b), dtype=np.int64)
 
     # --- Background customers (k-means coreset over article_emb) ------------
-    # M tiles the manifold at ~book-neighborhood granularity (data-driven).
-    M = int(np.clip(A // k_book, 64, 4000))
-    M = min(M, A)
+    # M tiles the manifold at ~book-neighborhood granularity.
+    #
+    # A-keyed (eb_target_shrinkage is None, OR no books to anchor to):
+    #   M = clip(A // k_book, 64, 4000), clamped M <= A — keys the prior
+    #   resolution to article density (the refuted control / curve point).
+    # n_books-keyed (eb_target_shrinkage = s, 0<s<1, AND n_books > 0):
+    #   M = round(n_books * s/(1-s)), clamped to [8, min(4000, A)] — pins
+    #   bg:book = s/(1-s) and shrinkage M/(M+n_books) ≈ s INDEPENDENT of A.
+    if eb_target_shrinkage is not None and n_books > 0:
+        s = float(eb_target_shrinkage)
+        M = int(round(n_books * (s / (1.0 - s))))
+        M = max(8, min(M, 4000, A))
+        _eb_mode = "nbooks-keyed"
+    else:
+        # eb_target_shrinkage None, or set but n_books == 0 → A-keyed
+        # fallback (no book signal to anchor the ratio to; preserves the
+        # no-book graceful contract).
+        M = int(np.clip(A // k_book, 64, 4000))
+        M = min(M, A)
+        _eb_mode = "A-keyed"
     # Unreachable in practice (A>=1 guaranteed above; clip lower bound 64);
     # kept defensively.
     if M < 1:
         _FL_GAINS_EB.clear()
         _FL_DIAG_EB.update(n_books=n_books, M=0, ratio_bg_book=0.0,
-                           shrinkage=0.0)
+                           shrinkage=0.0, s_target=eb_target_shrinkage,
+                           mode=_eb_mode)
         print(f"[fl_bookdemand_eb diag] EARLY-RETURN reason=M<1 "
-              f"n_books={n_books} M=0 ratio_bg_book=0 shrinkage=0 ngaps=0",
+              f"n_books={n_books} M=0 ratio_bg_book=0 shrinkage=0 "
+              f"s_target={eb_target_shrinkage} mode={_eb_mode} ngaps=0",
               flush=True)
         return []
     # n_init=1 is deliberate: these are manifold-tiling probe centroids, not a
@@ -622,6 +652,8 @@ def _fl_bookdemand_eb(
         M=int(M),
         ratio_bg_book=float(M / max(n_books, 1)),
         shrinkage=float(M / (M + n_books)),
+        s_target=eb_target_shrinkage,
+        mode=_eb_mode,
     )
 
     # Inverted index: article-local id -> list of candidate indices.
@@ -702,6 +734,7 @@ def _fl_bookdemand_eb(
     print(f"[fl_bookdemand_eb diag] n_books={int(n_books)} M={int(M)} "
           f"ratio_bg_book={float(M / max(n_books, 1)):.4g} "
           f"shrinkage={float(M / (M + n_books)):.4g} "
+          f"s_target={eb_target_shrinkage} mode={_eb_mode} "
           f"ngaps={len(gaps)}", flush=True)
     return gaps
 
@@ -778,6 +811,30 @@ _STRATEGIES["dpp"] = _dpp
 _STRATEGIES["softmax_mc"] = _softmax_mc
 _STRATEGIES["fl_bookdemand"] = _fl_bookdemand
 _STRATEGIES["fl_bookdemand_eb"] = _fl_bookdemand_eb
+
+
+def _make_eb_s(s: float) -> DeflateFn:
+    """Factory for the n_books-keyed fl_bookdemand_eb_s* variants.
+
+    Each delegates to the shared _fl_bookdemand_eb core with
+    eb_target_shrinkage bound to ``s``; any incoming
+    eb_target_shrinkage in params is popped first to avoid a
+    duplicate-kwarg TypeError.  fl_bookdemand_eb itself (None path)
+    stays untouched.
+    """
+    def _arm(cands, article_emb, *, num_gaps, min_gap_size,
+             sigma=None, **params):
+        params.pop("eb_target_shrinkage", None)
+        return _fl_bookdemand_eb(
+            cands, article_emb, num_gaps=num_gaps,
+            min_gap_size=min_gap_size, sigma=sigma,
+            eb_target_shrinkage=s, **params)
+    return _arm
+
+
+_STRATEGIES["fl_bookdemand_eb_s30"] = _make_eb_s(0.30)
+_STRATEGIES["fl_bookdemand_eb_s50"] = _make_eb_s(0.50)
+_STRATEGIES["fl_bookdemand_eb_s70"] = _make_eb_s(0.70)
 
 
 def deflate(

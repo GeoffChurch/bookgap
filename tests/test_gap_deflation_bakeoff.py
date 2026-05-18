@@ -603,6 +603,183 @@ def test_fl_bookdemand_eb_determinism():
         np.testing.assert_array_equal(m1, m2)
 
 
+def test_eb_target_shrinkage_pins_ratio():
+    """n_books-keyed s* variants pin M = clip(round(n_books*s/(1-s)),
+    8, min(4000, A)) and shrinkage ≈ s, INDEPENDENT of A.
+
+    Two fixtures with the SAME n_books (40) but different A (different
+    background point counts); for fixed s, M must be identical (ratio
+    keyed to n_books, not A)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_eb_diag,
+    )
+
+    def _make(extra_noise, seed):
+        rs = np.random.RandomState(seed)
+        d = 24
+        cen = np.zeros((4, d), np.float32)
+        for i in range(4):
+            cen[i, i] = 12.0
+        parts = [cen[i] + 0.1 * rs.randn(80, d).astype(np.float32)
+                 for i in range(4)]
+        if extra_noise:
+            parts.append(8.0 * rs.randn(extra_noise, d).astype(np.float32))
+        art = np.vstack(parts).astype(np.float32)
+        # 40 books: 10 per cluster, just outside each centroid
+        bk = np.vstack([cen[i] * 1.2 for i in range(4)
+                        for _ in range(10)]).astype(np.float32)
+        return art, bk
+
+    for s, nn in ((0.30, "30"), (0.50, "50"), (0.70, "70")):
+        name = "fl_bookdemand_eb_s" + nn
+        M_seen = []
+        for extra in (0, 2000):
+            art, bk = _make(extra, seed=11)
+            cands = build_kball_candidates(art, bk, 0.75, 1)
+            deflate(cands, name, art, num_gaps=20, min_gap_size=3,
+                    book_emb=bk)
+            diag = _fl_bookdemand_eb_diag()
+            A = len(art)
+            n_books = diag["n_books"]
+            assert n_books == 40, f"{name}: n_books={n_books}"
+            M_exp = max(8, min(int(round(n_books * s / (1.0 - s))),
+                               4000, A))
+            assert diag["M"] == M_exp, (
+                f"{name} A={A}: M={diag['M']} != expected {M_exp}")
+            assert abs(diag["shrinkage"] - s) < 0.05, (
+                f"{name} A={A}: shrinkage={diag['shrinkage']} not ≈ {s}")
+            assert diag["mode"] == "nbooks-keyed", diag
+            assert diag["s_target"] == s, diag
+            M_seen.append(diag["M"])
+        # A-invariance: same n_books, two different A → identical M
+        assert M_seen[0] == M_seen[1], (
+            f"{name}: M not A-invariant: {M_seen}")
+
+
+def test_eb_target_shrinkage_nbooks0_fallback():
+    """s set but n_books == 0 → fall back to A-keyed M, run
+    background-only, emit >= 3 gaps (NOT []), diag mode A-keyed."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_eb_diag,
+    )
+    rs = np.random.RandomState(51)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk_for_cands = np.vstack([cen * 1.2]).astype(np.float32)
+    cands = build_kball_candidates(art, bk_for_cands, 0.75, 1)
+    A = len(art)
+
+    g = deflate(cands, "fl_bookdemand_eb_s50", art, num_gaps=10,
+                min_gap_size=5, book_emb=None)
+    assert g != [], "s50 returned [] with no books (must degrade)"
+    assert len(g) >= 3, f"expected >=3 gaps, got {len(g)}"
+    diag = _fl_bookdemand_eb_diag()
+    assert diag["n_books"] == 0, diag
+    assert diag["mode"] == "A-keyed", diag
+    M_akeyed = min(int(np.clip(A // 10, 64, 4000)), A)
+    assert diag["M"] == M_akeyed, (
+        f"fallback M={diag['M']} != A-keyed {M_akeyed}")
+
+
+def test_eb_variants_registered_and_distinct():
+    """The 3 _sNN names are registered, each deterministic across two
+    runs, and at least one differs from fl_bookdemand_eb (None path) on
+    a fixture where shrinkage matters."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _STRATEGIES,
+    )
+    for nn in ("30", "50", "70"):
+        assert "fl_bookdemand_eb_s" + nn in _STRATEGIES
+
+    rs = np.random.RandomState(41)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    # moderate book count + background → shrinkage materially differs
+    bk = np.vstack([
+        cen[0] * 1.2 + 0.05 * rs.randn(8, d).astype(np.float32),
+        cen[1] * 1.2 + 0.05 * rs.randn(8, d).astype(np.float32),
+        cen[2] * 1.2 + 0.05 * rs.randn(8, d).astype(np.float32),
+    ]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+
+    def _run(name):
+        return deflate(cands, name, art, num_gaps=20, min_gap_size=5,
+                       book_emb=bk)
+
+    def _key(gaps):
+        return [(r, s, tuple(sorted(ids.tolist()))) for r, s, ids in gaps]
+
+    for nn in ("30", "50", "70"):
+        name = "fl_bookdemand_eb_s" + nn
+        assert _key(_run(name)) == _key(_run(name)), f"{name} non-determ"
+
+    base = _key(_run("fl_bookdemand_eb"))
+    diffs = [nn for nn in ("30", "50", "70")
+             if _key(_run("fl_bookdemand_eb_s" + nn)) != base]
+    assert diffs, (
+        "no _sNN variant differs from fl_bookdemand_eb — param inert")
+
+
+def test_fl_bookdemand_eb_none_path_unchanged():
+    """Regression guard: fl_bookdemand_eb (None path) must produce the
+    SAME gaps as the pre-change code (captured from CURRENT code before
+    the n_books-keyed change). The refuted control must not move."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_eb_diag,
+    )
+    rs = np.random.RandomState(71)
+    d = 32
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 10.0
+    parts = [cen[i] + 0.1 * rs.randn(60, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1 * rs.randn(120, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = np.vstack([cen[0] * 1.2, cen[1] * 1.2]).astype(np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    g = deflate(cands, "fl_bookdemand_eb", art, num_gaps=10,
+                min_gap_size=5, book_emb=bk)
+    # Hard-coded snapshot captured by running the PRE-change code once.
+    # NOTE: build_kball_candidates' HNSW index is order-nondeterministic
+    # ACROSS processes (the in-array member ORDER of a gap varies run to
+    # run — a pre-existing property unrelated to this change), but the
+    # SORTED member SET of each gap is byte-stable cross-process and is
+    # the correct regression anchor. We pin sha1(sorted-members) plus
+    # ngaps / sizes / ranks / diag — together these catch any movement
+    # of the None (A-keyed) path.
+    import hashlib
+    assert len(g) == 3
+    assert [x[0] for x in g] == [0, 1, 2]
+    assert [x[1] for x in g] == [60, 60, 180]
+
+    def _h(ids):
+        return hashlib.sha1(
+            repr(tuple(sorted(int(x) for x in ids))).encode()).hexdigest()
+
+    assert _h(g[0][2]) == "7f76ce77d235f93245c8b30d358f1f38722debc7"
+    assert _h(g[1][2]) == "8f9b6a4babdf9010a23b901429dc5d2613817a26"
+    assert _h(g[2][2]) == "c7784c21193a1a2e7f1d2ec9ebef8a6aecdd014f"
+    diag = _fl_bookdemand_eb_diag()
+    assert diag["n_books"] == 2
+    assert diag["M"] == 64                       # A-keyed value unchanged
+    assert diag["mode"] == "A-keyed", diag
+    assert diag["s_target"] is None, diag
+
+
 def test_fl_bookdemand_eb_memory_bounded():
     """The EB peak must be incompatible with a dense (A,K) or (C,K)
     float64 allocation — the exact regression this guard exists for.
