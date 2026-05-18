@@ -291,3 +291,52 @@ def test_global_to_article_local_maps_and_drops():
     # gm has global ids; 99 is a non-article id and must be dropped
     out = _global_to_article_local([[20, 40, 99], [10]], agi)
     assert out == [[1, 3], [0]]
+
+
+def test_fl_bookdemand_recovers_book_anchored_clusters():
+    """3 tight article clusters, one book just outside each → fl_bookdemand
+    selects 3 gaps each covering a distinct book's neighborhood, disjoint,
+    emission-rank element-0.
+
+    Books at 1.2*cen (outside but close to each cluster centroid) so that each
+    cluster article's nearest book is the cluster's own book and the k-ball
+    radius (~1.5) captures all 60 cluster neighbors. No diffuse background
+    noise — background articles would acquire huge k-balls spanning all
+    clusters, saturating book-demand coverage in a single pick.
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import build_kball_candidates, deflate
+    rs=np.random.RandomState(21); d=32
+    cen=np.zeros((3,d),np.float32)
+    for i in range(3): cen[i,i]=10.0
+    # 3 tight clusters only — no diffuse background (avoids huge cross-cluster balls)
+    parts=[cen[i]+0.1*rs.randn(60,d).astype(np.float32) for i in range(3)]
+    art=np.vstack(parts).astype(np.float32)
+    # books just outside each cluster centroid + 5 far decoy books
+    bk=np.vstack([cen*1.2, 40.0+rs.randn(5,d).astype(np.float32)]).astype(np.float32)
+    cands=build_kball_candidates(art, bk, 0.75, 1)
+    gaps=deflate(cands,"fl_bookdemand",art,num_gaps=3,min_gap_size=10,book_emb=bk)
+    assert len(gaps)==3
+    assert [g[0] for g in gaps]==[0,1,2]                      # emission rank
+    sets=[set(ids.tolist()) for _i,_s,ids in gaps]
+    for i in range(3):
+        for j in range(i+1,3):
+            u=len(sets[i]|sets[j]); assert (len(sets[i]&sets[j])/u if u else 0)<0.2
+
+
+def test_fl_bookdemand_monotone_and_nobook_edge():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_trace)
+    rs=np.random.RandomState(22)
+    a=rs.randn(250,8).astype(np.float32); a/=np.linalg.norm(a,axis=1,keepdims=True)
+    b=rs.randn(15,8).astype(np.float32); b/=np.linalg.norm(b,axis=1,keepdims=True)
+    c=build_kball_candidates(a,b,0.75,1)
+    g=deflate(c,"fl_bookdemand",a,num_gaps=15,min_gap_size=0,book_emb=b)
+    gn=_fl_bookdemand_trace()
+    assert all(gn[i]>=gn[i+1]-1e-9 for i in range(len(gn)-1))   # submodular
+    # no-books edge → []
+    assert deflate(c,"fl_bookdemand",a,num_gaps=5,min_gap_size=0,book_emb=None)==[]
+    import numpy as _np
+    assert deflate(c,"fl_bookdemand",a,num_gaps=5,min_gap_size=0,
+                   book_emb=_np.zeros((0,8),_np.float32))==[]

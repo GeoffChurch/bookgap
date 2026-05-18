@@ -370,6 +370,115 @@ def _softmax_mc(
     return gaps
 
 
+_FL_GAINS_BD: list[float] = []
+
+
+def _fl_bookdemand_trace() -> list[float]:
+    return list(_FL_GAINS_BD)
+
+
+def _fl_bookdemand(
+    cands: list[Candidate],
+    article_emb: np.ndarray,
+    *,
+    num_gaps: int,
+    min_gap_size: int,
+    sigma=None,          # deliberately unused — pure set-overlap, no kernel/sigma
+    book_emb=None,
+    k_book: int = 10,
+    **params,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Facility-location deflation over BOOK-anchored demand.
+
+    Coverage sim(g,b) = |members_g ∩ Nb[b]| / k_book — pure set overlap.
+    No sigma/kernel used, which sidesteps the global-vs-article-local sigma
+    index-space bug class entirely (sigma is accepted but ignored).
+
+    Memory-bounded: inverted index maps article-local id → candidate list;
+    per-candidate coverage stored as sparse dicts {book_idx: count/k_book}.
+    No dense (B,K) or (A,K) matrix is ever built.
+    """
+    # Edge cases
+    if book_emb is None:
+        return []
+    book_arr = np.asarray(book_emb, dtype=np.float32)
+    if book_arr.size == 0 or not cands:
+        return []
+
+    from bookgap.index import build_index, FlatL2
+
+    B = len(book_arr)
+    A = len(article_emb)
+    k_b = min(k_book, A)
+
+    # Build exact article index and query books for their k_b nearest articles
+    art_idx = build_index(FlatL2(), np.ascontiguousarray(article_emb.astype(np.float32)))
+    _D, Nb = art_idx.search(np.ascontiguousarray(book_arr.astype(np.float32)), k=k_b)
+    # Nb: shape (B, k_b) — article-local positional ids (consistent with Candidate.members)
+
+    # Build inverted index: article-local id → list of candidate indices
+    # O(Σ|members_g|) — bounded by total ball mass, no dense allocation
+    inv: dict[int, list[int]] = {}
+    for g, c in enumerate(cands):
+        for a in c.members.tolist():
+            if a not in inv:
+                inv[a] = []
+            inv[a].append(g)
+
+    # Accumulate coverage counts: cand_cov[g] = {book_b: overlap_count}
+    # Process each book's neighborhood; accumulate into sparse per-candidate dicts
+    cand_cov: list[dict[int, float]] = [{} for _ in range(len(cands))]
+    for b in range(B):
+        for a in Nb[b].tolist():
+            for g in inv.get(int(a), []):
+                cand_cov[g][b] = cand_cov[g].get(b, 0) + 1
+    # Normalise counts by k_b to get fractional coverage ∈ [0, 1]
+    for g in range(len(cands)):
+        for b in cand_cov[g]:
+            cand_cov[g][b] /= k_b
+
+    # Greedy facility-location: pick candidates to maximise Σ_b max(best_cov[b], cov(g,b))
+    best_cov = np.zeros(B, dtype=np.float64)
+    picked: set[int] = set()
+    _FL_GAINS_BD.clear()
+    gaps: list[tuple[int, int, np.ndarray]] = []
+    emitted = 0
+
+    for _ in range(num_gaps):
+        best_gain = -np.inf
+        best_j = -1
+        # Iterate in candidate-index order; strict > for ties → lowest index wins
+        for g in range(len(cands)):
+            if g in picked or not cand_cov[g]:
+                continue
+            gain_g = sum(
+                max(0.0, v - best_cov[b])
+                for b, v in cand_cov[g].items()
+            )
+            if gain_g > best_gain:
+                best_gain = gain_g
+                best_j = g
+
+        if best_j < 0 or not np.isfinite(best_gain) or best_gain <= 0:
+            break
+
+        ids = cands[best_j].members.astype(np.int64)
+        if min_gap_size > 0 and ids.size < min_gap_size:
+            break
+
+        _FL_GAINS_BD.append(best_gain)
+        gaps.append((emitted, int(ids.size), ids))
+        emitted += 1
+
+        # Update best_cov for books this candidate touches
+        for b, v in cand_cov[best_j].items():
+            if v > best_cov[b]:
+                best_cov[b] = v
+        picked.add(best_j)
+
+    return gaps
+
+
 def heldout_book_split(n_books: int, frac: float = 0.2,
                        seed: int = 42) -> np.ndarray:
     """Deterministic held-out book indices (sorted, no replacement)."""
@@ -440,6 +549,7 @@ _STRATEGIES: dict[str, DeflateFn] = {
 }
 _STRATEGIES["dpp"] = _dpp
 _STRATEGIES["softmax_mc"] = _softmax_mc
+_STRATEGIES["fl_bookdemand"] = _fl_bookdemand
 
 
 def deflate(
