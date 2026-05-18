@@ -102,12 +102,16 @@ def kball_seeds_from_state(
     radius_fraction: float = 0.75,
     num_gaps: int = 1000,
     min_gap_size: int = 0,
+    deflation: str = "greedy_hard",
 ) -> list[dict]:
     """Regenerate K-ball seeds in the projected space.
 
     Mirrors the dicts gap_kball_llr_refine.load_kball_csv yields:
     gap_idx, gap_size, topic_id, article_indices (global article idx).
     K-ball defaults: k=1, no self-match +1 correction (article-querying-article space; matches the standalone-validated kball_gap_probe path).
+
+    When deflation == "greedy_hard" (the default), behaviour is byte-identical
+    to the original _greedy_kball_gaps_inline call.
     """
     emb = state["emb"]
     art_gidx = np.asarray(state["article_global_idx"])
@@ -115,14 +119,11 @@ def kball_seeds_from_state(
     article_emb = np.ascontiguousarray(emb[art_gidx])
     book_emb = np.ascontiguousarray(emb[bk_gidx])
 
-    gaps = _greedy_kball_gaps_inline(
-        book_emb=book_emb,
-        article_emb=article_emb,
-        radius_fraction=radius_fraction,
-        k=1,
-        num_gaps=num_gaps,
-        min_gap_size=min_gap_size,
-    )
+    from artifacts_scripts.gap_deflation_bakeoff import build_kball_candidates, deflate
+    cands = build_kball_candidates(article_emb, book_emb, radius_fraction=radius_fraction, k=1)
+    gaps = deflate(cands, deflation, article_emb, num_gaps=num_gaps,
+                   min_gap_size=min_gap_size, sigma=state.get("sigma"),
+                   book_emb=book_emb, radius_fraction=radius_fraction)
     topic_id = state.get("topic_id", "")
     seeds: list[dict] = []
     for gap_idx, gap_size, local_ids in gaps:
@@ -382,7 +383,9 @@ SCORECARD_FIELDS = [
     "phase", "topic", "cell_or_arm", "self_loops", "row_normalize",
     "n_keep", "alpha_used", "sig_count_p1e3", "top10_artifact_leaks",
     "top25_jaccard_vs_ref", "fourcorner_bc", "fourcorner_bC",
-    "fourcorner_Bc", "fourcorner_BC", "runtime_s",
+    "fourcorner_Bc", "fourcorner_BC",
+    "mean_pairwise_jaccard_top20", "unique_coverage_at_20",
+    "runtime_s",
 ]
 
 
@@ -466,6 +469,9 @@ def scorecard_row(*, phase, topic, cell_or_arm, self_loops, row_normalize,
         key = ("B" if b_hi else "b") + ("C" if c_hi else "c")
         fc[key] += 1
 
+    from artifacts_scripts.gap_deflation_bakeoff import inter_gap_metrics
+    igm = inter_gap_metrics(ranked, top_k=20)
+
     return {
         "phase": phase, "topic": topic, "cell_or_arm": cell_or_arm,
         "self_loops": self_loops, "row_normalize": row_normalize,
@@ -474,6 +480,8 @@ def scorecard_row(*, phase, topic, cell_or_arm, self_loops, row_normalize,
         "top25_jaccard_vs_ref": round(jacc, 4),
         "fourcorner_bc": fc["bc"], "fourcorner_bC": fc["bC"],
         "fourcorner_Bc": fc["Bc"], "fourcorner_BC": fc["BC"],
+        "mean_pairwise_jaccard_top20": round(igm["mean_pairwise_jaccard_top20"], 4),
+        "unique_coverage_at_20": igm["unique_coverage_at_20"],
         "runtime_s": round(runtime_s, 1),
     }
 

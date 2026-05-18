@@ -261,6 +261,14 @@ def _dpp(cands, article_emb, *, num_gaps, min_gap_size, sigma=None,
     return gaps
 
 
+def inter_gap_metrics(survivors: list[dict], top_k: int = 20) -> dict:
+    sets = [set(g.get("refined_member_indices", [])) for g in survivors[:top_k]]
+    js = [len(a & b)/len(a | b) for i,a in enumerate(sets) for b in sets[i+1:] if (a|b)]
+    union = set().union(*sets) if sets else set()
+    return {"mean_pairwise_jaccard_top20": float(np.mean(js)) if js else 0.0,
+            "unique_coverage_at_20": len(union)}
+
+
 # Every strategy: (cands, article_emb, *, num_gaps, min_gap_size, sigma, **params) -> list[(seed_idx, size, member_ids)]
 DeflateFn = Callable[..., list]
 _STRATEGIES: dict[str, DeflateFn] = {

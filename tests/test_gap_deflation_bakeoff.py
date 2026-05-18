@@ -99,3 +99,23 @@ def test_dpp_picks_diverse_capped():
         js = [len(a & b)/len(a | b) for i,a in enumerate(sets)
               for b in sets[i+1:] if (a|b)]
         assert np.mean(js) < 0.5     # DPP suppresses heavy overlap
+
+
+def test_kball_seeds_accepts_deflation_kwarg():
+    import inspect
+    from artifacts_scripts.gap_denoiser_bakeoff import kball_seeds_from_state
+    sig = inspect.signature(kball_seeds_from_state)
+    assert "deflation" in sig.parameters
+    assert sig.parameters["deflation"].default == "greedy_hard"
+
+
+def test_inter_gap_metrics_basic():
+    from artifacts_scripts.gap_deflation_bakeoff import inter_gap_metrics
+    survivors = [
+        {"refined_member_indices": list(range(0, 50))},
+        {"refined_member_indices": list(range(40, 90))},
+        {"refined_member_indices": list(range(200, 260))},
+    ]
+    m = inter_gap_metrics(survivors, top_k=20)
+    assert 0.0 <= m["mean_pairwise_jaccard_top20"] <= 1.0
+    assert m["unique_coverage_at_20"] == len(set(range(0,90)) | set(range(200,260)))
