@@ -145,45 +145,71 @@ def _fl_marginal_trace() -> list[float]:
     return list(_FL_GAINS)
 
 
-def _sim_matrix(article_emb, centroids, sigma):
-    """Self-tuning Gaussian kernel sim(a,g)=exp(-||x_a-c_g||^2 /
-    (sigma_a * sigma_g)); sigma_g = median(sigma) (fixed data-derived
-    scalar — introduces no tunable hyperparameter)."""
-    sig_g = float(np.median(sigma))
-    d2 = (np.linalg.norm(article_emb[:, None, :] - centroids[None, :, :],
-                          axis=2) ** 2)
-    denom = np.maximum(sigma[:, None] * sig_g, 1e-8)
-    return np.exp(-d2 / denom)            # (n_articles, n_cands)
-
-
 def _submodular_fl(cands, article_emb, *, num_gaps, min_gap_size,
                    sigma=None, **params):
+    """Facility-location deflation — sparse, k-ball-restricted.
+
+    sim(a,g) is defined ONLY for articles a in cands[g].members (zero outside
+    the ball), so the working set is Σ|members_g| — never the full A×K matrix.
+
+    sigma_g = median(sigma) is a fixed data-derived scalar (no tunable
+    hyperparameter). sigma_a = sigma[a] per-article.
+
+    Greedy rounds pick the candidate with the largest marginal coverage gain
+    over the current best_cov vector. Per-candidate sim vectors are precomputed
+    once before the loop (total memory ∝ Σ|members_g|, bounded by ball mass).
+    """
     assert sigma is not None, "submodular_fl needs state['sigma']"
-    C = np.stack([c.centroid for c in cands]).astype(np.float32)
-    S = _sim_matrix(article_emb.astype(np.float32), C, np.asarray(sigma))
-    A = S.shape[0]
+    sigma = np.asarray(sigma, dtype=np.float64)
+    sig_g = float(np.median(sigma))
+    A = len(article_emb)
+    emb = article_emb.astype(np.float32)
+
+    # Precompute per-candidate sim vectors — each has length |members_g|.
+    # Total allocation: Σ|members_g| floats (sparse, bounded by ball mass).
+    sim_vecs: list[np.ndarray] = []   # sim_vecs[g] shape (|members_g|,) float64
+    for c in cands:
+        if c.members.size == 0:
+            sim_vecs.append(np.empty(0, dtype=np.float64))
+            continue
+        diff = emb[c.members].astype(np.float64) - c.centroid.astype(np.float64)
+        d2 = np.einsum("ij,ij->i", diff, diff)
+        denom = np.maximum(sigma[c.members] * sig_g, 1e-8)
+        sim_vecs.append(np.exp(-d2 / denom))
+
     best_cov = np.zeros(A, dtype=np.float64)
     picked: set[int] = set()
     _FL_GAINS.clear()
     gaps = []
     emitted = 0
+
     for _ in range(num_gaps):
-        gain = np.maximum(S - best_cov[:, None], 0.0).sum(axis=0)
-        for j in picked:
-            gain[j] = -np.inf
-        j = int(np.argmax(gain))
-        if not np.isfinite(gain[j]) or gain[j] <= 0:
+        # For each not-yet-picked candidate, gain = Σ max(0, sim(a,g) - best_cov[a])
+        # over its ball members only.  Operate on small per-candidate vectors.
+        best_gain = -np.inf
+        best_j = -1
+        for g, sv in enumerate(sim_vecs):
+            if g in picked or sv.size == 0:
+                continue
+            gain_g = float(np.maximum(sv - best_cov[cands[g].members], 0.0).sum())
+            if gain_g > best_gain:
+                best_gain = gain_g
+                best_j = g
+        if best_j < 0 or not np.isfinite(best_gain) or best_gain <= 0:
             break
-        new_cov = np.maximum(best_cov, S[:, j])
-        member_mask = (S[:, j] >= best_cov) & (S[:, j] > 0)
-        ids = np.where(member_mask)[0].astype(np.int64)
+        # Emit: members where sim(a,g) > best_cov[a] (strict > per spec)
+        sv = sim_vecs[best_j]
+        mem = cands[best_j].members
+        keep = sv > best_cov[mem]
+        ids = mem[keep].astype(np.int64)
         if min_gap_size > 0 and ids.size < min_gap_size:
             break
-        _FL_GAINS.append(float(gain[j]))
+        _FL_GAINS.append(best_gain)
         gaps.append((emitted, int(ids.size), ids))   # element-0 = emission rank
         emitted += 1
-        best_cov = new_cov
-        picked.add(j)
+        # Update coverage for all members of the picked ball
+        best_cov[mem] = np.maximum(best_cov[mem], sv)
+        picked.add(best_j)
     return gaps
 
 
