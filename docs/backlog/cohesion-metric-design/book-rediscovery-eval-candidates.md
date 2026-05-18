@@ -61,9 +61,15 @@ spread −0.0)**. Not a universal winner; the recommendation is now
 **regime-gated**: fl_bookdemand default above a book-density gate,
 submodular_fl fallback below it. Next: locate the gate (a topic
 between T10320-dense and T10462-sparse) + try a sparse-demand fallback
-inside fl_bookdemand. **Status: regime split conclusive; gate-location
-+ sparse-fallback are the open follow-ups. Feeds
-`gap-deflation-formulation.md` (recommendation changed there).**
+inside fl_bookdemand. **`fl_bookdemand_eb`** (emergent-shrinkage,
+no-branch) tested cross-topic: fixes the book-sparse collapse but
+over-regularizes (prior resolution `M` keyed to article density not
+book density → bg:book 6:1–38:1, shrinkage 0.86–0.97 everywhere → ≈
+submodular_fl, all 3 fl_bookdemand wins forfeited). Refuted as a
+universal winner; the operating-point fix (key M / book-weight to
+`n_books`, not `A`) is the open one-parameter follow-up. **Status:
+EB conclusive (refuted as-specified); regime-gated fl_bookdemand
+stands. Feeds `gap-deflation-formulation.md`.**
 
 ### P2 — Denoiser × deflation interaction
 Both bake-offs froze the *other* axis (deflation frozen at

@@ -175,10 +175,41 @@ blind (a `python -m` dual-module `_FL_DIAG_EB` split, fixed in
 `41ce35d`); a confirmatory re-run with valid per-topic shrinkage
 logging is in progress (`flbdeb2_*`) before this is certified.
 
-If confirmed: emergent-shrinkage-as-specified does NOT yield a
-universal winner; the lever is `eb_book_weight` > 1 (up-weight book
-customers) and/or making `M` shrink with book density rather than
-floor at 64 — i.e. the prior resolution must itself depend on book
-density, not just corpus size. **Status: PROVISIONAL pending the
-diag-valid re-run; regime-gated fl_bookdemand remains the standing
-recommendation until EB is shown to beat it.**
+**CONFIRMED (diag-valid re-run `flbdeb2_*`, scorecard
+deterministically reproduced).** Per-topic diag:
+
+| topic | n_books | M | bg:book | shrinkage | EB | fl_bookdemand |
+|---|--:|--:|--:|--:|--:|--:|
+| T11303 book-rich | 116 | 1412 | 12:1 | 0.924 | 0.483 | 0.655 |
+| T10820 book-rich | 183 | 2173 | 12:1 | 0.922 | 0.500 | 0.609 |
+| T10320 modern | 660 | 4000* | 6:1 | 0.858 | 0.285 | 0.630 |
+| T10462 sparse | 34 | 1278 | 38:1 | 0.974 | 0.500 | 0.125 |
+
+(*M hit the 4000 cap.) Shrinkage moves the *right direction* with
+book density (0.858 modern-dense → 0.974 sparse) but the operating
+point is uniformly background-dominated: `M = clip(A//k_book,64,4000)`
+keys the prior resolution to **article** density, which is high for
+every topic, so `n_books ≪ M` always (6:1–38:1) and shrinkage stays
+0.86–0.97 even book-rich. Result: EB ≈ `submodular_fl` everywhere —
+collapse fixed, all 3 fl_bookdemand wins forfeited.
+
+**Diagnosis:** the regularization strength must be a function of the
+book signal's *reliability* (`n_books`), but it is currently a
+function of *corpus size* (`A`). Emergent-shrinkage-from-customer-mix
+is sound in principle (it moves the right way) but cannot interpolate
+to books-dominant while `M ⟂ n_books`. Concrete levers, in order of
+directness: (a) key the prior resolution to book density —
+e.g. `M ≈ n_books · (1/s* − 1)` for a target shrinkage `s*` (makes the
+bg:book ratio, hence shrinkage, a tuned constant independent of
+regime); (b) `eb_book_weight ∝ A/n_books` (up-weight scarce books
+instead of shrinking M); (c) target a fixed shrinkage `s*` and solve
+for M per topic. (a)/(c) are the same idea (pin the operating point);
+they convert the *emergent but mis-anchored* ratio into a *controlled*
+one while keeping the no-regime-branch property.
+
+**Status: CONCLUSIVE — emergent-shrinkage-as-specified is refuted as a
+universal winner (over-regularizes: prior keyed to A not n_books).
+Regime-gated fl_bookdemand remains the standing recommendation. The
+operating-point fix (lever a/c) is the natural next experiment and is
+a one-parameter change, not a redesign. Pending sign-off on whether to
+pursue it or freeze the regime-gated result.**
