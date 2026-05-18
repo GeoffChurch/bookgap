@@ -145,6 +145,42 @@ def test_heldout_mask_deterministic_and_recall():
     assert spread == 0.0                        # 1 recalled book → entropy 0
 
 
+def test_deflation_main_guard_is_last_toplevel():
+    import ast, pathlib
+    src = pathlib.Path("artifacts_scripts/gap_deflation_bakeoff.py").read_text()
+    mod = ast.parse(src)
+    gi = None
+    for i, n in enumerate(mod.body):
+        if isinstance(n, ast.If) and "__main__" in ast.dump(n.test):
+            gi = i
+    assert gi is not None, "no __main__ guard"
+    after = [n for n in mod.body[gi+1:]
+             if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef))]
+    assert not after, f"defs after __main__ guard: {[n.name for n in after]}"
+
+
+def test_deflation_driver_emits_per_arm_rows(tmp_path, monkeypatch):
+    import csv
+    import artifacts_scripts.gap_deflation_bakeoff as dfl
+
+    def fake_run_arm(scope, deflation, out_dir, **kw):
+        return {"deflation": deflation, "scope": scope,
+                "mean_pairwise_jaccard_top20": 0.1,
+                "unique_coverage_at_20": 500,
+                "heldout_book_recall_at_20": 0.4,
+                "heldout_spread": 1.2, "runtime_s": 1.0}
+    monkeypatch.setattr(dfl, "run_arm", fake_run_arm)
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--scope", "17/1702/T10181",
+        "--arms", "greedy_hard,greedy_geom,submodular_fl,dpp",
+        "--out", str(tmp_path)])
+    dfl.main()
+    rows = list(csv.DictReader(open(tmp_path / "deflation_scorecard.csv")))
+    assert {r["deflation"] for r in rows} == {
+        "greedy_hard","greedy_geom","submodular_fl","dpp"}
+    assert all(r["scope"]=="17/1702/T10181" for r in rows)
+
+
 @pytest.mark.parametrize("strategy", [
     "greedy_hard", "greedy_geom", "submodular_fl", "dpp"])
 def test_synthetic_implant_recovers_clusters(strategy):

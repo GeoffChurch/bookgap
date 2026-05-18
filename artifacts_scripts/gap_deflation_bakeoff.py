@@ -351,3 +351,178 @@ def deflate(
     return _STRATEGIES[strategy](
         cands, article_emb, num_gaps=num_gaps,
         min_gap_size=min_gap_size, sigma=sigma, **params)
+
+
+# ---------------------------------------------------------------------------
+# Bake-off driver
+# ---------------------------------------------------------------------------
+
+import argparse
+import csv
+import time
+import traceback
+from pathlib import Path
+
+
+DEFLATION_SCORECARD_FIELDS = [
+    "deflation", "scope",
+    "mean_pairwise_jaccard_top20", "unique_coverage_at_20",
+    "heldout_book_recall_at_20", "heldout_spread", "runtime_s",
+]
+
+
+def run_arm(
+    scope: str,
+    deflation: str,
+    out_dir: Path,
+    *,
+    index_type: str = "hnsw",
+    n_keep: int = 370,
+) -> dict:
+    """Run one deflation arm end-to-end; return a metrics row dict.
+
+    Steps:
+    1. Load raw corpus for ``scope`` (emb, ids, types, titles, refs).
+    2. Build the FROZEN LIP/binary config (self_loops=True, row_normalize=False).
+    3. Held-out books: split 20 % off *before* candidate generation so the
+       gap finder must rediscover the held-out regions.
+    4. Regenerate K-ball seeds on the masked book set.
+    5. Run the full refine pipeline (LLR → fuzzy → calibrate → stats → dedup).
+    6. Rank survivors by effective_size, write per-arm leaderboard CSV.
+    7. Return inter-gap metrics + held-out recall/spread row dict.
+    """
+    from artifacts_scripts.hdbscan_gap_probe import load_scope
+    from artifacts_scripts.gap_denoiser_bakeoff import (
+        build_scatter_context,
+        solve_arm,
+        kball_seeds_from_state,
+        run_refine_pipeline,
+        _write_leaderboard,
+    )
+    from artifacts_scripts.gap_static_seed_diagnostic import setup
+
+    t0 = time.time()
+
+    # Step 1: load scope
+    emb, ids, types, titles, topic_ids, refs = load_scope(scope, with_refs=True)
+    labels = list(types)
+    titles_map = {i: titles[i] for i in range(len(titles))}
+
+    # Step 2: frozen LIP + binary graph config
+    ctx = build_scatter_context(
+        emb, ids, refs, labels,
+        self_loops=True,
+        row_normalize=False,
+    )
+    Q, _alpha = solve_arm("lip", ctx, n_keep)
+    state = setup(
+        scope,
+        index_type=index_type,
+        article_types=("article",),
+        book_types=("book",),
+        projection=Q,
+    )
+    state["topic_id"] = scope
+
+    # Step 3: held-out books — split BEFORE candidate generation
+    bgi = np.asarray(state["book_global_idx"])
+    hidx_local = heldout_book_split(len(bgi), frac=0.2, seed=42)
+    heldout_global = bgi[hidx_local]
+    heldout_book_emb = state["emb"][heldout_global]
+
+    heldout_set = set(heldout_global.tolist())
+    kept_books = np.array([b for b in bgi if b not in heldout_set])
+    state2 = dict(state)
+    state2["book_global_idx"] = kept_books
+
+    # Step 4: K-ball seeds using the masked book set
+    seeds = kball_seeds_from_state(state2, deflation=deflation)
+
+    # Step 5: full refine pipeline
+    survivors = run_refine_pipeline(state2, seeds)
+
+    # Step 6: rank and write leaderboard
+    ranked = sorted(survivors,
+                    key=lambda g: g.get("effective_size", 0.0),
+                    reverse=True)
+    leaderboard_dir = Path(out_dir) / "leaderboards"
+    _write_leaderboard(leaderboard_dir, scope, deflation, ranked, titles_map)
+
+    # Step 7: compute metrics row
+    m = inter_gap_metrics(ranked)
+    gm = [list(g.get("refined_member_indices", [])) for g in ranked]
+    art_gidx = np.asarray(state["article_global_idx"])
+    rec, spread = heldout_recall_spread(
+        heldout_book_emb,
+        state["emb"][art_gidx],
+        gm,
+        k_near=10,
+        cover_frac=0.5,
+    )
+    return {
+        "deflation": deflation,
+        "scope": scope,
+        **m,
+        "heldout_book_recall_at_20": rec,
+        "heldout_spread": spread,
+        "runtime_s": round(time.time() - t0, 1),
+    }
+
+
+def _write_deflation_scorecard(rows: list[dict], out_path: Path) -> None:
+    """Write scorecard CSV at ``out_path``; creates parent dirs; always writes header."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=DEFLATION_SCORECARD_FIELDS,
+                           extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def main() -> None:
+    """Gap-deflation bake-off driver.
+
+    Loops over deflation arms for a single scope (or multiple scopes when
+    called with repeated --scope flags in future extensions). Per-arm
+    try/except ensures one bad arm does not abort the run; the scorecard CSV
+    is checkpointed after every arm.
+    """
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--scope", default="17/1702/T10181",
+                   help="F/SF/T scope key, e.g. 17/1702/T10181")
+    p.add_argument("--arms",
+                   default="greedy_hard,greedy_geom,submodular_fl,dpp,softmax_mc",
+                   help="comma-separated deflation strategy names")
+    p.add_argument("--index-type", choices=["flat", "hnsw"], default="hnsw")
+    p.add_argument("--out", type=Path, required=True,
+                   help="output directory; scorecard written to <out>/deflation_scorecard.csv")
+    args = p.parse_args()
+
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    out_dir = args.out
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scorecard_path = out_dir / "deflation_scorecard.csv"
+
+    all_rows: list[dict] = []
+    for arm in arms:
+        try:
+            row = run_arm(
+                args.scope, arm, out_dir,
+                index_type=args.index_type,
+            )
+            all_rows.append(row)
+        except Exception as exc:
+            print(f"[ERROR] arm={arm}: {exc}", flush=True)
+            traceback.print_exc()
+            continue
+        _write_deflation_scorecard(all_rows, scorecard_path)
+        print(f"[checkpoint] arm={arm} done; wrote {len(all_rows)} rows to {scorecard_path}",
+              flush=True)
+
+    _write_deflation_scorecard(all_rows, scorecard_path)
+    print(f"[done] wrote {scorecard_path} ({len(all_rows)} rows)", flush=True)
+
+
+if __name__ == "__main__":
+    main()
