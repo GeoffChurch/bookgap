@@ -1093,10 +1093,13 @@ def _fl_union_bd_sub(
     out: list[tuple[int, int, np.ndarray]] = []
     for r, (_old_rank, sz, ids) in enumerate(list(g1) + list(g2)):
         out.append((r, sz, ids))
+    print(f"[fl_union_bd_sub diag] g1_bookdemand={len(g1)} "
+          f"g2_submodular={len(g2)} total={len(out)}", flush=True)
     return out
 
 
 # fl_gen_rank diag — SEPARATE globals (no cross-contamination with eb/resid).
+# not thread-safe
 _FL_DIAG_GENRANK: dict = {"n_books": 0, "pool_size": 0, "n_book_shaped": 0,
                           "mode": "gen-only", "ngaps": 0}
 
