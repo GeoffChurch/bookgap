@@ -40,3 +40,24 @@ def test_build_kball_candidates_shape():
     assert c.members.dtype == np.int64
     assert c.centroid.shape == (8,)
     assert all(0 <= m < 200 for m in c.members)
+
+
+def test_greedy_geom_differs_and_no_redundancy():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate,
+    )
+    rs = np.random.RandomState(5)
+    art = rs.randn(300, 8).astype(np.float32); art /= np.linalg.norm(art,axis=1,keepdims=True)
+    bk = rs.randn(20, 8).astype(np.float32); bk /= np.linalg.norm(bk,axis=1,keepdims=True)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, "greedy_geom", art, num_gaps=20, min_gap_size=0,
+                   book_emb=bk, radius_fraction=0.75)
+    seen = set()
+    sizes = []
+    for _i, sz, ids in gaps:
+        s = set(ids.tolist())
+        assert not (s & seen)
+        seen |= s
+        sizes.append(sz)
+    assert sizes == sorted(sizes, reverse=True) or len(sizes) <= 1

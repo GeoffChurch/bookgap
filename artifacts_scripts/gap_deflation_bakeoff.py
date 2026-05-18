@@ -106,9 +106,41 @@ def _greedy_hard(
     return gaps
 
 
+def _greedy_geom(cands, article_emb, *, num_gaps, min_gap_size,
+                 sigma=None, **params):
+    """Greedy, but every pick is taken on the RESIDUAL (unclaimed)
+    article set: after each emit, drop all globally-claimed ids from
+    every surviving candidate before the next argmax. v1 keeps the
+    kball radius fixed (radius-vs-nearest-unclaimed-book recompute is
+    intentionally deferred — residual-restricted pick is the behavior
+    this arm isolates)."""
+    alive = [c.members.copy() for c in cands]
+    claimed: set[int] = set()
+    gaps = []
+    for _ in range(num_gaps):
+        sizes = [len(ids) for ids in alive]
+        if not any(sizes):
+            break
+        best = int(np.argmax(sizes))
+        best_ids = alive[best]
+        if len(best_ids) == 0 or (min_gap_size > 0 and len(best_ids) < min_gap_size):
+            break
+        gaps.append((best, int(len(best_ids)), best_ids.copy()))
+        claimed |= set(best_ids.tolist())
+        for i in range(len(alive)):
+            if alive[i].size:
+                m = np.array([x not in claimed for x in alive[i].tolist()],
+                             dtype=bool)
+                alive[i] = alive[i][m]
+    return gaps
+
+
 # Every strategy: (cands, article_emb, *, num_gaps, min_gap_size, sigma, **params) -> list[(seed_idx, size, member_ids)]
 DeflateFn = Callable[..., list]
-_STRATEGIES: dict[str, DeflateFn] = {"greedy_hard": _greedy_hard}
+_STRATEGIES: dict[str, DeflateFn] = {
+    "greedy_hard": _greedy_hard,
+    "greedy_geom": _greedy_geom,
+}
 
 
 def deflate(
