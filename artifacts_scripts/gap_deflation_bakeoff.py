@@ -138,11 +138,61 @@ def _greedy_geom(cands, article_emb, *, num_gaps, min_gap_size,
     return gaps
 
 
+_FL_GAINS: list[float] = []
+
+
+def _fl_marginal_trace() -> list[float]:
+    return list(_FL_GAINS)
+
+
+def _sim_matrix(article_emb, centroids, sigma):
+    """Self-tuning Gaussian kernel sim(a,g)=exp(-||x_a-c_g||^2 /
+    (sigma_a * sigma_g)); sigma_g = median(sigma) (fixed data-derived
+    scalar — introduces no tunable hyperparameter)."""
+    sig_g = float(np.median(sigma))
+    d2 = (np.linalg.norm(article_emb[:, None, :] - centroids[None, :, :],
+                          axis=2) ** 2)
+    denom = np.maximum(sigma[:, None] * sig_g, 1e-8)
+    return np.exp(-d2 / denom)            # (n_articles, n_cands)
+
+
+def _submodular_fl(cands, article_emb, *, num_gaps, min_gap_size,
+                   sigma=None, **params):
+    assert sigma is not None, "submodular_fl needs state['sigma']"
+    C = np.stack([c.centroid for c in cands]).astype(np.float32)
+    S = _sim_matrix(article_emb.astype(np.float32), C, np.asarray(sigma))
+    A = S.shape[0]
+    best_cov = np.zeros(A, dtype=np.float64)
+    picked: set[int] = set()
+    _FL_GAINS.clear()
+    gaps = []
+    emitted = 0
+    for _ in range(num_gaps):
+        gain = np.maximum(S - best_cov[:, None], 0.0).sum(axis=0)
+        for j in picked:
+            gain[j] = -np.inf
+        j = int(np.argmax(gain))
+        if not np.isfinite(gain[j]) or gain[j] <= 0:
+            break
+        new_cov = np.maximum(best_cov, S[:, j])
+        member_mask = (S[:, j] >= best_cov) & (S[:, j] > 0)
+        ids = np.where(member_mask)[0].astype(np.int64)
+        if min_gap_size > 0 and ids.size < min_gap_size:
+            break
+        _FL_GAINS.append(float(gain[j]))
+        gaps.append((emitted, int(ids.size), ids))   # element-0 = emission rank
+        emitted += 1
+        best_cov = new_cov
+        picked.add(j)
+    return gaps
+
+
 # Every strategy: (cands, article_emb, *, num_gaps, min_gap_size, sigma, **params) -> list[(seed_idx, size, member_ids)]
 DeflateFn = Callable[..., list]
 _STRATEGIES: dict[str, DeflateFn] = {
     "greedy_hard": _greedy_hard,
     "greedy_geom": _greedy_geom,
+    "submodular_fl": _submodular_fl,
 }
 
 

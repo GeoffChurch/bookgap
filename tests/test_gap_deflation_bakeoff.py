@@ -61,3 +61,22 @@ def test_greedy_geom_differs_and_no_redundancy():
         seen |= s
         sizes.append(sz)
     assert sizes == sorted(sizes, reverse=True) or len(sizes) <= 1
+
+
+def test_submodular_fl_monotone_nonincreasing_gains():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_marginal_trace,
+    )
+    rs = np.random.RandomState(7)
+    art = rs.randn(250, 8).astype(np.float32); art /= np.linalg.norm(art,axis=1,keepdims=True)
+    bk = rs.randn(15, 8).astype(np.float32); bk /= np.linalg.norm(bk,axis=1,keepdims=True)
+    sigma = np.full(250, 0.5, dtype=np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, "submodular_fl", art, num_gaps=15,
+                   min_gap_size=0, sigma=sigma)
+    gains = _fl_marginal_trace()
+    assert all(gains[i] >= gains[i+1] - 1e-6 for i in range(len(gains)-1))
+    assert len(gaps) >= 1
+    # element-0 is the sequential emission rank
+    assert [g[0] for g in gaps] == list(range(len(gaps)))
