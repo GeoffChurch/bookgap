@@ -1705,3 +1705,236 @@ def test_union_genrank_registered_distinct():
     assert [t[2] for t in _gr_key(g_r)] != [t[2] for t in _gr_key(g_sub)], (
         "gen_rank order identical to submodular order despite books")
     assert _gr_key(g_r) != _gr_key(g_bd)
+
+
+# ---------------------------------------------------------------------------
+# Ranking-stage book-aware selection (the BINDING stage).
+# Spec: docs/superpowers/specs/2026-05-18-ranking-stage-book-aware-design.md
+# `_rank_survivors` is a strictly-additive axis over run_arm; rank="effsize"
+# (default) MUST be byte-identical to the prior
+#   sorted(survivors, key=lambda g: g.get("effective_size", 0.0), reverse=True)
+# line — that no-op-refactor property is the additive-proof gate.
+# ---------------------------------------------------------------------------
+
+
+def test_rank_registered():
+    """The 3 rank names dispatch; an unknown rank raises a clear
+    ValueError naming the bad rank."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    s = [{"effective_size": 2.0, "refined_member_indices": [0]},
+         {"effective_size": 5.0, "refined_member_indices": [1]}]
+    art = np.zeros((4, 3), dtype=np.float32)
+    for r in ("effsize", "bookdemand", "effsize_x_bd"):
+        out = _rank_survivors(s, r, book_emb=None,
+                              article_emb_for_rank=art, k_book=10)
+        assert isinstance(out, list) and len(out) == len(s)
+    with pytest.raises(ValueError, match="unknown rank 'nope'"):
+        _rank_survivors(s, "nope", book_emb=None,
+                        article_emb_for_rank=art, k_book=10)
+
+
+def test_rank_effsize_is_identity():
+    """rank="effsize" returns EXACTLY
+       sorted(s, key=lambda g: g.get("effective_size",0.0), reverse=True)
+    — same order AND same object identities (incl. ties + a survivor
+    missing the key → treated as 0.0). This proves the run_arm line
+    swap is a no-op refactor (the additive-proof gate)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    s = [
+        {"effective_size": 3.0, "refined_member_indices": [1, 2]},
+        {"effective_size": 9.0, "refined_member_indices": [3]},
+        {"effective_size": 3.0, "refined_member_indices": [4, 5, 6]},
+        {"refined_member_indices": [0]},          # missing key → 0.0
+        {"effective_size": 9.0, "refined_member_indices": []},
+        {"effective_size": 0.0, "refined_member_indices": [2]},
+    ]
+    art = np.zeros((7, 4), dtype=np.float32)
+    expected = sorted(s, key=lambda g: g.get("effective_size", 0.0),
+                      reverse=True)
+    got = _rank_survivors(s, "effsize", book_emb=None,
+                          article_emb_for_rank=art, k_book=10)
+    assert got == expected
+    assert [id(x) for x in got] == [id(x) for x in expected]
+    # also identity-stable when a (degenerate) book_emb is supplied —
+    # the effsize branch must NEVER consult books.
+    got2 = _rank_survivors(s, "effsize",
+                           book_emb=np.zeros((3, 4), dtype=np.float32),
+                           article_emb_for_rank=art, k_book=10)
+    assert [id(x) for x in got2] == [id(x) for x in expected]
+
+
+def test_rank_bd_zero_reduces_to_effsize():
+    """No books (None / empty) OR survivors with no book overlap ⇒
+    effsize_x_bd order == effsize order, and bookdemand order ==
+    effsize-stable order. Graceful, no special-casing."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    s = [
+        {"effective_size": 4.0, "refined_member_indices": [10]},
+        {"effective_size": 7.0, "refined_member_indices": [11]},
+        {"effective_size": 4.0, "refined_member_indices": [12]},
+        {"effective_size": 1.0, "refined_member_indices": [13]},
+    ]
+    art = np.zeros((4, 5), dtype=np.float32)
+    eff = _rank_survivors(s, "effsize", book_emb=None,
+                          article_emb_for_rank=art, k_book=10)
+    eff_ids = [id(x) for x in eff]
+
+    # book_emb None
+    for be in (None, np.zeros((0, 5), dtype=np.float32)):
+        bx = _rank_survivors(s, "effsize_x_bd", book_emb=be,
+                             article_emb_for_rank=art, k_book=10)
+        bd = _rank_survivors(s, "bookdemand", book_emb=be,
+                             article_emb_for_rank=art, k_book=10)
+        assert [id(x) for x in bx] == eff_ids
+        assert [id(x) for x in bd] == eff_ids
+
+    # books exist but none of the refined members land in any Nb
+    # (members are global ids 10..13 which are NOT valid article-local
+    # positions into a 4-article array → mapped-away → bd == 0 for all).
+    bk = np.ones((3, 5), dtype=np.float32)
+    bx2 = _rank_survivors(s, "effsize_x_bd", book_emb=bk,
+                          article_emb_for_rank=art, k_book=10)
+    bd2 = _rank_survivors(s, "bookdemand", book_emb=bk,
+                          article_emb_for_rank=art, k_book=10)
+    assert [id(x) for x in bx2] == eff_ids
+    assert [id(x) for x in bd2] == eff_ids
+
+
+def test_rank_bookaware_prioritizes_book_shaped():
+    """Two survivors with EQUAL effective_size: one whose refined
+    members overlap a book's Nb, one that doesn't. Under effsize_x_bd
+    the book-shaped one ranks first; assert the exact bd values by
+    hand calc (reused _fl_bookdemand Jaccard isect/(|m|+k_b−isect))."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    # 4 articles: two tight pairs far apart. Article-local ids 0..3.
+    art = np.array([
+        [0.0, 0.0],
+        [0.01, 0.0],
+        [50.0, 0.0],
+        [50.0, 0.01],
+    ], dtype=np.float32)
+    # One book sitting on the first pair. k_book=2 → Nb[0] = {0,1}.
+    bk = np.array([[0.0, 0.0]], dtype=np.float32)
+    # Survivor A overlaps the book neighborhood (members {0,1});
+    # survivor B is the far pair (members {2,3}) — no overlap.
+    s = [
+        {"effective_size": 5.0, "refined_member_indices": [2, 3]},  # B
+        {"effective_size": 5.0, "refined_member_indices": [0, 1]},  # A
+    ]
+    out = _rank_survivors(s, "effsize_x_bd", book_emb=bk,
+                          article_emb_for_rank=art, k_book=2)
+    # Hand calc: k_b = min(2, A=4) = 2; Nb[0] = {0,1}.
+    #   A: |m|=2, isect=2, union=2+2−2=2 → bd = 2/2 = 1.0
+    #   B: |m|=2, isect=0 → bd = 0.0
+    # effsize_x_bd key: A = 5*(1+1)=10 ; B = 5*(1+0)=5 → A first.
+    assert out[0]["refined_member_indices"] == [0, 1], out
+    assert out[1]["refined_member_indices"] == [2, 3], out
+
+    # bookdemand: same ordering here (A has strictly larger bd).
+    out_bd = _rank_survivors(s, "bookdemand", book_emb=bk,
+                             article_emb_for_rank=art, k_book=2)
+    assert out_bd[0]["refined_member_indices"] == [0, 1], out_bd
+
+
+def test_rank_determinism():
+    """Two calls byte-identical (stable sort, no RNG) for every rank."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    rs = np.random.RandomState(7)
+    art = rs.randn(40, 6).astype(np.float32)
+    bk = rs.randn(5, 6).astype(np.float32)
+    s = [{"effective_size": float(rs.randint(0, 5)),
+          "refined_member_indices": sorted(
+              int(x) for x in rs.choice(40, size=4, replace=False))}
+         for _ in range(30)]
+
+    def _key(lst):
+        return [(round(g.get("effective_size", 0.0), 9),
+                 tuple(g.get("refined_member_indices", []))) for g in lst]
+
+    for r in ("effsize", "bookdemand", "effsize_x_bd"):
+        a = _rank_survivors(s, r, book_emb=bk,
+                            article_emb_for_rank=art, k_book=10)
+        b = _rank_survivors(s, r, book_emb=bk,
+                            article_emb_for_rank=art, k_book=10)
+        assert _key(a) == _key(b)
+
+
+def test_rank_memory_bounded():
+    """GENUINE memory guard mirroring test_fl_bookdemand_eb_memory_bounded.
+
+    Many tight, well-separated micro-clusters so the rank working set —
+    the survivor member mass Ss = Σ_g|members_g| — is ≪ A·N and ≪ C·N.
+    The forbidden dense baselines are 8·A·N (article×survivor) and 8·C·N
+    (book/customer×survivor) float64 matrices (NO spurious `d` factor).
+    The tight sparse threshold is constructed to sit STRICTLY below
+    BOTH, so any dense (A,N)/(C,N) allocation in the bd scoring
+    machinery necessarily pushes peak above it and fails. The bd score
+    reuses _fl_bookdemand's sparse inverted-index + per-survivor sparse
+    {book:isect} dict (NO dense (A,N)/(C,N)/(A,N,d) array).
+    """
+    import tracemalloc
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+
+    rs = np.random.RandomState(811)
+    d = 16
+    n_clusters, pts_per = 1500, 8
+    centers = (rs.randn(n_clusters, d).astype(np.float32)) * 80.0
+    parts = [centers[i] + 0.02 * rs.randn(pts_per, d).astype(np.float32)
+             for i in range(n_clusters)]
+    art = np.vstack(parts).astype(np.float32)            # A = 12000
+    A = len(art)
+    # One survivor per cluster: its members are that cluster's
+    # article-local ids (8 each) → genuinely sparse member mass.
+    survivors = [
+        {"effective_size": float(rs.randint(1, 9)),
+         "refined_member_indices": list(
+             range(i * pts_per, (i + 1) * pts_per))}
+        for i in range(n_clusters)
+    ]
+    N = len(survivors)
+    # Small clustered book subset (real books cluster).
+    bk = (centers[:4] + 0.3).astype(np.float32)
+    n_books = len(bk)
+
+    Ss = sum(len(g["refined_member_indices"]) for g in survivors)
+    assert Ss < 0.05 * A * N, (
+        f"sparsity precondition violated: Ss={Ss} not << A*N={A * N} "
+        f"(Ss/(A*N)={Ss / (A * N):.6f}); fixture members not sparse"
+    )
+
+    tracemalloc.start()
+    _rank_survivors(survivors, "effsize_x_bd", book_emb=bk,
+                    article_emb_for_rank=art, k_book=10)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    DICT_OVERHEAD = 80                       # bytes per sparse dict entry
+    SPARSE_MULT = 6                          # modest multiplicative slack
+    FIXED_MB = 6 * 1024 * 1024               # fixed slack: FlatL2 index
+    # Sparse footprint: the inverted index (≤ Ss entries) + per-survivor
+    # {book:isect} dicts (≤ N·n_books entries) + the 1-D length-N bd
+    # vector. Bounded by Ss (NOT A·N, NOT C·N).
+    C = N + n_books
+    sparse_bytes = (Ss + N * n_books) * (8 + DICT_OVERHEAD) + C * 8
+    threshold = SPARSE_MULT * sparse_bytes + FIXED_MB
+
+    # Forbidden dense regressions (NO spurious `d` factor).
+    dense_AN = 8 * A * N
+    dense_CN = 8 * C * N
+
+    assert threshold < dense_AN and threshold < dense_CN, (
+        f"guard not below both dense allocs: Ss={Ss} C={C} N={N} "
+        f"threshold={threshold} dense_AN={dense_AN} dense_CN={dense_CN}"
+    )
+    assert peak < threshold, (
+        f"_rank_survivors peak={peak} exceeds tight sparse budget "
+        f"threshold={threshold} (Ss={Ss} C={C} A={A} N={N}); "
+        f"dense_AN={dense_AN} dense_CN={dense_CN} — a dense (A,N)/(C,N) "
+        f"allocation likely crept into the bd scoring machinery"
+    )

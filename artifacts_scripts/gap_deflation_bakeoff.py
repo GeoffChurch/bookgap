@@ -1317,6 +1317,185 @@ def _global_to_article_local(member_lists, article_global_idx):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Ranking-stage book-aware selection — the BINDING stage.
+# Spec: docs/superpowers/specs/2026-05-18-ranking-stage-book-aware-design.md
+#
+# The deflation stage only changes which gaps SURVIVE; the regime-blind
+# `effective_size` ranking in run_arm decided the held-out recall metric
+# and washed out every seed reorder (fl_gen_rank was byte-identical to
+# submodular_fl). The self-weakening book signal belongs HERE, at ranking.
+#
+# Strictly additive: rank="effsize" is LITERALLY the prior run_arm line
+# (a no-op refactor — the additive-proof gate). bookdemand / effsize_x_bd
+# are opt-in. `bd(g)` reuses _fl_bookdemand's EXACT Jaccard form
+# isect/(|m|+k_b−isect) and its sparse inverted-index pattern: NO dense
+# (A,N)/(C,N)/(A,N,d) array. Book-sparse ⇒ bd≈0 ⇒ key ≈ effective_size
+# (graceful floor, no branch/knob/fitted constant).
+# ---------------------------------------------------------------------------
+
+# Diag store (last call wins). not thread-safe.
+_RANK_DIAG: dict = {"rank": "effsize", "n_books": 0,
+                    "n_book_shaped": 0, "mode": "effsize"}
+
+
+def _rank_diag() -> dict:
+    return dict(_RANK_DIAG)
+
+
+def _rank_book_demand(
+    survivors: list[dict],
+    *,
+    book_emb,
+    article_emb_for_rank: np.ndarray,
+    k_book: int = 10,
+    article_global_idx=None,
+) -> np.ndarray:
+    """bd(g) = Σ_b Jaccard(g_members, Nb[b]) for every survivor.
+
+    g_members = g["refined_member_indices"] mapped GLOBAL→ARTICLE-LOCAL
+    exactly as run_arm's gm_local path: when ``article_global_idx`` is
+    given the members are remapped through the SAME
+    ``_global_to_article_local`` helper run_arm uses for gm_local (global
+    work ids → 0..A-1 positions, dropping non-article ids). When it is
+    None the members are already article-local positions and any id
+    outside 0..A-1 is dropped (same drop-non-member semantics).
+
+    Nb[b] = the k_b = min(k_book, A) nearest article-local articles to
+    KEPT book b (ONE exact FlatL2 over article_emb_for_rank, queried with
+    the kept book embeddings). Jaccard reuses _fl_bookdemand's EXACT form
+    isect/(|m|+k_b−isect) and its sparse inverted-index (article→survivor)
+    + per-survivor sparse {book:isect}. No dense (A,N)/(C,N)/(A,N,d).
+
+    book_emb None/empty OR no overlap ⇒ all-zero bd (graceful).
+    """
+    n = len(survivors)
+    bd = np.zeros(n, dtype=np.float64)
+    if book_emb is None or n == 0:
+        return bd
+    book_arr = np.asarray(book_emb, dtype=np.float32)
+    art_arr = np.asarray(article_emb_for_rank, dtype=np.float32)
+    A = len(art_arr)
+    if book_arr.size == 0 or A == 0:
+        return bd
+
+    from bookgap.index import build_index, FlatL2
+
+    B = len(book_arr)
+    k_b = min(k_book, A)
+    # ONE exact article index; query KEPT books for k_b nearest articles.
+    art_idx = build_index(
+        FlatL2(), np.ascontiguousarray(art_arr.astype(np.float32)))
+    _D, Nb = art_idx.search(
+        np.ascontiguousarray(book_arr.astype(np.float32)), k=k_b)
+
+    # Members → article-local positions. Reuse run_arm's EXACT gm_local
+    # mapping path when a global index is supplied; otherwise the members
+    # are already article-local and out-of-range ids are dropped (same
+    # drop-non-member semantics as _global_to_article_local).
+    raw = [list(g.get("refined_member_indices", [])) for g in survivors]
+    if article_global_idx is not None:
+        g_members = _global_to_article_local(raw, article_global_idx)
+    else:
+        g_members = [[int(x) for x in ml if 0 <= int(x) < A]
+                     for ml in raw]
+
+    # Inverted index: article-local id → list of survivor indices.
+    # O(Σ|members_g|) — bounded by survivor member mass, no dense alloc.
+    inv: dict[int, list[int]] = {}
+    for gi, mem in enumerate(g_members):
+        for a in mem:
+            inv.setdefault(a, []).append(gi)
+
+    # Per-survivor sparse intersection counts {book: isect}.
+    g_isect: list[dict[int, int]] = [{} for _ in range(n)]
+    for b in range(B):
+        for a in Nb[b].tolist():
+            for gi in inv.get(int(a), []):
+                dd = g_isect[gi]
+                dd[b] = dd.get(b, 0) + 1
+
+    # bd(g) = Σ_b isect / (|members_g| + k_b − isect)  [O(1) per entry],
+    # the EXACT _fl_bookdemand Jaccard form.
+    for gi in range(n):
+        mem_size = len(g_members[gi])
+        acc = 0.0
+        for b, isect in g_isect[gi].items():
+            union = mem_size + k_b - isect
+            if union > 0:
+                acc += isect / union
+        bd[gi] = acc
+    return bd
+
+
+def _rank_survivors(
+    survivors: list[dict],
+    rank: str,
+    *,
+    book_emb,
+    article_emb_for_rank: np.ndarray,
+    k_book: int = 10,
+    article_global_idx=None,
+) -> list[dict]:
+    """Rank-stage dispatcher (mirrors the _STRATEGIES deflation pattern).
+
+    - "effsize"      : LITERALLY the prior run_arm expression
+                       sorted(survivors,
+                              key=lambda g: g.get("effective_size", 0.0),
+                              reverse=True)
+                       — verbatim; this branch is a no-op refactor and
+                       must NEVER consult books (the additive-proof gate).
+    - "bookdemand"   : stable sort by (-bd(g), -effective_size(g)).
+    - "effsize_x_bd" : stable sort by -(effective_size(g)·(1+bd(g))).
+    - unknown        : ValueError(f"unknown rank {rank!r}").
+
+    Diag printed in-function (dual-module-safe under `python -m`).
+    """
+    if rank == "effsize":
+        ranked = sorted(survivors,
+                        key=lambda g: g.get("effective_size", 0.0),
+                        reverse=True)
+        _RANK_DIAG.update(rank=rank, n_books=0, n_book_shaped=0,
+                          mode="effsize")
+        print(f"[rank diag] rank={rank} n_books=0 n_book_shaped=0 "
+              f"mode=effsize", flush=True)
+        return ranked
+
+    if rank not in ("bookdemand", "effsize_x_bd"):
+        raise ValueError(f"unknown rank {rank!r}")
+
+    book_arr = (None if book_emb is None
+                else np.asarray(book_emb, dtype=np.float32))
+    nb = 0 if (book_arr is None or book_arr.size == 0) else len(book_arr)
+    bd = _rank_book_demand(
+        survivors, book_emb=book_emb,
+        article_emb_for_rank=article_emb_for_rank, k_book=k_book,
+        article_global_idx=article_global_idx)
+    nbs = int(np.count_nonzero(bd > 0.0))
+    mode = "book-aware" if (rank != "effsize" and nb > 0) else "effsize"
+
+    idx = list(range(len(survivors)))
+
+    def _eff(i: int) -> float:
+        return float(survivors[i].get("effective_size", 0.0))
+
+    if rank == "bookdemand":
+        # stable sort by (-bd, -effective_size) — bd>0 ahead of bd==0;
+        # bd all 0 ⇒ pure effsize-stable (graceful, no special-case).
+        order = sorted(idx, key=lambda i: (-bd[i], -_eff(i)))
+    else:  # effsize_x_bd
+        # self-weakening blend: book-sparse ⇒ bd≈0 ⇒ key ≈ effective_size
+        # ⇒ identical order to "effsize" (graceful floor, no branch).
+        order = sorted(idx, key=lambda i: -(_eff(i) * (1.0 + bd[i])))
+
+    ranked = [survivors[i] for i in order]
+    _RANK_DIAG.update(rank=rank, n_books=int(nb),
+                      n_book_shaped=nbs, mode=mode)
+    print(f"[rank diag] rank={rank} n_books={int(nb)} "
+          f"n_book_shaped={nbs} mode={mode}", flush=True)
+    return ranked
+
+
 def inter_gap_metrics(survivors: list[dict], top_k: int = 20) -> dict:
     sets = [set(g.get("refined_member_indices", [])) for g in survivors[:top_k]]
     js = [len(a & b)/len(a | b) for i,a in enumerate(sets) for b in sets[i+1:] if (a|b)]
@@ -1423,6 +1602,7 @@ def run_arm(
     *,
     index_type: str = "hnsw",
     n_keep: int = 370,
+    rank: str = "effsize",
 ) -> dict:
     """Run one deflation arm end-to-end; return a metrics row dict.
 
@@ -1487,9 +1667,7 @@ def run_arm(
     survivors = run_refine_pipeline(state2, seeds)
 
     # Step 6: rank and write leaderboard
-    ranked = sorted(survivors,
-                    key=lambda g: g.get("effective_size", 0.0),
-                    reverse=True)
+    ranked = _rank_survivors(survivors, rank, book_emb=state["emb"][np.asarray(state2["book_global_idx"])], article_emb_for_rank=state["emb"][np.asarray(state["article_global_idx"])], k_book=10, article_global_idx=state["article_global_idx"])
     leaderboard_dir = Path(out_dir) / "leaderboards"
     _write_leaderboard(leaderboard_dir, scope, deflation, ranked, titles_map)
 
@@ -1542,6 +1720,11 @@ def main() -> None:
                    default="greedy_hard,greedy_geom,submodular_fl,dpp,softmax_mc",
                    help="comma-separated deflation strategy names")
     p.add_argument("--index-type", choices=["flat", "hnsw"], default="hnsw")
+    p.add_argument("--rank",
+                   choices=["effsize", "bookdemand", "effsize_x_bd"],
+                   default="effsize",
+                   help="survivor-ranking axis (default effsize = prior "
+                        "behavior, byte-identical to committed scorecards)")
     p.add_argument("--out", type=Path, required=True,
                    help="output directory; scorecard written to <out>/deflation_scorecard.csv")
     args = p.parse_args()
@@ -1557,6 +1740,7 @@ def main() -> None:
             row = run_arm(
                 args.scope, arm, out_dir,
                 index_type=args.index_type,
+                rank=args.rank,
             )
             all_rows.append(row)
         except Exception as exc:
