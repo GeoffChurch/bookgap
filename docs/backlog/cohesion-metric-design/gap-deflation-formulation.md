@@ -93,6 +93,61 @@ level. Caveat: proxy not LLM-coverage; a confirmatory LLM-coverage
 run on a book-sparse topic (where submodular_fl wins) would be the
 single highest-value pre-paper check.
 
-**Status: CONCLUSIVE (5 topics, regime axis identified, qualitatively
-validated). Ready to migrate to docs/gap_deflation_results.md +
-transition this entry — pending sign-off.**
+**Status: superseded by the fl_bookdemand result below — do NOT
+migrate on the 5-topic map alone; the recommendation has changed.**
+
+### New arm: fl_bookdemand (2026-05-18) — beats both champions on 3/4 regimes
+
+`fl_bookdemand` = facility-location over **book-anchored demand**:
+customers = each training book's k=10 nearest articles (Nb);
+`cov(g,b) = Jaccard(members_g, Nb[b])` (parameter-free, bounded —
+chosen specifically so a giant background ball cannot saturate all
+demand in one pick; an unnormalised count form *did* collapse and is
+guarded by `test_fl_bookdemand_no_saturation_with_background`); greedy
+FL maximises Σ_b max(0, cov(g,b) − best_cov[b]). Commit `9a7f037`.
+Unifies greedy_hard's book-anchoring + submodular_fl's
+coverage-spreading without a regime switch — hypothesis: wins
+everywhere. Run vs the two regime champions, byte-anchored
+(greedy_hard/submodular_fl rows reproduce the 5-topic table exactly).
+
+| topic | regime | g_hard | sub_fl | **fl_bookdemand** | gaps_emitted |
+|---|---|---|---|---|---|
+| T11303 | classical/book-rich | 0.483 | 0.379 | **0.655** | 82 |
+| T10820 | classical/book-rich | 0.457 | 0.326 | **0.609** | 128 |
+| T10320 | modern/article-dense | 0.236 | 0.248 | **0.630** | 407 |
+| T10462 | **book-sparse** | 0.375 | **0.500** | 0.125 | **30** |
+
+**fl_bookdemand wins 3/4 decisively — beating BOTH prior champions on
+their own turf** (T11303/T10820 were greedy_hard's decisive-win
+regime; it also crushes the modern wash where neither champion broke
+0.25). Far fewer, sharper, more book-aligned gaps (82–407 vs ~830;
+highest unique_coverage@20 everywhere).
+
+**But it does NOT win everywhere — it collapses on book-sparse
+(T10462): 30 gaps, `heldout_spread = -0.0`, recall 0.125.** Structural,
+not a bug: book-sparse → tiny book-anchored demand → FL exhausts it in
+a few picks → held-out (also sparse) books not rediscovered. The
+`gaps_emitted` column (added with this arm) makes the collapse
+diagnostically unambiguous — 30 vs ~830 is the saturation signature.
+Where books are too sparse to *define* a demand signal, the
+non-book-anchored submodular_fl remains necessary.
+
+**REVISED FINAL recommendation:** the universal winner is
+**regime-gated, not single-method**. `fl_bookdemand` is the default
+wherever book-density clears a threshold — it dominates classical
+book-rich AND modern article-dense (the large majority of subfields),
+superseding both greedy_hard and submodular_fl there.
+`submodular_fl` remains the fallback ONLY for book-sparse subfields
+where fl_bookdemand collapses. greedy_hard is no longer the
+recommended default (beaten decisively on its own turf). Never
+dpp/softmax_mc/greedy_geom. Open: where exactly is the book-density
+gate (need a topic between T10320-dense and T10462-sparse to locate
+it), and does a sparse-demand fallback inside fl_bookdemand (blend
+toward submodular_fl as book-count→0) recover T10462 without losing
+the 3 wins.
+
+**Status: CONCLUSIVE on the regime split; recommendation changed
+(fl_bookdemand-gated, not greedy_hard-default). NOT ready to migrate —
+the book-density gate location + sparse-fallback question are the
+natural next experiments before a results doc is frozen. Pending
+sign-off.**

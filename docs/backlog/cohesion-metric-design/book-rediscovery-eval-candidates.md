@@ -44,11 +44,26 @@ the harness. **Status: proposed.**
 
 ### P2 — Deflation arms, cross-topic (in progress)
 `submodular_fl` won the T10181 triangulation (best held-out recall
-0.156 / spread 3.39). Running T11303 + T10462 (`defl_T11303_*`,
-`defl_T10462_*`, arms greedy_hard/greedy_geom/submodular_fl/dpp) to
-test generalization + whether dpp's "wide article coverage, worst
-book-alignment" replicates. **Status: in-progress (jobs launched
-2026-05-18); feeds `gap-deflation-formulation.md`.**
+0.156 / spread 3.39). Cross-topic baselines **complete** (5 topics):
+greedy_hard wins book-rich/classical (T11303 0.483, T10820 0.457),
+submodular_fl wins book-sparse (T10462 0.50) and is marginal on modern
+(T10320 0.248); dpp consistently worst book-alignment everywhere —
+confirms the regime axis in `gap-deflation-formulation.md`. **New arm
+`fl_bookdemand`** (facility-location over book-anchored demand; Jaccard
+coverage, anti-saturation; commit `9a7f037`) launched 2026-05-18 vs
+greedy_hard + submodular_fl on the regime-spanning set
+(T11303/T10462/T10320 running, T10820 queued; jobs `flbd_*`) to test
+the "wins everywhere" hypothesis. **Result (2026-05-18):**
+fl_bookdemand wins 3/4 decisively — T11303 0.655, T10820 0.609,
+T10320 0.630 — *beating both prior champions on their own turf* — but
+**collapses on book-sparse T10462 (recall 0.125, 30 gaps emitted,
+spread −0.0)**. Not a universal winner; the recommendation is now
+**regime-gated**: fl_bookdemand default above a book-density gate,
+submodular_fl fallback below it. Next: locate the gate (a topic
+between T10320-dense and T10462-sparse) + try a sparse-demand fallback
+inside fl_bookdemand. **Status: regime split conclusive; gate-location
++ sparse-fallback are the open follow-ups. Feeds
+`gap-deflation-formulation.md` (recommendation changed there).**
 
 ### P2 — Denoiser × deflation interaction
 Both bake-offs froze the *other* axis (deflation frozen at
