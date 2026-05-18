@@ -25,6 +25,8 @@ Per-gap quality measurement and filtering.
 - [topic-purity-axis](cohesion-metric-design/topic-purity-axis.md) — OpenAlex topic_id purity; useful at field/subfield scope (degenerate at single-topic scope)
 - [dedup-cache-member-sets](cohesion-metric-design/dedup-cache-member-sets.md) — small optimization for Jaccard dedup loop
 - [gap-deflation-formulation](cohesion-metric-design/gap-deflation-formulation.md) — **living**: bake-off of 5 deflation strategies (greedy-hard/geom, submodular-FL, DPP, softmax-mc) with held-out-book validation
+- [dual-landmark-eff-size-reporting](cohesion-metric-design/dual-landmark-eff-size-reporting.md) — report `eff_size_books`/`eff_size_chapters` per gap; **validated in the bake-off harness** (drives the LIP/LPP mirror-image result), production integration pending
+- [data-quality-artifact-prefilter](cohesion-metric-design/data-quality-artifact-prefilter.md) — drop structural data debris (N3C, taxonomy, …); **bake-off reinforced**: genuine debris, binomial p discriminates it, raw sig/size ranking does not
 
 ## Keyword extraction
 
@@ -36,6 +38,7 @@ Per-gap quality measurement and filtering.
 - [lattice-additive-tokenisation](keyword-extraction/lattice-additive-tokenisation.md) — semtok-style overlapping segmentation with conductance weighting
 - [doc-level-boilerplate-filter](keyword-extraction/doc-level-boilerplate-filter.md) — regex blacklist at ingest for scraped UI fragments in abstracts
 - [display-side-keyword-dedup](keyword-extraction/display-side-keyword-dedup.md) — drop shorter-phrase keywords whose token sets are subsets of longer-phrase keywords (cosmetic only)
+- [wire-keywords-into-batch-generator](keyword-extraction/wire-keywords-into-batch-generator.md) — attach `keywords` to every `GapWithContext` in `_compute_gaps_for_topic`; opportunity to audit `artifacts_scripts/curriculum/` for primitives that should move into `bookgap/`
 
 ## Infrastructure
 
@@ -45,3 +48,4 @@ Performance, indexing, refactoring.
 - [cuml-hdbscan-pynndescent](infrastructure/cuml-hdbscan-pynndescent.md) — RAPIDS cuml.HDBSCAN or PyNNDescent for HDBSCAN speedup
 - [cloud-denoiser-path-port](infrastructure/cloud-denoiser-path-port.md) — eliminate the `load_scope` bypass; route everything through Cloud(filter_pair, denoiser_config)
 - [share-fullindex-knn-dual-landmark](infrastructure/share-fullindex-knn-dual-landmark.md) — factor full-corpus member kNN out of compute_gap_stats so dual-landmark calls don't duplicate it (~2×→~1.2×)
+- [ff-stats-adaptive-calibration](infrastructure/ff-stats-adaptive-calibration.md) — partially validated: m-side calibration delivers 3-5× speedup; K-side rarely beats baseline at default tolerance (75/76 runs picked K=1500)
