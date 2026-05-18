@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 
 def test_greedy_hard_byte_matches_oracle():
@@ -142,3 +143,53 @@ def test_heldout_mask_deterministic_and_recall():
         k_near=10, cover_frac=0.5)
     assert rec == 1.0
     assert spread == 0.0                        # 1 recalled book → entropy 0
+
+
+@pytest.mark.parametrize("strategy", [
+    "greedy_hard", "greedy_geom", "submodular_fl", "dpp"])
+def test_synthetic_implant_recovers_clusters(strategy):
+    """3 tight implanted article clusters, NO books nearby → recovered
+    as the top-3 gaps with ~no mutual redundancy.
+
+    Fixture notes (test-fixture design; NOT changes to arm logic):
+    - d=32 so that axis-aligned cluster centers (10·e_i) are far apart in raw
+      Euclidean space (inter-cluster dist ≈ 14.1) without L2 normalisation.
+      L2-normalising collapses the geometry: post-normalisation inter-cluster
+      cosine dist (~1.1) falls below the book-article angular dist (~1.58),
+      making every k-ball span all 3 clusters — DPP then sees all top balls as
+      identical and cannot diversify.
+    - Books near the origin (scale 0.5) so the 75th-pct book distance from any
+      cluster article ≈ 10.8, which is < 14.1 (inter-cluster), giving each seed
+      a per-cluster ball of exactly 60 members.
+    - sigma=0.5 ≈ intra-cluster RMS distance (≈ 0.56 for σ_noise=0.1, d=32) so
+      that the submodular_fl Gaussian kernel produces non-trivial sim values.
+      sigma=0.1 (smaller than intra-cluster dist) drives all sim weights to ~0
+      and causes submodular_fl to emit 0 gaps.
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate,
+    )
+    rs = np.random.RandomState(11)
+    d = 32
+    # Three axis-aligned cluster centers, well-separated in raw Euclidean space
+    centers = np.eye(3, d, dtype=np.float32) * 10.0
+    parts = []
+    for c in centers:
+        parts.append(c + 0.1 * rs.randn(60, d).astype(np.float32))  # 3×60 tight
+    parts.append(rs.randn(120, d).astype(np.float32) * 0.5)          # diffuse bg near origin
+    art = np.vstack(parts).astype(np.float32)
+    # No L2 normalisation — preserves the Euclidean cluster geometry
+    bk = rs.randn(10, d).astype(np.float32) * 0.5                    # books near origin, NOT normalised
+    sigma = np.full(len(art), 0.5, dtype=np.float32)                  # ≈ intra-cluster RMS dist
+
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, strategy, art, num_gaps=3, min_gap_size=10,
+                   sigma=sigma, book_emb=bk, radius_fraction=0.75)
+    assert len(gaps) == 3, f"{strategy}: expected 3 gaps, got {len(gaps)}"
+    sets = [set(ids.tolist()) for _i, _s, ids in gaps]
+    for i in range(3):
+        for j in range(i + 1, 3):
+            u = len(sets[i] | sets[j])
+            jac = (len(sets[i] & sets[j]) / u) if u else 0.0
+            assert jac < 0.2, f"{strategy}: gaps {i},{j} overlap jac={jac:.2f}"
