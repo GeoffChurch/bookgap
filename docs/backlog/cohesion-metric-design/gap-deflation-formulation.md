@@ -293,9 +293,63 @@ default over the fitted s30 (≈equal numbers, no magic constant).
 Regime-gated fl_bookdemand/submodular_fl still wins the absolute
 numbers (full dense + .500 sparse) at the cost of the branch.
 
-**Status: TERMINAL — investigation conclusive. Choices: (1) adopt
-fl_bookdemand_resid as the no-branch default (principled,
-near-best, zero knobs); (2) keep regime-gated for absolute-best
-numbers (retains branch); (3) freeze as-is. Migration to
-docs/gap_deflation_results.md + dead_ends transitions pending
-sign-off on which.**
+### Best-of-both reframes (2026-05-18) — A union, B gen→rank — TERMINAL+
+
+Escape the "one mixed objective" box. **A `fl_union_bd_sub`** =
+concat(fl_bookdemand, submodular_fl), dedup+effective_size
+downstream. **B `fl_gen_rank`** = submodular_fl generates the pool,
+book-demand reranks emission (bd>0 desc, bd==0 backfill in submodular
+order). Arms commits `2e9b657`/`9d79ea9`/`afb560a` (full
+spec+quality review; B self-weakening confirmed safe-by-construction
+in the bd==0 sparse regime). 6-arm × 4-topic (`bob_*`, baselines
+byte-reproduced).
+
+| topic | greedy | sub_fl | fl_bd | resid | union | gen_rank |
+|---|--:|--:|--:|--:|--:|--:|
+| T11303 book-rich | .483 | .379 | **.655** | .621 | .414 | .379 |
+| T10820 book-rich | .457 | .326 | **.609** | .565 | .457 | .326 |
+| T10320 modern | .236 | .248 | .582 | **.618** | .418 | .248 |
+| T10462 sparse | .375 | .500 | .125 | .375 | **.625** | **.625** |
+
+**Finding 1 — the terminal structural insight.** `fl_gen_rank` is
+*byte-identical* to `submodular_fl` on T11303/T10820/T10320 (recall,
+spread, jaccard all equal) despite 354–563 gaps reranked by
+book-demand (diag). The reorder was **entirely washed out by
+`run_arm`'s downstream `effective_size` top-20 ranking**. ROOT CAUSE
+of the whole tension: the deflation/seed stage only changes which
+gaps *survive*, NOT the final selection — the regime-blind
+`effective_size` ranking is the binding constraint. **No
+deflation-stage strategy can be a universal winner because deflation
+is not the stage that decides the metric.**
+
+**Finding 2 — new book-sparse SOTA.** `fl_union_bd_sub` = **.625 on
+T10462**, beating `submodular_fl`'s .500 (the prior sparse ceiling)
+and every method in the entire investigation. Few sharp
+fl_bookdemand gaps (diag: 37) unioned with manifold coverage +
+effective_size ranking genuinely exceed either alone — real
+best-of-both *on sparse*. But worst book-aware method on dense
+(.414/.457/.418): submodular's 1000 gaps crowd fl_bookdemand's few
+sharp ones out of the effective_size top-20 (predicted crowding).
+
+**FINAL CONCLUSION (investigation closed at the deflation stage).**
+The full deflation design space is mapped — mixture (A-keyed /
+constant-s / intrinsic-residual) AND non-mixture (union / gen→rank).
+No no-branch deflation is a universal winner, and we now know *why*:
+the book-vs-manifold tradeoff is decided by the regime-blind
+`effective_size` ranking in `run_arm`, a different (protected)
+subsystem. The only genuinely new lever surfaced is the **ranking
+stage** (make the survivor ranking book-aware/regime-adaptive), not
+the deflation stage. Practical best numbers: dense → fl_bookdemand
+(.655/.609/.582) or resid (.621/.565/.618, zero-knob); sparse →
+**fl_union_bd_sub (.625, new SOTA)**. An updated regime gate
+fl_bookdemand(dense)/fl_union_bd_sub(sparse) beats the old
+fl_bookdemand/submodular_fl gate.
+
+**Status: TERMINAL — deflation-stage investigation conclusively
+closed. Open frontier (different subsystem, bigger reframe):
+book-aware/regime-adaptive survivor ranking in run_arm. Decisions
+pending sign-off: (1) adopt resid as zero-knob no-branch default;
+(2) updated regime gate fl_bookdemand/fl_union_bd_sub for absolute
+best (incl. new .625 sparse SOTA); (3) open the ranking-stage
+frontier; (4) freeze. Migration to docs/gap_deflation_results.md +
+dead_ends transitions pending which.**
