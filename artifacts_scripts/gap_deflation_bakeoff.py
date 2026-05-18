@@ -5,6 +5,7 @@ docs/superpowers/specs/2026-05-17-gap-deflation-bakeoff-design.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 
@@ -66,8 +67,12 @@ def build_kball_candidates(
 
 def _greedy_hard(
     cands: list[Candidate],
+    article_emb: np.ndarray,
+    *,
     num_gaps: int,
     min_gap_size: int,
+    sigma=None,
+    **params,
 ) -> list[tuple[int, int, np.ndarray]]:
     """Greedy-prune deflation — byte-anchored to _greedy_kball_gaps_inline.
 
@@ -95,13 +100,15 @@ def _greedy_hard(
         gaps.append((gap_idx, gap_size, best_ids.copy()))
         pruned_set = set(best_ids.tolist())
         for i, ids in enumerate(covered):
-            if ids.size:
+            if ids.size:  # micro-opt vs oracle (omits this); result identical on empty arrays
                 m = np.array([x not in pruned_set for x in ids.tolist()], dtype=bool)
                 covered[i] = ids[m]
     return gaps
 
 
-_STRATEGIES: dict[str, object] = {"greedy_hard": _greedy_hard}
+# Every strategy: (cands, article_emb, *, num_gaps, min_gap_size, sigma, **params) -> list[(seed_idx, size, member_ids)]
+DeflateFn = Callable[..., list]
+_STRATEGIES: dict[str, DeflateFn] = {"greedy_hard": _greedy_hard}
 
 
 def deflate(
@@ -130,8 +137,6 @@ def deflate(
     """
     if strategy not in _STRATEGIES:
         raise ValueError(f"unknown deflation strategy {strategy!r}")
-    fn = _STRATEGIES[strategy]
-    if strategy == "greedy_hard":
-        return fn(cands, num_gaps, min_gap_size)
-    return fn(cands, article_emb, num_gaps=num_gaps,
-              min_gap_size=min_gap_size, sigma=sigma, **params)
+    return _STRATEGIES[strategy](
+        cands, article_emb, num_gaps=num_gaps,
+        min_gap_size=min_gap_size, sigma=sigma, **params)
