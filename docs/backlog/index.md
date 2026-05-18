@@ -24,6 +24,7 @@ Per-gap quality measurement and filtering.
 - [boundary-centroid-cosine](cohesion-metric-design/boundary-centroid-cosine.md) — cosine between gap centroid and boundary-books centroid; high = book exists, low = templated-data leak
 - [topic-purity-axis](cohesion-metric-design/topic-purity-axis.md) — OpenAlex topic_id purity; useful at field/subfield scope (degenerate at single-topic scope)
 - [dedup-cache-member-sets](cohesion-metric-design/dedup-cache-member-sets.md) — small optimization for Jaccard dedup loop
+- [gap-deflation-formulation](cohesion-metric-design/gap-deflation-formulation.md) — **living**: bake-off of 5 deflation strategies (greedy-hard/geom, submodular-FL, DPP, softmax-mc) with held-out-book validation
 
 ## Keyword extraction
 

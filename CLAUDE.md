@@ -166,6 +166,9 @@ Hydra structured configs using dataclasses:
 Two places encode the project's idea-state:
 
 - **What might work** — `docs/backlog/` (organized by theme, with an `index.md`). Forward-looking ideas. If something interesting comes up mid-conversation — a new variant to try, a follow-up question, a refactor worth doing later — drop it there without asking first. One file per idea, self-contained enough to act on later without re-reading conversation context. Short is fine.
+
+  A backlog entry may also be a **living/in-progress doc**: when an idea is actively being worked, its file may grow in place from a one-liner into a working doc (add a `## Status / working notes` section, updated as work proceeds) rather than being deleted or moved immediately. The one-line `index.md` entry stays; the entry file itself is allowed to grow. On completion it migrates to its forever home (`docs/<topic>.md` results + code) per the validated/refuted rules below, and the backlog entry is removed/transitioned.
+
 - **What didn't work** — `docs/dead_ends/` (parallel structure to `docs/backlog/`, with its own `index.md`). Refuted ideas with their *diagnosis*. The point is to keep failed-but-instructive directions discoverable so we don't re-run the same experiment, AND so the *reason it failed* is captured (often more useful than the original idea).
 
 When an idea in `docs/backlog/` is executed:
