@@ -261,6 +261,115 @@ def _dpp(cands, article_emb, *, num_gaps, min_gap_size, sigma=None,
     return gaps
 
 
+def _softmax_mc(
+    cands: list[Candidate],
+    article_emb: np.ndarray,
+    *,
+    num_gaps: int,
+    min_gap_size: int,
+    sigma=None,
+    book_emb=None,
+    k_basins: int = 8,
+    target_perplexity: float = 1.75,
+    **params,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Multicluster-softmax deflation — memory-bounded (NO dense A×K array).
+
+    Design:
+    - Basins = candidate centroids ∪ book-anchored centroids.
+      First K rows are candidate basins (emittable); remaining rows are
+      book competitors (never emitted, but steal articles from gaps).
+    - Per-article kNN-basin query via FAISS (k_basins nearest basins).
+    - log-kernel: logk = -Dk / (sigma_a * sig_basin); sig_basin = median(sigma).
+    - Temperature τ calibrated by target perplexity P via 1-D bisection (~40 iters).
+    - Hard assignment: article → argmax basin over its k_basins retrieved.
+      If argmax is a book basin (index ≥ K) → unassigned (book competitor wins).
+    - Gaps = candidate basins with ≥ max(min_gap_size,1) assigned articles.
+      Sorted by size desc; element-0 = sequential emission rank.
+    """
+    if not cands:
+        return []
+
+    assert sigma is not None, "_softmax_mc requires sigma"
+    sigma_arr = np.asarray(sigma, dtype=np.float32)
+    sig_basin = float(np.median(sigma_arr))
+
+    K = len(cands)
+    cand_centroids = np.vstack([c.centroid for c in cands]).astype(np.float32)
+
+    # Stack basins: [candidate centroids | book centroids]
+    if book_emb is not None and len(book_emb) > 0:
+        book_arr = np.asarray(book_emb, dtype=np.float32)
+        basinC = np.vstack([cand_centroids, book_arr]).astype(np.float32)
+    else:
+        basinC = cand_centroids
+
+    n_basins = len(basinC)
+    k_q = min(k_basins, n_basins)
+
+    # Build FAISS index over basin centroids
+    bidx = _build_topic_index(basinC)
+
+    # Query every article for its k_q nearest basins
+    # article_emb: (A, d), bidx returns squared L2 distances
+    A = len(article_emb)
+    art_f32 = np.ascontiguousarray(article_emb.astype(np.float32))
+    Dk, Ik = bidx.search(art_f32, k_q)   # (A, k_q) each
+
+    # Compute log-kernel per (article, retrieved basin): logk[a, j] = -Dk[a,j] / (sigma_a * sig_basin)
+    # Dk shape: (A, k_q) — no dense A×K allocation
+    denom = np.maximum(sigma_arr[:, None] * sig_basin, 1e-8)   # (A, 1) broadcast → (A, k_q)
+    logk = -Dk / denom   # (A, k_q) — only k_q basins per article, NOT K basins
+
+    # Perplexity bisection to find temperature τ
+    # perplexity(w) = exp(entropy(w)); target P = target_perplexity
+    # Monotone in τ: higher τ → more uniform → higher perplexity.
+    def _mean_perplexity(tau: float) -> float:
+        w = logk / tau   # (A, k_q)
+        # numerically stable softmax along axis=1
+        w = w - w.max(axis=1, keepdims=True)
+        e = np.exp(w)
+        p = e / e.sum(axis=1, keepdims=True)
+        # Shannon entropy per article (nats), then perplexity
+        # clip to avoid log(0)
+        ent = -(p * np.log(np.maximum(p, 1e-30))).sum(axis=1)   # (A,)
+        return float(np.mean(np.exp(ent)))
+
+    tau_lo, tau_hi = 1e-3, 1e3
+    for _ in range(40):
+        tau_mid = (tau_lo + tau_hi) * 0.5
+        if _mean_perplexity(tau_mid) > target_perplexity:
+            tau_hi = tau_mid
+        else:
+            tau_lo = tau_mid
+    tau = (tau_lo + tau_hi) * 0.5
+
+    # Hard assignment: argmax of logk/τ over retrieved basins
+    scaled = logk / tau   # (A, k_q)
+    best_local = np.argmax(scaled, axis=1)   # (A,) — index into columns of Ik
+    best_basin = Ik[np.arange(A), best_local]   # (A,) — global basin index
+
+    # Assign articles to candidate basins; book basins (index ≥ K) → unassigned
+    assignments: list[list[int]] = [[] for _ in range(K)]
+    for a in range(A):
+        b = int(best_basin[a])
+        if b < K:
+            assignments[b].append(a)
+
+    # Emit candidate basins with enough articles, sorted by size desc
+    eff_min = max(min_gap_size, 1)
+    eligible = [(len(assignments[g]), g) for g in range(K)
+                if len(assignments[g]) >= eff_min]
+    eligible.sort(key=lambda x: -x[0])
+
+    gaps: list[tuple[int, int, np.ndarray]] = []
+    for rank, (sz, g) in enumerate(eligible[:num_gaps]):
+        ids = np.array(assignments[g], dtype=np.int64)
+        gaps.append((rank, sz, ids))
+
+    return gaps
+
+
 def heldout_book_split(n_books: int, frac: float = 0.2,
                        seed: int = 42) -> np.ndarray:
     """Deterministic held-out book indices (sorted, no replacement)."""
@@ -320,6 +429,7 @@ _STRATEGIES: dict[str, DeflateFn] = {
     "submodular_fl": _submodular_fl,
 }
 _STRATEGIES["dpp"] = _dpp
+_STRATEGIES["softmax_mc"] = _softmax_mc
 
 
 def deflate(

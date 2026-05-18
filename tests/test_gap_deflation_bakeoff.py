@@ -181,6 +181,33 @@ def test_deflation_driver_emits_per_arm_rows(tmp_path, monkeypatch):
     assert all(r["scope"]=="17/1702/T10181" for r in rows)
 
 
+def test_softmax_mc_partition_and_emission_rank():
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate,
+    )
+    rs = np.random.RandomState(13)
+    d = 16
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3): cen[i, i] = 8.0
+    parts = [cen[i] + 0.1*rs.randn(50, d).astype(np.float32) for i in range(3)]
+    parts.append(0.1*rs.randn(80, d).astype(np.float32))
+    art = np.vstack(parts).astype(np.float32)
+    bk = (0.1*rs.randn(8, d).astype(np.float32))           # books near origin bg
+    sigma = np.full(len(art), 0.5, dtype=np.float32)
+    cands = build_kball_candidates(art, bk, 0.75, 1)
+    gaps = deflate(cands, "softmax_mc", art, num_gaps=20, min_gap_size=5,
+                   sigma=sigma, book_emb=bk)
+    assert [g[0] for g in gaps] == list(range(len(gaps)))   # emission rank
+    seen = set()
+    for _i, sz, ids in gaps:                                # partition: disjoint
+        s = set(ids.tolist())
+        assert not (s & seen)
+        seen |= s
+        assert sz == len(ids) >= 5
+    assert len(gaps) >= 1
+
+
 @pytest.mark.parametrize("strategy", [
     "greedy_hard", "greedy_geom", "submodular_fl", "dpp"])
 def test_synthetic_implant_recovers_clusters(strategy):
