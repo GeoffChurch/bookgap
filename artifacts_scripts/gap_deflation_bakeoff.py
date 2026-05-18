@@ -776,9 +776,14 @@ def _resid_diag_mode(n_books: int, m_bg: int) -> str:
     """3-way diag `mode` label (single source of truth; can't drift).
 
     - "background-only" : n_books == 0 (no book signal — O = all articles).
-    - "book-only"       : M_bg == 0 with n_books > 0 (books cover the
-                          manifold, |O| ≈ 0 → pure book-anchored, the
-                          fl_bookdemand limit).
+    - "book-only"       : M_bg == 0 with n_books > 0. Reached only when
+                          orphans are fewer than the collective book
+                          budget (|O| < k_book·n_books), i.e. books spend
+                          their k_book budget on distinct manifold
+                          regions. With clustered books this requires
+                          books to be numerous *relative to* orphan mass,
+                          not merely book-rich → pure book-anchored, the
+                          fl_bookdemand limit.
     - "residual"        : both n_books > 0 and M_bg > 0 (mixed customers).
     """
     if n_books == 0:
@@ -821,17 +826,24 @@ def _fl_bookdemand_resid(
     - Orphan set O = {articles} \\ ⋃_b Nb[b] (article-local). Small when
       books densely cover the manifold, large when sparse.
     - Background customers: KMeans(n_clusters=M_bg, random_state=0,
-      n_init=1) over article_emb[O] ONLY. M_bg = clip(|O|//k_book, 0,
-      4000), clamped ≤ |O|. Each centroid's demand Nc = k_b nearest
+      n_init=1) over article_emb[O] ONLY.
+      M_bg = clip(|O| // max(k_book·n_books, k_book), 0, 4000),
+      clamped ≤ |O| — orphan density PER BOOK, so bg:book ≈
+      |O|/(k_book·n_books²). Each centroid's demand Nc = k_b nearest
       article-local articles over the SAME single article index (built
       once, reused for book + orphan-centroid queries; neighborhoods may
       include non-orphans — fine). Weight 1 (no per-customer density
       weight: M_bg already encodes orphan mass; adding it would
       double-count and re-introduce a knob).
 
-    The intrinsic regulator is M_bg ∝ |O|: book-dense ⇒ |O|≈0 ⇒ M_bg≈0 ⇒
-    pure book-anchored (= fl_bookdemand limit); book-sparse ⇒ most
-    articles orphaned ⇒ background dominant (no collapse).
+    The intrinsic regulator is orphan density PER BOOK
+    (M_bg = |O| // max(k_book·n_books, k_book)): shrinkage DECREASES as
+    books grow. M_bg→0 (pure book-anchored = fl_bookdemand limit)
+    requires |O| < k_book·n_books — books collectively spending their
+    k_book budget on distinct manifold regions; with clustered books
+    that is reached only when books are numerous *relative to* orphan
+    mass, not merely book-rich. Book-sparse ⇒ most articles orphaned and
+    the per-book budget is tiny ⇒ background dominant (no collapse).
 
     cov(g,c) = Jaccard(members_g, demand(c)) — REUSED verbatim from
     _fl_bookdemand: isect / (|members_g| + k_b - isect). Greedy maximises
@@ -846,8 +858,9 @@ def _fl_bookdemand_resid(
     n_books+M_bg (NOT a matrix). No dense (A,K)/(C,K)/(A,K,d) array.
 
     Edges: not cands or A==0 → []. book_emb None/empty → n_books=0,
-    O = ALL articles → background-only (NOT []). |O|==0 (books cover all)
-    → M_bg=0 → pure book-anchored (= fl_bookdemand limit).
+    O = ALL articles → background-only (NOT []). |O| < k_book·n_books
+    (books spend their budget on distinct regions) → M_bg=0 → pure
+    book-anchored (= fl_bookdemand limit).
 
     Diag is computed/printed IN-FUNCTION (dual-module-safe under
     `python -m`, per Addendum-1 fix 41ce35d) at the normal finalization
@@ -902,8 +915,17 @@ def _fl_bookdemand_resid(
     orphan_frac = float(n_orphans / A)
 
     # --- Background customers: KMeans over article_emb[O] ONLY ------------
-    # M_bg ∝ |O| is the intrinsic regulator — no tuned constant.
-    M_bg = int(np.clip(n_orphans // k_book, 0, 4000))
+    # Intrinsic regulator = orphan density PER BOOK (no tuned constant):
+    # M_bg = |O| // max(k_book·n_books, k_book) ⇒ bg:book ≈ |O|/(k_book·
+    # n_books²). Real books CLUSTER (they never blanket the manifold at
+    # n_books ≥ A/k_book), so absolute |O| ≈ A even on book-rich topics;
+    # the bare |O|//k_book reduces to ≈ A/(k_book·n_books) — algebraically
+    # identical to the refuted A-keyed EB (over-shrinks everywhere).
+    # Normalizing by n_books makes shrinkage DECREASE as books grow
+    # (dense ⇒ ~0 ≈ fl_bookdemand; sparse ⇒ high, background fills),
+    # still intrinsic. n_books==0 ⇒ max(0,k_book)=k_book ⇒ M_bg=|O|//
+    # k_book (background-only path unchanged).
+    M_bg = int(np.clip(n_orphans // max(k_book * n_books, k_book), 0, 4000))
     M_bg = min(M_bg, n_orphans)
 
     _mode = _resid_diag_mode(n_books, M_bg)
@@ -940,7 +962,8 @@ def _fl_bookdemand_resid(
         _FL_GAINS_RESID.clear()
         print(f"[fl_bookdemand_resid diag] EARLY-RETURN reason=C==0 "
               f"n_books={int(n_books)} n_orphans={int(n_orphans)} "
-              f"orphan_frac={orphan_frac:.4g} M_bg=0 mode={_mode} ngaps=0",
+              f"orphan_frac={orphan_frac:.4g} M_bg={int(M_bg)} "
+              f"mode={_mode} ngaps=0",
               flush=True)
         return []
 

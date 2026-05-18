@@ -1099,6 +1099,56 @@ def test_resid_orphan_monotone():
         diag_sparse, diag_dense)
 
 
+def test_resid_M_bg_normalized_per_book():
+    """Isolates the per-book normalization in
+    M_bg = |O| // max(k_book·n_books, k_book) (Addendum 2 fix that escapes
+    A-keyed-EB equivalence). Distinct from test_resid_orphan_monotone
+    (which varies orphan mass via book sparsity): here ALL books are
+    CO-LOCATED on one cluster, so the orphan set is held ~constant while
+    only n_books changes. M_bg must be STRICTLY smaller when n_books is
+    larger (denominator grows with n_books) — proving the regulator is
+    orphan density PER BOOK, not absolute |O| (the latter would be the
+    refuted A-keyed EB)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        build_kball_candidates, deflate, _fl_bookdemand_resid_diag,
+    )
+    rs = np.random.RandomState(207)
+    d = 24
+    cen = np.zeros((3, d), np.float32)
+    for i in range(3):
+        cen[i, i] = 12.0
+    parts = [cen[i] + 0.1 * rs.randn(80, d).astype(np.float32)
+             for i in range(3)]
+    parts.append(0.1 * rs.randn(200, d).astype(np.float32))  # diffuse bg
+    art = np.vstack(parts).astype(np.float32)
+
+    def _run(n_books):
+        # ALL books clustered onto cluster 0 → their k_book-NN union is
+        # ~constant regardless of n_books, so |O| stays ~fixed; only the
+        # per-book denominator changes.
+        bk = np.vstack([
+            cen[0] * 1.2 + 0.02 * rs.randn(d).astype(np.float32)
+            for _ in range(n_books)
+        ]).astype(np.float32)
+        cands = build_kball_candidates(art, bk, 0.75, 1)
+        deflate(cands, "fl_bookdemand_resid", art, num_gaps=15,
+                min_gap_size=3, book_emb=bk)
+        return _fl_bookdemand_resid_diag()
+
+    diag_few = _run(3)
+    diag_many = _run(60)
+
+    # Orphan mass comparable (clustered books don't blanket the manifold).
+    assert abs(diag_few["n_orphans"] - diag_many["n_orphans"]) <= 0.05 * (
+        diag_few["n_orphans"]), (diag_few, diag_many)
+    # Per-book normalization active: more books ⇒ strictly smaller M_bg
+    # despite comparable orphan mass.
+    assert diag_many["M_bg"] < diag_few["M_bg"], (
+        f"per-book normalization inactive (looks A-keyed): "
+        f"few={diag_few} many={diag_many}")
+
+
 def test_resid_no_s_knob():
     """Parameter-free: the signature has NO eb_target_shrinkage / s-style
     operating-point parameter, and a stray such kwarg passed via **params
@@ -1209,23 +1259,31 @@ def test_resid_memory_bounded():
 
     rs = np.random.RandomState(181)
     d = 16
-    n_clusters, pts_per = 1000, 8
+    n_clusters, pts_per = 5000, 4
     centers = (rs.randn(n_clusters, d).astype(np.float32)) * 80.0   # far apart
     parts = [centers[i] + 0.02 * rs.randn(pts_per, d).astype(np.float32)
              for i in range(n_clusters)]
-    art = np.vstack(parts).astype(np.float32)            # A = 8000
-    # One book per cluster, offset just enough that a p=0.75 ball captures
-    # its own (and only its own) tight cluster → per-candidate ball ~= 8.
-    # Books cover only HALF the clusters so the other half is fully
-    # orphaned → a substantial M_bg (∝ |O|) — this both exercises the
-    # orphan-coreset path and makes C = n_books + M_bg large enough that
-    # 8*C*K stays comfortably above the tight sparse threshold (so the
-    # "guard below both dense allocs" self-proof holds, and any real
-    # dense (C,K) allocation would still fail the primary assert).
-    bk = (centers[: n_clusters // 2] + 0.3).astype(np.float32)
-    cands = build_kball_candidates(art, bk, 0.75, 1)
+    art = np.vstack(parts).astype(np.float32)            # A = 20000
+    # SEED books (one per cluster) only seed the k-balls: a p=0.75 ball
+    # captures its own (and only its own) tight cluster → per-candidate
+    # ball ~= 4, so S = Σ|members| is O(A) and ≪ A*K and ≪ C*K.
+    seed_bk = (centers + 0.3).astype(np.float32)
+    cands = build_kball_candidates(art, seed_bk, 0.75, 1)
     A = len(art)
     K = len(cands)
+    # CUSTOMER books passed to the resid run are a SMALL clustered subset
+    # (real books cluster — they never blanket the manifold). Under the
+    # corrected per-book formula M_bg = |O| // max(k_book·n_books, k_book),
+    # ~all clusters are orphaned (|O| ≈ A) so M_bg is large and
+    # C = n_books + M_bg stays large enough that 8*C*K comfortably exceeds
+    # the tight sparse threshold (the "guard below both dense allocs"
+    # self-proof holds, and any real dense (C,K)/(A,K) allocation in the
+    # sparse-FL machinery still fails the primary assert). Decoupling the
+    # seed books from the customer books is deliberate: it isolates the
+    # sparse-ball requirement (needs many seeds) from the large-orphan-mass
+    # requirement (needs few, clustered customer books) which the corrected
+    # per-book formula otherwise puts in tension.
+    bk = (centers[:4] + 0.3).astype(np.float32)
 
     S = sum(int(len(c.members)) for c in cands)
     assert S < 0.05 * A * K, (
@@ -1235,7 +1293,7 @@ def test_resid_memory_bounded():
 
     tracemalloc.start()
     deflate(cands, "fl_bookdemand_resid", art, num_gaps=50,
-            min_gap_size=5, book_emb=bk)
+            min_gap_size=3, book_emb=bk)
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
 
