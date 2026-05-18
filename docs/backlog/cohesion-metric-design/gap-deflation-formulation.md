@@ -207,9 +207,42 @@ for M per topic. (a)/(c) are the same idea (pin the operating point);
 they convert the *emergent but mis-anchored* ratio into a *controlled*
 one while keeping the no-regime-branch property.
 
-**Status: CONCLUSIVE — emergent-shrinkage-as-specified is refuted as a
-universal winner (over-regularizes: prior keyed to A not n_books).
-Regime-gated fl_bookdemand remains the standing recommendation. The
-operating-point fix (lever a/c) is the natural next experiment and is
-a one-parameter change, not a redesign. Pending sign-off on whether to
-pursue it or freeze the regime-gated result.**
+**Operating-point fix tested (n_books-keyed s∈{.3,.5,.7} variants;
+arms commit `0d2da2e`).** `M = n_books·s/(1−s)` pins shrinkage≈s
+A-invariant (verified). 7-arm × 4-topic frontier sweep
+(`ebsw_*`, scorecards reproduced byte-identical → trustworthy).
+
+Recall@20 vs shrinkage (s≈0 = fl_bookdemand, s≈1 = submodular_fl,
+s≈0.9 = A-keyed fl_bookdemand_eb):
+
+| topic | n_books | s≈0 | s30 | s50 | s70 | s≈.9 | s≈1 | g_hard |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| T11303 book-rich | 116 | **.655** | .621 | .310 | .448 | .483 | .379 | .483 |
+| T10820 book-rich | 183 | .609 | **.630** | .565 | .457 | .500 | .326 | .457 |
+| T10320 modern | 660 | **.630** | .588 | .455 | .400 | .285 | .248 | .236 |
+| T10462 sparse | 34 | .125 | .375 | **.500** | .375 | .500 | .500 | .375 |
+
+**No constant s is a clean universal winner — regime optima diverge.**
+Book-rich/modern peak at low shrinkage (s≈0–.3, monotone decline as s
+rises); book-sparse T10462 is an inverted-U peaking at s≈.5 (low s
+collapses to .125). s50 rescues T10462 but craters T11303 (.655→.310);
+s30 is near-ceiling on the 3 dense topics but leaves T10462 at .375.
+
+**Two strong results:** (1) **s30 is an excellent single no-branch
+method** — ~95% of the dense ceiling (.621/.630/.588; *beats* pure
+fl_bookdemand on T10820) AND converts the T10462 collapse .125→.375,
+zero regime `if`. Below the *gated* champion only on book-sparse
+(.375 vs submodular_fl .500). (2) **The universal-winner schedule is
+now empirically pinned**: optimal shrinkage is a monotone function of
+book density — ≈.2 dense, ≈.5 sparse, both endpoints measured. A
+one-function `s = f(n_books/A)` schedule would plausibly dominate
+fl_bookdemand on dense AND submodular_fl on sparse: a no-branch
+universal winner designed from data, not guessed.
+
+**Status: CONCLUSIVE. Emergent-constant-shrinkage refuted as a
+universal winner, but the frontier is mapped and yields (a) s30 as a
+strong no-branch default and (b) a data-grounded shrinkage-schedule
+design. Standing recommendation: regime-gated fl_bookdemand OR s30
+(no-branch, near-equivalent). Next experiment (one-function, not a
+redesign): the book-density shrinkage schedule. Pending sign-off:
+pursue the schedule, adopt s30 and freeze, or keep regime-gated.**

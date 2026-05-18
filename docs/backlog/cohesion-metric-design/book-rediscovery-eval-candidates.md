@@ -66,10 +66,14 @@ no-branch) tested cross-topic: fixes the book-sparse collapse but
 over-regularizes (prior resolution `M` keyed to article density not
 book density → bg:book 6:1–38:1, shrinkage 0.86–0.97 everywhere → ≈
 submodular_fl, all 3 fl_bookdemand wins forfeited). Refuted as a
-universal winner; the operating-point fix (key M / book-weight to
-`n_books`, not `A`) is the open one-parameter follow-up. **Status:
-EB conclusive (refuted as-specified); regime-gated fl_bookdemand
-stands. Feeds `gap-deflation-formulation.md`.**
+universal winner. Operating-point fix (n_books-keyed s∈{.3,.5,.7})
+tested: no constant s wins everywhere (dense peaks s≈0–.3, sparse
+peaks s≈.5) BUT (a) **s30 is a strong single no-branch method**
+(~95% of dense ceiling; fixes collapse .125→.375) and (b) the
+universal-winner **shrinkage schedule `s=f(n_books/A)` is now
+empirically pinned** (≈.2 dense, ≈.5 sparse). **Status: frontier
+mapped & conclusive; next is the one-function schedule. Feeds
+`gap-deflation-formulation.md`.**
 
 ### P2 — Denoiser × deflation interaction
 Both bake-offs froze the *other* axis (deflation frozen at
