@@ -70,15 +70,22 @@ def find_gaps_for_topic(
     cell_type: CellType,
     k: int = 1,
     is_intra_cloud: bool = False,
+    deflation_strategy=None,
 ):
-    """Return gaps for the given books/articles subclouds and parameters."""
+    """Return gaps for the given books/articles subclouds and parameters.
+
+    ``deflation_strategy`` defaults to None (greedy hard-subtraction,
+    byte-identical to prior behaviour); pass
+    ``DeflationStrategy.FL_BOOKDEMAND_RESID`` to opt into resid.
+    """
     return cell_type.value.find_gaps(
         ambient=articles,
         landmark=books,
         query=articles,
         radius_fraction=radius_fraction,
         k=k,
-        is_intra_cloud=is_intra_cloud
+        is_intra_cloud=is_intra_cloud,
+        deflation_strategy=deflation_strategy,
     )
 
 def _compute_proposal_embeddings(

@@ -18,7 +18,11 @@ class VoronoiAlgorithm:
     """Wrapper class for Voronoi gap finding algorithm."""
     
     @staticmethod
-    def find_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, radius_fraction=None, k=None, is_intra_cloud=None):
+    def find_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, radius_fraction=None, k=None, is_intra_cloud=None, deflation_strategy=None):
+        # deflation_strategy is accepted for a uniform CellType.value.find_gaps
+        # signature but intentionally ignored: Voronoi gaps come from its own
+        # tessellation ordering (descending cell size), not k-ball candidate
+        # deflation, so there is no greedy-vs-resid choice to make here.
         assert query != landmark, "Use actual_voronoi_coverage when query and landmark are the same cloud"
         query_embeddings = query.embeddings()
         cell_sizes = hypothetical_voronoi_coverage(

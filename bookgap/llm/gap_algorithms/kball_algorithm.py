@@ -1,8 +1,11 @@
 """
 K-ball gap finding algorithm implementation.
 """
+from __future__ import annotations
+
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
@@ -11,15 +14,22 @@ from bookgap.cloud_index import get_kball_coverage, knn
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import kballs_with
 
+if TYPE_CHECKING:
+    # Deferred to avoid a circular import: bookgap.types imports
+    # KballAlgorithm at module load, so this module must not import
+    # bookgap.types at top level.
+    from bookgap.types import DeflationStrategy
+
 class KballAlgorithm:
     """Wrapper class for k-ball gap finding algorithm."""
-    
+
     @staticmethod
-    def find_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 
-            radius_fraction: float, k: int, is_intra_cloud: bool):
+    def find_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud,
+            radius_fraction: float, k: int, is_intra_cloud: bool,
+            deflation_strategy: "DeflationStrategy | None" = None):
         """
         Find gaps using k-ball algorithm.
-        
+
         Args:
             ambient: The ambient space to count points in (e.g., articles)
             landmark: The landmarks used to define distances (e.g., books)
@@ -27,15 +37,22 @@ class KballAlgorithm:
             radius_fraction: Fraction of distance to k-th nearest landmark to use as radius
             k: Which nearest landmark to use (1 = nearest, 2 = second nearest, etc.)
             is_intra_cloud: Whether landmark and query are the same cloud
+            deflation_strategy: Which gap-deflation strategy to apply.
+                None / GREEDY_HARD (default) is byte-identical to the
+                historical greedy hard-subtraction path;
+                FL_BOOKDEMAND_RESID is the opt-in facility-location
+                resid deflation.
         """
-        return KballAlgorithm.kball_gaps(ambient, landmark, query, radius_fraction, k, is_intra_cloud)
-    
+        return KballAlgorithm.kball_gaps(ambient, landmark, query, radius_fraction, k, is_intra_cloud,
+                                         deflation_strategy=deflation_strategy)
+
     @staticmethod
-    def kball_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 
-            radius_fraction: float, k: int, is_intra_cloud: bool):
+    def kball_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud,
+            radius_fraction: float, k: int, is_intra_cloud: bool,
+            deflation_strategy: "DeflationStrategy | None" = None):
         """
         Find gaps: query points where there are many closer ambient points than the nearest landmark points.
-        
+
         Args:
             ambient: The ambient space to count points in (e.g., articles)
             landmark: The landmarks used to define distances (e.g., books)
@@ -43,7 +60,18 @@ class KballAlgorithm:
             radius_fraction: Fraction of distance to k-th nearest landmark to use as radius
             k: Which nearest landmark to use (1 = nearest, 2 = second nearest, etc.)
             is_intra_cloud: Whether landmark and query are the same cloud
+            deflation_strategy: Gap-deflation strategy (see find_gaps).
         """
+        from bookgap.types import DeflationStrategy
+        if deflation_strategy is None:
+            deflation_strategy = DeflationStrategy.GREEDY_HARD
+        if deflation_strategy is DeflationStrategy.FL_BOOKDEMAND_RESID:
+            yield from KballAlgorithm._resid_gaps(
+                ambient=ambient, landmark=landmark, query=query,
+                radius_fraction=radius_fraction, k=k,
+                is_intra_cloud=is_intra_cloud)
+            return
+        # ----- GREEDY_HARD: existing greedy code, VERBATIM (byte-identity gate)
         covered_ambient_points = get_kball_coverage(ambient=ambient, landmark=landmark,
                                                     query=query, radius_fraction=radius_fraction,
                                                     k=k, is_intra_cloud=is_intra_cloud)
@@ -71,7 +99,82 @@ class KballAlgorithm:
                 # Remove all covered ambient points from other query point coverages (this completely zeros out the current gap)
                 mask = np.isin(idxs_, idxs, invert=True)
                 covered_ambient_points[idx] = (dists_[mask], idxs_[mask])
-    
+
+    @staticmethod
+    def _resid_gaps(*, ambient: SubCloud, landmark: SubCloud, query: SubCloud,
+                    radius_fraction: float, k: int, is_intra_cloud: bool):
+        """Opt-in fl_bookdemand_resid deflation, wrapped as KballGap.
+
+        Article/book embeddings are taken from the subclouds (query =
+        articles, landmark = books — the same roles the greedy path
+        uses). Candidates are built with the validated, ported
+        ``build_kball_candidates`` using the SAME ``radius_fraction``
+        and ``k`` the greedy path was invoked with (threaded through —
+        not hardcoded). Each returned ``(rank, size, member_ids)`` is
+        wrapped into the SAME ``KballGap`` object the greedy path
+        yields, with identical field population:
+
+        - ``ambient``/``landmark``/``query``/``radius_fraction``/``k``:
+          passed through verbatim (same objects/values as greedy).
+        - ``dists_idxs``: ``DistsAndIdxs`` whose ``idxs`` are the
+          article-local member indices and whose ``sqdists`` are the
+          squared distances from the candidate's seed article (the
+          query point that defines the ball — exactly greedy's
+          query→ambient distance semantics from
+          ``get_kball_coverage``), sorted ascending. ``KballGap``
+          then recomputes covering-book indices and the
+          book→articles mapping lazily from ``idxs`` + a fresh
+          ``knn(landmark, ambient, k=1)`` — IDENTICAL machinery to the
+          greedy gaps (no protocol field is fabricated).
+        """
+        from bookgap.llm.gap_algorithms.deflation_strategies import (
+            build_kball_candidates,
+            deflate,
+        )
+
+        article_emb = np.ascontiguousarray(query.embeddings(), dtype=np.float32)
+        book_emb = np.ascontiguousarray(landmark.embeddings(), dtype=np.float32)
+        if article_emb.shape[0] == 0:
+            return
+
+        cands = build_kball_candidates(
+            article_emb, book_emb, radius_fraction=radius_fraction, k=k,
+        )
+        # Map a candidate's exact member set back to its seed so the
+        # gap's query→member distances are computed about the SAME
+        # query point greedy would use (the ball seed article).
+        members_to_seed: dict[tuple[int, ...], int] = {}
+        for c in cands:
+            key = tuple(sorted(int(x) for x in c.members.tolist()))
+            members_to_seed.setdefault(key, int(c.idx))
+
+        deflated = deflate(
+            "fl_bookdemand_resid", cands, article_emb,
+            num_gaps=len(article_emb), min_gap_size=0, book_emb=book_emb,
+        )
+
+        for _rank, _size, member_ids in deflated:
+            idxs = np.asarray(member_ids, dtype=np.intp)
+            if idxs.size == 0:
+                continue
+            key = tuple(sorted(int(x) for x in idxs.tolist()))
+            seed = members_to_seed.get(key, int(idxs[0]))
+            seed_vec = article_emb[seed]
+            sqdists = np.sum(
+                (article_emb[idxs] - seed_vec) ** 2, axis=1
+            ).astype(np.float32)
+            order = np.argsort(sqdists, kind="stable")
+            sqdists = sqdists[order]
+            sorted_idxs = idxs[order]
+
+            yield KballGap(
+                ambient=ambient,
+                landmark=landmark,
+                query=query,
+                radius_fraction=radius_fraction,
+                k=k,
+                dists_idxs=DistsAndIdxs(sqdists=sqdists, idxs=sorted_idxs))
+
     @staticmethod
     def compute_gap_sizes_for_embeddings(
         *,

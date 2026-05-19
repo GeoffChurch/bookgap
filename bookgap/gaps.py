@@ -20,7 +20,7 @@ from bookgap.configs.config import ExperimentConfig
 from bookgap.gap_statistics import compute_gap_statistics
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.subcloud import get_subclouds_for_topic
-from bookgap.types import CellType
+from bookgap.types import CellType, DeflationStrategy
 from bookgap.util import LOGGER, MEMORY
 
 
@@ -32,10 +32,15 @@ def _compute_gaps_for_topic(
     radius_fraction: float,
     cell_type: CellType,
     num_gaps: int,
+    deflation_strategy: DeflationStrategy = DeflationStrategy.GREEDY_HARD,
 ) -> list[GapWithContext]:
     """Compute gaps for a single topic (cached per-topic).
-    
+
     Cached by joblib.Memory using the topic parameters as the cache key.
+    ``deflation_strategy`` is an explicit argument (not derived from a
+    config object joblib can't see into) so a strategy change produces
+    a different cache key — without this, opt-in resid would silently
+    serve greedy-cached gaps (a correctness bug).
     """
     books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
@@ -74,6 +79,7 @@ def _compute_gaps_for_topic(
         radius_fraction=radius_fraction,
         k=1,
         is_intra_cloud=False,
+        deflation_strategy=deflation_strategy,
     )
 
     topic_gaps: list[GapWithContext] = []
@@ -111,10 +117,12 @@ def _compute_gaps_impl(
     radius_fraction: float,
     cell_type: CellType,
     num_gaps: int,
+    deflation_strategy: DeflationStrategy = DeflationStrategy.GREEDY_HARD,
 ) -> list[GapWithContext]:
     """Internal implementation that computes gaps for a single configuration.
-    
-    Cached by joblib.Memory using the four hashable parameters as the cache key.
+
+    Cached by joblib.Memory using the hashable parameters (including
+    ``deflation_strategy``) as the cache key.
     """
 
     # Merge pre and post filters to get the most specific constraints
@@ -167,6 +175,7 @@ def _compute_gaps_impl(
                 radius_fraction=radius_fraction,
                 cell_type=cell_type,
                 num_gaps=num_gaps,
+                deflation_strategy=deflation_strategy,
             )
         )
 
@@ -185,4 +194,5 @@ def compute_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
         radius_fraction=config.gap.radius_fraction,
         cell_type=config.gap.cell_type,
         num_gaps=config.batch.num_gaps,
+        deflation_strategy=config.gap.deflation_strategy,
     )

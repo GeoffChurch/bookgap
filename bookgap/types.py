@@ -15,3 +15,15 @@ class CellType(Enum):
     """Types of cells used in gap analysis algorithms."""
     KBALL = KballAlgorithm
     VORONOI = VoronoiAlgorithm
+
+
+class DeflationStrategy(Enum):
+    """Gap-deflation strategy selectable on the K-ball path.
+
+    GREEDY_HARD is the byte-identical production default (the existing
+    greedy hard-subtraction pruning). FL_BOOKDEMAND_RESID is the
+    opt-in facility-location-over-book∪orphan-background deflation
+    validated in the gap-deflation bake-off. Voronoi ignores this.
+    """
+    GREEDY_HARD = "greedy_hard"
+    FL_BOOKDEMAND_RESID = "fl_bookdemand_resid"

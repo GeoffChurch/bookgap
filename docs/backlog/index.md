@@ -15,6 +15,7 @@ How candidate gaps are produced and refined.
 - [multi-start-union-pipeline](gap-detection-methods/multi-start-union-pipeline.md) — combine candidates from fixed/moving-centroid/hill-climb/article-seed/cohesion-cut, dedup at the end
 - [kball-vs-hdbscan-statistical-scoring](gap-detection-methods/kball-vs-hdbscan-statistical-scoring.md) — finish the cross-scope sweep with `bookgap/depletion_test.py`
 - [hdbscan-relevance-weighted-replication](gap-detection-methods/hdbscan-relevance-weighted-replication.md) — fold per-work weights into HDBSCAN via point replication
+- [port-refine-pipeline-for-resid](gap-detection-methods/port-refine-pipeline-for-resid.md) — production resid is raw-deflation only; port LLR-refine→dedup→effective_size behind the resid option if the deferred ollama LLM-coverage check shows raw resid underperforms its refined bake-off numbers
 
 ## Cohesion metric design
 

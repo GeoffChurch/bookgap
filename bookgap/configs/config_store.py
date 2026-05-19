@@ -19,7 +19,7 @@ from .cloud.cloud_config import CloudConfig
 from .embedder.embedder_config import SentenceTransformerEmbedderConfig
 
 # Import required enums and types
-from bookgap.types import CellType
+from bookgap.types import CellType, DeflationStrategy
 from bookgap.cloud import WorkDenoisers
 from bookgap.util import SubField, WorkType
 from .util.filter_config import FilterConfig, FilterPairConfig
@@ -30,6 +30,11 @@ def register_configs():
     """Register all preset configurations with Hydra ConfigStore."""
     cs = ConfigStore.instance()
     cs.store(name="gap", node=GapConfig())
+    # Opt-in resid deflation preset (greedy_hard remains the default `gap`).
+    cs.store(
+        name="resid",
+        node=GapConfig(deflation_strategy=DeflationStrategy.FL_BOOKDEMAND_RESID),
+    )
     cs.store(name="cloud", node=CloudConfig())
     cs.store(group="snapshot", name="default", node=SnapshotConfig())
     # Provide a fully-instantiated default experiment configuration to avoid
