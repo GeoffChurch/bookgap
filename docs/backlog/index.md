@@ -16,6 +16,7 @@ How candidate gaps are produced and refined.
 - [kball-vs-hdbscan-statistical-scoring](gap-detection-methods/kball-vs-hdbscan-statistical-scoring.md) — finish the cross-scope sweep with `bookgap/depletion_test.py`
 - [hdbscan-relevance-weighted-replication](gap-detection-methods/hdbscan-relevance-weighted-replication.md) — fold per-work weights into HDBSCAN via point replication
 - [port-refine-pipeline-for-resid](gap-detection-methods/port-refine-pipeline-for-resid.md) — production resid is raw-deflation only; port LLR-refine→dedup→effective_size behind the resid option if the deferred ollama LLM-coverage check shows raw resid underperforms its refined bake-off numbers
+- [radius-fraction-bakeoff](gap-detection-methods/radius-fraction-bakeoff.md) — sweep the never-tuned k-ball `radius_fraction` (fixed 0.75/k=1 all along) with resid+genuine-recall@20 across the 4 topics
 
 ## Cohesion metric design
 
@@ -28,6 +29,7 @@ Per-gap quality measurement and filtering.
 - [dual-landmark-eff-size-reporting](cohesion-metric-design/dual-landmark-eff-size-reporting.md) — report `eff_size_books`/`eff_size_chapters` per gap; **validated in the bake-off harness** (drives the LIP/LPP mirror-image result), production integration pending
 - [data-quality-artifact-prefilter](cohesion-metric-design/data-quality-artifact-prefilter.md) — drop structural data debris (N3C, taxonomy, …); **bake-off reinforced**: genuine debris, binomial p discriminates it, raw sig/size ranking does not
 - [book-rediscovery-eval-candidates](cohesion-metric-design/book-rediscovery-eval-candidates.md) — **living tracker**: methods worth running through the held-out eval. ⚠ Metric caveat: the eval was a full-set-coverage misnomer until fixed to genuine recall@20 (see `docs/gap_deflation_results.md`); prior conclusions resting on it must be re-checked
+- [heldout-book-recovery-production-eval](cohesion-metric-design/heldout-book-recovery-production-eval.md) — promote held-out recovery to a production-grade standalone eval emitting a paper-ready recall@K table (genuine recall@K, not the full-set misnomer)
 
 ## Keyword extraction
 
@@ -50,3 +52,4 @@ Performance, indexing, refactoring.
 - [cloud-denoiser-path-port](infrastructure/cloud-denoiser-path-port.md) — eliminate the `load_scope` bypass; route everything through Cloud(filter_pair, denoiser_config)
 - [share-fullindex-knn-dual-landmark](infrastructure/share-fullindex-knn-dual-landmark.md) — factor full-corpus member kNN out of compute_gap_stats so dual-landmark calls don't duplicate it (~2×→~1.2×)
 - [ff-stats-adaptive-calibration](infrastructure/ff-stats-adaptive-calibration.md) — partially validated: m-side calibration delivers 3-5× speedup; K-side rarely beats baseline at default tolerance (75/76 runs picked K=1500)
+- [wire-ollama-generator-as-selectable-backend](infrastructure/wire-ollama-generator-as-selectable-backend.md) — `OllamaProposalGenerator` already exists but isn't config-selectable; wire it as an opt-in backend (default OpenAI) to save $$ + unblock local LLM-coverage
