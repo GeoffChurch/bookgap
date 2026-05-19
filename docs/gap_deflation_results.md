@@ -88,17 +88,51 @@ rank-invariant per topic (.621/.375/.618/.565) as it must be.
 | T10320 modern    | .030      | **.042** | .036 |
 | T10820 book-rich | **.152**  | .109 | .152 |
 
-**Verdict: the founding premise is NOT supported by held-out
-rediscovery.** Raw KBALL ranking is ≥ n_eff (better 2/4, tied 1/4,
-worse only on modern-dense T10320); dual-landmark chapters is not a
-systematic improvement (worst on T11303, tied-best T10820, middling
-else). Correct statement: *no evidence on the book-rediscovery axis
-that n_eff or dual-landmark beats raw KBALL; raw is at least as
-good.* Small deltas, 4 topics, low absolute recall — triangulate,
-not oracle. **If the paper adopts n_eff/dual-landmark it must be
-justified on other grounds (qualitative, LLM-coverage); held-out
-rediscovery now argues *against* the change.** This bears directly
-on the `dual-landmark-eff-size-reporting` backlog entry.
+### recall@K curve (2026-05-19) — refines the @20-only verdict
+
+@20 alone gave small deltas that read as a flat "raw ≥ n_eff". The
+recall@K curve (K∈{5,10,20,fullset}; `RANK_KS`, commit `0f4798f`,
+byte-anchored — @20/fullset unchanged, fullset rank-invariant per
+topic, @20 reproduced) shows the deltas are **signal with the right
+shape**, and a **regime split** @20 hid:
+
+| topic | rank | @5 | @10 | @20 | fullset |
+|---|---|--:|--:|--:|--:|
+| T11303 book-rich | raw_kball | .000 | **.069** | **.138** | .621 |
+|  | effsize | .000 | .000 | .103 | .621 |
+|  | effsize_chapters | .000 | .034 | .069 | .621 |
+| T10820 book-rich | raw_kball | **.087** | **.109** | **.152** | .565 |
+|  | effsize | .022 | .043 | .109 | .565 |
+|  | effsize_chapters | .000 | .022 | .152 | .565 |
+| T10320 modern | raw_kball | .000 | .000 | .030 | .618 |
+|  | effsize | .000 | **.018** | **.042** | .618 |
+|  | effsize_chapters | **.012** | .018 | .036 | .618 |
+| T10462 sparse | raw_kball | .000 | .125 | .25 | .375 |
+|  | effsize | .000 | .125 | .25 | .375 |
+|  | effsize_chapters | .000 | .000 | .25 | .375 |
+
+**Refined verdict (supersedes the flat @20 statement):**
+- **Book-rich (T11303, T10820): raw KBALL is the better TOP-ranked
+  key, decisively.** Its lead is *largest at @5/@10 and narrows toward
+  @20* (T10820: 4× at @5 → 1.4× at @20) — the monotone-from-the-top
+  signature of a genuinely better ranking, not noise.
+- **Modern article-dense (T10320): n_eff / dual-landmark is the
+  better top-ranked key** — raw finds *nothing* in top-10
+  (@5=@10=.000); n_eff's posterior-denoising demotes the large noisy
+  blobs raw_kball ranks first on dense topics. A clean top-rank
+  inversion @20 obscured as a wash.
+- **Book-sparse (T10462): tie**; @5/@10 there are quantization noise
+  (~8 held-out books → multiples of ~.125), as predicted — read the
+  curve, not those cells.
+
+So it is **regime-dependent**, not a flat win either way: raw for
+book-rich, n_eff/dual-landmark for modern article-dense, tie for
+book-sparse. A paper adopting n_eff must scope the claim to the
+article-dense regime (or justify on qualitative / LLM-coverage);
+raw KBALL remains best where books are dense. 4 topics, low
+absolutes — triangulate, not oracle. Bears on the
+`dual-landmark-eff-size-reporting` backlog entry (dual-landmark is
+top-key-competitive only on modern-dense, never the clear winner).
 
 ## Status / follow-ups
 

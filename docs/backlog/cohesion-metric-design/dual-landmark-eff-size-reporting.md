@@ -8,8 +8,13 @@
 > dual-landmark signal is still **informative as a diagnostic
 > cross-tab** (the four-corner / LIP-LPP mirror-image result stands),
 > but it is *not* validated as a better ranking criterion than raw
-> KBALL on the book-rediscovery axis. See `docs/gap_deflation_results.md`
-> (§ "Gap-selection key"). Promotion into production must rest on the
+> KBALL on the book-rediscovery axis. **recall@K-curve update
+> (2026-05-19):** the regime split is now sharper — on modern
+> article-dense (T10320) the better top-ranked key is **book-landmark
+> n_eff** (raw finds nothing in top-10); `effective_size_chapters` is
+> only ever *top-key-competitive* there, never the clear winner on
+> any regime/K. See `docs/gap_deflation_results.md`
+> (§ "recall@K curve"). Promotion into production must rest on the
 > diagnostic value or other axes, not on rediscovery ranking.
 
 ## Idea
