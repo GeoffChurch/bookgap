@@ -1272,6 +1272,12 @@ def heldout_book_split(n_books: int, frac: float = 0.2,
     return np.sort(rng.choice(n_books, size=n_hold, replace=False))
 
 
+# Shared top-k for the rank-sensitive metrics. inter_gap_metrics and the
+# genuine held-out recall@20 in run_arm both slice ranked[:RANK_TOPK];
+# deduplicating the literal keeps "@20" honest in both places.
+RANK_TOPK = 20
+
+
 def heldout_recall_spread(heldout_book_emb, article_emb, gaps_members,
                           k_near: int = 10, cover_frac: float = 0.5):
     """recall = fraction of held-out books whose `k_near` nearest
@@ -1496,7 +1502,7 @@ def _rank_survivors(
     return ranked
 
 
-def inter_gap_metrics(survivors: list[dict], top_k: int = 20) -> dict:
+def inter_gap_metrics(survivors: list[dict], top_k: int = RANK_TOPK) -> dict:
     sets = [set(g.get("refined_member_indices", [])) for g in survivors[:top_k]]
     js = [len(a & b)/len(a | b) for i,a in enumerate(sets) for b in sets[i+1:] if (a|b)]
     union = set().union(*sets) if sets else set()
@@ -1589,9 +1595,11 @@ from pathlib import Path
 
 
 DEFLATION_SCORECARD_FIELDS = [
-    "deflation", "scope",
+    "deflation", "rank", "scope",
     "mean_pairwise_jaccard_top20", "unique_coverage_at_20",
-    "heldout_book_recall_at_20", "heldout_spread", "gaps_emitted", "runtime_s",
+    "heldout_recall_at20", "heldout_spread_at20",
+    "heldout_recall_fullset", "heldout_spread_fullset",
+    "gaps_emitted", "runtime_s",
 ]
 
 
@@ -1673,22 +1681,40 @@ def run_arm(
 
     # Step 7: compute metrics row
     m = inter_gap_metrics(ranked)
-    gm = [list(g.get("refined_member_indices", [])) for g in ranked]
     art_gidx = np.asarray(state["article_global_idx"])
-    gm_local = _global_to_article_local(gm, art_gidx)
-    rec, spread = heldout_recall_spread(
+    # full-set (OLD behaviour, verbatim): the byte-anchor gate + the
+    # breadth-vs-quality delta. Identical inputs/call to the pre-change
+    # `rec, spread` — just renamed to *_fullset.
+    gm_full = [list(g.get("refined_member_indices", [])) for g in ranked]
+    gm_full_local = _global_to_article_local(gm_full, art_gidx)
+    rec_full, spr_full = heldout_recall_spread(
         heldout_book_emb,
         state["emb"][art_gidx],
-        gm_local,
+        gm_full_local,
+        k_near=10,
+        cover_frac=0.5,
+    )
+    # top-20 (NEW PRIMARY): genuine rank-sensitive recall@20 over
+    # ranked[:RANK_TOPK]; same mapping, same call shape as full-set.
+    gm_top = [list(g.get("refined_member_indices", []))
+              for g in ranked[:RANK_TOPK]]
+    gm_top_local = _global_to_article_local(gm_top, art_gidx)
+    rec20, spr20 = heldout_recall_spread(
+        heldout_book_emb,
+        state["emb"][art_gidx],
+        gm_top_local,
         k_near=10,
         cover_frac=0.5,
     )
     return {
         "deflation": deflation,
+        "rank": rank,
         "scope": scope,
         **m,
-        "heldout_book_recall_at_20": rec,
-        "heldout_spread": spread,
+        "heldout_recall_at20": rec20,
+        "heldout_spread_at20": spr20,
+        "heldout_recall_fullset": rec_full,
+        "heldout_spread_fullset": spr_full,
         "gaps_emitted": len(ranked),   # survivors after refine; low count (e.g. 1) signals saturation
         "runtime_s": round(time.time() - t0, 1),
     }

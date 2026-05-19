@@ -164,11 +164,12 @@ def test_deflation_driver_emits_per_arm_rows(tmp_path, monkeypatch):
     import artifacts_scripts.gap_deflation_bakeoff as dfl
 
     def fake_run_arm(scope, deflation, out_dir, **kw):
-        return {"deflation": deflation, "scope": scope,
+        return {"deflation": deflation, "rank": "effsize", "scope": scope,
                 "mean_pairwise_jaccard_top20": 0.1,
                 "unique_coverage_at_20": 500,
-                "heldout_book_recall_at_20": 0.4,
-                "heldout_spread": 1.2, "runtime_s": 1.0}
+                "heldout_recall_at20": 0.3, "heldout_spread_at20": 0.9,
+                "heldout_recall_fullset": 0.4, "heldout_spread_fullset": 1.2,
+                "gaps_emitted": 7, "runtime_s": 1.0}
     monkeypatch.setattr(dfl, "run_arm", fake_run_arm)
     monkeypatch.setattr("sys.argv", [
         "prog", "--scope", "17/1702/T10181",
@@ -291,6 +292,87 @@ def test_global_to_article_local_maps_and_drops():
     # gm has global ids; 99 is a non-article id and must be dropped
     out = _global_to_article_local([[20, 40, 99], [10]], agi)
     assert out == [[1, 3], [0]]
+
+
+def test_recall_at20_uses_only_top20():
+    """METRIC CORRECTION regression proof. A held-out book is covered
+    ONLY by a survivor at rank >=21 (index 24, outside the first 20).
+    The full-set recall (OLD behaviour, retained) must count it (>0);
+    the genuine top-20 recall (NEW PRIMARY, ranked[:RANK_TOPK]) must
+    NOT — the slice is what makes the ranking axis testable.
+
+    Exercises the EXACT two heldout_recall_spread calls run_arm makes
+    (same mapping helper, same k_near=10/cover_frac=0.5), differing
+    only by the ranked[:RANK_TOPK] slice.
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        RANK_TOPK, _global_to_article_local, heldout_recall_spread,
+    )
+    assert RANK_TOPK == 20
+    # 25 "ranked" survivors; survivor k owns article-local member k.
+    A = 300
+    art = np.random.RandomState(0).randn(A, 8).astype(np.float32)
+    ranked = [{"refined_member_indices": [i]} for i in range(25)]
+    # Held-out book sits exactly on article 24 → its sole 1-NN is
+    # article 24, claimable only by survivor index 24 (rank 24 >= 21).
+    heldout_book_emb = art[24:25]
+    art_gidx = np.arange(A)  # identity global<->local for the fixture
+
+    gm_full = [list(g["refined_member_indices"]) for g in ranked]
+    gm_full_local = _global_to_article_local(gm_full, art_gidx)
+    rec_full, _ = heldout_recall_spread(
+        heldout_book_emb, art[art_gidx], gm_full_local,
+        k_near=1, cover_frac=0.5)
+
+    gm_top = [list(g["refined_member_indices"])
+              for g in ranked[:RANK_TOPK]]
+    gm_top_local = _global_to_article_local(gm_top, art_gidx)
+    rec20, _ = heldout_recall_spread(
+        heldout_book_emb, art[art_gidx], gm_top_local,
+        k_near=1, cover_frac=0.5)
+
+    assert rec_full > 0.0, "full-set must still count rank-24 coverage"
+    assert rec20 == 0.0, "top-20 must exclude the rank-24-only coverage"
+
+
+def test_fullset_equals_prechange():
+    """The full-set value is the VERBATIM old computation (byte-anchor):
+    heldout_recall_fullset == heldout_recall_spread called directly on
+    the full mapped survivor list with the identical
+    k_near=10/cover_frac=0.5 signature run_arm used pre-change.
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        _global_to_article_local, heldout_recall_spread,
+    )
+    rs = np.random.RandomState(2)
+    A = 120
+    art = rs.randn(A, 6).astype(np.float32)
+    # Mixed survivor set; some members beyond rank 20.
+    ranked = [{"refined_member_indices":
+               sorted(int(x) for x in
+                      rs.choice(A, size=5, replace=False))}
+              for _ in range(30)]
+    heldout_book_emb = art[rs.choice(A, size=4, replace=False)]
+    art_gidx = np.arange(A)
+
+    # The exact pre-change run_arm computation.
+    gm = [list(g.get("refined_member_indices", [])) for g in ranked]
+    gm_local = _global_to_article_local(gm, art_gidx)
+    rec_pre, spr_pre = heldout_recall_spread(
+        heldout_book_emb, art[art_gidx], gm_local,
+        k_near=10, cover_frac=0.5)
+
+    # The new *_fullset pair (same inputs, same call).
+    gm_full = [list(g.get("refined_member_indices", [])) for g in ranked]
+    gm_full_local = _global_to_article_local(gm_full, art_gidx)
+    rec_full, spr_full = heldout_recall_spread(
+        heldout_book_emb, art[art_gidx], gm_full_local,
+        k_near=10, cover_frac=0.5)
+
+    assert rec_full == rec_pre
+    assert spr_full == spr_pre
 
 
 def test_fl_bookdemand_recovers_book_anchored_clusters():
