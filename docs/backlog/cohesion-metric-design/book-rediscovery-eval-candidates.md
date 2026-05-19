@@ -1,5 +1,21 @@
 # Book-rediscovery eval — candidate experiments
 
+> ⚠ **METRIC CAVEAT (2026-05-18, load-bearing).** Until commit
+> `303ae02`, `run_arm` fed the *full* deduped survivor set (not the
+> top-20) to `heldout_recall_spread`, so `heldout_book_recall_at_20`
+> was **full-set coverage — rank-insensitive, and it rewarded emitting
+> many gaps**, not surfacing good ones. Any conclusion in this tracker
+> (or anywhere) that rested on the pre-fix metric is suspect and must
+> be re-checked under genuine **recall@20** (`ranked[:20]`; now the
+> primary, alongside a retained `*_fullset` anchor). Concretely, the
+> entire cross-topic deflation comparison reversed under the
+> correction: high-volume coverage methods score ≈0.0 recall@20;
+> intrinsic `fl_bookdemand_resid` is the winner. See
+> `docs/gap_deflation_results.md` and
+> `docs/dead_ends/cohesion-metric-design/deflation-demand-engineering-metric-artifact.md`.
+> Treat every "@K" eval here as genuine top-K, and read the metric's
+> implementation before trusting a sweep.
+
 **Living tracking doc.** The held-out-real-books rediscovery eval
 (signal A: mask 20% of books before detection, measure
 `heldout_book_recall@K` + `heldout_spread`; implemented in

@@ -24,10 +24,9 @@ Per-gap quality measurement and filtering.
 - [boundary-centroid-cosine](cohesion-metric-design/boundary-centroid-cosine.md) — cosine between gap centroid and boundary-books centroid; high = book exists, low = templated-data leak
 - [topic-purity-axis](cohesion-metric-design/topic-purity-axis.md) — OpenAlex topic_id purity; useful at field/subfield scope (degenerate at single-topic scope)
 - [dedup-cache-member-sets](cohesion-metric-design/dedup-cache-member-sets.md) — small optimization for Jaccard dedup loop
-- [gap-deflation-formulation](cohesion-metric-design/gap-deflation-formulation.md) — **living**: bake-off of 5 deflation strategies (greedy-hard/geom, submodular-FL, DPP, softmax-mc) with held-out-book validation
 - [dual-landmark-eff-size-reporting](cohesion-metric-design/dual-landmark-eff-size-reporting.md) — report `eff_size_books`/`eff_size_chapters` per gap; **validated in the bake-off harness** (drives the LIP/LPP mirror-image result), production integration pending
 - [data-quality-artifact-prefilter](cohesion-metric-design/data-quality-artifact-prefilter.md) — drop structural data debris (N3C, taxonomy, …); **bake-off reinforced**: genuine debris, binomial p discriminates it, raw sig/size ranking does not
-- [book-rediscovery-eval-candidates](cohesion-metric-design/book-rediscovery-eval-candidates.md) — **living tracker**: every method/experiment worth running through the held-out-book-rediscovery eval (P1 denoiser-bakeoff+held-out & Soft-EM; cross-topic deflation in-progress; + the explicit don't-retry list)
+- [book-rediscovery-eval-candidates](cohesion-metric-design/book-rediscovery-eval-candidates.md) — **living tracker**: methods worth running through the held-out eval. ⚠ Metric caveat: the eval was a full-set-coverage misnomer until fixed to genuine recall@20 (see `docs/gap_deflation_results.md`); prior conclusions resting on it must be re-checked
 
 ## Keyword extraction
 

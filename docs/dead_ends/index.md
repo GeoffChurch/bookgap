@@ -14,6 +14,7 @@ Approaches to per-gap quality measurement that were tried and refuted.
 - [inverse-square-kernel-dimension-inappropriate](cohesion-metric-design/inverse-square-kernel-dimension-inappropriate.md) — `1/d²` is the 3D-specific Newtonian Green's function; in d-dim it'd be `1/r^(d-2)` ≈ delta function for d=384. Use Gaussian heat kernel instead
 - [top-hat-knn-purity-loses-density](cohesion-metric-design/top-hat-knn-purity-loses-density.md) — unweighted K-NN purity loses local-density structure; weighted (Gaussian or 1/d²) preserves it
 - [full-data-soft-mixture-degenerate-bootstrap](cohesion-metric-design/full-data-soft-mixture-degenerate-bootstrap.md) — `K_G/K_total` is mathematically the proper mixture posterior but degenerate from single-seed init: weight diffuses to ~|G|/N uniform, no positive feedback to grow the cluster. Size-matched local CSLS isn't just a tractability dodge; it's the calibration that makes EM converge.
+- [deflation-demand-engineering-metric-artifact](cohesion-metric-design/deflation-demand-engineering-metric-artifact.md) — A-keyed/constant-s/union/gen-rank/ranking-stage demand engineering chased a phantom "book-vs-manifold tension" that was a metric misnomer (`heldout_book_recall_at_20` was full-set, not top-20, recall). Under correct recall@20 there is no tension; intrinsic `fl_bookdemand_resid` wins. Validated result: `docs/gap_deflation_results.md`
 
 ## Gap detection methods
 
