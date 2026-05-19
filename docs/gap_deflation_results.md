@@ -70,6 +70,36 @@ sweep, verify the metric's *implementation* measures what its name
 claims — read what set/slice/space it consumes. A plausible column name
 is not proof.
 
+## Gap-selection key: raw KBALL vs n_eff vs dual-landmark (2026-05-18)
+
+The session's *founding* question — adapt the paper to rank gaps by
+n_eff / book-chapter landmarks *instead of* raw KBALL ranking — is
+now answerable on the corrected metric (it was unmeasurable before:
+the full-set misnomer made ranking invisible). Deflation fixed at
+`fl_bookdemand_resid`, sweeping the `--rank` key, genuine recall@20.
+Consistency gate passed: `effsize` byte-matched the prior re-baseline
+resid@effsize (.103/.25/.042/.109); `heldout_recall_fullset` is
+rank-invariant per topic (.621/.375/.618/.565) as it must be.
+
+| topic            | raw_kball | effsize (n_eff book) | effsize_chapters (dual-landmark) |
+|------------------|----------:|---------------------:|---------------------------------:|
+| T11303 book-rich | **.138**  | .103 | .069 |
+| T10462 sparse    | .250      | .250 | .250 |
+| T10320 modern    | .030      | **.042** | .036 |
+| T10820 book-rich | **.152**  | .109 | .152 |
+
+**Verdict: the founding premise is NOT supported by held-out
+rediscovery.** Raw KBALL ranking is ≥ n_eff (better 2/4, tied 1/4,
+worse only on modern-dense T10320); dual-landmark chapters is not a
+systematic improvement (worst on T11303, tied-best T10820, middling
+else). Correct statement: *no evidence on the book-rediscovery axis
+that n_eff or dual-landmark beats raw KBALL; raw is at least as
+good.* Small deltas, 4 topics, low absolute recall — triangulate,
+not oracle. **If the paper adopts n_eff/dual-landmark it must be
+justified on other grounds (qualitative, LLM-coverage); held-out
+rediscovery now argues *against* the change.** This bears directly
+on the `dual-landmark-eff-size-reporting` backlog entry.
+
 ## Status / follow-ups
 
 - **Validated and resolved.** Winner lives in code

@@ -1,5 +1,17 @@
 # Dual-landmark `effective_size` reporting per gap
 
+> ⚠ **Update (2026-05-18, corrected-metric):** as a *gap-selection
+> ranking key*, dual-landmark `effective_size_chapters` does **not**
+> beat book-landmark n_eff or raw-KBALL ranking on genuine held-out
+> recall@20 (deflation fixed at `fl_bookdemand_resid`: T11303
+> .069 vs raw .138 / n_eff .103; tied/middling elsewhere). The
+> dual-landmark signal is still **informative as a diagnostic
+> cross-tab** (the four-corner / LIP-LPP mirror-image result stands),
+> but it is *not* validated as a better ranking criterion than raw
+> KBALL on the book-rediscovery axis. See `docs/gap_deflation_results.md`
+> (§ "Gap-selection key"). Promotion into production must rest on the
+> diagnostic value or other axes, not on rediscovery ranking.
+
 ## Idea
 
 Each LLR-refined gap should carry `effective_size_books` and
