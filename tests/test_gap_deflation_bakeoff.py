@@ -1804,10 +1804,13 @@ def test_rank_registered():
     ValueError naming the bad rank."""
     import numpy as np
     from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
-    s = [{"effective_size": 2.0, "refined_member_indices": [0]},
-         {"effective_size": 5.0, "refined_member_indices": [1]}]
+    s = [{"effective_size": 2.0, "kball_size": 1,
+          "effective_size_chapters": 3.0, "refined_member_indices": [0]},
+         {"effective_size": 5.0, "kball_size": 2,
+          "effective_size_chapters": 6.0, "refined_member_indices": [1]}]
     art = np.zeros((4, 3), dtype=np.float32)
-    for r in ("effsize", "bookdemand", "effsize_x_bd"):
+    for r in ("effsize", "bookdemand", "effsize_x_bd",
+              "raw_kball", "effsize_chapters"):
         out = _rank_survivors(s, r, book_emb=None,
                               article_emb_for_rank=art, k_book=10)
         assert isinstance(out, list) and len(out) == len(s)
@@ -1845,6 +1848,97 @@ def test_rank_effsize_is_identity():
                            book_emb=np.zeros((3, 4), dtype=np.float32),
                            article_emb_for_rank=art, k_book=10)
     assert [id(x) for x in got2] == [id(x) for x in expected]
+
+
+def test_rank_raw_kball_sorts_by_kball_size():
+    """rank="raw_kball" sorts survivors by the RAW pre-refine k-ball
+    gap size (the paper's original raw-KBALL criterion) descending,
+    NOT by effective_size. The effective_size order is deliberately
+    the INVERSE of the kball_size order to prove the key. A missing
+    kball_size → 0. book_emb=None must work (short-circuit, no FlatL2)."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    s = [
+        {"kball_size": 10, "effective_size": 99.0,
+         "refined_member_indices": [0]},
+        {"kball_size": 50, "effective_size": 1.0,
+         "refined_member_indices": [1]},
+        {"kball_size": 30, "effective_size": 5.0,
+         "refined_member_indices": [2]},
+        {"effective_size": 7.0,                       # missing → 0
+         "refined_member_indices": [3]},
+    ]
+    out = _rank_survivors(s, "raw_kball", book_emb=None,
+                          article_emb_for_rank=None, k_book=10)
+    assert [g.get("kball_size", 0) for g in out] == [50, 30, 10, 0]
+    # short-circuit proof: an article_emb that would crash the bd path
+    # is irrelevant because raw_kball never reaches it.
+    out2 = _rank_survivors(s, "raw_kball", book_emb=None,
+                           article_emb_for_rank=np.zeros((0, 0)),
+                           k_book=10)
+    assert [g.get("kball_size", 0) for g in out2] == [50, 30, 10, 0]
+
+
+def test_rank_effsize_chapters_sorts_by_chapter_field():
+    """rank="effsize_chapters" sorts by the dual-landmark n_eff vs
+    book-chapter landmarks (effective_size_chapters) descending. The
+    effective_size order is deliberately the INVERSE to prove the key.
+    Missing effective_size_chapters → 0.0. book_emb=None works."""
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    s = [
+        {"effective_size_chapters": 9.0, "effective_size": 1.0,
+         "refined_member_indices": [0]},
+        {"effective_size_chapters": 1.0, "effective_size": 9.0,
+         "refined_member_indices": [1]},
+        {"effective_size_chapters": 5.0, "effective_size": 5.0,
+         "refined_member_indices": [2]},
+        {"effective_size": 8.0,                       # missing → 0.0
+         "refined_member_indices": [3]},
+    ]
+    out = _rank_survivors(s, "effsize_chapters", book_emb=None,
+                          article_emb_for_rank=None, k_book=10)
+    assert [g.get("effective_size_chapters", 0.0) for g in out] == [
+        9.0, 5.0, 1.0, 0.0]
+    out2 = _rank_survivors(s, "effsize_chapters", book_emb=None,
+                           article_emb_for_rank=np.zeros((0, 0)),
+                           k_book=10)
+    assert [g.get("effective_size_chapters", 0.0) for g in out2] == [
+        9.0, 5.0, 1.0, 0.0]
+
+
+def test_rank_new_keys_short_circuit_no_bd(monkeypatch):
+    """raw_kball / effsize_chapters MUST short-circuit before the
+    bd/FlatL2 machinery — same gate as effsize. We spy on
+    bookgap.index.build_index: it must NOT be called for these ranks.
+    (bookdemand/effsize_x_bd DO build it — not asserted here.)"""
+    import numpy as np
+    import bookgap.index as bgi
+    from artifacts_scripts.gap_deflation_bakeoff import _rank_survivors
+    calls = []
+    orig = bgi.build_index
+
+    def _spy(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(bgi, "build_index", _spy)
+    s = [
+        {"kball_size": 3, "effective_size_chapters": 2.0,
+         "effective_size": 1.0, "refined_member_indices": [0]},
+        {"kball_size": 7, "effective_size_chapters": 8.0,
+         "effective_size": 4.0, "refined_member_indices": [1]},
+    ]
+    # Pass a degenerate article emb that would crash the bd FlatL2 path
+    # if ever reached — proves the short-circuit.
+    for r in ("raw_kball", "effsize_chapters"):
+        out = _rank_survivors(s, r, book_emb=np.ones((2, 4), np.float32),
+                              article_emb_for_rank=np.zeros((0, 0)),
+                              k_book=10)
+        assert isinstance(out, list) and len(out) == 2
+    assert calls == [], (
+        "build_index was invoked for a pure-field-sort rank — the "
+        "raw_kball/effsize_chapters short-circuit leaked into bd")
 
 
 def test_rank_bd_zero_reduces_to_effsize():

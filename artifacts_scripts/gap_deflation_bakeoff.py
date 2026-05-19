@@ -1451,15 +1451,33 @@ def _rank_survivors(
                               reverse=True)
                        — verbatim; this branch is a no-op refactor and
                        must NEVER consult books (the additive-proof gate).
+    - "raw_kball"    : pure-field sort by g["kball_size"] (the RAW
+                       pre-refine k-ball gap size — the paper's original
+                       raw-KBALL criterion) descending. Same
+                       short-circuit gate as effsize: no books, no
+                       article index, no FlatL2.
+    - "effsize_chapters" : pure-field sort by
+                       g["effective_size_chapters"] (dual-landmark n_eff
+                       vs book-chapter landmarks) descending. Same
+                       short-circuit gate as effsize.
     - "bookdemand"   : stable sort by (-bd(g), -effective_size(g)).
     - "effsize_x_bd" : stable sort by -(effective_size(g)·(1+bd(g))).
     - unknown        : ValueError(f"unknown rank {rank!r}").
 
     Diag printed in-function (dual-module-safe under `python -m`).
     """
-    if rank == "effsize":
+    # Pure-field-sort ranks: resolve and return BEFORE any bd/FlatL2
+    # machinery. These consult no books and no article index — same
+    # additive-proof short-circuit gate as effsize.
+    _FIELD_SORT = {
+        "effsize": ("effective_size", 0.0),
+        "raw_kball": ("kball_size", 0),
+        "effsize_chapters": ("effective_size_chapters", 0.0),
+    }
+    if rank in _FIELD_SORT:
+        field, default = _FIELD_SORT[rank]
         ranked = sorted(survivors,
-                        key=lambda g: g.get("effective_size", 0.0),
+                        key=lambda g: g.get(field, default),
                         reverse=True)
         _RANK_DIAG.update(rank=rank, n_books=0, n_book_shaped=0,
                           mode="effsize")
@@ -1747,7 +1765,8 @@ def main() -> None:
                    help="comma-separated deflation strategy names")
     p.add_argument("--index-type", choices=["flat", "hnsw"], default="hnsw")
     p.add_argument("--rank",
-                   choices=["effsize", "bookdemand", "effsize_x_bd"],
+                   choices=["effsize", "bookdemand", "effsize_x_bd",
+                            "raw_kball", "effsize_chapters"],
                    default="effsize",
                    help="survivor-ranking axis (default effsize = prior "
                         "behavior, byte-identical to committed scorecards)")
