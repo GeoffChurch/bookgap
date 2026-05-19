@@ -158,6 +158,14 @@ class KballAlgorithm:
             if idxs.size == 0:
                 continue
             key = tuple(sorted(int(x) for x in idxs.tolist()))
+            # `key` is ALWAYS present in members_to_seed: deflate()
+            # returns cands[best_j].members verbatim, so the sorted
+            # member tuple here always matches a populated key built from
+            # the same candidate pool above. The int(idxs[0]) fallback is
+            # defensive dead-code — it picks the member closest to itself
+            # as the seed (geometrically valid but the WRONG anchor); if
+            # it ever triggers, the deflate() return-shape contract
+            # (members returned verbatim) has changed.
             seed = members_to_seed.get(key, int(idxs[0]))
             seed_vec = article_emb[seed]
             sqdists = np.sum(

@@ -29,6 +29,9 @@ from typing import Callable
 import numpy as np
 
 from bookgap.index import build_index, kballs_with, HNSW, FlatL2
+# bookgap.util is already a transitive dep (bookgap.index imports LOGGER from
+# it) and neither util nor index imports this module, so this is cycle-free.
+from bookgap.util import LOGGER
 
 
 # --- Ported VERBATIM from artifacts_scripts/kball_gap_probe._build_topic_index
@@ -201,9 +204,9 @@ def _fl_bookdemand_resid(
     (books spend their budget on distinct regions) → M_bg=0 → pure
     book-anchored (= fl_bookdemand limit).
 
-    Diag is computed/printed IN-FUNCTION (dual-module-safe under
-    `python -m`, per Addendum-1 fix 41ce35d) at the normal finalization
-    and at every early return.
+    Diag is computed/logged at DEBUG level (production: routed through
+    bookgap LOGGER, not stdout) at the normal finalization and at every
+    early return.
     """
     A = len(article_emb)
     if not cands or A == 0:
@@ -213,10 +216,10 @@ def _fl_bookdemand_resid(
         _FL_GAINS_RESID.clear()
         _FL_DIAG_RESID.update(n_books=int(_n_books_early), n_orphans=0,
                               orphan_frac=0.0, M_bg=0, mode=_mode, ngaps=0)
-        print(f"[fl_bookdemand_resid diag] EARLY-RETURN "
-              f"reason={'no_cands' if not cands else 'A==0'} "
-              f"n_books={int(_n_books_early)} n_orphans=0 "
-              f"orphan_frac=0 M_bg=0 mode={_mode} ngaps=0", flush=True)
+        LOGGER.debug(f"[fl_bookdemand_resid diag] EARLY-RETURN "
+                     f"reason={'no_cands' if not cands else 'A==0'} "
+                     f"n_books={int(_n_books_early)} n_orphans=0 "
+                     f"orphan_frac=0 M_bg=0 mode={_mode} ngaps=0")
         return []
 
     from bookgap.index import build_index, FlatL2
@@ -227,6 +230,12 @@ def _fl_bookdemand_resid(
 
     # ONE exact article index, reused for BOTH book and orphan-centroid
     # queries (the single FlatL2 the memory contract pins).
+    # NOTE: this FlatL2 is DELIBERATELY separate from the HNSW
+    # `article_index` built in build_kball_candidates. That one does
+    # k-ball radius search to form candidate balls; this one does
+    # deterministic book-demand k-NN. They are behaviorally distinct
+    # (exact vs. approximate, different query semantics) and a verbatim
+    # port of the validated bake-off — they must NOT be merged.
     art_idx = build_index(FlatL2(), emb_f32)
 
     # --- Book customers (demand = Nb[b], k_b nearest article-local) ---------
@@ -299,11 +308,10 @@ def _fl_bookdemand_resid(
         # handled, or n_orphans==0 with n_books==0 — impossible since
         # n_books==0 ⇒ O = all A ≥ 1). Kept defensively.
         _FL_GAINS_RESID.clear()
-        print(f"[fl_bookdemand_resid diag] EARLY-RETURN reason=C==0 "
-              f"n_books={int(n_books)} n_orphans={int(n_orphans)} "
-              f"orphan_frac={orphan_frac:.4g} M_bg={int(M_bg)} "
-              f"mode={_mode} ngaps=0",
-              flush=True)
+        LOGGER.debug(f"[fl_bookdemand_resid diag] EARLY-RETURN reason=C==0 "
+                     f"n_books={int(n_books)} n_orphans={int(n_orphans)} "
+                     f"orphan_frac={orphan_frac:.4g} M_bg={int(M_bg)} "
+                     f"mode={_mode} ngaps=0")
         return []
 
     # Inverted index: article-local id -> list of candidate indices.
@@ -383,9 +391,9 @@ def _fl_bookdemand_resid(
         picked.add(best_j)
 
     _FL_DIAG_RESID.update(ngaps=len(gaps))
-    print(f"[fl_bookdemand_resid diag] n_books={int(n_books)} "
-          f"n_orphans={int(n_orphans)} orphan_frac={orphan_frac:.4g} "
-          f"M_bg={int(M_bg)} mode={_mode} ngaps={len(gaps)}", flush=True)
+    LOGGER.debug(f"[fl_bookdemand_resid diag] n_books={int(n_books)} "
+                 f"n_orphans={int(n_orphans)} orphan_frac={orphan_frac:.4g} "
+                 f"M_bg={int(M_bg)} mode={_mode} ngaps={len(gaps)}")
     return gaps
 
 
