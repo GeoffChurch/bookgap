@@ -16,7 +16,7 @@ How candidate gaps are produced and refined.
 - [kball-vs-hdbscan-statistical-scoring](gap-detection-methods/kball-vs-hdbscan-statistical-scoring.md) — finish the cross-scope sweep with `bookgap/depletion_test.py`
 - [hdbscan-relevance-weighted-replication](gap-detection-methods/hdbscan-relevance-weighted-replication.md) — fold per-work weights into HDBSCAN via point replication
 - [port-refine-pipeline-for-resid](gap-detection-methods/port-refine-pipeline-for-resid.md) — production resid is raw-deflation only; port LLR-refine→dedup→effective_size behind the resid option if the deferred ollama LLM-coverage check shows raw resid underperforms its refined bake-off numbers
-- [radius-fraction-bakeoff](gap-detection-methods/radius-fraction-bakeoff.md) — sweep the never-tuned k-ball `radius_fraction` (fixed 0.75/k=1 all along) with resid+genuine-recall@20 across the 4 topics
+- [radius-fraction-bakeoff](gap-detection-methods/radius-fraction-bakeoff.md) — sweep the never-tuned k-ball `radius_fraction` (fixed 0.75/k=1 all along) with resid+recall@K curve across the 4 topics, plus a **data-driven per-seed radius** arm (σ-tied / margin / density-adaptive) — directly tests whether n_eff's book-rich shortfall is a fixed-radius handicap vs a formula issue
 
 ## Cohesion metric design
 
