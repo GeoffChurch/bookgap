@@ -345,11 +345,65 @@ the deflation stage. Practical best numbers: dense → fl_bookdemand
 fl_bookdemand(dense)/fl_union_bd_sub(sparse) beats the old
 fl_bookdemand/submodular_fl gate.
 
-**Status: TERMINAL — deflation-stage investigation conclusively
-closed. Open frontier (different subsystem, bigger reframe):
-book-aware/regime-adaptive survivor ranking in run_arm. Decisions
-pending sign-off: (1) adopt resid as zero-knob no-branch default;
-(2) updated regime gate fl_bookdemand/fl_union_bd_sub for absolute
-best (incl. new .625 sparse SOTA); (3) open the ranking-stage
-frontier; (4) freeze. Migration to docs/gap_deflation_results.md +
-dead_ends transitions pending which.**
+### METRIC CORRECTION + re-baseline (2026-05-18) — INVESTIGATION RESOLVED
+
+**The headline metric was misnamed.** `run_arm` passed the FULL
+deduped survivor set (not top-20) to `heldout_recall_spread`;
+`heldout_book_recall_at_20` was full-set coverage,
+rank-INSENSITIVE — it rewarded *emitting many gaps*, not surfacing
+good ones. Fixed (commit `303ae02`, spec
+`docs/superpowers/specs/2026-05-18-ranking-stage-book-aware-design.md`):
+genuine `heldout_recall_at20` from `ranked[:20]` (new primary) +
+retained `heldout_recall_fullset` (byte-anchor + breadth/quality
+delta). 12-job re-baseline (`rb_*`). **Validity gate PASSED: every
+A-run `heldout_recall_fullset` byte-matches the prior `bob_*`
+numbers exactly** — the harness is sound, the correction left the
+old computation untouched.
+
+Genuine recall@20 (corrected primary):
+
+| topic | greedy | sub_fl | fl_bd | resid | union | sub@bd | sub@x_bd |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| T11303 | .000 | .000 | .103 | .103 | .000 | .103 | .034 |
+| T10462 | .000 | .000 | .125 | **.250** | .000 | .000 | .000 |
+| T10320 | .000 | .006 | .012 | **.042** | .000 | .024 | .024 |
+| T10820 | .000 | .000 | **.130** | .109 | .000 | .022 | .000 |
+
+**THE PRIOR DEFLATION CONCLUSIONS ABOVE ARE ARTIFACTS OF THE BROKEN
+METRIC.** `greedy_hard`/`submodular_fl`/`fl_union_bd_sub` score ≈0.0
+genuine recall@20 everywhere — their entire prior .38–.625 was gaps
+beyond rank-20 (a gap-quantity artifact; e.g. submodular T11303
+.379→.000, union T10462 .625→.000). The "submodular wins sparse",
+"regime gate", "union .625 SOTA", "book-vs-manifold tension is
+fundamental", and "ranking is the binding constraint" findings are
+ALL void — the manifold-coverage methods were never good; they only
+emitted ~800–1100 gaps so *some* low-ranked gap incidentally covered
+held-out books.
+
+**RESOLUTION (definitive, the whole investigation):**
+1. There is **no book-vs-manifold tension** under the correct
+   metric — it never existed; it was the misnamed metric.
+2. **`fl_bookdemand_resid` is the winner** — intrinsic, zero-knob,
+   no-branch; best or tied genuine recall@20 on all 4 topics
+   (decisively best on book-sparse T10462 .250, where every
+   coverage method = .000). Only the *few-sharp-book-anchored*
+   methods (resid, fl_bookdemand) surface held-out-book regions in
+   their top-ranked gaps; resid ≥ fl_bookdemand.
+3. Book-aware *ranking* of a book-blind pool cannot rescue it
+   (`sub@effsize_x_bd` ≈.0–.034, often < pure `@bookdemand` — the
+   multiplicative effsize factor dilutes). The survivor set must be
+   book-anchored *at generation*; ranking is NOT the lever. The
+   simplest intrinsic book-anchored deflation already wins.
+4. Absolute recall@20 is low (.10–.25 best) — expected for an
+   honest top-20-vs-held-out-books proxy; the RELATIVE ordering
+   (resid/fl_bd ≫ all coverage methods) is the robust signal.
+   Triangulate with qualitative-primary as always.
+
+**Status: INVESTIGATION RESOLVED. Winner = `fl_bookdemand_resid`
+(intrinsic, zero-knob, no branch). No tension, no gate, no
+best-of-both needed — the simplest book-anchored method wins once
+the metric is correct. The single most instructive artifact is the
+metric-misnomer diagnosis itself. Ready to migrate
+→ docs/gap_deflation_results.md (winner=resid + the metric-flaw
+lesson) and transition the refuted coverage/regime/union/ranking
+detours to dead_ends. Pending final sign-off.**
