@@ -167,6 +167,8 @@ def test_deflation_driver_emits_per_arm_rows(tmp_path, monkeypatch):
         return {"deflation": deflation, "rank": "effsize", "scope": scope,
                 "mean_pairwise_jaccard_top20": 0.1,
                 "unique_coverage_at_20": 500,
+                "heldout_recall_at5": 0.1, "heldout_spread_at5": 0.4,
+                "heldout_recall_at10": 0.2, "heldout_spread_at10": 0.7,
                 "heldout_recall_at20": 0.3, "heldout_spread_at20": 0.9,
                 "heldout_recall_fullset": 0.4, "heldout_spread_fullset": 1.2,
                 "gaps_emitted": 7, "runtime_s": 1.0}
@@ -373,6 +375,89 @@ def test_fullset_equals_prechange():
 
     assert rec_full == rec_pre
     assert spr_full == spr_pre
+
+
+def test_recall_at5_at10_use_only_topK():
+    """recall@K curve extension (mirrors test_recall_at20_uses_only_top20).
+
+    Two held-out books:
+      - book A covered ONLY by the survivor at rank 8 (index 8) →
+        counts for @10, @20, fullset; NOT @5.
+      - book B covered ONLY by the survivor at rank 15 (index 15) →
+        counts for @20, fullset; NOT @5, NOT @10.
+
+    Drives the SAME two-call helper the @20 test uses, extended to the
+    K∈{5,10,20} slices: same _global_to_article_local mapping, same
+    heldout_recall_spread(k_near=1, cover_frac=0.5) call shape, differing
+    only by the ranked[:K] slice. Also asserts the @5⊆@10⊆@20⊆fullset
+    monotonicity that holds by construction (recall non-decreasing in K).
+    """
+    import numpy as np
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        RANK_KS, RANK_TOPK, _global_to_article_local, heldout_recall_spread,
+    )
+    assert RANK_TOPK == 20
+    assert RANK_KS == (5, 10, 20)
+    # 25 "ranked" survivors; survivor k owns article-local member k.
+    A = 300
+    art = np.random.RandomState(0).randn(A, 8).astype(np.float32)
+    ranked = [{"refined_member_indices": [i]} for i in range(25)]
+    # Book A sits on article 8 (claimable only by survivor index 8,
+    # rank 8 >= 6 so outside @5). Book B sits on article 15 (claimable
+    # only by survivor index 15, rank 15 >= 11 so outside @5 and @10).
+    heldout_book_emb = np.vstack([art[8:9], art[15:16]])
+    art_gidx = np.arange(A)  # identity global<->local for the fixture
+
+    def recall_for_slice(k):
+        gm = [list(g["refined_member_indices"]) for g in ranked[:k]]
+        gm_local = _global_to_article_local(gm, art_gidx)
+        rec, _ = heldout_recall_spread(
+            heldout_book_emb, art[art_gidx], gm_local,
+            k_near=1, cover_frac=0.5)
+        return rec
+
+    def recall_fullset():
+        gm = [list(g["refined_member_indices"]) for g in ranked]
+        gm_local = _global_to_article_local(gm, art_gidx)
+        rec, _ = heldout_recall_spread(
+            heldout_book_emb, art[art_gidx], gm_local,
+            k_near=1, cover_frac=0.5)
+        return rec
+
+    rec5 = recall_for_slice(5)
+    rec10 = recall_for_slice(10)
+    rec20 = recall_for_slice(RANK_TOPK)
+    rec_full = recall_fullset()
+
+    # @5: neither book covered (survivors 8 and 15 are outside top-5).
+    assert rec5 == 0.0, "top-5 must exclude rank-8 and rank-15 coverage"
+    # @10: book A (rank 8) covered, book B (rank 15) not → 1/2.
+    assert rec10 == 0.5, "top-10 counts rank-8 (book A) only"
+    # @20: both books covered → 1.0.
+    assert rec20 == 1.0, "top-20 counts both rank-8 and rank-15"
+    assert rec_full == 1.0, "full-set counts both"
+
+    # @5 ⊆ @10 ⊆ @20 ⊆ fullset monotonicity (recall non-decreasing in K).
+    assert rec5 <= rec10 <= rec20 <= rec_full
+
+
+def test_deflation_scorecard_fields_include_recall_curve():
+    """Schema: the 4 new recall@K columns sit ADJACENT to the @20 pair,
+    immediately before heldout_recall_at20, with the rest of the column
+    order (deflation/rank/scope/jaccard/coverage/at20/fullset/
+    gaps_emitted/runtime_s) otherwise byte-unchanged."""
+    from artifacts_scripts.gap_deflation_bakeoff import (
+        DEFLATION_SCORECARD_FIELDS,
+    )
+    assert DEFLATION_SCORECARD_FIELDS == [
+        "deflation", "rank", "scope",
+        "mean_pairwise_jaccard_top20", "unique_coverage_at_20",
+        "heldout_recall_at5", "heldout_spread_at5",
+        "heldout_recall_at10", "heldout_spread_at10",
+        "heldout_recall_at20", "heldout_spread_at20",
+        "heldout_recall_fullset", "heldout_spread_fullset",
+        "gaps_emitted", "runtime_s",
+    ]
 
 
 def test_fl_bookdemand_recovers_book_anchored_clusters():

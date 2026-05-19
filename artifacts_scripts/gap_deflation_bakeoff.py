@@ -1277,6 +1277,13 @@ def heldout_book_split(n_books: int, frac: float = 0.2,
 # deduplicating the literal keeps "@20" honest in both places.
 RANK_TOPK = 20
 
+# recall@K curve: the rank-cutoffs run_arm slices ranked[:K] for, in
+# addition to the full set. RANK_KS[-1] is RANK_TOPK by construction so
+# the existing @20 output is one element of the same uniform loop (the
+# @20/fullset values stay byte-identical — this is a pure additive
+# extension of the 303ae02 @20 metric correction).
+RANK_KS = (5, 10, RANK_TOPK)
+
 
 def heldout_recall_spread(heldout_book_emb, article_emb, gaps_members,
                           k_near: int = 10, cover_frac: float = 0.5):
@@ -1615,6 +1622,8 @@ from pathlib import Path
 DEFLATION_SCORECARD_FIELDS = [
     "deflation", "rank", "scope",
     "mean_pairwise_jaccard_top20", "unique_coverage_at_20",
+    "heldout_recall_at5", "heldout_spread_at5",
+    "heldout_recall_at10", "heldout_spread_at10",
     "heldout_recall_at20", "heldout_spread_at20",
     "heldout_recall_fullset", "heldout_spread_fullset",
     "gaps_emitted", "runtime_s",
@@ -1712,23 +1721,37 @@ def run_arm(
         k_near=10,
         cover_frac=0.5,
     )
-    # top-20 (NEW PRIMARY): genuine rank-sensitive recall@20 over
-    # ranked[:RANK_TOPK]; same mapping, same call shape as full-set.
-    gm_top = [list(g.get("refined_member_indices", []))
-              for g in ranked[:RANK_TOPK]]
-    gm_top_local = _global_to_article_local(gm_top, art_gidx)
-    rec20, spr20 = heldout_recall_spread(
-        heldout_book_emb,
-        state["emb"][art_gidx],
-        gm_top_local,
-        k_near=10,
-        cover_frac=0.5,
-    )
+    # recall@K curve (NEW PRIMARY): genuine rank-sensitive recall over
+    # ranked[:K] for K in RANK_KS=(5,10,20). EACH K reuses the EXACT
+    # full-set mapping + call shape (same gm list comp, same
+    # _global_to_article_local, same heldout_recall_spread with
+    # k_near=10/cover_frac=0.5) — only the ranked[:K] slice differs.
+    # RANK_KS[-1] is RANK_TOPK so the @20 pair below is byte-identical
+    # to the pre-extension 303ae02 computation (verified by
+    # test_recall_at20_uses_only_top20 / test_fullset_equals_prechange).
+    rec_at: dict[int, float] = {}
+    spr_at: dict[int, float] = {}
+    for _k in RANK_KS:
+        gm_k = [list(g.get("refined_member_indices", []))
+                for g in ranked[:_k]]
+        gm_k_local = _global_to_article_local(gm_k, art_gidx)
+        rec_at[_k], spr_at[_k] = heldout_recall_spread(
+            heldout_book_emb,
+            state["emb"][art_gidx],
+            gm_k_local,
+            k_near=10,
+            cover_frac=0.5,
+        )
+    rec20, spr20 = rec_at[RANK_TOPK], spr_at[RANK_TOPK]
     return {
         "deflation": deflation,
         "rank": rank,
         "scope": scope,
         **m,
+        "heldout_recall_at5": rec_at[5],
+        "heldout_spread_at5": spr_at[5],
+        "heldout_recall_at10": rec_at[10],
+        "heldout_spread_at10": spr_at[10],
         "heldout_recall_at20": rec20,
         "heldout_spread_at20": spr20,
         "heldout_recall_fullset": rec_full,
