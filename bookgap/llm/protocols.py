@@ -51,16 +51,29 @@ class OpenAIModel(Enum):
     GPT_4O = "gpt-4o"
     GPT_4 = "gpt-4"
     GPT_5 = "gpt-5"
-    
+
     @property
     def supports_temperature(self) -> bool:
         """Whether this model supports temperature parameter."""
         return self != OpenAIModel.GPT_5
-    
+
     @property
     def uses_max_completion_tokens(self) -> bool:
         """Whether this model uses max_completion_tokens instead of max_tokens."""
         return self == OpenAIModel.GPT_5
+
+
+class LLMBackend(Enum):
+    """Proposal-generation backend selector.
+
+    ``OPENAI_BATCH`` is the historical default (the OpenAI Batch API path
+    in :mod:`bookgap.llm.generators.workflow_functions`). ``OLLAMA_LOCAL``
+    dispatches to :class:`bookgap.llm.generators.ollama_local.OllamaProposalGenerator`
+    for synchronous local inference; selected via ``config.llm.backend``.
+    """
+
+    OPENAI_BATCH = "openai_batch"
+    OLLAMA_LOCAL = "ollama_local"
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ from bookgap.configs.config import ExperimentConfig
 from bookgap.configs.config_store import register_configs
 from bookgap.llm.generators.run_state import RunStateManager
 from bookgap.llm.generators.workflow_functions import run_batch_workflow
+from bookgap.llm.protocols import LLMBackend
 from bookgap.util import LOGGER
 
 
@@ -111,8 +112,18 @@ def _run_workflow(cfg: ExperimentConfig, resume_output_dir: Optional[Path]) -> N
         state_manager.state.step.value,
     )
 
-    # Validate environment
-    if not os.getenv("OPENAI_API_KEY"):
+    # Validate environment. OPENAI_API_KEY is only mandatory when the
+    # OpenAI Batch backend is selected; the Ollama backend runs entirely
+    # locally and has no need for it.
+    backend_raw = getattr(cfg.llm, "backend", LLMBackend.OPENAI_BATCH)
+    if isinstance(backend_raw, str):
+        try:
+            backend = LLMBackend(backend_raw)
+        except ValueError:
+            backend = LLMBackend[backend_raw]
+    else:
+        backend = backend_raw
+    if backend is LLMBackend.OPENAI_BATCH and not os.getenv("OPENAI_API_KEY"):
         LOGGER.error("OPENAI_API_KEY environment variable is required")
         raise ValueError("OPENAI_API_KEY environment variable is required")
 

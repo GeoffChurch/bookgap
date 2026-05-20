@@ -3,6 +3,8 @@
 Pure functions for the batch processing pipeline using Hydra's instantiation system.
 """
 
+from __future__ import annotations
+
 from collections import defaultdict
 from dataclasses import dataclass
 import json
@@ -11,7 +13,10 @@ import random
 import time
 import hashlib
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .ollama_local import OllamaProposalRecord
 
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
@@ -37,9 +42,9 @@ from bookgap.subcloud import SubCloud
 from bookgap.util import LOGGER, create_unicode_safe_filename
 from ..protocols import (
     ProposalContext, BatchRequestData,
-    Article, Book, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
+    Article, Book, LLMBackend, OpenAIModel, ProposalCounts, ParsedProposal, Proposal
 )
-from ..identifiers import parse_gap_proposal_id, GapProposalId
+from ..identifiers import build_gap_proposal_id, parse_gap_proposal_id, GapProposalId
 from bookgap.index import range_search_radii_with
 from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
@@ -696,32 +701,108 @@ def run_batch_workflow(
     *,
     reuse_existing_results: bool = True,
 ) -> BatchResults:
-    """Run the complete batch workflow from gap finding to result ingestion.
+    """Run the complete proposal workflow from gap finding to result ingestion.
 
-    Args:
-        config: Experiment configuration
-        output_dir: Directory for all batch artifacts
-        state_manager: Persistence helper for resumable runs
-        reuse_existing_results: Allow reusing an existing results JSONL file
+    Dispatches on ``config.llm.backend``:
 
-    Returns:
-        BatchResults frozen dataclass containing proposals, metadata, and artifact paths
+    - ``LLMBackend.OPENAI_BATCH`` (default): OpenAI Batch API path
+      (:func:`_run_openai_batch_path`); byte-identical to historical
+      behaviour when no overrides are supplied.
+    - ``LLMBackend.OLLAMA_LOCAL``: synchronous local Ollama path
+      (:func:`_run_ollama_local_path`).
+
+    Both paths share the same gap-finding, context-building, and
+    downstream artifact-generation code, so the only divergence is the
+    proposal-generation step itself.
     """
     LOGGER.info("Starting batch workflow with %s gaps per topic", config.batch.num_gaps)
 
-    # Step 1: Find gaps
+    # Step 1: Find gaps (shared across backends)
     gaps = compute_gaps_for_config(config)
     if state_manager is not None:
         state_manager.mark_gaps_ready(gap_count=len(gaps))
     LOGGER.info("Found %s gaps", len(gaps))
 
-    # ARTIFACTS: Generate context files
+    # ARTIFACTS: Generate context files (shared)
     context_paths = generate_all_contexts(gaps, output_dir)
 
-    # Step 2: Build contexts
+    # Step 2: Build contexts (shared)
     contexts = build_contexts_for_gaps(gaps, config)
     LOGGER.info("Built %s proposal contexts", len(contexts))
 
+    backend = _resolve_backend(config)
+    if backend is LLMBackend.OPENAI_BATCH:
+        results = _run_openai_batch_path(
+            config=config,
+            output_dir=output_dir,
+            state_manager=state_manager,
+            gaps=gaps,
+            contexts=contexts,
+            context_paths=context_paths,
+            reuse_existing_results=reuse_existing_results,
+        )
+    elif backend is LLMBackend.OLLAMA_LOCAL:
+        results = _run_ollama_local_path(
+            config=config,
+            output_dir=output_dir,
+            state_manager=state_manager,
+            gaps=gaps,
+            contexts=contexts,
+            context_paths=context_paths,
+        )
+    else:  # pragma: no cover - exhaustively handled above
+        raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+    _generate_downstream_artifacts(
+        gaps=gaps,
+        contexts=contexts,
+        results=results,
+        config=config,
+        output_dir=output_dir,
+    )
+
+    return results
+
+
+def _resolve_backend(config: ExperimentConfig) -> LLMBackend:
+    """Coerce ``config.llm.backend`` to an :class:`LLMBackend` member.
+
+    OmegaConf may surface the enum as either the enum value itself or its
+    string value (e.g. ``"openai_batch"``) depending on whether the
+    config was constructed via ``OmegaConf.structured`` or built ad-hoc
+    in tests. Accept both forms.
+    """
+    raw = getattr(config.llm, "backend", LLMBackend.OPENAI_BATCH)
+    if isinstance(raw, LLMBackend):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return LLMBackend(raw)
+        except ValueError:
+            try:
+                return LLMBackend[raw]
+            except KeyError as exc:
+                raise ValueError(f"Unknown LLM backend string: {raw!r}") from exc
+    raise TypeError(f"Unexpected LLMBackend type {type(raw)!r}: {raw!r}")
+
+
+def _run_openai_batch_path(
+    *,
+    config: ExperimentConfig,
+    output_dir: Path,
+    state_manager: RunStateManager,
+    gaps: list[GapWithContext],
+    contexts: list[ProposalContext],
+    context_paths: Any,
+    reuse_existing_results: bool,
+) -> BatchResults:
+    """Execute the OpenAI Batch API proposal-generation path.
+
+    Behavior identical to the pre-dispatch implementation: generates
+    batch requests, writes the JSONL input file, submits the batch job,
+    monitors it, downloads results, and parses them into
+    :class:`ParsedProposal` objects.
+    """
     # Step 3: Generate batch requests
     requests = generate_batch_requests(contexts, config)
     LOGGER.info("Generated %s batch requests", len(requests))
@@ -772,8 +853,245 @@ def run_batch_workflow(
     )
     state_manager.mark_completed(batch_job_id, proposal_count=len(results.proposals))
     LOGGER.info("Completed! Generated %s proposals", len(results.proposals))
+    return results
 
-    # Index proposals once for downstream artifact generation
+
+def _run_ollama_local_path(
+    *,
+    config: ExperimentConfig,
+    output_dir: Path,
+    state_manager: RunStateManager,
+    gaps: list[GapWithContext],
+    contexts: list[ProposalContext],
+    context_paths: Any,
+) -> BatchResults:
+    """Execute the synchronous local-Ollama proposal-generation path.
+
+    Iterates :class:`ProposalContext` objects one at a time, calls
+    :class:`OllamaProposalGenerator.generate`, appends each successful
+    record to ``ollama_results.jsonl`` as it is produced (for crash
+    resumability), and finally embeds the parsed proposals to produce
+    the same :class:`BatchResults` shape the OpenAI path returns.
+
+    Resumability: on restart, already-written custom IDs are skipped so
+    a SIGINT'd run can pick up where it left off without re-paying for
+    completed generations. JSON-parse failures (``record.proposal is
+    None``) are logged and skipped — they do not block the run.
+    """
+    # Local import to keep the `ollama` dependency optional at
+    # import-time of `workflow_functions` (only required when the user
+    # actually opts into the Ollama backend).
+    from .ollama_local import OllamaProposalGenerator, OllamaProposalRecord
+
+    results_path = output_dir / "ollama_results.jsonl"
+
+    embedder_model = str(config.cloud.embedder_model)
+    denoiser_name = str(config.cloud.denoiser)
+    drop_k_value = str(config.cloud.drop_k)
+
+    state_manager.mark_ready_to_submit(
+        gap_count=len(gaps),
+        context_file_count=len(context_paths),
+        request_count=len(contexts),
+        embedder_model=embedder_model,
+        denoiser=denoiser_name,
+        drop_k=drop_k_value,
+    )
+
+    already_done: set[str] = _read_completed_custom_ids(results_path)
+    if already_done:
+        LOGGER.info(
+            "Resuming Ollama run: %s of %s contexts already on disk",
+            len(already_done),
+            len(contexts),
+        )
+
+    generator = OllamaProposalGenerator(
+        model=str(config.llm.ollama_model),
+        num_articles=int(config.llm.num_articles),
+        num_books=int(config.llm.num_books),
+        temperature=float(config.llm.temperature),
+        num_ctx=int(config.llm.ollama_num_ctx),
+        num_predict=int(config.llm.ollama_num_predict),
+    )
+
+    pseudo_batch_id = f"ollama:{config.llm.ollama_model}"
+
+    with open(results_path, "a", encoding="utf-8") as results_fp:
+        for i, context in enumerate(contexts, start=1):
+            custom_id = build_gap_proposal_id(
+                gap_idx=context.gap_idx, topic_id=context.topic_id,
+            )
+            if custom_id in already_done:
+                continue
+
+            LOGGER.info(
+                "[ollama %d/%d] generating proposal for %s",
+                i, len(contexts), custom_id,
+            )
+            record = generator.generate(context)
+            record_dict = _ollama_record_to_jsonl_dict(record, custom_id=custom_id)
+            results_fp.write(json.dumps(record_dict) + "\n")
+            results_fp.flush()
+            already_done.add(custom_id)
+
+    # Parse the full on-disk results file (including any pre-existing
+    # entries from prior runs) into ParsedProposal objects.
+    raw = results_path.read_text(encoding="utf-8") if results_path.exists() else ""
+    parsed_proposals, stats = _parse_ollama_results_content(raw, config)
+    LOGGER.info(
+        "Parsed %s ollama proposals out of %s records (%s parse failures, %s errors)",
+        stats["parsed_count"], stats["raw_count"],
+        stats["parse_failure_count"], stats["error_count"],
+    )
+
+    state_manager.mark_completed(
+        pseudo_batch_id, proposal_count=len(parsed_proposals),
+    )
+
+    return BatchResults(proposals=parsed_proposals, metadata=config)
+
+
+def _ollama_record_to_jsonl_dict(
+    record: OllamaProposalRecord,
+    *,
+    custom_id: str,
+) -> dict[str, Any]:
+    """Serialise an :class:`OllamaProposalRecord` to a JSONL line.
+
+    Stores the parsed proposal (if any), the raw content, and provenance
+    metadata. The schema is private to the Ollama path —
+    :func:`_parse_ollama_results_content` is the only consumer.
+    """
+    proposal_dict = (
+        record.proposal.model_dump() if record.proposal is not None else None
+    )
+    return {
+        "custom_id": custom_id,
+        "proposal": proposal_dict,
+        "raw_content": record.raw_content,
+        "thinking": record.thinking,
+        "metadata": record.metadata,
+    }
+
+
+def _read_completed_custom_ids(results_path: Path) -> set[str]:
+    """Return the set of ``custom_id`` values already persisted in
+    ``ollama_results.jsonl``, used for crash-resume.
+
+    Tolerates partial-write trailing lines (the last entry, if any, will
+    just be regenerated — cheap on a local model). Lines without a valid
+    JSON body or without a ``custom_id`` field are simply skipped.
+    """
+    if not results_path.exists():
+        return set()
+    done: set[str] = set()
+    with open(results_path, "r", encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cid = entry.get("custom_id")
+            if isinstance(cid, str) and cid:
+                done.add(cid)
+    return done
+
+
+def _parse_ollama_results_content(
+    raw: str, config: ExperimentConfig,
+) -> tuple[list[ParsedProposal], dict[str, int]]:
+    """Convert ``ollama_results.jsonl`` content into ParsedProposal list.
+
+    Mirrors the shape of :func:`_parse_batch_results_content` so the
+    downstream pipeline (analytics, plots, CSV export) doesn't care
+    which backend produced the proposals.
+    """
+    raw_lines = raw.splitlines() if raw else []
+    pending_proposals: list[PendingProposal] = []
+    num_empty = 0
+    num_errors = 0
+    num_parse_failures = 0
+
+    for line in raw_lines:
+        if not line.strip():
+            num_empty += 1
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            num_errors += 1
+            LOGGER.error("Failed to decode ollama result line: %s", exc)
+            continue
+
+        proposal_dict = entry.get("proposal")
+        if proposal_dict is None:
+            num_parse_failures += 1
+            LOGGER.warning(
+                "Skipping ollama record %s: model produced unparseable JSON",
+                entry.get("custom_id"),
+            )
+            continue
+
+        try:
+            proposal = Proposal.model_validate(proposal_dict)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            num_errors += 1
+            LOGGER.error("Failed to validate ollama proposal: %s", exc)
+            continue
+
+        custom_id = entry.get("custom_id")
+        if not isinstance(custom_id, str) or not custom_id:
+            num_errors += 1
+            LOGGER.error("Ollama record missing custom_id; skipping")
+            continue
+
+        pending_proposals.append(
+            PendingProposal(proposal=proposal, custom_id=custom_id)
+        )
+
+    parsed_proposals: list[ParsedProposal] = []
+    if pending_proposals:
+        embeddings = _compute_proposal_embeddings(pending_proposals, config=config)
+        parsed_proposals = [
+            ParsedProposal(
+                proposal=pending.proposal,
+                custom_id=pending.custom_id,
+                embedding=embedding,
+            )
+            for pending, embedding in zip(
+                pending_proposals, embeddings, strict=True,
+            )
+        ]
+
+    stats = {
+        "raw_count": len(raw_lines),
+        "parsed_count": len(parsed_proposals),
+        "empty_count": num_empty,
+        "error_count": num_errors,
+        "parse_failure_count": num_parse_failures,
+    }
+    return parsed_proposals, stats
+
+
+def _generate_downstream_artifacts(
+    *,
+    gaps: list[GapWithContext],
+    contexts: list[ProposalContext],
+    results: BatchResults,
+    config: ExperimentConfig,
+    output_dir: Path,
+) -> None:
+    """Run the post-generation artifact pipeline shared by both backends.
+
+    Computes outrank counts and per-proposal gap stats, then writes gap
+    plots and the gaps-analysis CSV. Extracted unchanged from the
+    pre-dispatch implementation so the two backends produce identical
+    downstream artifacts.
+    """
     proposal_grouping = _index_proposals(results.proposals)
 
     proposal_id_lookup = {
@@ -782,7 +1100,6 @@ def run_batch_workflow(
     }
     analytics_store = ProposalAnalyticsStore()
 
-    # Compute proposal outrank counts for coverage metrics
     _compute_proposal_outrank_counts(
         gaps,
         proposal_grouping.by_topic_gap,
@@ -797,8 +1114,7 @@ def run_batch_workflow(
         analytics_store,
         proposal_id_lookup,
     )
-    
-    # ARTIFACTS: Generate plots
+
     _plot_paths = generate_gap_plots_for_results(
         gaps,
         results.proposals,
@@ -806,7 +1122,6 @@ def run_batch_workflow(
         proposals_by_gap=proposal_grouping.by_gap_idx,
     )
 
-    # ARTIFACTS: Generate simple results CSV (Step 2.2 minimal)
     _results_csv = generate_gaps_analysis_csv(
         gaps,
         results.proposals,
@@ -816,12 +1131,6 @@ def run_batch_workflow(
         proposals_grouped=proposal_grouping.by_topic_gap,
         ordered_proposals=proposal_grouping.ordered,
         proposal_analytics=analytics_store,
-    )
-
-    # Return enhanced results with artifacts
-    return BatchResults(
-        proposals=results.proposals,
-        metadata=results.metadata,
     )
 
 
