@@ -154,7 +154,12 @@ def load_run_metadata(run_dir: Path) -> Optional[RunMetadata]:
 
     denoiser = OmegaConf.select(config, "cloud.denoiser", default=None)
     drop_k = OmegaConf.select(config, "cloud.drop_k", default=None)
-    embedder_model = OmegaConf.select(config, "cloud.embedder_model", default=None)
+    # Try the current schema (cloud.embedder.model_name, a nested config
+    # object) first, then fall back to the legacy flat cloud.embedder_model
+    # path for backward compatibility with pre-2026-05 runs.
+    embedder_model = OmegaConf.select(config, "cloud.embedder.model_name", default=None)
+    if embedder_model is None:
+        embedder_model = OmegaConf.select(config, "cloud.embedder_model", default=None)
     num_articles = OmegaConf.select(config, "llm.num_articles", default=None)
     num_books = OmegaConf.select(config, "llm.num_books", default=None)
 
