@@ -408,6 +408,24 @@ def _stream_one_proposal_metrics(
     }
 
 
+def _touch_streaming_csv(output_dir: Path) -> None:
+    """Create ``coverage_progress.csv`` with just a header row if missing.
+
+    Called early in :func:`run_batch_workflow` (Ollama backend only) so
+    operators can ``tail -F`` the file from the start of the workflow,
+    before gap detection + context-building complete. Subsequent
+    :func:`_open_streaming_csv` calls preserve the file (the file already
+    has a header, so the append-mode branch skips the writeheader step).
+    """
+    csv_path = output_dir / _STREAMING_CSV_FILENAME
+    if csv_path.exists():
+        return
+    with open(csv_path, "w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=_STREAMING_CSV_FIELDNAMES)
+        writer.writeheader()
+        fp.flush()
+
+
 def _open_streaming_csv(
     output_dir: Path,
     *,
@@ -879,6 +897,14 @@ def run_batch_workflow(
     proposal-generation step itself.
     """
     LOGGER.info("Starting batch workflow with %s gaps per topic", config.batch.num_gaps)
+
+    # Touch the Ollama streaming CSV before gap detection so operators can
+    # `tail -F coverage_progress.csv` from the very start of the workflow
+    # and see the header before any rows arrive (gap detection +
+    # context-building can take ~5-10 minutes on large topic sets). No-op
+    # for the OpenAI backend.
+    if _resolve_backend(config) is LLMBackend.OLLAMA_LOCAL:
+        _touch_streaming_csv(output_dir)
 
     # Step 1: Find gaps (shared across backends)
     gaps = compute_gaps_for_config(config)
