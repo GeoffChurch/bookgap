@@ -32,6 +32,7 @@ from bookgap.llm.generators.workflow_functions import (
     _read_completed_custom_ids,
     _resolve_backend,
     _run_ollama_local_path,
+    _stream_one_proposal_metrics,
     run_batch_workflow,
 )
 from bookgap.llm.identifiers import build_gap_proposal_id
@@ -358,6 +359,8 @@ class TestOllamaDispatch:
             done_reason="stop",
         )
 
+    @patch("bookgap.llm.generators.workflow_functions.instantiate")
+    @patch("bookgap.llm.generators.workflow_functions.Embedder")
     @patch("bookgap.llm.generators.workflow_functions.generate_all_contexts")
     @patch("bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results")
     @patch("bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv")
@@ -376,6 +379,8 @@ class TestOllamaDispatch:
         mock_csv,
         mock_plots,
         mock_gen_contexts,
+        mock_embedder_cls,
+        mock_instantiate,
     ) -> None:
         gap1, ctx1 = _make_gap("topic-a", 0)
         gap2, ctx2 = _make_gap("topic-b", 1)
@@ -385,6 +390,12 @@ class TestOllamaDispatch:
         mock_plots.return_value = []
         mock_csv.return_value = Path("results.csv")
         mock_embed.return_value = np.zeros((2, 3), dtype=np.float32)
+        # The streaming-metrics path needs a hot embedder + an instantiated
+        # cloud projection; here we patch them out with identity stubs.
+        TestStreamingCoverageProgress._patch_hot_embedder(mock_embedder_cls)
+        mock_instantiate.return_value = (
+            TestStreamingCoverageProgress._identity_cloud_mock()
+        )
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
 
@@ -435,9 +446,19 @@ class TestOllamaResumability:
     """Verify pre-existing on-disk records skip the corresponding
     `ollama.chat` calls so a SIGKILL'd run can resume."""
 
+    @patch("bookgap.llm.generators.workflow_functions.instantiate")
+    @patch("bookgap.llm.generators.workflow_functions.Embedder")
     @patch("bookgap.llm.generators.workflow_functions._compute_proposal_embeddings")
-    def test_resume_skips_completed(self, mock_embed) -> None:
+    def test_resume_skips_completed(
+        self, mock_embed, mock_embedder_cls, mock_instantiate,
+    ) -> None:
         mock_embed.return_value = np.zeros((2, 3), dtype=np.float32)
+        # Patch the hot embedder + cloud projection used by the streaming
+        # metrics path so the test only exercises resume-skip behaviour.
+        TestStreamingCoverageProgress._patch_hot_embedder(mock_embedder_cls)
+        mock_instantiate.return_value = (
+            TestStreamingCoverageProgress._identity_cloud_mock()
+        )
 
         gap1, ctx1 = _make_gap("topic-a", 0)
         gap2, ctx2 = _make_gap("topic-b", 1)
@@ -502,6 +523,349 @@ class TestOllamaResumability:
             }
             # And both end up in the parsed BatchResults.
             assert len(result.proposals) == 2
+
+
+class TestStreamingCoverageProgress:
+    """The Ollama path emits a `coverage_progress.csv` incrementally so
+    operators can `tail -F` headline metrics during a multi-hour run."""
+
+    def _fake_chat_response(self, title: str, abstract: str):
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps({"title": title, "abstract": abstract}),
+                thinking=None,
+            ),
+            eval_count=10,
+            prompt_eval_count=5,
+            total_duration=1_000_000,
+            eval_duration=900_000,
+            done_reason="stop",
+        )
+
+    @staticmethod
+    def _identity_cloud_mock() -> Mock:
+        """A Mock cloud whose denoiser_projection is the identity and
+        whose normalize_embeddings is False (so the streaming pass uses
+        raw embeddings unchanged)."""
+        projection = Mock()
+        projection.apply.side_effect = lambda x: x
+        cloud = Mock()
+        cloud.denoiser_projection.return_value = projection
+        cloud.normalize_embeddings = False
+        return cloud
+
+    @staticmethod
+    def _patch_hot_embedder(mock_embedder_cls, embedding_dim: int = 3):
+        """Configure the patched Embedder class so its context-manager
+        yields an embedder whose ``embed_texts`` returns a deterministic
+        unit-direction embedding per call."""
+
+        class _FakeEmbedder:
+            def __init__(self):
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def embed_texts(self, pairs):
+                self.calls += 1
+                # Return a single unit vector that does NOT match any gap
+                # article exactly; the exact value doesn't matter for
+                # schema/row-count tests.
+                return np.zeros((len(pairs), embedding_dim), dtype=np.float32)
+
+        instance = _FakeEmbedder()
+        mock_embedder_cls.return_value = instance
+        return instance
+
+    @patch("bookgap.llm.generators.workflow_functions.instantiate")
+    @patch("bookgap.llm.generators.workflow_functions.Embedder")
+    @patch("bookgap.llm.generators.workflow_functions._compute_proposal_embeddings")
+    def test_streaming_csv_grows_incrementally(
+        self,
+        mock_embed_post,
+        mock_embedder_cls,
+        mock_instantiate,
+    ) -> None:
+        """Each ollama.chat call yields a row in coverage_progress.csv
+        before the next call begins. After all calls, the CSV holds N
+        data rows + 1 header row."""
+        mock_embed_post.return_value = np.zeros((2, 3), dtype=np.float32)
+        self._patch_hot_embedder(mock_embedder_cls)
+        mock_instantiate.return_value = self._identity_cloud_mock()
+
+        gap1, ctx1 = _make_gap("topic-a", 0)
+        gap2, ctx2 = _make_gap("topic-b", 1)
+        contexts = [ctx1, ctx2]
+        gaps = [gap1, gap2]
+
+        config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
+
+        # Capture CSV state between each ollama.chat call so we can prove
+        # rows arrive incrementally, not in one post-loop dump.
+        csv_snapshots: list[str] = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            csv_path = output_dir / "coverage_progress.csv"
+
+            def capture_after_chat(*args, **kwargs):
+                # The streaming row for THIS proposal is written AFTER
+                # ollama.chat returns and before the next chat starts.
+                # We capture the file state at the moment chat returns;
+                # the streaming write happens immediately after.
+                resp = self._fake_chat_response(
+                    f"T{len(csv_snapshots)+1}", f"A{len(csv_snapshots)+1}",
+                )
+                # Read the CSV state BEFORE the streaming write for this
+                # iteration (so first snapshot may show header-only or
+                # be absent before the first write).
+                csv_snapshots.append(
+                    csv_path.read_text(encoding="utf-8")
+                    if csv_path.exists() else ""
+                )
+                return resp
+
+            state = RunStateManager(output_dir)
+            with patch(
+                "bookgap.llm.generators.ollama_local.ollama"
+            ) as mock_ollama:
+                mock_ollama.chat.side_effect = capture_after_chat
+
+                _run_ollama_local_path(
+                    config=config,
+                    output_dir=output_dir,
+                    state_manager=state,
+                    gaps=gaps,
+                    contexts=contexts,
+                    context_paths=[],
+                )
+
+            # After the loop, the CSV must exist with header + 2 data rows.
+            assert csv_path.exists(), "coverage_progress.csv must be written"
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+            assert len(lines) == 3, f"expected 1 header + 2 data, got {lines!r}"
+
+            header = lines[0].split(",")
+            assert header == [
+                "topic_id",
+                "topic_name",
+                "gap_size",
+                "coverage_pct",
+                "proposal_gap_percentile",
+                "proposal_title",
+            ]
+
+            # Two data rows, one per topic.
+            data_rows = [line.split(",") for line in lines[1:]]
+            topic_ids = {row[0] for row in data_rows}
+            assert topic_ids == {"topic-a", "topic-b"}
+
+            # Incremental writes: at the moment of the second chat call,
+            # the first row was already on disk (header + 1 data row).
+            # csv_snapshots[1] is what we saw before the second streaming
+            # write happened.
+            assert len(csv_snapshots) == 2
+            after_first_chat = csv_snapshots[1].splitlines()
+            assert len(after_first_chat) == 2, (
+                f"Expected header + 1 row before second chat completes, "
+                f"got {csv_snapshots[1]!r}"
+            )
+
+    @patch("bookgap.llm.generators.workflow_functions.instantiate")
+    @patch("bookgap.llm.generators.workflow_functions.Embedder")
+    @patch("bookgap.llm.generators.workflow_functions._compute_proposal_embeddings")
+    def test_streaming_csv_includes_resumed_records(
+        self,
+        mock_embed_post,
+        mock_embedder_cls,
+        mock_instantiate,
+    ) -> None:
+        """When the run resumes from a non-empty ollama_results.jsonl,
+        the streaming CSV must include rows for the pre-existing records.
+        Otherwise the streaming CSV becomes a partial view of the run."""
+        mock_embed_post.return_value = np.zeros((2, 3), dtype=np.float32)
+        self._patch_hot_embedder(mock_embedder_cls)
+        mock_instantiate.return_value = self._identity_cloud_mock()
+
+        gap1, ctx1 = _make_gap("topic-a", 0)
+        gap2, ctx2 = _make_gap("topic-b", 1)
+        contexts = [ctx1, ctx2]
+        gaps = [gap1, gap2]
+
+        config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            # Pre-populate ollama_results.jsonl with a record for
+            # topic-a (the run was interrupted after writing it).
+            existing_cid = build_gap_proposal_id(
+                gap_idx=0, topic_id="topic-a",
+            )
+            results_path = output_dir / "ollama_results.jsonl"
+            results_path.write_text(
+                json.dumps({
+                    "custom_id": existing_cid,
+                    "proposal": {"title": "Resumed", "abstract": "Resumed"},
+                    "raw_content": "{...}",
+                    "thinking": None,
+                    "metadata": {"model": "test:1b"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            state = RunStateManager(output_dir)
+            with patch(
+                "bookgap.llm.generators.ollama_local.ollama"
+            ) as mock_ollama:
+                mock_ollama.chat.return_value = self._fake_chat_response(
+                    "T2", "A2",
+                )
+
+                _run_ollama_local_path(
+                    config=config,
+                    output_dir=output_dir,
+                    state_manager=state,
+                    gaps=gaps,
+                    contexts=contexts,
+                    context_paths=[],
+                )
+
+                # The new ollama call was only made for the un-completed
+                # context (topic-b).
+                assert mock_ollama.chat.call_count == 1
+
+            csv_path = output_dir / "coverage_progress.csv"
+            assert csv_path.exists()
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+            assert len(lines) == 3, (
+                f"Expected header + 2 rows (1 resumed + 1 new), got {lines!r}"
+            )
+
+            data_rows = [line.split(",") for line in lines[1:]]
+            topic_ids_in_csv = {row[0] for row in data_rows}
+            assert topic_ids_in_csv == {"topic-a", "topic-b"}
+
+            # The resumed row's proposal title is the one from the
+            # JSONL, not from a fresh ollama call.
+            row_by_topic = {row[0]: row for row in data_rows}
+            assert row_by_topic["topic-a"][5] == "Resumed"
+            assert row_by_topic["topic-b"][5] == "T2"
+
+    @patch("bookgap.llm.generators.workflow_functions.instantiate")
+    @patch("bookgap.llm.generators.workflow_functions.Embedder")
+    @patch("bookgap.llm.generators.workflow_functions._compute_proposal_embeddings")
+    def test_streaming_csv_skips_failed_parses(
+        self,
+        mock_embed_post,
+        mock_embedder_cls,
+        mock_instantiate,
+    ) -> None:
+        """If ``generator.generate`` returns a record whose ``proposal``
+        is None (the model emitted nonsense JSON even after retry), the
+        streaming pass logs and skips the row for that topic."""
+        mock_embed_post.return_value = np.zeros((1, 3), dtype=np.float32)
+        self._patch_hot_embedder(mock_embedder_cls)
+        mock_instantiate.return_value = self._identity_cloud_mock()
+
+        gap1, ctx1 = _make_gap("topic-a", 0)
+        gap2, ctx2 = _make_gap("topic-b", 1)
+        contexts = [ctx1, ctx2]
+        gaps = [gap1, gap2]
+
+        config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            state = RunStateManager(output_dir)
+            with patch(
+                "bookgap.llm.generators.ollama_local.ollama"
+            ) as mock_ollama:
+                # First call returns valid JSON; second call returns
+                # nonsense that the strict + retry parser cannot parse.
+                bad_response = SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="not valid json at all",
+                        thinking=None,
+                    ),
+                    eval_count=10,
+                    prompt_eval_count=5,
+                    total_duration=1_000_000,
+                    eval_duration=900_000,
+                    done_reason="stop",
+                )
+                mock_ollama.chat.side_effect = [
+                    self._fake_chat_response("Good", "Good"),
+                    bad_response,
+                    bad_response,  # retry
+                ]
+
+                _run_ollama_local_path(
+                    config=config,
+                    output_dir=output_dir,
+                    state_manager=state,
+                    gaps=gaps,
+                    contexts=contexts,
+                    context_paths=[],
+                )
+
+            csv_path = output_dir / "coverage_progress.csv"
+            assert csv_path.exists()
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+            # Header + 1 row for the good proposal only.
+            assert len(lines) == 2, (
+                f"Expected header + 1 row (failed parse skipped), got {lines!r}"
+            )
+            data_row = lines[1].split(",")
+            assert data_row[0] == "topic-a"
+            assert data_row[5] == "Good"
+
+
+class TestStreamOneProposalMetrics:
+    """Unit test for the per-iteration streaming helper."""
+
+    def test_returns_row_dict_with_correct_keys(self) -> None:
+        """The helper returns a dict with the streaming-row fields."""
+        gap, _ctx = _make_gap("topic-x", 0)
+
+        # An identity projection: streaming math operates on raw vectors.
+        projection = SimpleNamespace(apply=lambda x: x)
+
+        class _FakeEmbedder:
+            def embed_texts(self, pairs):
+                # One row matching the first article exactly so
+                # coverage is well-defined and coverage_pct = 100%.
+                return np.array(
+                    [gap.articles.embeddings()[0]], dtype=np.float32,
+                )
+
+        proposal = Proposal(title="My Title", abstract="My Abstract")
+        config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
+
+        row = _stream_one_proposal_metrics(
+            gap=gap,
+            proposal=proposal,
+            embedder=_FakeEmbedder(),
+            projection=projection,
+            normalize_embeddings=False,
+            config=config,
+        )
+
+        assert row is not None
+        assert set(row.keys()) == {
+            "topic_id",
+            "topic_name",
+            "gap_size",
+            "coverage_pct",
+            "proposal_gap_percentile",
+            "proposal_title",
+        }
+        assert row["topic_id"] == "topic-x"
+        assert row["proposal_title"] == "My Title"
+        assert row["gap_size"] == 1
 
 
 class TestParseOllamaResults:
