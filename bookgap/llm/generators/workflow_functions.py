@@ -7,13 +7,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import csv
 import json
 import logging
 import random
 import time
 import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, IO, Optional
 
 if TYPE_CHECKING:
     from .ollama_local import OllamaProposalRecord
@@ -277,6 +278,163 @@ def _compute_proposal_gap_stats(
                     gap_zscore=stats.gap_zscore,
                 ),
             )
+
+
+# ---------------------------------------------------------------------------
+# Streaming-metrics path (Ollama only)
+# ---------------------------------------------------------------------------
+
+_STREAMING_CSV_FILENAME = "coverage_progress.csv"
+_STREAMING_CSV_FIELDNAMES = [
+    "topic_id",
+    "topic_name",
+    "gap_size",
+    "coverage_pct",
+    "proposal_gap_percentile",
+    "proposal_title",
+]
+
+
+def _stream_one_proposal_metrics(
+    *,
+    gap: GapWithContext,
+    proposal: Proposal,
+    embedder: Any,
+    projection: Any,
+    normalize_embeddings: bool,
+    config: ExperimentConfig,
+    epsilon: float = float(np.finfo(np.float32).eps * 8),
+) -> dict[str, Any] | None:
+    """Compute the streaming-CSV row for a single (gap, proposal) pair.
+
+    Mirrors the per-gap subset of :func:`_compute_proposal_outrank_counts`
+    (for coverage) and :func:`_compute_proposal_gap_stats` (for the
+    gap-size percentile), but operates on a single proposal at a time so
+    the operator can `tail -F` `coverage_progress.csv` during a long
+    Ollama run. Returns ``None`` if the row cannot be computed (empty
+    gap or index-build failure) — the caller skips writing in that case.
+    """
+    # Embed the proposal's (title, abstract) into the cloud space.
+    raw = embedder.embed_texts([(proposal.title, proposal.abstract)])
+    projected = projection.apply(raw)
+    if normalize_embeddings and projected.shape[0] > 0:
+        projected = projected / np.linalg.norm(projected, axis=1, keepdims=True)
+    proposal_vec = np.asarray(projected[0], dtype=np.float32)
+
+    # --- Coverage %: per-gap outrank logic on a single proposal. -----------
+    gap_article_indices = gap.gap.get_dists_idxs().idxs
+    if len(gap_article_indices) == 0:
+        return None
+
+    article_embeddings_all = gap.articles.embeddings()
+    try:
+        gap_article_vecs = np.ascontiguousarray(
+            article_embeddings_all[np.asarray(gap_article_indices, dtype=int)],
+            dtype=np.float32,
+        )
+    except IndexError:
+        LOGGER.warning(
+            "Streaming: gap (%s, %d) has invalid article indices; "
+            "skipping streaming row",
+            gap.topic_id, gap.gap_idx,
+        )
+        return None
+
+    if gap_article_vecs.size == 0:
+        return None
+
+    try:
+        book_index = gap.books.index()
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning(
+            "Streaming: failed to build book index for gap (%s, %d): %s",
+            gap.topic_id, gap.gap_idx, exc,
+        )
+        return None
+
+    diffs = gap_article_vecs - proposal_vec
+    sq_dists = np.einsum("ij,ij->i", diffs, diffs, dtype=np.float32)
+    counts = np.zeros(len(gap_article_vecs), dtype=np.int32)
+
+    def _kernel_fn(article_idx: int, neighbor_dists, _neighbor_ids) -> None:
+        threshold = float(sq_dists[article_idx]) - epsilon
+        if threshold <= 0.0:
+            counts[article_idx] = 0
+        else:
+            counts[article_idx] = int(np.count_nonzero(neighbor_dists < threshold))
+
+    range_search_radii_with(
+        book_index,
+        query=gap_article_vecs,
+        radii=sq_dists,
+        kernel_fn=_kernel_fn,
+        show_progress=False,
+    )
+
+    outrank = ProposalOutrankCounts(counts=counts)
+    coverage_pct = 100.0 * outrank.coverage_fraction()
+
+    # --- Gap-size percentile: per-gap subset of gap-stats logic. -----------
+    proposal_gap_percentile: float
+    try:
+        gap_stats_list = compute_gap_metrics_for_embeddings(
+            gap=gap,
+            embeddings=proposal_vec[np.newaxis, :].astype(np.float32),
+            config=config,
+        )
+        proposal_gap_percentile = float(gap_stats_list[0].gap_size_percentile)
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning(
+            "Streaming: failed to compute gap percentile for (%s, %d): %s",
+            gap.topic_id, gap.gap_idx, exc,
+        )
+        proposal_gap_percentile = float("nan")
+
+    return {
+        "topic_id": gap.topic_id,
+        "topic_name": gap.topic_name,
+        "gap_size": int(len(gap_article_indices)),
+        "coverage_pct": coverage_pct,
+        "proposal_gap_percentile": proposal_gap_percentile,
+        "proposal_title": proposal.title,
+    }
+
+
+def _open_streaming_csv(
+    output_dir: Path,
+    *,
+    truncate: bool = False,
+) -> tuple[IO[str], csv.DictWriter]:
+    """Open ``coverage_progress.csv`` and return ``(fp, writer)``.
+
+    When ``truncate=True`` (used on resume so the CSV is regenerated
+    coherently from the JSONL), the file is wiped first. Otherwise the
+    file is opened for append; the header is written only if the file
+    is empty or new.
+
+    Caller is responsible for closing the returned file handle.
+    """
+    csv_path = output_dir / _STREAMING_CSV_FILENAME
+    if truncate and csv_path.exists():
+        csv_path.unlink()
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    fp = open(csv_path, "a", encoding="utf-8", newline="")
+    writer = csv.DictWriter(fp, fieldnames=_STREAMING_CSV_FIELDNAMES)
+    if write_header:
+        writer.writeheader()
+        fp.flush()
+    return fp, writer
+
+
+def _write_streaming_row(
+    writer: csv.DictWriter,
+    fp: IO[str],
+    row: dict[str, Any],
+) -> None:
+    """Append one row + flush so ``tail -F`` sees it immediately."""
+    writer.writerow(row)
+    fp.flush()
+
 
 class MetadataUtils:
     """Static utilities for metadata chunking and parsing."""
@@ -873,10 +1031,23 @@ def _run_ollama_local_path(
     resumability), and finally embeds the parsed proposals to produce
     the same :class:`BatchResults` shape the OpenAI path returns.
 
+    In parallel with the JSONL persistence, this path runs a *streaming*
+    metrics pass: after each successful generation it embeds the
+    proposal's (title, abstract) through a hot embedder + the cloud's
+    denoiser projection, computes the per-gap coverage and percentile
+    metrics, and appends one row to ``coverage_progress.csv``. This
+    second output gives the operator live visibility into headline
+    numbers during a multi-hour run (`tail -F coverage_progress.csv`)
+    while the canonical ``gaps_analysis_results.csv`` is still produced
+    by the post-loop batched pipeline.
+
     Resumability: on restart, already-written custom IDs are skipped so
     a SIGINT'd run can pick up where it left off without re-paying for
-    completed generations. JSON-parse failures (``record.proposal is
-    None``) are logged and skipped — they do not block the run.
+    completed generations. The streaming CSV does NOT skip those — on
+    resume, rows for already-completed records are emitted from the
+    JSONL so the CSV remains a complete view of the run. JSON-parse
+    failures (``record.proposal is None``) are logged and skipped — they
+    do not block the run and they do not produce a streaming row.
     """
     # Local import to keep the `ollama` dependency optional at
     # import-time of `workflow_functions` (only required when the user
@@ -917,23 +1088,99 @@ def _run_ollama_local_path(
 
     pseudo_batch_id = f"ollama:{config.llm.ollama_model}"
 
-    with open(results_path, "a", encoding="utf-8") as results_fp:
-        for i, context in enumerate(contexts, start=1):
-            custom_id = build_gap_proposal_id(
-                gap_idx=context.gap_idx, topic_id=context.topic_id,
-            )
-            if custom_id in already_done:
-                continue
+    # Build a (topic_id, gap_idx) -> GapWithContext index for the
+    # streaming pass. Cheap; gaps is at most a few hundred entries.
+    gap_lookup: dict[tuple[str, int], GapWithContext] = {
+        (gap.topic_id, gap.gap_idx): gap for gap in gaps
+    }
 
-            LOGGER.info(
-                "[ollama %d/%d] generating proposal for %s",
-                i, len(contexts), custom_id,
-            )
-            record = generator.generate(context)
-            record_dict = _ollama_record_to_jsonl_dict(record, custom_id=custom_id)
-            results_fp.write(json.dumps(record_dict) + "\n")
-            results_fp.flush()
-            already_done.add(custom_id)
+    # Resolve the cloud's projection ONCE so the streaming loop reuses
+    # the cached projection matrix instead of recomputing per iteration.
+    cloud = instantiate(config.cloud)
+    projection = cloud.denoiser_projection()
+    normalize_embeddings = bool(cloud.normalize_embeddings)
+
+    # On resume, emit streaming rows for pre-existing JSONL records so
+    # the CSV stays a complete view. Loaded BEFORE we open the hot
+    # embedder context so the resume path doesn't pay for a model load
+    # if everything is already done.
+    resumed_records = _load_existing_ollama_records(
+        results_path, already_done,
+    )
+
+    # Open the hot embedder once for the duration of the loop. Embedding
+    # one (title, abstract) per iteration costs ~1-2s; the model load is
+    # what's expensive, and we amortise it across all generations.
+    with Embedder(model_name=embedder_model) as embedder, \
+            open(results_path, "a", encoding="utf-8") as results_fp:
+        # On resume (already_done non-empty), truncate-and-rewrite the
+        # streaming CSV so it stays a complete + duplicate-free view of
+        # every record on disk. Fresh runs just create a new file.
+        stream_fp, stream_writer = _open_streaming_csv(
+            output_dir, truncate=bool(resumed_records),
+        )
+        try:
+            # First, replay resumed records into the streaming CSV.
+            for resumed_cid, resumed_proposal in resumed_records:
+                gap_key = _gap_key_from_custom_id(resumed_cid)
+                _maybe_write_stream_row(
+                    gap_lookup=gap_lookup,
+                    gap_key=gap_key,
+                    proposal=resumed_proposal,
+                    embedder=embedder,
+                    projection=projection,
+                    normalize_embeddings=normalize_embeddings,
+                    config=config,
+                    stream_writer=stream_writer,
+                    stream_fp=stream_fp,
+                    custom_id=resumed_cid,
+                )
+
+            # Then the normal generation loop.
+            for i, context in enumerate(contexts, start=1):
+                custom_id = build_gap_proposal_id(
+                    gap_idx=context.gap_idx, topic_id=context.topic_id,
+                )
+                if custom_id in already_done:
+                    continue
+
+                LOGGER.info(
+                    "[ollama %d/%d] generating proposal for %s",
+                    i, len(contexts), custom_id,
+                )
+                record = generator.generate(context)
+                record_dict = _ollama_record_to_jsonl_dict(
+                    record, custom_id=custom_id,
+                )
+                results_fp.write(json.dumps(record_dict) + "\n")
+                results_fp.flush()
+                already_done.add(custom_id)
+
+                # Streaming-CSV: skip rows when the model produced
+                # unparseable JSON (same skip semantics as the post-loop
+                # canonical pipeline).
+                if record.proposal is None:
+                    LOGGER.warning(
+                        "Streaming: skipping CSV row for %s "
+                        "(unparseable proposal)",
+                        custom_id,
+                    )
+                    continue
+
+                _maybe_write_stream_row(
+                    gap_lookup=gap_lookup,
+                    gap_key=(context.topic_id, context.gap_idx),
+                    proposal=record.proposal,
+                    embedder=embedder,
+                    projection=projection,
+                    normalize_embeddings=normalize_embeddings,
+                    config=config,
+                    stream_writer=stream_writer,
+                    stream_fp=stream_fp,
+                    custom_id=custom_id,
+                )
+        finally:
+            stream_fp.close()
 
     # Parse the full on-disk results file (including any pre-existing
     # entries from prior runs) into ParsedProposal objects.
@@ -999,6 +1246,106 @@ def _read_completed_custom_ids(results_path: Path) -> set[str]:
             if isinstance(cid, str) and cid:
                 done.add(cid)
     return done
+
+
+def _load_existing_ollama_records(
+    results_path: Path, custom_ids: set[str],
+) -> list[tuple[str, Proposal]]:
+    """Reload (custom_id, parsed proposal) pairs from a partially-written
+    ``ollama_results.jsonl``.
+
+    Used on resume to feed the streaming-CSV pass for records that
+    completed in a prior run. Records whose ``proposal`` is None (the
+    model produced unparseable JSON last time) are skipped to mirror
+    the live-loop skip semantics.
+
+    Returns the list in JSONL order so the resumed streaming rows arrive
+    in the same order they were originally generated.
+    """
+    if not results_path.exists() or not custom_ids:
+        return []
+
+    out: list[tuple[str, Proposal]] = []
+    with open(results_path, "r", encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cid = entry.get("custom_id")
+            if not isinstance(cid, str) or cid not in custom_ids:
+                continue
+            proposal_dict = entry.get("proposal")
+            if proposal_dict is None:
+                continue
+            try:
+                proposal = Proposal.model_validate(proposal_dict)
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.warning(
+                    "Streaming: skipping resumed record %s (invalid "
+                    "proposal payload: %s)",
+                    cid, exc,
+                )
+                continue
+            out.append((cid, proposal))
+    return out
+
+
+def _gap_key_from_custom_id(custom_id: str) -> tuple[str, int] | None:
+    """Convert an ollama-results custom_id back to ``(topic_id, gap_idx)``.
+
+    Returns ``None`` if the id is malformed (we log + skip the row in
+    that case rather than crashing the run).
+    """
+    try:
+        parsed = parse_gap_proposal_id(custom_id)
+    except Exception as exc:
+        LOGGER.warning(
+            "Streaming: cannot parse custom_id %s for streaming row: %s",
+            custom_id, exc,
+        )
+        return None
+    return (parsed.topic_id, parsed.gap_idx)
+
+
+def _maybe_write_stream_row(
+    *,
+    gap_lookup: dict[tuple[str, int], GapWithContext],
+    gap_key: tuple[str, int] | None,
+    proposal: Proposal,
+    embedder: Any,
+    projection: Any,
+    normalize_embeddings: bool,
+    config: ExperimentConfig,
+    stream_writer: csv.DictWriter,
+    stream_fp: IO[str],
+    custom_id: str,
+) -> None:
+    """Compute and write one streaming-CSV row, logging + skipping on
+    any expected non-fatal error (missing gap, computation failure)."""
+    if gap_key is None:
+        return
+    gap = gap_lookup.get(gap_key)
+    if gap is None:
+        LOGGER.warning(
+            "Streaming: no gap found for %s; skipping streaming row",
+            custom_id,
+        )
+        return
+    row = _stream_one_proposal_metrics(
+        gap=gap,
+        proposal=proposal,
+        embedder=embedder,
+        projection=projection,
+        normalize_embeddings=normalize_embeddings,
+        config=config,
+    )
+    if row is None:
+        return
+    _write_streaming_row(stream_writer, stream_fp, row)
 
 
 def _parse_ollama_results_content(
