@@ -54,6 +54,14 @@ from .run_state import RunStateManager, RunStep
 from bookgap.gaps import compute_gaps_for_config
 
 
+# Suppress per-request httpx INFO logging from both the OpenAI client
+# (batch-job polling) and the Ollama client (per-proposal `chat` calls).
+# Applied at module load so it affects every code path that issues HTTP
+# traffic through httpx, not just the OpenAI batch polling loop where
+# the call was historically nested.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 @dataclass(frozen=True)
 class PendingProposal:
     """Temporary holder for parsed proposal data before embeddings are attached."""
@@ -754,9 +762,6 @@ def monitor_and_download_results(
     Raises:
         Exception: If monitoring or download fails
     """
-    # Suppress verbose httpx logging during batch polling
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-
     client = OpenAI()
     results_path = output_dir / "batch_results.jsonl"
 
