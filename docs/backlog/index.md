@@ -17,6 +17,7 @@ How candidate gaps are produced and refined.
 - [hdbscan-relevance-weighted-replication](gap-detection-methods/hdbscan-relevance-weighted-replication.md) — fold per-work weights into HDBSCAN via point replication
 - [port-refine-pipeline-for-resid](gap-detection-methods/port-refine-pipeline-for-resid.md) — production resid is raw-deflation only; port LLR-refine→dedup→effective_size behind the resid option if the deferred ollama LLM-coverage check shows raw resid underperforms its refined bake-off numbers
 - [radius-fraction-bakeoff](gap-detection-methods/radius-fraction-bakeoff.md) — sweep the never-tuned k-ball `radius_fraction` (fixed 0.75/k=1 all along) with resid+recall@K curve across the 4 topics, plus a **data-driven per-seed radius** arm (σ-tied / margin / density-adaptive) — directly tests whether n_eff's book-rich shortfall is a fixed-radius handicap vs a formula issue
+- [kball-residual-mass](gap-detection-methods/kball-residual-mass.md) — four discount-by-book-claim variants for k-ball gap sizing (virtual-centroid / partition mutual-NN / global k-NN discount / KDE-on-KDE), implemented sequentially as alternative `gap.size_metric` options
 
 ## Cohesion metric design
 
@@ -53,4 +54,5 @@ Performance, indexing, refactoring.
 - [share-fullindex-knn-dual-landmark](infrastructure/share-fullindex-knn-dual-landmark.md) — factor full-corpus member kNN out of compute_gap_stats so dual-landmark calls don't duplicate it (~2×→~1.2×)
 - [ff-stats-adaptive-calibration](infrastructure/ff-stats-adaptive-calibration.md) — partially validated: m-side calibration delivers 3-5× speedup; K-side rarely beats baseline at default tolerance (75/76 runs picked K=1500)
 - [wire-ollama-generator-as-selectable-backend](infrastructure/wire-ollama-generator-as-selectable-backend.md) — `OllamaProposalGenerator` already exists but isn't config-selectable; wire it as an opt-in backend (default OpenAI) to save $$ + unblock local LLM-coverage
+- [stream-ollama-proposal-metrics](infrastructure/stream-ollama-proposal-metrics.md) — move per-proposal embedding + coverage/gap-stats INTO the Ollama generation loop instead of deferring to a bulk pass at the end; gives `tail -f`-able coverage progress for hour-long runs
 - [share-build-topic-index-helper](infrastructure/share-build-topic-index-helper.md) — `_build_topic_index` now verbatim-duplicated in production `deflation_strategies.py` + research `kball_gap_probe.py`; extract one shared `bookgap/` source (isolated refactor, byte-identity-gated)
