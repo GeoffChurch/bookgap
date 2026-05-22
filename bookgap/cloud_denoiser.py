@@ -215,6 +215,7 @@ class WorkDenoisers(enum.Enum):
     AUG_LPP = ProjectiveDenoiser(denoisers.AugmentedLPPDenoiser())
     ORTHO_MANIFOLD = ProjectiveDenoiser(denoisers.OrthogonalManifoldDenoiser())
     NORM_LPP = ProjectiveDenoiser(denoisers.NormalizedLPPDenoiser())
+    SYM_NORM_LPP = ProjectiveDenoiser(denoisers.SymmetricNormalizedLPPDenoiser())
     W = ProjectiveDenoiser(denoisers.WDenoiser())
     # LDA = ProjectiveDenoiser(denoisers.LDADenoiser())
     # SYM_LDA = ProjectiveDenoiser(denoisers.SymmetrizedLDADenoiser())

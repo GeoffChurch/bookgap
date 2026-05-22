@@ -508,6 +508,57 @@ class LPPDenoiser:
             P = res.P_or_U
             return P, res.eigvals
 
+class SymmetricNormalizedLPPDenoiser:
+    """Normalized LPP using the SYMMETRIC normalized Laplacian L_sym with
+    the identity constraint --- the principled normalized variant.
+
+    Solves the generalized eigenproblem:
+        X_c^T L_sym X_c a = lambda X_c^T X_c a
+    where L_sym = I - D^{-1/2} W D^{-1/2}. Equivalent to plain LPP on
+    degree-scaled data Y = D^{-1/2} X via the identity
+    X_c^T L_sym X_c = Y_c^T L Y_c.
+
+    Contrast with :class:`NormalizedLPPDenoiser`, which uses L_sym + X^T D X
+    constraint --- a non-standard hybrid that doesn't correspond to any
+    published variant. This class is the standard normalized-spectral
+    formulation.
+    """
+    def projector(self, context: DenoiserContext, n_components: int):
+        X_c = context.X_centered()
+        N, d = X_c.shape
+        B = context.A_sym()
+        degrees = np.array(B.sum(axis=1)).ravel()
+        safe_indices = degrees > 0
+        inv_sqrt_deg = np.zeros_like(degrees, dtype=float)
+        inv_sqrt_deg[safe_indices] = np.power(degrees[safe_indices], -0.5)
+        D_inv_sqrt = sp.diags(inv_sqrt_deg)
+        if not np.any(safe_indices):
+            LOGGER.warning(
+                "SymmetricNormalizedLPPDenoiser: all nodes have zero degree; "
+                "falling back to identity-Laplacian regularization."
+            )
+            L_sym = sp.eye(N) - (D_inv_sqrt @ B @ D_inv_sqrt)
+        else:
+            L_sym = sp.eye(N) - (D_inv_sqrt @ B @ D_inv_sqrt)
+
+        if N < d:
+            LOGGER.info(f"SymmetricNormalizedLPP: N < d, dual. N={N}, d={d}")
+            K = X_c @ adj(X_c)
+            subset = subset_range(n=N, subset_size=n_components, smallest=True)
+            a_dual = adj(K) @ L_sym @ K
+            b_dual = adj(K) @ K
+            res = _solve_eigh_robustly(a_dual, b_dual, subset)
+            P = _recover_projector_from_dual(X_c, res.P_or_U)
+            return P, res.eigvals
+
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        a_matrix = adj(X_c) @ L_sym @ X_c
+        b_matrix = adj(X_c) @ X_c
+        assert np.allclose(adj(a_matrix), a_matrix, atol=1e-6), "a_matrix is not Hermitian!"
+        res = _solve_eigh_robustly(a_matrix, b_matrix, subset)
+        return res.P_or_U, res.eigvals
+
+
 class NormalizedLPPDenoiser:
     def projector(self, context: DenoiserContext, n_components: int):
         X_c = context.X_centered() # Use centered data

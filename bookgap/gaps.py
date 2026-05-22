@@ -18,10 +18,13 @@ from bookgap.cloud import Cloud
 from bookgap.openalex_scopes import resolve_filter_upward, get_subfield_topics, get_field_topics
 from bookgap.configs.config import ExperimentConfig
 from bookgap.gap_statistics import compute_gap_statistics
+from bookgap import gap_size_metrics
 from bookgap.llm.data_structures import GapWithContext
 from bookgap.subcloud import get_subclouds_for_topic
 from bookgap.types import CellType, DeflationStrategy
 from bookgap.util import LOGGER, MEMORY
+
+import numpy as np
 
 
 @MEMORY.cache
@@ -33,14 +36,21 @@ def _compute_gaps_for_topic(
     cell_type: CellType,
     num_gaps: int,
     deflation_strategy: DeflationStrategy = DeflationStrategy.GREEDY_HARD,
+    size_metric: str = "raw_kball",
+    candidate_pool_size: int = 10,
 ) -> list[GapWithContext]:
     """Compute gaps for a single topic (cached per-topic).
 
     Cached by joblib.Memory using the topic parameters as the cache key.
-    ``deflation_strategy`` is an explicit argument (not derived from a
-    config object joblib can't see into) so a strategy change produces
-    a different cache key — without this, opt-in resid would silently
-    serve greedy-cached gaps (a correctness bug).
+    ``deflation_strategy``, ``size_metric``, and ``candidate_pool_size``
+    are explicit arguments (not derived from a config object joblib can't
+    see into) so a config change produces a different cache key.
+
+    When ``size_metric != "raw_kball"``: consume ``candidate_pool_size``
+    candidates from the gap generator, score each by the chosen metric,
+    sort by score desc, take top ``num_gaps``. When ``size_metric ==
+    "raw_kball"``: take the first ``num_gaps`` candidates from the
+    generator (byte-identical to historical behaviour).
     """
     books, articles = get_subclouds_for_topic(cloud, topic_id)
     num_books = len(books.embeddings())
@@ -82,8 +92,35 @@ def _compute_gaps_for_topic(
         deflation_strategy=deflation_strategy,
     )
 
+    # Re-rank by size_metric if it isn't the historical default. raw_kball
+    # is the no-op: the generator already yields candidates by descending
+    # raw size (greedy_hard) or in FL_BOOKDEMAND_RESID's own order.
+    if size_metric == "raw_kball":
+        ordered_gaps = list(islice(gap_generator, num_gaps))
+    else:
+        metric_fn = gap_size_metrics.get(size_metric)
+        pool_size = max(num_gaps, candidate_pool_size)
+        pool = list(islice(gap_generator, pool_size))
+        article_emb = np.ascontiguousarray(articles.embeddings(), dtype=np.float32)
+        book_emb_arr = np.ascontiguousarray(book_embeddings, dtype=np.float32)
+        scored = []
+        for gap in pool:
+            members = np.asarray(gap.get_dists_idxs().idxs, dtype=np.int64)
+            score = metric_fn(members, article_emb, book_emb_arr)
+            scored.append((score, gap))
+        # Sort by score desc; stable so that ties preserve generator order.
+        scored.sort(key=lambda sg: sg[0], reverse=True)
+        ordered_gaps = [g for _, g in scored[:num_gaps]]
+        LOGGER.info(
+            "Topic %s: re-ranked %d candidates by %s; "
+            "top score=%.1f (raw_size=%d), bottom=%.1f (raw_size=%d)",
+            topic_name, len(scored), size_metric,
+            scored[0][0], len(scored[0][1].get_dists_idxs().idxs),
+            scored[-1][0], len(scored[-1][1].get_dists_idxs().idxs),
+        )
+
     topic_gaps: list[GapWithContext] = []
-    for i, gap in enumerate(islice(gap_generator, num_gaps)):
+    for i, gap in enumerate(ordered_gaps):
         gap_size = len(gap.get_dists_idxs().idxs)
         LOGGER.info("Found gap of size %s articles", gap_size)
         gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(
@@ -118,6 +155,8 @@ def _compute_gaps_impl(
     cell_type: CellType,
     num_gaps: int,
     deflation_strategy: DeflationStrategy = DeflationStrategy.GREEDY_HARD,
+    size_metric: str = "raw_kball",
+    candidate_pool_size: int = 10,
 ) -> list[GapWithContext]:
     """Internal implementation that computes gaps for a single configuration.
 
@@ -176,6 +215,8 @@ def _compute_gaps_impl(
                 cell_type=cell_type,
                 num_gaps=num_gaps,
                 deflation_strategy=deflation_strategy,
+                size_metric=size_metric,
+                candidate_pool_size=candidate_pool_size,
             )
         )
 
@@ -195,4 +236,6 @@ def compute_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
         cell_type=config.gap.cell_type,
         num_gaps=config.batch.num_gaps,
         deflation_strategy=config.gap.deflation_strategy,
+        size_metric=getattr(config.gap, "size_metric", "raw_kball"),
+        candidate_pool_size=getattr(config.gap, "candidate_pool_size", 10),
     )

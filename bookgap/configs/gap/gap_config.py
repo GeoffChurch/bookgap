@@ -27,3 +27,17 @@ class GapConfig:
     ambient_work_type: str = WorkType.ARTICLE  # Query work type (e.g., articles defining gaps)
     landmark_work_type: str = WorkType.BOOK  # Reference work type (e.g., books covering gaps)
 
+    # Gap-sizing metric used to rank candidate gaps for top-k selection.
+    # "raw_kball" (default): number of articles in the bookless ball — historical, byte-identical.
+    # "virtual_centroid": Variant 4 from docs/backlog/gap-detection-methods/kball-residual-mass.md —
+    #   count articles whose nearest book (among real books + the gap's centroid as a virtual book) is the virtual centroid.
+    # "mutual_nn": Variant 3 (partition-mutual-NN discount).
+    # "book_knn_discount": Variant 1 (global k-NN discount).
+    # "kde_ratio": Variant 2 (KDE-on-KDE soft).
+    size_metric: str = "raw_kball"
+
+    # When size_metric != "raw_kball", generate this many candidates from the gap generator
+    # to rerank. Ignored when size_metric == "raw_kball" (raw-KBALL ranking == generator
+    # order; the islice in _compute_gaps_for_topic is enough).
+    candidate_pool_size: int = 10
+
