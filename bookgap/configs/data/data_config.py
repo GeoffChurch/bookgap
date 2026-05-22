@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True)
+@dataclass
 class SqDistDeduplicatorConfig:
     """Configuration for SqDistDeduplicator.
 
@@ -20,7 +20,7 @@ class SqDistDeduplicatorConfig:
             raise ValueError(f"min_sqdist must be positive, got {self.min_sqdist}")
 
 
-@dataclass(frozen=True)
+@dataclass
 class SimHashDeduplicatorConfig:
     """Configuration for SimHashDeduplicator.
 

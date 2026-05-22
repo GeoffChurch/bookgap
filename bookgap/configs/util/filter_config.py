@@ -10,9 +10,14 @@ from typing import Optional, Tuple
 from bookgap.util import Domain, WorkType
 
 
-@dataclass(frozen=True)
+@dataclass
 class FilterConfig:
-    """Hydra structured config for :class:`bookgap.util.Filter`."""
+    """Hydra structured config for :class:`bookgap.util.Filter`.
+
+    Not frozen so Hydra CLI overrides (e.g. ``cloud.filter_pair.pre.subfield=1702``)
+    can mutate fields. Hashability lives on the runtime :class:`bookgap.util.Filter`
+    that Hydra instantiates from this config, not on the config wrapper.
+    """
 
     _target_: str = field(default="bookgap.util.Filter", init=False)
     domain: Optional[str] = None
@@ -22,9 +27,12 @@ class FilterConfig:
     work_types: Optional[Tuple[str, ...]] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class FilterPairConfig:
-    """Hydra structured config for :class:`bookgap.util.FilterPair`."""
+    """Hydra structured config for :class:`bookgap.util.FilterPair`.
+
+    Not frozen — see :class:`FilterConfig` for rationale.
+    """
 
     _target_: str = field(default="bookgap.util.FilterPair", init=False)
     pre: FilterConfig = field(

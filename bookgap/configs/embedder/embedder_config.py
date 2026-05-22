@@ -1,4 +1,10 @@
-"""Hydra-friendly embedder configurations."""
+"""Hydra-friendly embedder configurations.
+
+These stay ``frozen=True`` because :class:`bookgap.cloud.Cloud` stores the
+embedder config DIRECTLY (not an instantiated runtime object) so it can
+participate in the Cloud hash key for joblib caching. See Cloud.__post_init__
+which normalizes the embedder field to one of these two classes.
+"""
 from dataclasses import dataclass, field
 
 

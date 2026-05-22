@@ -121,9 +121,61 @@ class OllamaProposalGenerator:
         )
 
     def generate(self, context: ProposalContext) -> OllamaProposalRecord:
-        """Generate one proposal synchronously via Ollama."""
+        """Generate one proposal synchronously via Ollama.
+
+        On strict-parse failure (anything other than a single JSON
+        object, optionally fenced), we re-call ``ollama.chat`` ONCE more
+        — non-zero temperature gives the model another draw at a clean
+        response. If the retry also fails strict parsing, we leave
+        ``proposal=None`` (the offline recovery utility
+        :func:`_try_parse_proposal_lenient` can still extract a
+        proposal from the persisted ``raw_content`` if the operator
+        opts in).
+        """
         prompts = self.build_prompts(context)
-        response = ollama.chat(
+        response = self._chat_once(prompts)
+        raw = response.message.content or ""
+        thinking = getattr(response.message, "thinking", None)
+        proposal = _try_parse_proposal(raw)
+        metadata = self._build_metadata(response)
+
+        if proposal is None:
+            # ONE retry. Same prompt, fresh sampling.
+            first_raw = raw
+            first_thinking = thinking
+            retry_response = self._chat_once(prompts)
+            retry_raw = retry_response.message.content or ""
+            retry_thinking = getattr(retry_response.message, "thinking", None)
+            retry_proposal = _try_parse_proposal(retry_raw)
+            metadata["retried"] = True
+            metadata["first_raw_content"] = first_raw
+            metadata["first_thinking"] = first_thinking
+            if retry_proposal is not None:
+                # Success on retry: persist the retry as `raw_content`
+                # for downstream / re-parse consistency. The first
+                # attempt is preserved in metadata for forensics.
+                proposal = retry_proposal
+                raw = retry_raw
+                thinking = retry_thinking
+                metadata.update(self._build_metadata(retry_response))
+            else:
+                # Both failed: persist the retry as `raw_content` (most
+                # recent attempt) and the first in metadata.
+                raw = retry_raw
+                thinking = retry_thinking
+                metadata.update(self._build_metadata(retry_response))
+
+        return OllamaProposalRecord(
+            proposal=proposal,
+            raw_content=raw,
+            thinking=thinking,
+            prompts=prompts,
+            context=context,
+            metadata=metadata,
+        )
+
+    def _chat_once(self, prompts: PromptPair):
+        return ollama.chat(
             model=self.model,
             messages=[
                 {"role": "system", "content": prompts.system_prompt},
@@ -136,11 +188,8 @@ class OllamaProposalGenerator:
             },
         )
 
-        raw = response.message.content or ""
-        thinking = getattr(response.message, "thinking", None)
-        proposal = _try_parse_proposal(raw)
-
-        metadata: dict[str, Any] = {
+    def _build_metadata(self, response) -> dict[str, Any]:
+        return {
             "model": self.model,
             "implementation": "ollama_local",
             "eval_count": response.eval_count,
@@ -149,15 +198,6 @@ class OllamaProposalGenerator:
             "eval_duration_ns": response.eval_duration,
             "done_reason": response.done_reason,
         }
-
-        return OllamaProposalRecord(
-            proposal=proposal,
-            raw_content=raw,
-            thinking=thinking,
-            prompts=prompts,
-            context=context,
-            metadata=metadata,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -181,38 +221,102 @@ class _PromptBuilder(OpenAIBatchGenerator):
         return self._build_prompt(context)
 
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_MARKDOWN_FENCE_RE = re.compile(
+    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?```\s*$",
+    re.DOTALL,
+)
 
 
 def _try_parse_proposal(raw: str) -> Proposal | None:
-    """Best-effort JSON → Proposal parsing.
+    """Strict JSON → Proposal parsing.
 
-    Tries strict json first, then falls back to extracting the largest
-    {...} block (handles cases where the model wraps the JSON in extra
-    text despite the instruction).
+    Accepts only a single JSON object, optionally wrapped in **one**
+    enclosing markdown code fence. Rejects lists, multi-block outputs,
+    and any output with stray commentary before/after the JSON. The
+    intent is to fail loudly when the model deviates from the
+    ``{title, abstract}`` contract so that :meth:`OllamaProposalGenerator.generate`
+    can do a one-shot retry. For offline recovery from past JSONL files
+    that contain such deviations, use :func:`_try_parse_proposal_lenient`.
     """
     raw = raw.strip()
-    for candidate in (raw, _extract_json_object(raw)):
-        if not candidate:
-            continue
+    m = _MARKDOWN_FENCE_RE.match(raw)
+    if m:
+        raw = m.group(1).strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    try:
+        return Proposal.model_validate(parsed)
+    except Exception:
+        return None
+
+
+def _try_parse_proposal_lenient(raw: str) -> Proposal | None:
+    """Lenient JSON → Proposal parsing, for offline recovery only.
+
+    Scans ``raw`` for every top-level balanced JSON block (``{...}``
+    or ``[...]``), parses each, and returns the first ``Proposal``
+    that validates. For list blocks, returns the first list item that
+    validates. Strings (including escaped quotes) are skipped so
+    brackets inside string literals don't confuse the depth counter.
+
+    NOT used during fresh generation — that path uses
+    :func:`_try_parse_proposal` + one retry. This is reserved for
+    recovering data from JSONL files written before the strict + retry
+    machinery was in place.
+    """
+    raw = raw.strip()
+    for block in _iter_balanced_json_blocks(raw):
         try:
-            parsed = json.loads(candidate)
+            parsed = json.loads(block)
         except json.JSONDecodeError:
             continue
         try:
             return Proposal.model_validate(parsed)
         except Exception:
-            # Maybe it's a list with one item.
-            if isinstance(parsed, list) and len(parsed) == 1:
+            pass
+        if isinstance(parsed, list):
+            for item in parsed:
                 try:
-                    return Proposal.model_validate(parsed[0])
+                    return Proposal.model_validate(item)
                 except Exception:
-                    pass
+                    continue
     return None
 
 
-def _extract_json_object(text: str) -> str | None:
-    """Greedy extraction of the first {...} block in text. Returns None
-    if no balanced block is found."""
-    match = _JSON_OBJECT_RE.search(text)
-    return match.group(0) if match else None
+def _iter_balanced_json_blocks(text: str):
+    """Yield every top-level balanced ``{...}`` or ``[...]`` substring.
+
+    Tracks bracket depth (counting both ``{`` and ``[``) while respecting
+    JSON string literals — brackets inside a `"..."` string are ignored.
+    Backslash escapes inside strings are honored so ``"a\\"b"`` is one string.
+    """
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, c in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if c == "\\" and in_string:
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c in "{[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif c in "}]":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield text[start:i + 1]
+                    start = -1

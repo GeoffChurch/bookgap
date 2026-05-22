@@ -239,7 +239,7 @@ def _make_mock_config(*, backend: LLMBackend, num_gaps: int = 1) -> Any:
                 cell_type=SimpleNamespace(value=_StubAlgorithm()),
             ),
             cloud=SimpleNamespace(
-                embedder_model="test-model",
+                embedder=SimpleNamespace(model_name="test-model"),
                 denoiser="NONE",
                 drop_k=0,
             ),

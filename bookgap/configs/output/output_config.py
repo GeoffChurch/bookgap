@@ -10,7 +10,7 @@ from typing import Tuple
 from .export_formats import ExportFormat
 
 
-@dataclass(frozen=True)
+@dataclass
 class OutputConfig:
     """Configuration for output generation and export.
     

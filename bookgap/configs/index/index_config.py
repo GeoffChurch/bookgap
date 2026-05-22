@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True)
+@dataclass
 class HNSWConfig:
     """Hydra-friendly configuration for :class:`bookgap.index.HNSW`.
 

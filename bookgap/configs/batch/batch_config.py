@@ -7,7 +7,7 @@ completion windows, and output generation options.
 
 from dataclasses import dataclass
 
-@dataclass(frozen=True)
+@dataclass
 class BatchConfig:
     """Configuration for batch processing parameters.
     

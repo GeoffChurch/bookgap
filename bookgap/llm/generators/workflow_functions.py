@@ -104,7 +104,7 @@ def _compute_proposal_embeddings(
         for proposal in pending
     ]
 
-    with Embedder(model_name=config.cloud.embedder_model) as embedder:
+    with Embedder(model_name=config.cloud.embedder.model_name) as embedder:
         raw_embeddings = embedder.embed_texts(title_abstract_pairs)
 
     cloud: Cloud = instantiate(config.cloud)
@@ -807,7 +807,7 @@ def _run_openai_batch_path(
     requests = generate_batch_requests(contexts, config)
     LOGGER.info("Generated %s batch requests", len(requests))
 
-    embedder_model = str(config.cloud.embedder_model)
+    embedder_model = str(config.cloud.embedder.model_name)
     denoiser_name = str(config.cloud.denoiser)
     drop_k_value = str(config.cloud.drop_k)
     num_articles_value = str(config.llm.num_articles)
@@ -885,7 +885,7 @@ def _run_ollama_local_path(
 
     results_path = output_dir / "ollama_results.jsonl"
 
-    embedder_model = str(config.cloud.embedder_model)
+    embedder_model = str(config.cloud.embedder.model_name)
     denoiser_name = str(config.cloud.denoiser)
     drop_k_value = str(config.cloud.drop_k)
 
