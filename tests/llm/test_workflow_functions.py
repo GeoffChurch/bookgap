@@ -976,3 +976,130 @@ class TestGetSupportedModels:
         result = get_supported_models()
         expected_models = [model.value for model in OpenAIModel]
         assert result == expected_models
+
+
+def test_build_prompt_records_uses_backend_specific_model_and_params():
+    """build_prompt_records produces one PromptRecord per ProposalContext,
+    populated with backend-name, model id, and generation params pulled
+    from the ExperimentConfig."""
+    from dataclasses import dataclass, field
+    from bookgap.llm.protocols import (
+        Article, Book, LLMBackend, ProposalContext, ProposalCounts,
+        OpenAIModel,
+    )
+    from bookgap.llm.generators.workflow_functions import build_prompt_records
+
+    @dataclass
+    class _LLMCfg:
+        backend: LLMBackend = LLMBackend.OLLAMA_LOCAL
+        ollama_model: str = "gemma4:31b"
+        model: OpenAIModel = OpenAIModel.GPT_5
+        num_articles: int = 10
+        num_books: int = 5
+        temperature: float = 0.2
+        max_tokens: int = 4096
+        ollama_num_ctx: int = 8192
+        ollama_num_predict: int = 8192
+        use_structured_output: bool = True
+
+    @dataclass
+    class _Cfg:
+        llm: _LLMCfg = field(default_factory=_LLMCfg)
+
+    cfg = _Cfg()
+
+    contexts = [
+        ProposalContext(
+            topic_name="Topic A", topic_id="T1", gap_idx=0,
+            requested_num_prompt_articles=10, requested_num_prompt_books=5,
+            sampled_articles=[Article(display_name="A", abstract="X")],
+            covering_books=[Book(display_name="B", abstract="Y")],
+            counts=ProposalCounts(num_articles_for_llm=1, num_books_for_llm=1),
+        ),
+    ]
+
+    records = build_prompt_records(contexts, cfg)
+    assert len(records) == 1
+    r = records[0]
+    assert r.backend == "ollama_local"
+    assert r.model == "gemma4:31b"
+    assert r.custom_id == "gap_0_topic_T1"
+    assert r.sampled_articles[0].display_name == "A"
+    assert r.covering_books[0].articles_covered == 0
+    assert r.generation_params["temperature"] == 0.2
+    assert r.generation_params["num_ctx"] == 8192
+
+
+def test_build_prompt_records_openai_backend():
+    from dataclasses import dataclass, field
+    from bookgap.llm.protocols import (
+        Article, Book, LLMBackend, ProposalContext, ProposalCounts,
+        OpenAIModel,
+    )
+    from bookgap.llm.generators.workflow_functions import build_prompt_records
+
+    @dataclass
+    class _LLMCfg:
+        backend: LLMBackend = LLMBackend.OPENAI_BATCH
+        model: OpenAIModel = OpenAIModel.GPT_5
+        ollama_model: str = ""
+        num_articles: int = 10
+        num_books: int = 5
+        temperature: float = 0.2
+        max_tokens: int = 4096
+        ollama_num_ctx: int = 8192
+        ollama_num_predict: int = 8192
+        use_structured_output: bool = True
+
+    @dataclass
+    class _Cfg:
+        llm: _LLMCfg = field(default_factory=_LLMCfg)
+
+    cfg = _Cfg()
+    contexts = [ProposalContext(
+        topic_name="T", topic_id="T1", gap_idx=0,
+        requested_num_prompt_articles=10, requested_num_prompt_books=5,
+        sampled_articles=[], covering_books=[],
+        counts=ProposalCounts(num_articles_for_llm=0, num_books_for_llm=0),
+    )]
+    rec = build_prompt_records(contexts, cfg)[0]
+    assert rec.backend == "openai_batch"
+    assert rec.model == OpenAIModel.GPT_5.value
+    assert rec.generation_params["max_tokens"] == 4096
+    assert "num_ctx" not in rec.generation_params
+
+
+def test_generate_all_prompts_writes_one_file_per_record(tmp_path):
+    """generate_all_prompts writes each PromptRecord to prompts/."""
+    from bookgap.llm.prompt_record import (
+        ArticleEntry, BookEntry, PromptRecord, record_filename,
+    )
+    from bookgap.llm.generators.workflow_functions import generate_all_prompts
+
+    records = [
+        PromptRecord(
+            custom_id="gap_0_topic_T1",
+            topic_id="T1", topic_name="A", gap_idx=0,
+            requested_num_prompt_articles=2, requested_num_prompt_books=1,
+            sampled_articles=[ArticleEntry(openalex_id="W1",
+                                           display_name="A1", abstract="X")],
+            covering_books=[BookEntry(openalex_id="B1", display_name="B1",
+                                      abstract="Y", articles_covered=0,
+                                      fraction_covered=0.0)],
+            backend="ollama_local", model="gemma4:31b",
+            generation_params={"temperature": 0.2},
+        ),
+        PromptRecord(
+            custom_id="gap_0_topic_T2",
+            topic_id="T2", topic_name="B", gap_idx=0,
+            requested_num_prompt_articles=2, requested_num_prompt_books=1,
+            sampled_articles=[],
+            covering_books=[],
+            backend="ollama_local", model="gemma4:31b",
+            generation_params={"temperature": 0.2},
+        ),
+    ]
+    paths = generate_all_prompts(records, tmp_path)
+    assert len(paths) == 2
+    assert (tmp_path / "prompts" / record_filename(0, "T1")).exists()
+    assert (tmp_path / "prompts" / record_filename(0, "T2")).exists()

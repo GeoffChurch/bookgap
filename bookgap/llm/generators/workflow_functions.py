@@ -602,6 +602,81 @@ def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig
     return contexts
 
 
+def build_prompt_records(contexts, config):
+    """Build one PromptRecord per ProposalContext, populated with the
+    backend name, model id, and backend-specific generation params from
+    the ExperimentConfig. Returns a list parallel to ``contexts``.
+
+    The in-memory ProposalContext doesn't carry per-book coverage stats
+    (they live in the ContextRecord on disk). For PromptRecord we record
+    articles_covered=0 / fraction_covered=0.0 for the books — the
+    rendered prompt doesn't use those fields, and downstream consumers
+    that need coverage look up the ContextRecord by (topic_id, gap_idx).
+    """
+    from bookgap.llm.identifiers import build_gap_proposal_id
+    from bookgap.llm.prompt_record import (
+        ArticleEntry, BookEntry, PromptRecord,
+    )
+    from bookgap.llm.protocols import LLMBackend
+
+    backend = _resolve_backend(config)
+    if backend is LLMBackend.OLLAMA_LOCAL:
+        backend_name = "ollama_local"
+        model = str(config.llm.ollama_model)
+        params = {
+            "temperature": float(config.llm.temperature),
+            "num_ctx": int(config.llm.ollama_num_ctx),
+            "num_predict": int(config.llm.ollama_num_predict),
+        }
+    elif backend is LLMBackend.OPENAI_BATCH:
+        backend_name = "openai_batch"
+        m = config.llm.model
+        model = m.value if hasattr(m, "value") else str(m)
+        params = {
+            "temperature": float(config.llm.temperature),
+            "max_tokens": int(config.llm.max_tokens),
+            "use_structured_output": bool(config.llm.use_structured_output),
+        }
+    else:  # pragma: no cover
+        raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+    records = []
+    for ctx in contexts:
+        records.append(PromptRecord(
+            custom_id=build_gap_proposal_id(
+                gap_idx=ctx.gap_idx, topic_id=ctx.topic_id,
+            ),
+            topic_id=ctx.topic_id,
+            topic_name=ctx.topic_name,
+            gap_idx=ctx.gap_idx,
+            requested_num_prompt_articles=ctx.requested_num_prompt_articles,
+            requested_num_prompt_books=ctx.requested_num_prompt_books,
+            sampled_articles=[
+                ArticleEntry(openalex_id="", display_name=a.display_name,
+                             abstract=a.abstract)
+                for a in ctx.sampled_articles
+            ],
+            covering_books=[
+                BookEntry(openalex_id="", display_name=b.display_name,
+                          abstract=b.abstract,
+                          articles_covered=0, fraction_covered=0.0)
+                for b in ctx.covering_books
+            ],
+            backend=backend_name,
+            model=model,
+            generation_params=params,
+        ))
+    return records
+
+
+def generate_all_prompts(prompt_records, output_dir):
+    """Write each PromptRecord to ``<output_dir>/prompts/`` and return
+    the list of written paths."""
+    from bookgap.llm.prompt_record import write_prompt_record
+    prompts_dir = output_dir / "prompts"
+    return [write_prompt_record(prompts_dir, r) for r in prompt_records]
+
+
 def save_batch_input_jsonl(batch_requests: list[BatchRequestData], batch_input_filename: Path, config: ExperimentConfig) -> None:
     """Save batch requests to JSONL file for OpenAI batch API."""
     if not batch_requests:
@@ -918,6 +993,14 @@ def run_batch_workflow(
     # Step 2: Build contexts (shared)
     contexts = build_contexts_for_gaps(gaps, config)
     LOGGER.info("Built %s proposal contexts", len(contexts))
+
+    # ARTIFACTS: Write one PromptRecord per context (shared across backends).
+    # Backends do NOT read these files at run-time — they're the on-disk
+    # audit trail used by downstream consumers and the appendix generator.
+    prompt_records = build_prompt_records(contexts, config)
+    prompt_paths = generate_all_prompts(prompt_records, output_dir)
+    LOGGER.info("Wrote %s prompt records to %s/prompts/",
+                len(prompt_paths), output_dir)
 
     backend = _resolve_backend(config)
     if backend is LLMBackend.OPENAI_BATCH:
