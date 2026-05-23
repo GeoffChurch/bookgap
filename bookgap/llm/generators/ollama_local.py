@@ -2,14 +2,19 @@
 
 Parallels :class:`OpenAIBatchGenerator` but uses a synchronous local call
 to an Ollama model (e.g. ``gemma4:31b``) instead of the OpenAI Batch API.
-Inherits the prompt-building logic from :class:`OpenAIBatchGenerator` so
-prompts are identical to what the paper used. The only deviations from
-the OpenAI version:
+Prompt construction is the orchestrator's responsibility: callers pass
+an already-rendered :class:`PromptPair` (typically from
+:func:`bookgap.llm.prompt_render.render_prompts`). This keeps the prompt
+format DRY across backends and lets the persisted ``PromptRecord`` serve
+as the single source of truth for what was actually sent.
+
+Deviations from the OpenAI batch path:
 
 - One-at-a-time synchronous calls (no batch); suitable for offline eval
   runs but not for the production pipeline.
-- No structured-output API; we instruct the model to emit JSON in the
-  user prompt and then parse the response.
+- No structured-output API; the orchestrator-rendered user prompt
+  carries a JSON-output instruction (see ``prompt_render`` for the
+  exact text) and we parse the response.
 - Ollama models that produce a ``thinking`` block (e.g. gemma4) have
   their thoughts captured separately for transparency but only the
   final ``content`` is parsed as the proposal.
@@ -28,18 +33,9 @@ from typing import Any
 import ollama
 
 from ..protocols import (
-    ChatMessage,
     PromptPair,
     Proposal,
     ProposalContext,
-)
-from .openai_batch import OpenAIBatchGenerator
-
-
-_JSON_INSTRUCTION = (
-    "\n\nOutput ONLY a JSON object with this exact schema, and nothing else:\n"
-    "{\"title\": \"...\", \"abstract\": \"...\"}\n"
-    "No markdown fences, no commentary, no leading or trailing text."
 )
 
 
@@ -61,12 +57,13 @@ class OllamaProposalRecord:
 
 
 class OllamaProposalGenerator:
-    """Local-Ollama proposal generator.
+    """Synchronous Ollama proposal generator.
 
-    Reuses :class:`OpenAIBatchGenerator`'s prompt-building so prompts
-    match the published methodology exactly. Differs only in transport
-    (synchronous local Ollama call) and output handling (no
-    structured-output API; JSON parsed from raw content).
+    Prompt construction is the orchestrator's responsibility: callers
+    pass an already-rendered :class:`PromptPair` (typically from
+    :func:`bookgap.llm.prompt_render.render_prompts`). This keeps prompt
+    format DRY across backends and lets the persisted ``PromptRecord``
+    serve as the single source of truth for what was actually sent.
     """
 
     def __init__(
@@ -75,53 +72,25 @@ class OllamaProposalGenerator:
         model: str,
         num_articles: int,
         num_books: int,
-        temperature: float = 0.7,
-        num_ctx: int = 8192,
-        num_predict: int = 8192,
-    ):
-        """Initialise an Ollama proposal generator.
-
-        Parameters
-        ----------
-        model
-            Ollama model tag (e.g. ``"gemma4:31b"``, ``"qwen3:30b"``).
-        num_articles, num_books
-            Plumbed to the prompt-builder so context is sized
-            consistently with the OpenAI flow.
-        temperature
-            Sampling temperature.
-        num_ctx
-            Context window. 8192 is enough for a typical proposal
-            context (5 articles + 5 books).
-        num_predict
-            Max generated tokens. Must be generous for thinking models
-            (gemma4 spends most of its budget on thoughts before
-            emitting the final JSON content).
-        """
-        # Reuse OpenAIBatchGenerator's prompt-building by composition,
-        # not inheritance — we don't want its OPENAI_API_KEY check or
-        # its batch-API surface.
-        self._prompt_builder = _PromptBuilder(
-            num_articles=num_articles, num_books=num_books,
-        )
+        temperature: float,
+        num_ctx: int,
+        num_predict: int,
+    ) -> None:
         self.model = model
+        # num_articles/num_books are retained for metadata only; the
+        # actual sample sizes are bounded by the orchestrator before
+        # prompts are built.
         self.num_articles = num_articles
         self.num_books = num_books
         self.temperature = temperature
         self.num_ctx = num_ctx
         self.num_predict = num_predict
 
-    def build_prompts(self, context: ProposalContext) -> PromptPair:
-        """Build prompts via the shared OpenAI logic plus a JSON-output
-        instruction (since Ollama lacks structured-output APIs)."""
-        base = self._prompt_builder.build(context)
-        return PromptPair(
-            system_prompt=base.system_prompt,
-            user_prompt=base.user_prompt + _JSON_INSTRUCTION,
-        )
-
-    def generate(self, context: ProposalContext) -> OllamaProposalRecord:
-        """Generate one proposal synchronously via Ollama.
+    def generate(
+        self, context: ProposalContext, prompts: PromptPair,
+    ) -> OllamaProposalRecord:
+        """Generate one proposal via Ollama. ``prompts`` is rendered by
+        the orchestrator using the shared ``render_prompts`` function.
 
         On strict-parse failure (anything other than a single JSON
         object, optionally fenced), we re-call ``ollama.chat`` ONCE more
@@ -132,7 +101,6 @@ class OllamaProposalGenerator:
         proposal from the persisted ``raw_content`` if the operator
         opts in).
         """
-        prompts = self.build_prompts(context)
         response = self._chat_once(prompts)
         raw = response.message.content or ""
         thinking = getattr(response.message, "thinking", None)
@@ -203,22 +171,6 @@ class OllamaProposalGenerator:
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
-
-class _PromptBuilder(OpenAIBatchGenerator):
-    """Compositional shim: subclass OpenAIBatchGenerator just to access
-    its private prompt-building methods, but skip the OPENAI_API_KEY
-    requirement that the parent's __init__ enforces."""
-
-    def __init__(self, num_articles: int, num_books: int) -> None:  # noqa: D401
-        # Skip the parent __init__ entirely — we don't need the OpenAI
-        # API key, model enum, or temperature/max_tokens for prompt
-        # building. Only num_articles / num_books are referenced inside
-        # the prompt logic, and those are stored as plain attributes.
-        self.num_articles = num_articles
-        self.num_books = num_books
-
-    def build(self, context: ProposalContext) -> PromptPair:
-        return self._build_prompt(context)
 
 
 _MARKDOWN_FENCE_RE = re.compile(

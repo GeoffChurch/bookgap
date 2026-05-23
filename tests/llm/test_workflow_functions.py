@@ -853,72 +853,66 @@ class TestRunBatchWorkflow:
 
 class TestGenerateBatchRequests:
     """Test generate_batch_requests function."""
-    
+
     def test_empty_contexts(self):
         """Test handling of empty contexts list."""
         mock_config = Mock()
-        result = generate_batch_requests([], mock_config)
+        result = generate_batch_requests([], [], mock_config)
         assert result == []
 
-    @patch('bookgap.llm.generators.workflow_functions.instantiate')
-    def test_successful_generation(self, mock_instantiate):
-        """Test successful batch request generation."""
-        # Setup mocks
-        mock_generator = Mock()
-        mock_requests = [Mock(), Mock()]
-        mock_generator.generate_batch_requests.return_value = mock_requests
-        mock_instantiate.return_value = mock_generator
-        
-        counts = ProposalCounts(num_articles_for_llm=0, num_books_for_llm=0)
-        context = ProposalContext(
-            topic_name="Topic",
-            topic_id="id",
-            gap_idx=0,
-            requested_num_prompt_articles=2,
-            requested_num_prompt_books=1,
-            sampled_articles=[],
-            covering_books=[],
-            counts=counts,
-        )
-        mock_contexts = [context, context]
-        mock_config = cast(
-            ExperimentConfig,
-            SimpleNamespace(llm=SimpleNamespace(model="gpt-4o-mini", _target_="dummy.generator")),
-        )
-        
-        # Call function
-        result = generate_batch_requests(mock_contexts, mock_config)
-        
-        # Assertions
-        assert result == mock_requests
-        mock_instantiate.assert_called_once_with(mock_config.llm)
-        mock_generator.generate_batch_requests.assert_called_once_with(mock_contexts)
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"})
+    def test_successful_generation(self):
+        """Test successful batch request generation against the real
+        OpenAIBatchGenerator (prompts are rendered from PromptRecords)."""
+        from bookgap.llm.protocols import OpenAIModel as _OpenAIModel
+        from bookgap.llm.prompt_record import PromptRecord
 
-    @patch('bookgap.llm.generators.workflow_functions.instantiate')
-    def test_generation_error(self, mock_instantiate):
-        """Test error handling during generation."""
-        # Setup mocks to raise exception
-        mock_instantiate.side_effect = Exception("Test error")
-        
         counts = ProposalCounts(num_articles_for_llm=0, num_books_for_llm=0)
-        context = ProposalContext(
-            topic_name="Topic",
-            topic_id="id",
-            gap_idx=0,
-            requested_num_prompt_articles=2,
-            requested_num_prompt_books=1,
-            sampled_articles=[],
-            covering_books=[],
-            counts=counts,
+        ctx1 = ProposalContext(
+            topic_name="AI", topic_id="ai_001", gap_idx=1,
+            requested_num_prompt_articles=2, requested_num_prompt_books=1,
+            sampled_articles=[], covering_books=[], counts=counts,
         )
-        mock_contexts = [context]
+        ctx2 = ProposalContext(
+            topic_name="ML", topic_id="ml_001", gap_idx=2,
+            requested_num_prompt_articles=2, requested_num_prompt_books=1,
+            sampled_articles=[], covering_books=[], counts=counts,
+        )
+        records = [
+            PromptRecord(
+                custom_id="gap_1_topic_ai_001", topic_id="ai_001",
+                topic_name="AI", gap_idx=1,
+                requested_num_prompt_articles=2,
+                requested_num_prompt_books=1,
+                sampled_articles=[], covering_books=[],
+                backend="openai_batch", model="gpt-4o-mini",
+                generation_params={"temperature": 0.2},
+            ),
+            PromptRecord(
+                custom_id="gap_2_topic_ml_001", topic_id="ml_001",
+                topic_name="ML", gap_idx=2,
+                requested_num_prompt_articles=2,
+                requested_num_prompt_books=1,
+                sampled_articles=[], covering_books=[],
+                backend="openai_batch", model="gpt-4o-mini",
+                generation_params={"temperature": 0.2},
+            ),
+        ]
         mock_config = cast(
             ExperimentConfig,
-            SimpleNamespace(llm=SimpleNamespace(model="gpt-4o", _target_="test.target")),
+            SimpleNamespace(llm=SimpleNamespace(
+                model=_OpenAIModel.GPT_4O_MINI,
+                temperature=0.2,
+                max_tokens=4096,
+                use_structured_output=False,
+            )),
         )
-        
-        with pytest.raises(Exception, match=r"^Test error$"):
-            generate_batch_requests(mock_contexts, mock_config)
+
+        result = generate_batch_requests([ctx1, ctx2], records, mock_config)
+
+        assert len(result) == 2
+        assert result[0].custom_id == "gap_1_topic_ai_001"
+        assert result[1].custom_id == "gap_2_topic_ml_001"
 
 class TestValidateBatchRequests:
     """Test validate_batch_requests function."""
@@ -1098,3 +1092,53 @@ def test_generate_all_prompts_writes_one_file_per_record(tmp_path):
     assert len(paths) == 2
     assert (tmp_path / "prompts" / record_filename(0, "T1")).exists()
     assert (tmp_path / "prompts" / record_filename(0, "T2")).exists()
+
+
+def test_ollama_generator_accepts_external_promptpair(monkeypatch):
+    """OllamaProposalGenerator.generate(context, prompts) — prompts come
+    from the orchestrator, not built internally."""
+    from bookgap.llm.generators.ollama_local import OllamaProposalGenerator
+    from bookgap.llm.protocols import (
+        Article, Book, ProposalContext, ProposalCounts, PromptPair,
+    )
+
+    captured = {}
+
+    class _StubResponse:
+        def __init__(self):
+            self.message = type("M", (), {
+                "content": '{"title": "X", "abstract": "Y"}',
+                "thinking": None,
+            })()
+            self.eval_count = 1
+            self.prompt_eval_count = 1
+            self.total_duration = 1
+            self.eval_duration = 1
+            self.done_reason = "stop"
+
+    def _fake_chat(model, messages, options):
+        captured["messages"] = messages
+        return _StubResponse()
+
+    monkeypatch.setattr(
+        "bookgap.llm.generators.ollama_local.ollama.chat", _fake_chat,
+    )
+
+    g = OllamaProposalGenerator(
+        model="gemma4:31b", num_articles=10, num_books=5,
+        temperature=0.2, num_ctx=8192, num_predict=8192,
+    )
+    ctx = ProposalContext(
+        topic_name="T", topic_id="T1", gap_idx=0,
+        requested_num_prompt_articles=10, requested_num_prompt_books=5,
+        sampled_articles=[Article(display_name="A", abstract="X")],
+        covering_books=[Book(display_name="B", abstract="Y")],
+        counts=ProposalCounts(num_articles_for_llm=1, num_books_for_llm=1),
+    )
+    prompts = PromptPair(system_prompt="SYS", user_prompt="USR")
+    record = g.generate(ctx, prompts)
+    assert captured["messages"] == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "USR"},
+    ]
+    assert record.prompts == prompts

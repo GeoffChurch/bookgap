@@ -38,7 +38,7 @@ from bookgap.llm.data_structures import (
     ProposalGapStats,
     ProposalOutrankCounts,
 )
-from bookgap.llm.generators.batch_generator import BatchProposalGenerator
+from bookgap.llm.generators.openai_batch import OpenAIBatchGenerator
 from bookgap.subcloud import SubCloud
 from bookgap.util import LOGGER, create_unicode_safe_filename
 from ..protocols import (
@@ -53,6 +53,7 @@ from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
 from bookgap.llm.prompt_record import (
     ArticleEntry, BookEntry, PromptRecord, write_prompt_record,
 )
+from bookgap.llm.prompt_render import render_prompts
 from .run_state import RunStateManager, RunStep
 from bookgap.gaps import compute_gaps_for_config
 
@@ -1010,6 +1011,7 @@ def run_batch_workflow(
             state_manager=state_manager,
             gaps=gaps,
             contexts=contexts,
+            prompt_records=prompt_records,
             context_paths=context_paths,
             reuse_existing_results=reuse_existing_results,
         )
@@ -1020,6 +1022,7 @@ def run_batch_workflow(
             state_manager=state_manager,
             gaps=gaps,
             contexts=contexts,
+            prompt_records=prompt_records,
             context_paths=context_paths,
         )
     else:  # pragma: no cover - exhaustively handled above
@@ -1065,6 +1068,7 @@ def _run_openai_batch_path(
     state_manager: RunStateManager,
     gaps: list[GapWithContext],
     contexts: list[ProposalContext],
+    prompt_records: list[PromptRecord],
     context_paths: Any,
     reuse_existing_results: bool,
 ) -> BatchResults:
@@ -1076,7 +1080,7 @@ def _run_openai_batch_path(
     :class:`ParsedProposal` objects.
     """
     # Step 3: Generate batch requests
-    requests = generate_batch_requests(contexts, config)
+    requests = generate_batch_requests(contexts, prompt_records, config)
     LOGGER.info("Generated %s batch requests", len(requests))
 
     embedder_model = str(config.cloud.embedder.model_name)
@@ -1135,6 +1139,7 @@ def _run_ollama_local_path(
     state_manager: RunStateManager,
     gaps: list[GapWithContext],
     contexts: list[ProposalContext],
+    prompt_records: list[PromptRecord],
     context_paths: Any,
 ) -> BatchResults:
     """Execute the synchronous local-Ollama proposal-generation path.
@@ -1262,7 +1267,10 @@ def _run_ollama_local_path(
                     "[ollama %d/%d] generating proposal for %s",
                     i, len(contexts), custom_id,
                 )
-                record = generator.generate(context)
+                # i is 1-indexed via enumerate(..., start=1); prompt_records
+                # is parallel to contexts (same length, same order).
+                prompts = render_prompts(prompt_records[i - 1])
+                record = generator.generate(context, prompts)
                 record_dict = _ollama_record_to_jsonl_dict(
                     record, custom_id=custom_id,
                 )
@@ -1595,14 +1603,30 @@ def _generate_downstream_artifacts(
     )
 
 
-def generate_batch_requests(contexts: list[ProposalContext], config: ExperimentConfig) -> list[BatchRequestData]:
+def generate_batch_requests(
+    contexts: list[ProposalContext],
+    prompt_records: list[PromptRecord],
+    config: ExperimentConfig,
+) -> list[BatchRequestData]:
+    """Build OpenAI batch requests from already-rendered prompts.
+
+    ``prompt_records`` is parallel to ``contexts`` (typically the output
+    of :func:`build_prompt_records`).
+    """
     if not contexts:
         return []
-    
-    generator: BatchProposalGenerator = instantiate(config.llm)
-    
-    # Generate batch requests
-    return generator.generate_batch_requests(contexts)
+
+    generator = OpenAIBatchGenerator(
+        model=config.llm.model,
+        temperature=config.llm.temperature,
+        max_tokens=config.llm.max_tokens,
+        use_structured_output=config.llm.use_structured_output,
+    )
+    pairs = [
+        (ctx, render_prompts(rec))
+        for ctx, rec in zip(contexts, prompt_records, strict=True)
+    ]
+    return generator.build_requests(pairs)
 
 
 

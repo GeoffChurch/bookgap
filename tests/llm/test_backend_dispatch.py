@@ -260,6 +260,33 @@ def _make_mock_config(*, backend: LLMBackend, num_gaps: int = 1) -> Any:
     )
 
 
+def _make_prompt_record(context: ProposalContext) -> "PromptRecord":
+    """Build a PromptRecord parallel to a ProposalContext.
+
+    Tests that drive `_run_ollama_local_path` (or `_run_openai_batch_path`)
+    directly must pass `prompt_records` parallel to `contexts`; the
+    orchestrator does this via `build_prompt_records` in production.
+    """
+    from bookgap.llm.identifiers import build_gap_proposal_id
+    from bookgap.llm.prompt_record import PromptRecord
+
+    return PromptRecord(
+        custom_id=build_gap_proposal_id(
+            gap_idx=context.gap_idx, topic_id=context.topic_id,
+        ),
+        topic_id=context.topic_id,
+        topic_name=context.topic_name,
+        gap_idx=context.gap_idx,
+        requested_num_prompt_articles=context.requested_num_prompt_articles,
+        requested_num_prompt_books=context.requested_num_prompt_books,
+        sampled_articles=[],
+        covering_books=[],
+        backend="ollama_local",
+        model="test:1b",
+        generation_params={"temperature": 0.2},
+    )
+
+
 def _make_gap(custom_id_topic: str, gap_idx: int) -> tuple[GapWithContext, ProposalContext]:
     books = cast(SubCloud, _StubSubCloud(np.eye(3, dtype=np.float32)))
     articles = cast(
@@ -463,6 +490,7 @@ class TestOllamaResumability:
         gap1, ctx1 = _make_gap("topic-a", 0)
         gap2, ctx2 = _make_gap("topic-b", 1)
         contexts = [ctx1, ctx2]
+        prompt_records = [_make_prompt_record(c) for c in contexts]
         gaps = [gap1, gap2]
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
@@ -505,6 +533,7 @@ class TestOllamaResumability:
                     state_manager=state,
                     gaps=gaps,
                     contexts=contexts,
+                    prompt_records=prompt_records,
                     context_paths=[],
                 )
 
@@ -600,6 +629,7 @@ class TestStreamingCoverageProgress:
         gap1, ctx1 = _make_gap("topic-a", 0)
         gap2, ctx2 = _make_gap("topic-b", 1)
         contexts = [ctx1, ctx2]
+        prompt_records = [_make_prompt_record(c) for c in contexts]
         gaps = [gap1, gap2]
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
@@ -641,6 +671,7 @@ class TestStreamingCoverageProgress:
                     state_manager=state,
                     gaps=gaps,
                     contexts=contexts,
+                    prompt_records=prompt_records,
                     context_paths=[],
                 )
 
@@ -694,6 +725,7 @@ class TestStreamingCoverageProgress:
         gap1, ctx1 = _make_gap("topic-a", 0)
         gap2, ctx2 = _make_gap("topic-b", 1)
         contexts = [ctx1, ctx2]
+        prompt_records = [_make_prompt_record(c) for c in contexts]
         gaps = [gap1, gap2]
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
@@ -731,6 +763,7 @@ class TestStreamingCoverageProgress:
                     state_manager=state,
                     gaps=gaps,
                     contexts=contexts,
+                    prompt_records=prompt_records,
                     context_paths=[],
                 )
 
@@ -774,6 +807,7 @@ class TestStreamingCoverageProgress:
         gap1, ctx1 = _make_gap("topic-a", 0)
         gap2, ctx2 = _make_gap("topic-b", 1)
         contexts = [ctx1, ctx2]
+        prompt_records = [_make_prompt_record(c) for c in contexts]
         gaps = [gap1, gap2]
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
@@ -809,6 +843,7 @@ class TestStreamingCoverageProgress:
                     state_manager=state,
                     gaps=gaps,
                     contexts=contexts,
+                    prompt_records=prompt_records,
                     context_paths=[],
                 )
 
