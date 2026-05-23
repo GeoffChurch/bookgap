@@ -110,6 +110,7 @@ def tex(text: str, max_chars: int | None = None) -> str:
 
 _PROMPT_TITLE_MAX = 80
 _PROMPT_ABSTRACT_MAX = 200
+_BOOK_ABSTRACT_MAX = 600  # highest-coverage book abstract (one per topic)
 
 
 def emit_topic_page(
@@ -151,9 +152,9 @@ def emit_topic_page(
     out.append("\\paragraph{Prompt articles (the ten randomly sampled from the gap).}")
     out.append("\\begin{enumerate}\\setlength\\itemsep{0.25em}")
     for a in articles:
+        url_part = f" (\\url{{{a.openalex_id}}})" if a.openalex_id else ""
         out.append(
-            f"\\item \\textbf{{{tex(a.display_name, _PROMPT_TITLE_MAX)}}} "
-            f"(\\url{{{a.openalex_id}}})"
+            f"\\item \\textbf{{{tex(a.display_name, _PROMPT_TITLE_MAX)}}}{url_part}"
         )
         out.append("")
         out.append(tex(a.abstract, _PROMPT_ABSTRACT_MAX))
@@ -163,14 +164,14 @@ def emit_topic_page(
     if top_book is None:
         out.append("\\textit{No books found in this topic.}")
     else:
+        url_part = f"\\url{{{top_book.openalex_id}}}; " if top_book.openalex_id else ""
         out.append(
             f"\\textbf{{{tex(top_book.display_name)}}} "
-            f"(\\url{{{top_book.openalex_id}}}; "
-            f"covers {top_book.articles_covered} articles, "
+            f"({url_part}covers {top_book.articles_covered} articles, "
             f"{top_book.fraction_covered * 100:.2f}\\% of the gap)"
         )
         out.append("")
-        out.append(tex(top_book.abstract))
+        out.append(tex(top_book.abstract, _BOOK_ABSTRACT_MAX))
 
     out.append("\\endgroup")
     return "\n".join(out)
@@ -221,6 +222,11 @@ def main() -> None:
                 f"(expected {prompt_path} and {ctx_path})"
             )
         prompt = read_prompt_record(prompt_path)
+        if prompt.gap_idx != gap_idx:
+            raise SystemExit(
+                f"prompt record for {topic_id} has gap_idx={prompt.gap_idx}, "
+                f"expected {gap_idx}"
+            )
         context = read_context_record(ctx_path)
         top_book = context.covering_books[0] if context.covering_books else None
 
