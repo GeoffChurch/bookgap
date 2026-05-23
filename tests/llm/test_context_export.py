@@ -54,20 +54,32 @@ def _proposal_analysis_for(g: GapWithContext) -> dict:
     2 are covering books — the proposal_analysis just needs embeddings for the
     covering books in that order).
     """
-    return {
-        "gap_article_embeddings": np.array([
-            [0.0, 0.1, 0.0],
-            [0.0, -0.1, 0.0],
-            [1.0, 0.1, 0.0],
-            [1.0, -0.1, 0.0],
-            [0.5, 0.5, 0.0],
+    gap_articles = np.array([
+        [0.0, 0.1, 0.0],
+        [0.0, -0.1, 0.0],
+        [1.0, 0.1, 0.0],
+        [1.0, -0.1, 0.0],
+        [0.5, 0.5, 0.0],
+    ], dtype=np.float32)
+    # All topic articles: a superset of the gap articles. The PCA in
+    # compute_local_projection_2d fits on this set; minimum size 2 to
+    # produce a well-defined plane.
+    all_topic_articles = np.vstack([
+        gap_articles,
+        np.array([
+            [0.5, 0.0, 0.0],
+            [0.2, 0.2, 0.1],
         ], dtype=np.float32),
+    ])
+    return {
+        "gap_article_embeddings": gap_articles,
         "book_embeddings": np.array([
             [0.0, 0.0, 0.0],   # book_0 (covering book #1, near first 2 articles)
             [3.0, 0.0, 0.0],   # book_1 (covering book #2)
         ], dtype=np.float32),
         "proposal_embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32),
         "seed_embedding": np.array([0.5, 0.0, 0.0], dtype=np.float32),
+        "all_topic_article_embeddings": all_topic_articles,
         "gap_radius": 1.2,
     }
 
@@ -90,8 +102,9 @@ def test_save_gap_context_writes_v2_record(tmp_path: Path) -> None:
     assert 0.0 <= rec.proposal_coverage.fraction_covered <= 1.0
     # local_projection_2d populated and well-formed
     assert rec.local_projection_2d.gap_radius == 1.2
-    assert rec.local_projection_2d.seed.x == 0.0
-    assert rec.local_projection_2d.seed.y == 0.0
+    # Seed projects to a finite (x, y) under PCA — no longer pinned to origin.
+    assert np.isfinite(rec.local_projection_2d.seed.x)
+    assert np.isfinite(rec.local_projection_2d.seed.y)
     assert len(rec.local_projection_2d.gap_articles) == 5
     assert len(rec.local_projection_2d.gap_articles_flipped_to_proposal) == 5
     # every book has articles_covered_after_proposal populated

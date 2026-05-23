@@ -1625,7 +1625,8 @@ def _build_proposal_analyses(
 
         gap_dists_idxs = g.gap.get_dists_idxs()
         gap_article_indices = gap_dists_idxs.idxs[:g.gap_size]
-        article_embs = g.articles.embeddings()[gap_article_indices]
+        all_topic_article_embs = g.articles.embeddings()
+        article_embs = all_topic_article_embs[gap_article_indices]
 
         # Books, ordered to match sorted_book_items in _build_context_record.
         raw_coverage = group_gap_articles_by_covering_books(g.gap)
@@ -1637,7 +1638,7 @@ def _build_proposal_analyses(
         book_embs = g.books.embeddings()[book_indices_in_order]
 
         # Seed = the gap's center article = idxs[0] (closest to gap center).
-        seed_emb = g.articles.embeddings()[int(gap_dists_idxs.idxs[0])]
+        seed_emb = all_topic_article_embs[int(gap_dists_idxs.idxs[0])]
 
         # Gap radius: KBallGap doesn't expose its radius directly, but by
         # construction the gap is exactly the set of ambient points
@@ -1654,6 +1655,7 @@ def _build_proposal_analyses(
             book_embeddings=book_embs,
             proposal_embedding=proposal_emb,
             seed_embedding=seed_emb,
+            all_topic_article_embeddings=all_topic_article_embs,
             gap_radius=gap_radius,
         )
     return out

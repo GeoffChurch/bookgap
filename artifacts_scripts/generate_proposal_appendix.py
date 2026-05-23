@@ -201,36 +201,50 @@ def _render_bar_chart_tikz(
 _SCATTER_HALF_SIDE_CM = 3.5  # half of the plot box width in cm
 
 
-def _render_aep_scatter_tikz(projection: LocalProjection2D) -> str:
-    """TikZ scatter of seed + gap articles + books + proposal in AEP
-    coordinates. ``projection`` is a LocalProjection2D from prompt_record.
+def _render_projection_scatter_tikz(
+    projection: LocalProjection2D,
+    book_coverages: list[int],
+) -> str:
+    """TikZ scatter of gap articles + books + proposal in PCA-on-all-articles
+    coordinates. ``book_coverages`` is parallel to ``projection.books`` and
+    provides each book's in-gap article count, used to set per-book opacity
+    (more covered articles → more opaque). The seed marker is omitted —
+    seeds are a gap-detection provenance artifact, not visually informative.
     """
-    # Find the bounding extent across all rendered points.
     all_xs = (
         [p.x for p in projection.gap_articles]
         + [p.x for p in projection.books]
-        + [projection.proposal.x, 0.0]
+        + [projection.proposal.x]
     )
     all_ys = (
         [p.y for p in projection.gap_articles]
         + [p.y for p in projection.books]
-        + [projection.proposal.y, 0.0]
+        + [projection.proposal.y]
     )
     extent = max(
         abs(min(all_xs)), abs(max(all_xs)),
         abs(min(all_ys)), abs(max(all_ys)),
-        projection.gap_radius * 1.1,
+        1e-6,
     )
     scale = _SCATTER_HALF_SIDE_CM / extent  # cm per unit
 
     out: list[str] = []
     out.append("\\begin{tikzpicture}")
-    # Dashed gap circle.
-    r = projection.gap_radius * scale
-    out.append(
-        f"\\draw[gray, thick, dashed] (0,0) circle ({r:.3f}cm);"
-    )
-    # Gap articles: subdued or green.
+    # Books FIRST so articles render on top (a dense gap-article cloud
+    # is the main thing; books should peek through where they overlap).
+    # Per-book opacity: scale from 0.15 (no in-gap coverage) up to 1.0
+    # (the topic's top-covering book). Books that cover nothing are
+    # nearly invisible — exactly the visual weight they deserve.
+    if projection.books:
+        max_count = max(book_coverages) if book_coverages else 0
+        for pt, count in zip(projection.books, book_coverages, strict=True):
+            alpha = 0.15 + 0.85 * (count / max_count) if max_count > 0 else 0.15
+            out.append(
+                f"\\node[blue, opacity={alpha:.3f}, font=\\scriptsize] at "
+                f"({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) {{$\\times$}};"
+            )
+    # Gap articles: subdued grey for those still covered by an existing
+    # book, green for those that flip to the proposal's Voronoi cell.
     for pt, flipped in zip(
         projection.gap_articles,
         projection.gap_articles_flipped_to_proposal,
@@ -241,21 +255,11 @@ def _render_aep_scatter_tikz(projection: LocalProjection2D) -> str:
             f"\\fill[{color}] ({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) "
             f"circle (0.5pt);"
         )
-    # Books: blue x outside the circle (typically).
-    for pt in projection.books:
-        out.append(
-            f"\\node[blue, font=\\scriptsize] at "
-            f"({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) {{$\\times$}};"
-        )
-    # Proposal: green star.
+    # Proposal on top.
     out.append(
         f"\\node[green!60!black, font=\\bfseries] at "
         f"({projection.proposal.x * scale:.4f}cm,"
         f"{projection.proposal.y * scale:.4f}cm) {{$\\star$}};"
-    )
-    # Seed: orange star at origin.
-    out.append(
-        "\\node[orange!80!black, font=\\bfseries] at (0cm,0cm) {$\\star$};"
     )
     out.append("\\end{tikzpicture}")
     return "\n".join(out)
@@ -311,7 +315,10 @@ def emit_topic_page(
         proposal_post_count=proposal_coverage.articles_covered,
     ))
     out.append("\\quad")
-    out.append(_render_aep_scatter_tikz(local_projection))
+    out.append(_render_projection_scatter_tikz(
+        local_projection,
+        book_coverages=[b.articles_covered for b in covering_books_for_chart],
+    ))
     out.append("\\end{center}")
     out.append("\\par\\medskip")
 

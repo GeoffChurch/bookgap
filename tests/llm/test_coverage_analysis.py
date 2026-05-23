@@ -1,4 +1,4 @@
-"""Tests for post-proposal coverage analysis + AEP projection."""
+"""Tests for post-proposal coverage analysis + PCA-on-all-articles projection."""
 from __future__ import annotations
 
 import numpy as np
@@ -14,8 +14,6 @@ from bookgap.llm.coverage_analysis import (
 
 def test_post_proposal_coverage_handful_synthetic():
     """4 gap articles, 2 books, 1 proposal placed near 2 of the articles."""
-    # In 3D: place 2 articles near book_0 (at origin), 2 near where the
-    # proposal will sit (at +e_0), books along e_0 axis.
     gap_articles = np.array([
         [0.0, 0.1, 0.0],   # nearest to book_0
         [0.0, -0.1, 0.0],  # nearest to book_0
@@ -23,8 +21,8 @@ def test_post_proposal_coverage_handful_synthetic():
         [1.0, -0.1, 0.0],  # nearest to proposal
     ], dtype=np.float32)
     books = np.array([
-        [0.0, 0.0, 0.0],   # book_0
-        [3.0, 0.0, 0.0],   # book_1, far away
+        [0.0, 0.0, 0.0],
+        [3.0, 0.0, 0.0],
     ], dtype=np.float32)
     proposal = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
@@ -70,101 +68,116 @@ def test_post_proposal_coverage_all_flips():
     assert list(result.per_book_articles_covered_after) == [0]
 
 
-def test_aep_preserves_radial_distance_exactly():
-    """Each point's 2D distance from origin equals its ND distance from seed."""
+def _project_args(rng, n_topic_articles=50, n_gap=10, n_books=5, d=8):
+    """Shared synthetic-input builder."""
+    all_articles = rng.normal(size=(n_topic_articles, d)).astype(np.float32)
+    gap_indices = rng.choice(n_topic_articles, size=n_gap, replace=False)
+    gap_articles = all_articles[gap_indices]
+    seed = all_articles[gap_indices[0]]  # seed is one of the gap articles
+    books = rng.normal(size=(n_books, d)).astype(np.float32) * 1.5
+    proposal = rng.normal(size=d).astype(np.float32)
+    return dict(
+        all_topic_article_embeddings=all_articles,
+        seed_embedding=seed,
+        gap_article_embeddings=gap_articles,
+        book_embeddings=books,
+        proposal_embedding=proposal,
+    )
+
+
+def test_pca_projection_returns_correct_shapes():
+    """LocalProjection2DResult has the expected shapes for each entity."""
     rng = np.random.default_rng(seed=42)
-    seed = rng.normal(size=10).astype(np.float32)
-    gap_articles = seed + 0.3 * rng.normal(size=(20, 10)).astype(np.float32)
-    books = seed + 1.5 * rng.normal(size=(5, 10)).astype(np.float32)
-    proposal = seed + 0.4 * rng.normal(size=10).astype(np.float32)
-    green_mask = np.array([True] * 5 + [False] * 15)
+    args = _project_args(rng, n_topic_articles=50, n_gap=10, n_books=5, d=8)
+    result = compute_local_projection_2d(**args)
+    assert isinstance(result, LocalProjection2DResult)
+    assert result.seed_2d.shape == (2,)
+    assert result.proposal_2d.shape == (2,)
+    assert result.gap_articles_2d.shape == (10, 2)
+    assert result.books_2d.shape == (5, 2)
 
-    result = compute_local_projection_2d(
-        seed_embedding=seed,
-        gap_article_embeddings=gap_articles,
-        green_mask=green_mask,
-        book_embeddings=books,
-        proposal_embedding=proposal,
+
+def test_pca_projection_is_norm_contracting():
+    """Linear orthonormal projection: 2D distance from origin ≤ ND distance
+    from the all-article mean."""
+    rng = np.random.default_rng(seed=7)
+    args = _project_args(rng, n_topic_articles=100, n_gap=20, n_books=10, d=12)
+    result = compute_local_projection_2d(**args)
+    center = args["all_topic_article_embeddings"].mean(axis=0)
+
+    nd_gap = np.linalg.norm(args["gap_article_embeddings"] - center, axis=1)
+    twod_gap = np.linalg.norm(result.gap_articles_2d, axis=1)
+    # 2D distance is the projection magnitude — must be ≤ original distance.
+    assert np.all(twod_gap <= nd_gap + 1e-5)
+
+    nd_book = np.linalg.norm(args["book_embeddings"] - center, axis=1)
+    twod_book = np.linalg.norm(result.books_2d, axis=1)
+    assert np.all(twod_book <= nd_book + 1e-5)
+
+
+def test_pca_projection_captures_dominant_directions():
+    """If the article cloud has its variance concentrated along a known
+    direction, PCA axis 0 should align with that direction."""
+    d = 10
+    n = 100
+    rng = np.random.default_rng(seed=3)
+    # Strongly correlated along e_0; weak noise elsewhere.
+    main_axis = np.zeros(d, dtype=np.float32)
+    main_axis[0] = 1.0
+    weights = rng.normal(size=(n, 1)).astype(np.float32) * 5.0
+    noise = rng.normal(size=(n, d)).astype(np.float32) * 0.01
+    all_articles = weights * main_axis + noise
+
+    args = dict(
+        all_topic_article_embeddings=all_articles,
+        seed_embedding=all_articles[0],
+        gap_article_embeddings=all_articles[:5],
+        book_embeddings=rng.normal(size=(3, d)).astype(np.float32),
+        proposal_embedding=rng.normal(size=d).astype(np.float32),
+    )
+    result = compute_local_projection_2d(**args)
+    # The article variance along the projection's first axis should be
+    # essentially the full e_0 variance; the second axis captures noise.
+    var_axis_0 = np.var(result.gap_articles_2d[:, 0])
+    var_axis_1 = np.var(result.gap_articles_2d[:, 1])
+    # Articles vary by ~25× on e_0 (weights * 5), so axis 0 should dominate.
+    assert var_axis_0 > var_axis_1 * 100, (
+        f"PCA axis 0 should capture dominant article variance; "
+        f"var_axis_0={var_axis_0:.4f}, var_axis_1={var_axis_1:.4f}"
     )
 
-    nd_radii = np.linalg.norm(gap_articles - seed, axis=1)
-    twod_radii = np.linalg.norm(result.gap_articles_2d, axis=1)
-    np.testing.assert_allclose(twod_radii, nd_radii, atol=1e-5)
 
-    nd_book_radii = np.linalg.norm(books - seed, axis=1)
-    twod_book_radii = np.linalg.norm(result.books_2d, axis=1)
-    np.testing.assert_allclose(twod_book_radii, nd_book_radii, atol=1e-5)
+def test_pca_projection_centered_at_article_mean():
+    """Centering at the all-article mean: the article cloud's projection
+    is centered around the 2D origin."""
+    rng = np.random.default_rng(seed=11)
+    args = _project_args(rng, n_topic_articles=200, n_gap=20, n_books=5, d=10)
+    result = compute_local_projection_2d(**args)
+    # Project all articles via the same axes to check center.
+    center = args["all_topic_article_embeddings"].mean(axis=0)
+    centered = args["all_topic_article_embeddings"] - center
+    S = centered.T @ centered
+    from scipy.linalg import eigh
+    _, eigvecs = eigh(S)
+    axes = eigvecs[:, -2:][:, ::-1]
+    all_2d = (args["all_topic_article_embeddings"] - center) @ axes
+    np.testing.assert_allclose(all_2d.mean(axis=0), [0.0, 0.0], atol=1e-5)
 
 
-def test_aep_makes_greens_compact_when_possible():
-    """Greens placed at +e_0 direction; non-greens scattered. After GEP,
-    greens should cluster at similar 2D angles."""
-    rng = np.random.default_rng(seed=0)
-    seed = np.zeros(10, dtype=np.float32)
-    # Greens: small noise around +e_0 direction
-    greens = np.tile(np.eye(1, 10, 0).astype(np.float32), (10, 1)) \
-             + 0.05 * rng.normal(size=(10, 10)).astype(np.float32)
-    # Non-greens: scattered in other directions
-    non_greens = rng.normal(size=(10, 10)).astype(np.float32)
-    gap_articles = np.vstack([greens, non_greens])
-    green_mask = np.array([True] * 10 + [False] * 10)
-    books = rng.normal(size=(3, 10)).astype(np.float32) * 2.0
-    proposal = np.eye(1, 10, 0).ravel().astype(np.float32)
-
-    result = compute_local_projection_2d(
-        seed_embedding=seed,
-        gap_article_embeddings=gap_articles,
-        green_mask=green_mask,
-        book_embeddings=books,
-        proposal_embedding=proposal,
+def test_pca_projection_handles_small_article_set():
+    """3 articles, 1 book, 1 proposal — projection still produces valid output."""
+    rng = np.random.default_rng(seed=13)
+    args = dict(
+        all_topic_article_embeddings=rng.normal(size=(3, 6)).astype(np.float32),
+        seed_embedding=rng.normal(size=6).astype(np.float32),
+        gap_article_embeddings=rng.normal(size=(2, 6)).astype(np.float32),
+        book_embeddings=rng.normal(size=(1, 6)).astype(np.float32),
+        proposal_embedding=rng.normal(size=6).astype(np.float32),
     )
-
-    # Green angles should be more concentrated than non-green angles
-    green_angles = np.arctan2(result.gap_articles_2d[:10, 1],
-                               result.gap_articles_2d[:10, 0])
-    non_green_angles = np.arctan2(result.gap_articles_2d[10:, 1],
-                                   result.gap_articles_2d[10:, 0])
-    # Circular variance — lower for greens
-    green_cv = 1 - np.abs(np.exp(1j * green_angles).mean())
-    non_green_cv = 1 - np.abs(np.exp(1j * non_green_angles).mean())
-    assert green_cv < non_green_cv, (
-        f"greens should cluster more than non-greens; "
-        f"green_cv={green_cv:.3f}, non_green_cv={non_green_cv:.3f}"
-    )
-
-
-def test_aep_falls_back_to_pca_when_no_greens():
-    """When green_mask is all False, the GEP is degenerate; fall back
-    to PCA of (gap_articles ∪ books ∪ proposal)."""
-    rng = np.random.default_rng(seed=1)
-    seed = np.zeros(8, dtype=np.float32)
-    gap_articles = 0.3 * rng.normal(size=(15, 8)).astype(np.float32)
-    green_mask = np.zeros(15, dtype=bool)
-    books = rng.normal(size=(4, 8)).astype(np.float32)
-    proposal = rng.normal(size=8).astype(np.float32)
-
-    # Should not raise:
-    result = compute_local_projection_2d(
-        seed_embedding=seed,
-        gap_article_embeddings=gap_articles,
-        green_mask=green_mask,
-        book_embeddings=books,
-        proposal_embedding=proposal,
-    )
-    # Radial preservation still holds
-    nd = np.linalg.norm(gap_articles - seed, axis=1)
-    twod = np.linalg.norm(result.gap_articles_2d, axis=1)
-    np.testing.assert_allclose(twod, nd, atol=1e-5)
-
-
-def test_aep_seed_is_at_origin():
-    """Seed always projects to (0, 0)."""
-    seed = np.array([0.3, 0.4, 0.5], dtype=np.float32)
-    result = compute_local_projection_2d(
-        seed_embedding=seed,
-        gap_article_embeddings=np.array([[0.5, 0.5, 0.5]], dtype=np.float32),
-        green_mask=np.array([True]),
-        book_embeddings=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
-        proposal_embedding=np.array([0.4, 0.4, 0.5], dtype=np.float32),
-    )
-    assert result.seed_2d.tolist() == [0.0, 0.0]
+    result = compute_local_projection_2d(**args)
+    assert result.gap_articles_2d.shape == (2, 2)
+    assert result.books_2d.shape == (1, 2)
+    # No NaN/inf
+    for arr in (result.seed_2d, result.proposal_2d,
+                result.gap_articles_2d, result.books_2d):
+        assert np.all(np.isfinite(arr))

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import eigh, LinAlgError
+from scipy.linalg import eigh
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,7 @@ def compute_post_proposal_coverage(
 
 @dataclass(frozen=True)
 class LocalProjection2DResult:
-    seed_2d: NDArray[np.float64]            # shape (2,), always [0., 0.]
+    seed_2d: NDArray[np.float64]            # shape (2,) — seed article's PCA projection
     proposal_2d: NDArray[np.float64]        # shape (2,)
     gap_articles_2d: NDArray[np.float64]    # shape (N_gap, 2)
     books_2d: NDArray[np.float64]           # shape (N_books, 2)
@@ -69,123 +69,43 @@ class LocalProjection2DResult:
 
 def compute_local_projection_2d(
     *,
+    all_topic_article_embeddings: NDArray[np.floating],
     seed_embedding: NDArray[np.floating],
     gap_article_embeddings: NDArray[np.floating],
-    green_mask: NDArray[np.bool_],
     book_embeddings: NDArray[np.floating],
     proposal_embedding: NDArray[np.floating],
 ) -> LocalProjection2DResult:
-    """Azimuthal equidistant projection from the seed, with angular
-    axes (u₁, u₂) chosen by the green-vs-total GEP:
+    """2D PCA on all topic articles; project the seed, gap articles, books,
+    and proposal into the resulting plane.
 
-        maximize  trace(W^T S_green W) / trace(W^T S_total W)
+    Articles are the natural reference cloud — they're the densest population
+    in the topic and capture the dominant directions of within-topic
+    semantic variation. Books and the proposal then land relative to that
+    cloud, which is exactly the relationship the appendix wants to convey.
 
-    i.e. pick the directions where the greens carry the MOST variance
-    relative to the rest. Under AEP, this is what makes greens cluster
-    angularly: their lateral projections share a consistent direction
-    (their dominant green axis), so after radial rescaling their angles
-    stay tight. The non-greens, having little aligned variance on these
-    axes, project to noisy lateral directions and spread out in angle.
-
-    (Note: the plan's prose says "maximize total / green", but that
-    actually disperses greens angularly under AEP — small lateral
-    magnitudes get amplified by radial rescaling and their directions
-    are dominated by noise. The objective implemented here is what the
-    accompanying test specifies, which encodes the stated visual goal
-    of green angular compactness.)
-
-    Falls back to PCA on the total scatter if no green articles exist
-    or the green scatter is too low-rank.
-
-    Degenerate points: a point whose lateral projection onto (u₁, u₂) is
-    zero (length < 1e-12) cannot be assigned an angle and is placed at
-    the origin (0, 0). It will be visually indistinguishable from the
-    seed in any scatter plot — callers that care should filter or label
-    such points. For typical high-D embeddings with random book/article
-    positions this case is vanishingly rare.
+    Centering: at the all-article mean (the natural origin of the article
+    cloud). PCA from ``scipy.linalg.eigh`` on a symmetric PSD matrix returns
+    Euclidean-orthonormal eigenvectors, so 2D distances are honest
+    lower-bounds for ND distances along the chosen plane.
     """
+    assert all_topic_article_embeddings.ndim == 2
     assert seed_embedding.ndim == 1
     assert gap_article_embeddings.ndim == 2
     assert book_embeddings.ndim == 2
     assert proposal_embedding.ndim == 1
 
-    # Center everything at the seed.
-    gap_c = gap_article_embeddings - seed_embedding
-    books_c = book_embeddings - seed_embedding
-    proposal_c = proposal_embedding - seed_embedding
+    center = all_topic_article_embeddings.mean(axis=0)
+    centered = all_topic_article_embeddings - center
+    S = centered.T @ centered
+    _, eigvecs = eigh(S)
+    axes = eigvecs[:, -2:][:, ::-1].astype(np.float64)
 
-    # Build M_total: all displayed entities (gap articles + books + proposal).
-    M_total = np.vstack([gap_c, books_c, proposal_c[None, :]])
-    # S_total: outer product (no scaling needed — only ratios matter).
-    S_total = M_total.T @ M_total
-
-    # Pick angular axes (u1, u2) ∈ ℝ^(D × 2).
-    u1u2 = _choose_angular_axes(
-        S_total=S_total,
-        M_green=gap_c[green_mask] if green_mask.any() else None,
-    )
-
-    def _aep(centered: NDArray[np.floating]) -> NDArray[np.float64]:
-        """Apply AEP to centered (i.e. x − seed) vectors."""
-        # 2D lateral projection.
-        lateral = centered @ u1u2  # shape (N, 2)
-        # Radial: ND distance from seed.
-        rho = np.linalg.norm(centered, axis=-1)  # shape (N,) or scalar
-        # Angles.
-        lateral_norms = np.linalg.norm(lateral, axis=-1)
-        # Avoid /0: where lateral is zero, set angle to 0 (degenerate fallback).
-        safe = lateral_norms > 1e-12
-        scaled = np.zeros_like(lateral, dtype=np.float64)
-        scaled[safe] = (lateral[safe].astype(np.float64)
-                        * (rho[safe] / lateral_norms[safe])[:, None])
-        # For non-safe points, leave at origin (will sit at the seed, which is
-        # honest: their entire deviation from the seed lies in directions we
-        # cannot show).
-        return scaled
+    def _project(x: NDArray[np.floating]) -> NDArray[np.float64]:
+        return ((x - center) @ axes).astype(np.float64)
 
     return LocalProjection2DResult(
-        seed_2d=np.array([0.0, 0.0]),
-        proposal_2d=_aep(proposal_c[None, :])[0],
-        gap_articles_2d=_aep(gap_c),
-        books_2d=_aep(books_c),
+        seed_2d=_project(seed_embedding[None, :])[0],
+        proposal_2d=_project(proposal_embedding[None, :])[0],
+        gap_articles_2d=_project(gap_article_embeddings),
+        books_2d=_project(book_embeddings),
     )
-
-
-def _choose_angular_axes(
-    *,
-    S_total: NDArray[np.floating],
-    M_green: NDArray[np.floating] | None,
-) -> NDArray[np.float64]:
-    """Solve `S_green v = λ S_total v` and return the top-2 generalized
-    eigenvectors as columns (i.e. directions of largest green variance
-    per unit total variance). Falls back to PCA of S_total if M_green is
-    None, has fewer than 2 rows (the top-2 generalized eigenvectors need
-    rank ≥ 2 of S_green, which requires at least 2 green points), or the
-    GEP fails numerically.
-    """
-    d = S_total.shape[0]
-    if M_green is None or M_green.shape[0] < 2:
-        # Degenerate: PCA of S_total.
-        return _top2_eigenvectors_psd(S_total)
-    S_green = M_green.T @ M_green
-    # Add small ridge to S_total for numerical stability (it appears as
-    # the RHS metric matrix in the GEP and must be SPD).
-    ridge = max(1e-8, 1e-6 * float(np.trace(S_total)) / d)
-    S_total_reg = S_total + ridge * np.eye(d)
-    try:
-        _, eigvecs = eigh(a=S_green, b=S_total_reg)
-        # eigh returns eigvals in ascending order. We want the LARGEST
-        # (largest ratio of green-scatter to total-scatter along v).
-        top2 = eigvecs[:, -2:]
-        # Reorder so column 0 corresponds to the largest eigenvalue.
-        top2 = top2[:, ::-1].astype(np.float64)
-        return top2
-    except LinAlgError:
-        # Fall back to PCA.
-        return _top2_eigenvectors_psd(S_total)
-
-
-def _top2_eigenvectors_psd(S: NDArray[np.floating]) -> NDArray[np.float64]:
-    _, eigvecs = eigh(S)
-    top2 = eigvecs[:, -2:][:, ::-1].astype(np.float64)
-    return top2

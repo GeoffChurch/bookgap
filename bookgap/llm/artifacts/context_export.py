@@ -129,6 +129,9 @@ def _build_context_record(
     book_embeddings = np.asarray(analysis["book_embeddings"])
     proposal_embedding = np.asarray(analysis["proposal_embedding"])
     seed_embedding = np.asarray(analysis["seed_embedding"])
+    all_topic_article_embeddings = np.asarray(
+        analysis["all_topic_article_embeddings"]
+    )
     gap_radius = float(analysis["gap_radius"])
 
     post = compute_post_proposal_coverage(
@@ -156,25 +159,28 @@ def _build_context_record(
         fraction_covered=post.proposal_fraction_covered,
     )
 
-    # Compute the AEP projection. The green mask: per-article flip
-    # indicator. Recompute since ``post`` gives only aggregate counts.
+    # Per-article flip indicator for the green mask (which articles flip
+    # to the proposal once it joins the book set). Recompute since
+    # ``post`` only carries aggregate counts.
     augmented = np.vstack([book_embeddings, proposal_embedding[None, :]])
     diffs = gap_article_embeddings[:, None, :] - augmented[None, :, :]
     sq = np.einsum("nbd,nbd->nb", diffs, diffs)
     nearest = np.argmin(sq, axis=1)
     green_mask = nearest == book_embeddings.shape[0]
 
+    # 2D PCA on all topic articles. Books, proposal, seed, and gap
+    # articles project into the resulting plane.
     proj = compute_local_projection_2d(
+        all_topic_article_embeddings=all_topic_article_embeddings,
         seed_embedding=seed_embedding,
         gap_article_embeddings=gap_article_embeddings,
-        green_mask=green_mask,
         book_embeddings=book_embeddings,
         proposal_embedding=proposal_embedding,
     )
 
     local_projection_2d = LocalProjection2D(
         gap_radius=gap_radius,
-        seed=Point2D(x=0.0, y=0.0),
+        seed=Point2D(x=float(proj.seed_2d[0]), y=float(proj.seed_2d[1])),
         proposal=Point2D(x=float(proj.proposal_2d[0]), y=float(proj.proposal_2d[1])),
         gap_articles=[Point2D(x=float(p[0]), y=float(p[1])) for p in proj.gap_articles_2d],
         gap_articles_flipped_to_proposal=[bool(m) for m in green_mask],
