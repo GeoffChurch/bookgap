@@ -1,5 +1,9 @@
 """Round-trip + filename-convention tests for ContextRecord/PromptRecord."""
+import json
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from bookgap.llm.prompt_record import (
     ContextRecord, PromptRecord, ArticleEntry, BookEntry,
@@ -82,3 +86,39 @@ def test_context_record_round_trip(tmp_path: Path) -> None:
 def test_record_filename_convention() -> None:
     assert record_filename(0, "T10020") == "gap_0_topic_T10020.json"
     assert record_filename(3, "T13567") == "gap_3_topic_T13567.json"
+
+
+def test_context_record_with_no_furthest_article(tmp_path: Path) -> None:
+    """A gap of size 1 has no 'furthest' entry. The None branch must
+    round-trip cleanly."""
+    rec = replace(_sample_context_record(), furthest_article=None)
+    write_context_record(tmp_path, rec)
+    loaded = read_context_record(
+        tmp_path / record_filename(rec.gap_idx, rec.topic_id)
+    )
+    assert loaded == rec
+    assert loaded.furthest_article is None
+
+
+def test_prompt_record_with_empty_lists(tmp_path: Path) -> None:
+    """Empty sampled_articles and covering_books round-trip cleanly
+    (e.g., topics with no books)."""
+    rec = replace(_sample_prompt_record(),
+                  sampled_articles=[], covering_books=[])
+    write_prompt_record(tmp_path, rec)
+    loaded = read_prompt_record(
+        tmp_path / record_filename(rec.gap_idx, rec.topic_id)
+    )
+    assert loaded == rec
+
+
+def test_read_rejects_mismatched_schema_version(tmp_path: Path) -> None:
+    """Schema-version mismatch must raise rather than silently coercing."""
+    rec = _sample_prompt_record()
+    write_prompt_record(tmp_path, rec)
+    target = tmp_path / record_filename(rec.gap_idx, rec.topic_id)
+    d = json.loads(target.read_text())
+    d["schema_version"] = 999
+    target.write_text(json.dumps(d))
+    with pytest.raises(ValueError, match="schema_version"):
+        read_prompt_record(target)

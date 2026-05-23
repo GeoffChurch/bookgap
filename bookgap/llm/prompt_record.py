@@ -70,7 +70,6 @@ class BookCoverage:
 
 @dataclass(frozen=True)
 class ContextRecord:
-    schema_version: int
     topic_id: str
     topic_name: str
     gap_idx: int
@@ -80,11 +79,11 @@ class ContextRecord:
     articles_by_centrality: list[ArticleEntry]
     furthest_article: FurthestArticle | None
     covering_books: list[BookCoverage]
+    schema_version: int = CONTEXT_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
 class PromptRecord:
-    schema_version: int
     custom_id: str
     topic_id: str
     topic_name: str
@@ -96,6 +95,7 @@ class PromptRecord:
     backend: str
     model: str
     generation_params: dict[str, Any] = field(default_factory=dict)
+    schema_version: int = PROMPT_SCHEMA_VERSION
 
 
 def write_context_record(dirpath: Path, rec: ContextRecord) -> Path:
@@ -114,20 +114,13 @@ def write_prompt_record(dirpath: Path, rec: PromptRecord) -> Path:
     return out
 
 
-def _build_article(d: dict) -> ArticleEntry:
-    return ArticleEntry(**d)
-
-
-def _build_book(d: dict) -> BookEntry:
-    return BookEntry(**d)
-
-
-def _build_book_coverage(d: dict) -> BookCoverage:
-    return BookCoverage(**d)
-
-
 def read_context_record(path: Path) -> ContextRecord:
     d = json.loads(path.read_text(encoding="utf-8"))
+    if d["schema_version"] != CONTEXT_SCHEMA_VERSION:
+        raise ValueError(
+            f"ContextRecord schema_version {d['schema_version']} "
+            f"!= {CONTEXT_SCHEMA_VERSION} (file: {path})"
+        )
     return ContextRecord(
         schema_version=d["schema_version"],
         topic_id=d["topic_id"],
@@ -136,16 +129,21 @@ def read_context_record(path: Path) -> ContextRecord:
         gap_stats=GapStats(**d["gap_stats"]),
         topic_totals_articles=d["topic_totals_articles"],
         topic_totals_books=d["topic_totals_books"],
-        articles_by_centrality=[_build_article(a)
+        articles_by_centrality=[ArticleEntry(**a)
                                 for a in d["articles_by_centrality"]],
         furthest_article=(FurthestArticle(**d["furthest_article"])
                           if d["furthest_article"] is not None else None),
-        covering_books=[_build_book_coverage(b) for b in d["covering_books"]],
+        covering_books=[BookCoverage(**b) for b in d["covering_books"]],
     )
 
 
 def read_prompt_record(path: Path) -> PromptRecord:
     d = json.loads(path.read_text(encoding="utf-8"))
+    if d["schema_version"] != PROMPT_SCHEMA_VERSION:
+        raise ValueError(
+            f"PromptRecord schema_version {d['schema_version']} "
+            f"!= {PROMPT_SCHEMA_VERSION} (file: {path})"
+        )
     return PromptRecord(
         schema_version=d["schema_version"],
         custom_id=d["custom_id"],
@@ -154,8 +152,8 @@ def read_prompt_record(path: Path) -> PromptRecord:
         gap_idx=d["gap_idx"],
         requested_num_prompt_articles=d["requested_num_prompt_articles"],
         requested_num_prompt_books=d["requested_num_prompt_books"],
-        sampled_articles=[_build_article(a) for a in d["sampled_articles"]],
-        covering_books=[_build_book(b) for b in d["covering_books"]],
+        sampled_articles=[ArticleEntry(**a) for a in d["sampled_articles"]],
+        covering_books=[BookEntry(**b) for b in d["covering_books"]],
         backend=d["backend"],
         model=d["model"],
         generation_params=d["generation_params"],
