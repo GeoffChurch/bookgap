@@ -126,6 +126,10 @@ can be deleted.
   `bookgap.llm.prompt_render.render_prompts(record)` to recompute. Backends
   receive a pre-rendered `PromptPair` from the orchestrator and never construct
   prompts themselves.
+  Schema v2 (current) adds ``proposal_coverage`` and ``local_projection_2d`` to
+  ``ContextRecord`` and ``articles_covered_after_proposal`` to ``BookCoverage`` —
+  populated by the post-results coverage analysis in
+  ``workflow_functions.run_batch_workflow``.
 
 ### Gap Detection
 
