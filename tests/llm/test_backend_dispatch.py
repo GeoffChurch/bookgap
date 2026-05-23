@@ -315,6 +315,10 @@ def _make_gap(custom_id_topic: str, gap_idx: int) -> tuple[GapWithContext, Propo
 class TestOpenAIDispatch:
     """Verify the OpenAI Batch path is still taken when backend is OPENAI_BATCH."""
 
+    @patch(
+        "bookgap.llm.generators.workflow_functions._compute_proposal_embeddings",
+        return_value=np.zeros((1, 3), dtype=np.float32),
+    )
     @patch("bookgap.llm.generators.workflow_functions.generate_all_contexts")
     @patch("bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results")
     @patch("bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv")
@@ -335,6 +339,7 @@ class TestOpenAIDispatch:
         mock_csv,
         mock_plots,
         mock_gen_contexts,
+        _mock_compute_proposal_embeddings,
     ) -> None:
         gap, context = _make_gap("topic-a", 0)
         mock_compute_gaps.return_value = [gap]

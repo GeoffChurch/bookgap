@@ -1005,8 +1005,10 @@ def run_batch_workflow(
         state_manager.mark_gaps_ready(gap_count=len(gaps))
     LOGGER.info("Found %s gaps", len(gaps))
 
-    # ARTIFACTS: Generate context files (shared)
-    context_paths = generate_all_contexts(gaps, output_dir)
+    # NOTE: Contexts are now written AFTER proposals are parsed, because the
+    # v2 ContextRecord schema requires per-gap proposal coverage data. See
+    # the post-results block at the bottom of run_batch_workflow.
+    context_paths: list[Path] = []
 
     # Step 2: Build contexts (shared)
     contexts = build_contexts_for_gaps(gaps, config)
@@ -1044,6 +1046,17 @@ def run_batch_workflow(
         )
     else:  # pragma: no cover - exhaustively handled above
         raise ValueError(f"Unknown LLM backend: {backend!r}")
+
+    # Now that proposals exist, build the per-gap proposal-analysis dict
+    # and emit v2 contexts/*.json.
+    proposal_analyses = _build_proposal_analyses(gaps, results, config)
+    context_paths = generate_all_contexts(
+        gaps=[g for g in gaps if (g.topic_id, g.gap_idx) in proposal_analyses],
+        output_dir=output_dir,
+        proposal_analyses=proposal_analyses,
+    )
+    LOGGER.info("Wrote %s v2 contexts to %s/contexts/",
+                len(context_paths), output_dir)
 
     _generate_downstream_artifacts(
         gaps=gaps,
@@ -1559,6 +1572,97 @@ def _parse_ollama_results_content(
         "parse_failure_count": num_parse_failures,
     }
     return parsed_proposals, stats
+
+
+def _build_proposal_analyses(
+    gaps: list[GapWithContext],
+    results: BatchResults,
+    config: ExperimentConfig,
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """For each (topic_id, gap_idx) that has a parsed proposal, build the
+    per-gap inputs needed by ``save_gap_context`` for the v2 fields.
+
+    Skips gaps without proposals (the appendix never references them
+    anyway). Returns a dict keyed by ``(topic_id, gap_idx)``.
+
+    Each value is the kwargs dict consumed by ``save_gap_context`` via
+    its ``proposal_analysis`` arg:
+      * ``gap_article_embeddings`` — (gap_size, D), in the order of
+        ``gap.get_dists_idxs().idxs[:gap_size]``.
+      * ``book_embeddings`` — (N_covering_books, D), in the order of
+        ``covering_books`` after sorting by descending coverage with
+        ``book_idx`` as tie-breaker (matches
+        ``_build_context_record``'s ``sorted_book_items``).
+      * ``proposal_embedding`` — (D,).
+      * ``seed_embedding`` — (D,), the gap's seed article embedding
+        (``idxs[0]``).
+      * ``gap_radius`` — float K-ball radius (sqrt of the max sqdist in
+        the gap, which equals the K-ball threshold by construction).
+    """
+    # Index proposals by (topic_id, gap_idx).
+    proposal_by_key: dict[tuple[str, int], ParsedProposal] = {}
+    for prop in results.proposals:
+        try:
+            parsed = parse_gap_proposal_id(prop.custom_id)
+        except Exception:
+            continue
+        proposal_by_key[(parsed.topic_id, parsed.gap_idx)] = prop
+
+    if not proposal_by_key:
+        return {}
+
+    # Compute proposal embeddings ONCE for everything we have a proposal
+    # for (a single Embedder spin-up handles all proposals in one batch).
+    pending: list[PendingProposal] = []
+    pending_keys: list[tuple[str, int]] = []
+    for key, prop in proposal_by_key.items():
+        pending.append(PendingProposal(proposal=prop.proposal, custom_id=prop.custom_id))
+        pending_keys.append(key)
+    proposal_embeddings = _compute_proposal_embeddings(pending, config=config)
+
+    # Build per-gap analysis.
+    out: dict[tuple[str, int], dict[str, Any]] = {}
+    for g in gaps:
+        key = (g.topic_id, g.gap_idx)
+        if key not in proposal_by_key:
+            continue
+        proposal_idx = pending_keys.index(key)
+        proposal_emb = proposal_embeddings[proposal_idx]
+
+        gap_dists_idxs = g.gap.get_dists_idxs()
+        gap_article_indices = gap_dists_idxs.idxs[:g.gap_size]
+        article_embs = g.articles.embeddings()[gap_article_indices]
+
+        # Books, ordered to match sorted_book_items in _build_context_record.
+        raw_coverage = group_gap_articles_by_covering_books(g.gap)
+        sorted_book_items = sorted(
+            ((int(b), [int(a) for a in covered]) for b, covered in raw_coverage.items()),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+        book_indices_in_order = [b for b, _ in sorted_book_items]
+        book_embs = g.books.embeddings()[book_indices_in_order]
+
+        # Seed = the gap's center article = idxs[0] (closest to gap center).
+        seed_emb = g.articles.embeddings()[int(gap_dists_idxs.idxs[0])]
+
+        # Gap radius: KBallGap doesn't expose its radius directly, but by
+        # construction the gap is exactly the set of ambient points
+        # within the K-ball threshold of the seed; the max sqdist in
+        # gap_dists_idxs.sqdists is therefore (approximately) the
+        # squared threshold. Use sqrt of that as the radius.
+        if gap_dists_idxs.sqdists.size > 0:
+            gap_radius = float(np.sqrt(float(np.max(gap_dists_idxs.sqdists))))
+        else:
+            gap_radius = 0.0
+
+        out[key] = dict(
+            gap_article_embeddings=article_embs,
+            book_embeddings=book_embs,
+            proposal_embedding=proposal_emb,
+            seed_embedding=seed_emb,
+            gap_radius=gap_radius,
+        )
+    return out
 
 
 def _generate_downstream_artifacts(

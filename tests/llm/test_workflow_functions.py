@@ -833,6 +833,12 @@ class TestRunBatchWorkflow:
                 patch('bookgap.llm.generators.workflow_functions.compute_gaps_for_config', return_value=mock_gaps) as mock_compute_gaps,
                 patch('bookgap.llm.generators.workflow_functions.build_prompt_records') as mock_build_prompt_records,
                 patch('bookgap.llm.generators.workflow_functions.generate_all_prompts') as mock_generate_all_prompts,
+                # v2 contexts call _compute_proposal_embeddings — stub it so the
+                # test doesn't try to spin up the real Embedder.
+                patch(
+                    'bookgap.llm.generators.workflow_functions._compute_proposal_embeddings',
+                    return_value=np.zeros((1, 3), dtype=np.float32),
+                ),
             ):
                 mock_build_prompt_records.return_value = []
                 mock_generate_all_prompts.return_value = []
@@ -858,7 +864,15 @@ class TestRunBatchWorkflow:
         mock_save_jsonl.assert_called_once_with(mock_requests, output_dir / expected_filename, mock_config)
         mock_submit.assert_called_once_with(output_dir / expected_filename, mock_config)
         mock_monitor.assert_called_once_with("batch-123", mock_config, output_dir, reuse_existing=False, state_manager=state_manager)
-        mock_generate_contexts.assert_called_once_with(mock_gaps, output_dir)
+        # generate_all_contexts is now called AFTER proposals with the new
+        # kw-only signature. Only gaps that have a matching proposal are
+        # passed; with proposals only for topic-1/gap_idx=0, that's [gap0].
+        mock_generate_contexts.assert_called_once()
+        _gc_args, gc_kwargs = mock_generate_contexts.call_args
+        assert _gc_args == ()
+        assert gc_kwargs["gaps"] == [gap0]
+        assert gc_kwargs["output_dir"] == output_dir
+        assert ("topic-1", 0) in gc_kwargs["proposal_analyses"]
         mock_generate_plots.assert_called_once()
         plot_args, plot_kwargs = mock_generate_plots.call_args
         assert plot_args == (mock_gaps, result.proposals, output_dir)
