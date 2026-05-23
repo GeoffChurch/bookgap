@@ -1125,7 +1125,7 @@ def test_ollama_generator_accepts_external_promptpair(monkeypatch):
     )
 
     g = OllamaProposalGenerator(
-        model="gemma4:31b", num_articles=10, num_books=5,
+        model="gemma4:31b",
         temperature=0.2, num_ctx=8192, num_predict=8192,
     )
     ctx = ProposalContext(

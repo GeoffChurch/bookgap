@@ -1198,8 +1198,6 @@ def _run_ollama_local_path(
 
     generator = OllamaProposalGenerator(
         model=str(config.llm.ollama_model),
-        num_articles=int(config.llm.num_articles),
-        num_books=int(config.llm.num_books),
         temperature=float(config.llm.temperature),
         num_ctx=int(config.llm.ollama_num_ctx),
         num_predict=int(config.llm.ollama_num_predict),
@@ -1256,7 +1254,9 @@ def _run_ollama_local_path(
                 )
 
             # Then the normal generation loop.
-            for i, context in enumerate(contexts, start=1):
+            for i, (context, prompt_record) in enumerate(
+                zip(contexts, prompt_records, strict=True), start=1,
+            ):
                 custom_id = build_gap_proposal_id(
                     gap_idx=context.gap_idx, topic_id=context.topic_id,
                 )
@@ -1267,9 +1267,7 @@ def _run_ollama_local_path(
                     "[ollama %d/%d] generating proposal for %s",
                     i, len(contexts), custom_id,
                 )
-                # i is 1-indexed via enumerate(..., start=1); prompt_records
-                # is parallel to contexts (same length, same order).
-                prompts = render_prompts(prompt_records[i - 1])
+                prompts = render_prompts(prompt_record)
                 record = generator.generate(context, prompts)
                 record_dict = _ollama_record_to_jsonl_dict(
                     record, custom_id=custom_id,

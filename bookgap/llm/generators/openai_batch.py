@@ -1,7 +1,7 @@
 """OpenAI Batch API request builder.
 
 Prompt construction is the orchestrator's responsibility — this class
-just wraps a (PromptPair, ProposalContext) pair into the OpenAI batch
+just wraps a (ProposalContext, PromptPair) pair into the OpenAI batch
 API's JSONL request format.
 """
 import os

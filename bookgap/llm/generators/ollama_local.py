@@ -70,18 +70,11 @@ class OllamaProposalGenerator:
         self,
         *,
         model: str,
-        num_articles: int,
-        num_books: int,
         temperature: float,
         num_ctx: int,
         num_predict: int,
     ) -> None:
         self.model = model
-        # num_articles/num_books are retained for metadata only; the
-        # actual sample sizes are bounded by the orchestrator before
-        # prompts are built.
-        self.num_articles = num_articles
-        self.num_books = num_books
         self.temperature = temperature
         self.num_ctx = num_ctx
         self.num_predict = num_predict
