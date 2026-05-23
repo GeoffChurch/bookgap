@@ -116,6 +116,16 @@ can be deleted.
 - **`SubCloud`** (`subcloud.py`): A lightweight filtered view over a parent `Cloud` (e.g., just books or just articles for a given topic). Does not copy data; indexes into the parent.
 - **Per-scope Parquet** (`openalex_ingest.py`): Each scope's works stored as a Parquet file under `cache/works_parquet/`. `corpus_dataset()` returns a lazy `pyarrow.dataset.Dataset` spanning all scopes with column-selective reads.
 - **Embeddings store** (`cloud.py`): Dense embeddings stored in a separate Parquet file under `cache/embeddings_parquet/`, keyed by corpus fingerprint + embedder config. Decoupled from works so switching embedders doesn't require re-fetching.
+- **Per-(topic, gap) JSON artifacts** (`bookgap/llm/prompt_record.py`): each
+  proposal-generation run writes `contexts/gap_{gap_idx}_topic_{topic_id}.json`
+  (backend-agnostic gap analysis: all articles ranked by centrality, furthest
+  article, all covering books ranked by descending coverage) and
+  `prompts/gap_{gap_idx}_topic_{topic_id}.json` (the exact input handed to the
+  LLM: sampled articles, selected books, backend + model + generation params).
+  The rendered system/user prompt strings are NOT persisted — call
+  `bookgap.llm.prompt_render.render_prompts(record)` to recompute. Backends
+  receive a pre-rendered `PromptPair` from the orchestrator and never construct
+  prompts themselves.
 
 ### Gap Detection
 
