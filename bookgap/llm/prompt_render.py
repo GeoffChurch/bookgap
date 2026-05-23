@@ -9,7 +9,7 @@ methods and ollama_local._JSON_INSTRUCTION.
 from __future__ import annotations
 
 from bookgap.llm.prompt_record import PromptRecord
-from bookgap.llm.protocols import PromptPair
+from bookgap.llm.protocols import LLMBackend, PromptPair
 
 
 _SYSTEM_PROMPT = "You are an academic researcher and educator."
@@ -31,7 +31,7 @@ _OLLAMA_JSON_INSTRUCTION = (
 
 def render_prompts(record: PromptRecord) -> PromptPair:
     user = _build_user_prompt(record)
-    if record.backend == "ollama_local":
+    if record.backend == LLMBackend.OLLAMA_LOCAL.value:
         user = user + _OLLAMA_JSON_INSTRUCTION
     return PromptPair(system_prompt=_SYSTEM_PROMPT, user_prompt=user)
 

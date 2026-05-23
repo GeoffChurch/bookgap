@@ -1,9 +1,11 @@
 """Golden-text test pinning the current prompt format so refactoring to
 the shared render function can't drift."""
+from dataclasses import replace
+
 from bookgap.llm.prompt_record import (
     ArticleEntry, BookEntry, PromptRecord,
 )
-from bookgap.llm.prompt_render import render_prompts
+from bookgap.llm.prompt_render import _OLLAMA_JSON_INSTRUCTION, render_prompts
 
 
 _BASE_RECORD = PromptRecord(
@@ -45,15 +47,14 @@ def test_openai_user_prompt_format() -> None:
 
 
 def test_ollama_appends_json_instruction() -> None:
-    from dataclasses import replace
     rec = replace(_BASE_RECORD, backend="ollama_local", model="gemma4:31b")
     pp = render_prompts(rec)
-    assert pp.user_prompt.startswith("Based on the research articles")
-    assert "JSON" in pp.user_prompt
+    # The user prompt is exactly the openai-shape body + the Ollama suffix.
+    openai_pp = render_prompts(_BASE_RECORD)
+    assert pp.user_prompt == openai_pp.user_prompt + _OLLAMA_JSON_INSTRUCTION
 
 
 def test_no_articles_or_books_falls_back_to_generic_instruction() -> None:
-    from dataclasses import replace
     rec = replace(_BASE_RECORD, sampled_articles=[], covering_books=[])
     pp = render_prompts(rec)
     assert pp.user_prompt == (
@@ -63,7 +64,6 @@ def test_no_articles_or_books_falls_back_to_generic_instruction() -> None:
 
 
 def test_articles_only_intro() -> None:
-    from dataclasses import replace
     rec = replace(_BASE_RECORD, covering_books=[])
     pp = render_prompts(rec)
     assert pp.user_prompt.startswith(
@@ -71,3 +71,20 @@ def test_articles_only_intro() -> None:
     )
     assert "## Related Existing Books" not in pp.user_prompt
     assert "## Sample Articles" in pp.user_prompt
+
+
+def test_books_only_intro() -> None:
+    rec = replace(_BASE_RECORD, sampled_articles=[])
+    pp = render_prompts(rec)
+    assert pp.user_prompt.startswith(
+        "Based on the related books provided below, please propose"
+    )
+    assert "## Sample Articles" not in pp.user_prompt
+    assert "## Related Existing Books" in pp.user_prompt
+
+
+def test_openai_backend_does_not_get_json_suffix() -> None:
+    pp = render_prompts(_BASE_RECORD)
+    # _BASE_RECORD has backend="openai_batch"; the Ollama JSON suffix
+    # must not leak into that path.
+    assert _OLLAMA_JSON_INSTRUCTION not in pp.user_prompt
