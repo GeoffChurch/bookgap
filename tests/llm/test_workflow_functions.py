@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast, Optional
@@ -28,6 +29,8 @@ from bookgap.llm.generators.workflow_functions import (
     validate_batch_requests,
     get_supported_models,
     build_contexts_for_gaps,
+    build_prompt_records,
+    generate_all_prompts,
     save_batch_input_jsonl,
     submit_batch_job,
     monitor_and_download_results,
@@ -35,8 +38,17 @@ from bookgap.llm.generators.workflow_functions import (
 )
 from bookgap.util import create_unicode_safe_filename
 from bookgap.llm.identifiers import build_gap_proposal_id
+from bookgap.llm.prompt_record import (
+    ArticleEntry,
+    BookEntry,
+    PromptRecord,
+    record_filename,
+)
 from bookgap.llm.protocols import (
+    Article,
+    Book,
     GapProtocol,
+    LLMBackend,
     ProposalContext,
     BatchRequestData,
     ChatCompletionBody,
@@ -982,12 +994,6 @@ def test_build_prompt_records_uses_backend_specific_model_and_params():
     """build_prompt_records produces one PromptRecord per ProposalContext,
     populated with backend-name, model id, and generation params pulled
     from the ExperimentConfig."""
-    from dataclasses import dataclass, field
-    from bookgap.llm.protocols import (
-        Article, Book, LLMBackend, ProposalContext, ProposalCounts,
-        OpenAIModel,
-    )
-    from bookgap.llm.generators.workflow_functions import build_prompt_records
 
     @dataclass
     class _LLMCfg:
@@ -1031,12 +1037,6 @@ def test_build_prompt_records_uses_backend_specific_model_and_params():
 
 
 def test_build_prompt_records_openai_backend():
-    from dataclasses import dataclass, field
-    from bookgap.llm.protocols import (
-        Article, Book, LLMBackend, ProposalContext, ProposalCounts,
-        OpenAIModel,
-    )
-    from bookgap.llm.generators.workflow_functions import build_prompt_records
 
     @dataclass
     class _LLMCfg:
@@ -1071,11 +1071,6 @@ def test_build_prompt_records_openai_backend():
 
 def test_generate_all_prompts_writes_one_file_per_record(tmp_path):
     """generate_all_prompts writes each PromptRecord to prompts/."""
-    from bookgap.llm.prompt_record import (
-        ArticleEntry, BookEntry, PromptRecord, record_filename,
-    )
-    from bookgap.llm.generators.workflow_functions import generate_all_prompts
-
     records = [
         PromptRecord(
             custom_id="gap_0_topic_T1",

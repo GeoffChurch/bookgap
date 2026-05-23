@@ -50,6 +50,9 @@ from bookgap.index import range_search_radii_with
 from bookgap.llm.artifacts.gap_plots import generate_gap_plots_for_results
 from bookgap.llm.artifacts.context_export import generate_all_contexts
 from bookgap.llm.artifacts.results_export import generate_gaps_analysis_csv
+from bookgap.llm.prompt_record import (
+    ArticleEntry, BookEntry, PromptRecord, write_prompt_record,
+)
 from .run_state import RunStateManager, RunStep
 from bookgap.gaps import compute_gaps_for_config
 
@@ -602,7 +605,9 @@ def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig
     return contexts
 
 
-def build_prompt_records(contexts, config):
+def build_prompt_records(
+    contexts: list[ProposalContext], config: ExperimentConfig,
+) -> list[PromptRecord]:
     """Build one PromptRecord per ProposalContext, populated with the
     backend name, model id, and backend-specific generation params from
     the ExperimentConfig. Returns a list parallel to ``contexts``.
@@ -613,15 +618,9 @@ def build_prompt_records(contexts, config):
     rendered prompt doesn't use those fields, and downstream consumers
     that need coverage look up the ContextRecord by (topic_id, gap_idx).
     """
-    from bookgap.llm.identifiers import build_gap_proposal_id
-    from bookgap.llm.prompt_record import (
-        ArticleEntry, BookEntry, PromptRecord,
-    )
-    from bookgap.llm.protocols import LLMBackend
-
     backend = _resolve_backend(config)
     if backend is LLMBackend.OLLAMA_LOCAL:
-        backend_name = "ollama_local"
+        backend_name = LLMBackend.OLLAMA_LOCAL.value
         model = str(config.llm.ollama_model)
         params = {
             "temperature": float(config.llm.temperature),
@@ -629,7 +628,7 @@ def build_prompt_records(contexts, config):
             "num_predict": int(config.llm.ollama_num_predict),
         }
     elif backend is LLMBackend.OPENAI_BATCH:
-        backend_name = "openai_batch"
+        backend_name = LLMBackend.OPENAI_BATCH.value
         m = config.llm.model
         model = m.value if hasattr(m, "value") else str(m)
         params = {
@@ -669,10 +668,11 @@ def build_prompt_records(contexts, config):
     return records
 
 
-def generate_all_prompts(prompt_records, output_dir):
+def generate_all_prompts(
+    prompt_records: list[PromptRecord], output_dir: Path,
+) -> list[Path]:
     """Write each PromptRecord to ``<output_dir>/prompts/`` and return
     the list of written paths."""
-    from bookgap.llm.prompt_record import write_prompt_record
     prompts_dir = output_dir / "prompts"
     return [write_prompt_record(prompts_dir, r) for r in prompt_records]
 
