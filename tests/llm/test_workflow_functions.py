@@ -370,8 +370,11 @@ class TestComputeProposalEmbeddings:
     def test_projection_and_normalization_applied(self, mock_embedder_cls, mock_instantiate):
         pending = [self._make_pending("A")]
         config = cast(ExperimentConfig, OmegaConf.create({
-            "cloud": {"_target_": "mock.Cloud", "embedder_model": Embedder.ModelName.GEMMA_300M.value},
-            "embedder": {"model_name": "mock-model"},
+            "cloud": {
+                "_target_": "mock.Cloud",
+                "embedder_model": Embedder.ModelName.GEMMA_300M.value,
+                "embedder": {"model_name": "mock-model"},
+            },
         }))
 
         raw_embeddings = np.array([[3.0, 4.0]], dtype=np.float32)
@@ -565,9 +568,12 @@ class TestMonitorAndDownloadResults:
         mock_batch_completed.request_counts.failed = 0
 
         config_data = {
-            "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
             "batch": {"completion_window": "24h"},
-            "cloud": {"_target_": "mock.Cloud", "embedder_model": Embedder.ModelName.GEMMA_300M.value},
+            "cloud": {
+                "_target_": "mock.Cloud",
+                "embedder_model": Embedder.ModelName.GEMMA_300M.value,
+                "embedder": {"model_name": Embedder.ModelName.GEMMA_300M.value},
+            },
         }
         config = cast(ExperimentConfig, OmegaConf.create(config_data))
         expected_metadata = MetadataUtils.serialize_config(config)
@@ -795,8 +801,24 @@ class TestRunBatchWorkflow:
                     radius_fraction=0.5,
                     cell_type=SimpleNamespace(value=_StubAlgorithm()),
                 ),
-                cloud=SimpleNamespace(embedder_model="test-model", denoiser="NONE", drop_k=0),
-                llm=SimpleNamespace(num_articles=1, num_books=1),
+                cloud=SimpleNamespace(
+                    embedder_model="test-model",
+                    embedder=SimpleNamespace(model_name="test-model"),
+                    denoiser="NONE",
+                    drop_k=0,
+                ),
+                llm=SimpleNamespace(
+                    num_articles=1,
+                    num_books=1,
+                    backend=LLMBackend.OPENAI_BATCH,
+                    model=OpenAIModel.GPT_5,
+                    temperature=0.0,
+                    max_tokens=1024,
+                    use_structured_output=False,
+                    ollama_model="",
+                    ollama_num_ctx=0,
+                    ollama_num_predict=0,
+                ),
             ),
         )
 
@@ -809,7 +831,11 @@ class TestRunBatchWorkflow:
                 patch('bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv') as mock_generate_csv,
                 patch('bookgap.llm.generators.workflow_functions.save_batch_input_jsonl') as mock_save_jsonl,
                 patch('bookgap.llm.generators.workflow_functions.compute_gaps_for_config', return_value=mock_gaps) as mock_compute_gaps,
+                patch('bookgap.llm.generators.workflow_functions.build_prompt_records') as mock_build_prompt_records,
+                patch('bookgap.llm.generators.workflow_functions.generate_all_prompts') as mock_generate_all_prompts,
             ):
+                mock_build_prompt_records.return_value = []
+                mock_generate_all_prompts.return_value = []
                 context_paths = [output_dir / "context.json"]
                 plot_paths = [output_dir / "plot.png"]
                 results_csv = output_dir / "results.csv"
@@ -824,7 +850,7 @@ class TestRunBatchWorkflow:
         # Verify all steps were called in order
         mock_compute_gaps.assert_called_once_with(mock_config)
         mock_build_contexts.assert_called_once_with(mock_gaps, mock_config)
-        mock_generate.assert_called_once_with(mock_contexts, mock_config)
+        mock_generate.assert_called_once_with(mock_contexts, [], mock_config)
         expected_filename = create_unicode_safe_filename(
             f"{mock_config.cloud.embedder_model}__{mock_config.cloud.denoiser}__drop_{mock_config.cloud.drop_k}__"
             f"articles_{mock_config.llm.num_articles}__books_{mock_config.llm.num_books}.jsonl"
