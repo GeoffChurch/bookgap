@@ -197,9 +197,9 @@ def main() -> None:
     for d in (prompts_dir, contexts_dir):
         if not d.is_dir():
             raise SystemExit(
-                f"missing required directory {d} -- run "
-                f"artifacts_scripts.backfill_prompts_and_contexts on this "
-                f"run first"
+                f"missing required directory {d} -- this run predates the JSON "
+                f"artifact stack; re-run the gap-analysis pipeline to produce "
+                f"prompts/ and contexts/"
             )
 
     with csv_path.open() as f:
