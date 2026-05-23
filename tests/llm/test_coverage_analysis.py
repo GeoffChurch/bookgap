@@ -85,7 +85,6 @@ def test_aep_preserves_radial_distance_exactly():
         green_mask=green_mask,
         book_embeddings=books,
         proposal_embedding=proposal,
-        gap_radius=1.0,
     )
 
     nd_radii = np.linalg.norm(gap_articles - seed, axis=1)
@@ -118,7 +117,6 @@ def test_aep_makes_greens_compact_when_possible():
         green_mask=green_mask,
         book_embeddings=books,
         proposal_embedding=proposal,
-        gap_radius=1.5,
     )
 
     # Green angles should be more concentrated than non-green angles
@@ -152,7 +150,6 @@ def test_aep_falls_back_to_pca_when_no_greens():
         green_mask=green_mask,
         book_embeddings=books,
         proposal_embedding=proposal,
-        gap_radius=1.0,
     )
     # Radial preservation still holds
     nd = np.linalg.norm(gap_articles - seed, axis=1)
@@ -169,6 +166,5 @@ def test_aep_seed_is_at_origin():
         green_mask=np.array([True]),
         book_embeddings=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
         proposal_embedding=np.array([0.4, 0.4, 0.5], dtype=np.float32),
-        gap_radius=1.0,
     )
     assert result.seed_2d.tolist() == [0.0, 0.0]
