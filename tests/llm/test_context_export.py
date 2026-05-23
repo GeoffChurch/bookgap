@@ -120,3 +120,91 @@ def test_generate_all_contexts_raises_on_missing_entry(tmp_path: Path) -> None:
     ):
         with pytest.raises(KeyError):
             generate_all_contexts([g], tmp_path, proposal_analyses={})
+
+
+def test_no_books_yields_empty_covering_books(tmp_path: Path) -> None:
+    """v2 should still emit an empty covering_books list when no books cover the gap.
+    Requires a proposal_analysis with zero covering-book embeddings."""
+    g = _make_gap_with_context()
+    analysis = _proposal_analysis_for(g)
+    # Empty book_embeddings: a (0, D) array.
+    analysis["book_embeddings"] = np.zeros((0, 3), dtype=np.float32)
+    with patch(
+        "bookgap.llm.artifacts.context_export.group_gap_articles_by_covering_books",
+        return_value={},
+    ):
+        save_gap_context(g, tmp_path, proposal_analysis=analysis)
+    rec = read_context_record(
+        tmp_path / "contexts" / record_filename(g.gap_idx, g.topic_id)
+    )
+    assert rec.covering_books == []
+    # All gap articles flip to proposal (only book in the set).
+    assert all(rec.local_projection_2d.gap_articles_flipped_to_proposal)
+
+
+def test_articles_by_centrality_content_and_order(tmp_path: Path) -> None:
+    """articles_by_centrality preserves the gap's idxs order."""
+    g = _make_gap_with_context()
+    analysis = _proposal_analysis_for(g)
+    with patch(
+        "bookgap.llm.artifacts.context_export.group_gap_articles_by_covering_books",
+        return_value={0: [10, 15], 1: [22]},
+    ):
+        save_gap_context(g, tmp_path, proposal_analysis=analysis)
+    rec = read_context_record(
+        tmp_path / "contexts" / record_filename(g.gap_idx, g.topic_id)
+    )
+    # gap.idxs = [10, 15, 22, 8, 12] → article display names in that order.
+    assert [a.display_name for a in rec.articles_by_centrality] == [
+        "Article 10", "Article 15", "Article 22", "Article 8", "Article 12",
+    ]
+
+
+def test_covering_books_sorted_by_descending_coverage(tmp_path: Path) -> None:
+    """covering_books is sorted by descending coverage (book_idx tie-break)."""
+    g = _make_gap_with_context()
+    analysis = _proposal_analysis_for(g)
+    with patch(
+        "bookgap.llm.artifacts.context_export.group_gap_articles_by_covering_books",
+        # book 1 covers 3 articles, book 0 covers 2 articles — book 1 should come first.
+        return_value={0: [10, 15], 1: [22, 8, 12]},
+    ):
+        # Update analysis's book_embeddings to match the new ordering:
+        # after sort, books = [(1, ...), (0, ...)], so embeddings must be in
+        # that order too.
+        analysis["book_embeddings"] = np.array([
+            [3.0, 0.0, 0.0],   # book_1's embedding
+            [0.0, 0.0, 0.0],   # book_0's embedding
+        ], dtype=np.float32)
+        save_gap_context(g, tmp_path, proposal_analysis=analysis)
+    rec = read_context_record(
+        tmp_path / "contexts" / record_filename(g.gap_idx, g.topic_id)
+    )
+    assert len(rec.covering_books) == 2
+    assert rec.covering_books[0].display_name == "Book 1"  # higher coverage
+    assert rec.covering_books[0].articles_covered == 3
+    assert rec.covering_books[0].fraction_covered == pytest.approx(3 / 5)
+    assert rec.covering_books[1].display_name == "Book 0"
+    assert rec.covering_books[1].articles_covered == 2
+
+
+def test_furthest_article_populated_when_gap_size_gt_1(tmp_path: Path) -> None:
+    """furthest_article is the article at argmax(sqdists)."""
+    g = _make_gap_with_context()  # sqdists = [0.0, 0.3, 0.8, 0.5, 0.4]
+    analysis = _proposal_analysis_for(g)
+    # Only one covering book in this test — trim book_embeddings to match.
+    analysis["book_embeddings"] = np.array([
+        [0.0, 0.0, 0.0],
+    ], dtype=np.float32)
+    with patch(
+        "bookgap.llm.artifacts.context_export.group_gap_articles_by_covering_books",
+        return_value={0: [10]},
+    ):
+        save_gap_context(g, tmp_path, proposal_analysis=analysis)
+    rec = read_context_record(
+        tmp_path / "contexts" / record_filename(g.gap_idx, g.topic_id)
+    )
+    # argmax(sqdists) = index 2 → idxs[2] = 22 → "Article 22"
+    assert rec.furthest_article is not None
+    assert rec.furthest_article.display_name == "Article 22"
+    assert rec.furthest_article.sqdist == pytest.approx(0.8)

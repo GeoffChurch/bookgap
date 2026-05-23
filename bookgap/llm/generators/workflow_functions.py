@@ -1604,21 +1604,16 @@ def _build_proposal_analyses(
     for prop in results.proposals:
         try:
             parsed = parse_gap_proposal_id(prop.custom_id)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning(
+                "Could not parse custom_id %r for proposal-analysis "
+                "indexing: %s", prop.custom_id, exc,
+            )
             continue
         proposal_by_key[(parsed.topic_id, parsed.gap_idx)] = prop
 
     if not proposal_by_key:
         return {}
-
-    # Compute proposal embeddings ONCE for everything we have a proposal
-    # for (a single Embedder spin-up handles all proposals in one batch).
-    pending: list[PendingProposal] = []
-    pending_keys: list[tuple[str, int]] = []
-    for key, prop in proposal_by_key.items():
-        pending.append(PendingProposal(proposal=prop.proposal, custom_id=prop.custom_id))
-        pending_keys.append(key)
-    proposal_embeddings = _compute_proposal_embeddings(pending, config=config)
 
     # Build per-gap analysis.
     out: dict[tuple[str, int], dict[str, Any]] = {}
@@ -1626,8 +1621,7 @@ def _build_proposal_analyses(
         key = (g.topic_id, g.gap_idx)
         if key not in proposal_by_key:
             continue
-        proposal_idx = pending_keys.index(key)
-        proposal_emb = proposal_embeddings[proposal_idx]
+        proposal_emb = proposal_by_key[key].embedding
 
         gap_dists_idxs = g.gap.get_dists_idxs()
         gap_article_indices = gap_dists_idxs.idxs[:g.gap_size]
