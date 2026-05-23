@@ -8,10 +8,11 @@ containing:
 - the highest-coverage existing book in the topic (title + abstract +
   coverage stats), or a note if the topic has no books
 
-Reads ``prompts/gap_<gi>_topic_<topic_id>.json`` and
-``contexts/gap_<gi>_topic_<topic_id>.json`` from the run dir. If a run
-predates the JSON artifact stack, run
-``python -m artifacts_scripts.backfill_prompts_and_contexts`` on it first.
+Reads ``prompts/gap_<gi>_topic_<topic_id>.json`` for the actual prompt
+articles given to the LLM, and ``contexts/gap_<gi>_topic_<topic_id>.json``
+for the highest-coverage existing book. Fails fast if either directory is
+absent — runs that predate the JSON artifact stack need to be re-run via
+the gap-analysis pipeline.
 
 Usage::
 

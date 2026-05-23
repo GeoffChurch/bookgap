@@ -144,7 +144,8 @@ Gap computation is cached per-topic via `@MEMORY.cache` in `gaps.py`.
 
 - **`protocols.py`** (`llm/protocols.py`): Pydantic models (`Proposal`, `Chapter`, `ParsedProposal`) and the `GapProtocol` interface
 - **`workflow_functions.py`** (`llm/generators/workflow_functions.py`): Orchestrates the batch pipeline: gap computation -> context building -> OpenAI Batch API submission -> result parsing -> artifact generation
-- **`BatchProposalGenerator`** (`llm/generators/batch_generator.py`): Manages OpenAI Batch API lifecycle
+- **`OpenAIBatchGenerator`** (`llm/generators/openai_batch.py`): Wraps `(ProposalContext, PromptPair)` pairs into OpenAI batch-API request JSON.
+- **`OllamaProposalGenerator`** (`llm/generators/ollama_local.py`): Synchronous Ollama backend; accepts a pre-rendered `PromptPair` from the orchestrator.
 - **`run_state.py`** (`llm/generators/run_state.py`): Resumable run state management
 
 ### Configuration
