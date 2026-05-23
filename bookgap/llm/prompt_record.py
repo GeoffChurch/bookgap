@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 
-CONTEXT_SCHEMA_VERSION = 1
+CONTEXT_SCHEMA_VERSION = 2
 PROMPT_SCHEMA_VERSION = 1
 
 
@@ -60,12 +60,43 @@ class FurthestArticle:
 
 
 @dataclass(frozen=True)
+class ProposalCoverage:
+    """How much of the gap the proposal would cover if added as a book."""
+    articles_covered: int
+    fraction_covered: float
+
+
+@dataclass(frozen=True)
+class Point2D:
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
+class LocalProjection2D:
+    """Azimuthal equidistant projection from the seed article, with
+    angular axes chosen by a green-vs-total GEP. Radii are exact ND
+    distances from the seed; the gap circle drawn at radius
+    ``gap_radius`` contains exactly the in-gap points.
+    """
+    gap_radius: float
+    seed: Point2D              # always (0.0, 0.0); included for self-containedness
+    proposal: Point2D
+    gap_articles: list[Point2D]
+    # Parallel mask to gap_articles: True if the article flips to the
+    # proposal's Voronoi cell once the proposal is added as a book.
+    gap_articles_flipped_to_proposal: list[bool]
+    books: list[Point2D]
+
+
+@dataclass(frozen=True)
 class BookCoverage:
     openalex_id: str
     display_name: str
     abstract: str
     articles_covered: int
     fraction_covered: float
+    articles_covered_after_proposal: int  # NEW, required
 
 
 @dataclass(frozen=True)
@@ -79,6 +110,8 @@ class ContextRecord:
     articles_by_centrality: list[ArticleEntry]
     furthest_article: FurthestArticle | None
     covering_books: list[BookCoverage]
+    proposal_coverage: ProposalCoverage             # NEW, required
+    local_projection_2d: LocalProjection2D          # NEW, required
     schema_version: int = CONTEXT_SCHEMA_VERSION
 
 
@@ -134,6 +167,23 @@ def read_context_record(path: Path) -> ContextRecord:
         furthest_article=(FurthestArticle(**d["furthest_article"])
                           if d["furthest_article"] is not None else None),
         covering_books=[BookCoverage(**b) for b in d["covering_books"]],
+        proposal_coverage=ProposalCoverage(**d["proposal_coverage"]),
+        local_projection_2d=_deserialize_local_projection_2d(
+            d["local_projection_2d"]
+        ),
+    )
+
+
+def _deserialize_local_projection_2d(d: dict) -> LocalProjection2D:
+    return LocalProjection2D(
+        gap_radius=d["gap_radius"],
+        seed=Point2D(**d["seed"]),
+        proposal=Point2D(**d["proposal"]),
+        gap_articles=[Point2D(**p) for p in d["gap_articles"]],
+        gap_articles_flipped_to_proposal=list(
+            d["gap_articles_flipped_to_proposal"]
+        ),
+        books=[Point2D(**p) for p in d["books"]],
     )
 
 
