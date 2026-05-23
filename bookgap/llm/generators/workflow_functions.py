@@ -540,11 +540,16 @@ def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig
         for i, work in enumerate(sampled_article_dicts):
             display_name = work.get('display_name') if isinstance(work, dict) else getattr(work, 'display_name', None)
             abstract = work.get('abstract') if isinstance(work, dict) else getattr(work, 'abstract', None)
+            openalex_id = work.get('id') if isinstance(work, dict) else getattr(work, 'id', None)
             if not display_name or not abstract:
                 raise ValueError(
                     f"Sampled article {i} for gap {gap_with_context.gap_idx} missing display_name or abstract"
                 )
-            sampled_articles.append(Article(display_name=display_name, abstract=abstract))
+            sampled_articles.append(Article(
+                display_name=display_name,
+                abstract=abstract,
+                openalex_id=str(openalex_id or ""),
+            ))
 
         # Select covering books ordered by decreasing coverage, deterministic tie-breaker
         covering_books: list[Book] = []
@@ -566,9 +571,14 @@ def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig
                 book_work = book_works[idx]
                 display_name = book_work.get('display_name') if isinstance(book_work, dict) else getattr(book_work, 'display_name', None)
                 abstract = book_work.get('abstract') if isinstance(book_work, dict) else getattr(book_work, 'abstract', None)
+                openalex_id = book_work.get('id') if isinstance(book_work, dict) else getattr(book_work, 'id', None)
                 if not display_name or not abstract:
                     continue
-                covering_books.append(Book(display_name=display_name, abstract=abstract))
+                covering_books.append(Book(
+                    display_name=display_name,
+                    abstract=abstract,
+                    openalex_id=str(openalex_id or ""),
+                ))
                 if len(covering_books) >= requested_books:
                     break
         else:
@@ -576,9 +586,14 @@ def build_contexts_for_gaps(gaps: list[GapWithContext], config: ExperimentConfig
             for book_work in book_works[:requested_books]:
                 display_name = book_work.get('display_name') if isinstance(book_work, dict) else getattr(book_work, 'display_name', None)
                 abstract = book_work.get('abstract') if isinstance(book_work, dict) else getattr(book_work, 'abstract', None)
+                openalex_id = book_work.get('id') if isinstance(book_work, dict) else getattr(book_work, 'id', None)
                 if not display_name or not abstract:
                     continue
-                covering_books.append(Book(display_name=display_name, abstract=abstract))
+                covering_books.append(Book(
+                    display_name=display_name,
+                    abstract=abstract,
+                    openalex_id=str(openalex_id or ""),
+                ))
                 if len(covering_books) >= requested_books:
                     break
         
@@ -652,12 +667,14 @@ def build_prompt_records(
             requested_num_prompt_articles=ctx.requested_num_prompt_articles,
             requested_num_prompt_books=ctx.requested_num_prompt_books,
             sampled_articles=[
-                ArticleEntry(openalex_id="", display_name=a.display_name,
+                ArticleEntry(openalex_id=a.openalex_id,
+                             display_name=a.display_name,
                              abstract=a.abstract)
                 for a in ctx.sampled_articles
             ],
             covering_books=[
-                BookEntry(openalex_id="", display_name=b.display_name,
+                BookEntry(openalex_id=b.openalex_id,
+                          display_name=b.display_name,
                           abstract=b.abstract,
                           articles_covered=0, fraction_covered=0.0)
                 for b in ctx.covering_books

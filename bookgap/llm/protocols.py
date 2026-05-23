@@ -88,13 +88,15 @@ class Article:
     """Research article data structure."""
     display_name: str
     abstract: str
+    openalex_id: str = ""
 
 
-@dataclass(frozen=True)  
+@dataclass(frozen=True)
 class Book:
     """Book data structure."""
     display_name: str
     abstract: str
+    openalex_id: str = ""
 
 
 @dataclass(frozen=True)
