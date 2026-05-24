@@ -356,6 +356,503 @@ def expand_soft(
     return w
 
 
+def expand_soft_batched(
+    seed_idxs: list[int],
+    emb: np.ndarray,
+    types_arr: np.ndarray,
+    sigma: np.ndarray,
+    full_index,
+    book_index,
+    book_global_idx: np.ndarray,
+    article_global_idx: np.ndarray,
+    article_to_nearest_books_global: np.ndarray,
+    article_index,
+    n: int,
+    emb_gpu,           # torch.Tensor on cuda — REQUIRED for batched path
+    sigma_gpu,         # torch.Tensor on cuda — REQUIRED for batched path
+    *,
+    tau_supp: float = 0.5,
+    neighborhood_K: int = 200,
+    max_iters: int = 50,
+    conv_eps: float = 1e-3,
+    claimed: set[int] | None = None,
+    claimed_overlap_threshold: float = 0.5,
+    claimed_check_every: int = 5,
+    frozen_cache: dict | None = None,
+    gpu_fp32: bool = True,
+) -> list:
+    """Process ``len(seed_idxs)`` seeds in parallel through soft-EM iters
+    on GPU. Returns a list parallel to ``seed_idxs``; each entry is one of:
+
+        * ``np.ndarray`` of shape ``(n,)`` — converged weight vector
+        * ``frozenset`` — frozen-cache hit (current hard support matched
+          an already-discovered basin)
+        * ``None`` — claimed-overlap abort (only emitted when
+          ``claimed`` is supplied and overlap fraction exceeds threshold).
+
+    Other failure modes (degenerate centroid, no article members, empty
+    boundary) terminate the seed early and return the current weight
+    vector — matching ``expand_soft``'s single-seed semantics.
+
+    The kernel matmuls (G, B-books, B-articles) are stacked across the
+    active seeds into single ``bmm`` operations so the per-iter CUDA
+    dispatch overhead is amortized N-fold over the batch.
+
+    Implementation notes:
+      * Per-seed weight vectors are stored sparsely as ``dict[int, float]``
+        and only the touched positions of each seed's full ``w`` are
+        materialized at the end (or on cache-miss return).
+      * Self-subtraction (``K_G[c] -= w[c]`` for ``c`` already in support)
+        runs on CPU after pulling K_G back from device — cheap per-seed
+        loop, avoids a 3D scatter on GPU.
+      * Bootstrap iters (singleton support) skip phases B–E for that
+        seed and only force-add the nearest non-self neighbour. The
+        single-seed code does the same via ``continue``.
+      * fp32 default: 99.2% basin overlap vs fp64 was already validated
+        on the single-seed GPU path.
+    """
+    import torch
+
+    is_article = types_arr == "article"
+    dev = emb_gpu.device
+    kdtype = torch.float32 if gpu_fp32 else torch.float64
+    B = len(seed_idxs)
+
+    # Per-seed sparse weight storage. Indices into the global n-space.
+    w_sparse: list[dict[int, float]] = [{int(s): 1.0} for s in seed_idxs]
+
+    # active[b] == False means the seed is done (success or failure);
+    # results[b] holds its return value.
+    active = np.ones(B, dtype=bool)
+    results: list = [None] * B
+
+    # Per-seed in_G_lookup is too large to keep separate copies of.
+    # Instead, recompute the support each iter and use a shared scratch
+    # array that gets reset per-seed inside the boundary-book step.
+    in_G_scratch = np.zeros(n, dtype=bool)
+
+    last_check_overlap_iter: list[int] = [0] * B
+
+    # ---- Intra-batch coordination state ----
+    # In sequential CPU mode, a seed that converges first updates `claimed`
+    # and `gap_hashes`, so subsequent seeds heading to the same basin abort
+    # via cache-hit or claimed-overlap. In batched mode the prior-batch
+    # `claimed`/`frozen_cache` aren't enough — within a single batch, near-
+    # twin seeds run independently to convergence and produce duplicates.
+    # Mirror that by carrying batch-local cache + claimed sets, populated
+    # as seeds in this batch terminate. First converger in seed-order wins.
+    batch_local_cache: dict[frozenset, int] = {}   # frozenset -> b that produced it
+    batch_local_claimed: set[int] = set()
+
+    for it in range(max_iters):
+        # ---- Phase A: per-seed CPU work (support, centroid, boundary books) ----
+        # For each active seed compute: supp_b, centroid_b, f_b dict,
+        # B_arts (we defer this until after Phase B).
+        # Bootstrap seeds: do nearest-neighbour add and skip the rest of
+        # this iter for them.
+
+        # Per-seed scratch lists, in seed-order. None entries for inactive
+        # seeds and bootstrap-this-iter seeds.
+        per_seed_supp: list[np.ndarray | None] = [None] * B
+        per_seed_w_supp: list[np.ndarray | None] = [None] * B
+        per_seed_centroid: list[np.ndarray | None] = [None] * B
+        per_seed_fb: list[dict[int, float] | None] = [None] * B
+        # mark seeds that finished early in Phase A so we don't process
+        # them in matmul, but they're still 'active' until end-of-iter
+        # post-processing in the absence of further state.
+        bootstrap_this_iter = np.zeros(B, dtype=bool)
+
+        for b in range(B):
+            if not active[b]:
+                continue
+            # Intra-batch seed-in-claimed pre-filter. CPU sequential mode
+            # skips any seed whose index is in `claimed` *before* expansion
+            # starts (line 1125 of caller) — but `claimed` only updates
+            # between batches, so peer seeds within the same batch never
+            # see each other's claims via that channel. Mirror the CPU
+            # short-circuit by checking `batch_local_claimed` (and prior
+            # `claimed` for safety) every iter. This catches the common
+            # case where seed B's index is itself a member of seed A's
+            # just-converged basin (intra-batch), which would otherwise
+            # require cur_supp to grow large enough for the threshold-0.5
+            # claimed-overlap check to fire.
+            if seed_idxs[b] in batch_local_claimed:
+                results[b] = None
+                active[b] = False
+                continue
+            wb = w_sparse[b]
+            # supp = sorted list of indices with weight > tau_supp
+            supp_list = sorted(int(i) for i, v in wb.items() if v > tau_supp)
+            if len(supp_list) < 2:
+                # Bootstrap: force-add nearest non-self neighbour.
+                seed_b = seed_idxs[b]
+                _, I = full_index.search(emb[seed_b:seed_b + 1], k=2)
+                nn = int(I[0, 1]) if int(I[0, 0]) == seed_b else int(I[0, 0])
+                wb[nn] = 1.0
+                bootstrap_this_iter[b] = True
+                continue
+
+            supp = np.array(supp_list, dtype=np.int64)
+            w_supp = np.array([wb[int(i)] for i in supp_list], dtype=np.float64)
+
+            centroid = (emb[supp] * w_supp[:, None]).sum(axis=0) / w_supp.sum()
+            norm = float(np.linalg.norm(centroid))
+            if norm < 1e-12:
+                # Degenerate centroid — terminate this seed with current w.
+                results[b] = _materialize_w(wb, n)
+                active[b] = False
+                continue
+            centroid = (centroid / norm).astype(np.float32)
+
+            article_supp = supp[is_article[supp]]
+            if len(article_supp) == 0:
+                results[b] = _materialize_w(wb, n)
+                active[b] = False
+                continue
+
+            # Reset scratch for this seed
+            in_G_scratch[supp] = True
+            try:
+                cand_books = article_to_nearest_books_global[article_supp]
+                mask_valid = (cand_books != -1) & ~in_G_scratch[
+                    np.where(cand_books != -1, cand_books, 0)
+                ]
+                has_valid = mask_valid.any(axis=1)
+                if not has_valid.any():
+                    results[b] = _materialize_w(wb, n)
+                    active[b] = False
+                    continue
+
+                first_valid_col = mask_valid.argmax(axis=1)
+                f_b: dict[int, float] = {}
+                for row_i, (ai, has_v) in enumerate(zip(article_supp, has_valid)):
+                    if not has_v:
+                        continue
+                    gb = int(cand_books[row_i, first_valid_col[row_i]])
+                    f_b[gb] = f_b.get(gb, 0.0) + float(wb[int(ai)])
+
+                if not f_b:
+                    results[b] = _materialize_w(wb, n)
+                    active[b] = False
+                    continue
+            finally:
+                in_G_scratch[supp] = False
+
+            per_seed_supp[b] = supp
+            per_seed_w_supp[b] = w_supp
+            per_seed_centroid[b] = centroid
+            per_seed_fb[b] = f_b
+
+        # Indices of seeds that need the matmul this iter.
+        ready = [b for b in range(B)
+                 if active[b]
+                 and not bootstrap_this_iter[b]
+                 and per_seed_supp[b] is not None]
+
+        if not ready and not bootstrap_this_iter.any():
+            break  # everyone done
+
+        if ready:
+            # ---- Phase B: batched HNSW for centroids ----
+            centroid_stack = np.stack([per_seed_centroid[b] for b in ready])
+            _, I_centroid = full_index.search(centroid_stack, k=neighborhood_K)
+            # Per-seed candidate sets (sorted np arrays)
+            per_seed_candidates: dict[int, np.ndarray] = {}
+            for r_i, b in enumerate(ready):
+                cset = set(int(c) for c in I_centroid[r_i])
+                cset.update(int(s) for s in per_seed_supp[b])
+                per_seed_candidates[b] = np.array(sorted(cset), dtype=np.int64)
+
+            # ---- Phase C: batched article-NN for boundary articles ----
+            # Stack ALL boundary-book embeddings across all ready seeds
+            # into one big query, run one article_index.search, then
+            # per-seed walk the slice picking k_want non-supp non-already-picked.
+            bb_lists: list[list[int]] = []          # per-seed list of boundary-book globals
+            bb_mass_lists: list[list[float]] = []   # parallel mass list
+            k_wants_per_book: list[list[int]] = []  # parallel k_want
+            for b in ready:
+                f_b = per_seed_fb[b]
+                bbk = list(f_b.keys())
+                bb_lists.append(bbk)
+                bb_mass_lists.append([f_b[k] for k in bbk])
+                k_wants_per_book.append([max(1, int(np.ceil(f_b[k]))) for k in bbk])
+
+            # Flat arrays for the single search.
+            flat_bb_globals: list[int] = []
+            seed_offsets = [0]  # offsets into flat_bb_globals per ready seed
+            flat_kwants: list[int] = []
+            for bbk, kws in zip(bb_lists, k_wants_per_book):
+                flat_bb_globals.extend(bbk)
+                flat_kwants.extend(kws)
+                seed_offsets.append(len(flat_bb_globals))
+
+            # K_search_max: enough headroom for any seed's worst case.
+            max_kwant = max(flat_kwants) if flat_kwants else 1
+            max_supp = max(len(per_seed_supp[b]) for b in ready)
+            K_search_max = min(
+                max_kwant + max_supp + 10,
+                len(article_global_idx),
+            )
+
+            per_seed_B_arts: dict[int, np.ndarray] = {}
+            if flat_bb_globals:
+                bb_query = np.ascontiguousarray(emb[np.array(flat_bb_globals, dtype=np.int64)])
+                _, I_arts_flat = article_index.search(bb_query, k=K_search_max)
+                # Per-seed walk
+                for r_i, b in enumerate(ready):
+                    supp_set = set(int(s) for s in per_seed_supp[b])
+                    B_arts: list[int] = []
+                    B_arts_set: set[int] = set()
+                    start = seed_offsets[r_i]
+                    end = seed_offsets[r_i + 1]
+                    for j_book in range(start, end):
+                        k_want = flat_kwants[j_book]
+                        I_arts_row = I_arts_flat[j_book]
+                        taken = 0
+                        for al_idx in I_arts_row:
+                            if taken >= k_want:
+                                break
+                            a_global = int(article_global_idx[al_idx])
+                            if a_global not in supp_set and a_global not in B_arts_set:
+                                B_arts_set.add(a_global)
+                                B_arts.append(a_global)
+                                taken += 1
+                    per_seed_B_arts[b] = np.array(B_arts, dtype=np.int64)
+            else:
+                for b in ready:
+                    per_seed_B_arts[b] = np.empty(0, dtype=np.int64)
+
+            # ---- Phase D: padded GPU batched matmul ----
+            # Build padded tensors over the `ready` set.
+            B_ready = len(ready)
+            max_C = max(len(per_seed_candidates[b]) for b in ready)
+            max_S = max(len(per_seed_supp[b]) for b in ready)
+            max_Nb = max((len(bb) for bb in bb_lists), default=0)
+            max_Na = max((len(per_seed_B_arts[b]) for b in ready), default=0)
+            max_Nb = max(max_Nb, 1)  # avoid 0-d tensor edges
+            max_Na = max(max_Na, 1)
+
+            cand_idx_pad = np.zeros((B_ready, max_C), dtype=np.int64)
+            cand_mask = np.zeros((B_ready, max_C), dtype=bool)
+            supp_idx_pad = np.zeros((B_ready, max_S), dtype=np.int64)
+            w_supp_pad = np.zeros((B_ready, max_S), dtype=np.float64)
+            supp_mask = np.zeros((B_ready, max_S), dtype=bool)
+            bb_idx_pad = np.zeros((B_ready, max_Nb), dtype=np.int64)
+            bb_mass_pad = np.zeros((B_ready, max_Nb), dtype=np.float64)
+            bb_mask = np.zeros((B_ready, max_Nb), dtype=bool)
+            ba_idx_pad = np.zeros((B_ready, max_Na), dtype=np.int64)
+            ba_mask = np.zeros((B_ready, max_Na), dtype=bool)
+
+            for r_i, b in enumerate(ready):
+                ca = per_seed_candidates[b]
+                cand_idx_pad[r_i, :len(ca)] = ca
+                cand_mask[r_i, :len(ca)] = True
+                sa = per_seed_supp[b]
+                wa = per_seed_w_supp[b]
+                supp_idx_pad[r_i, :len(sa)] = sa
+                w_supp_pad[r_i, :len(sa)] = wa
+                supp_mask[r_i, :len(sa)] = True
+                bbg = bb_lists[r_i]
+                bbmm = bb_mass_lists[r_i]
+                if bbg:
+                    bb_idx_pad[r_i, :len(bbg)] = bbg
+                    bb_mass_pad[r_i, :len(bbmm)] = bbmm
+                    bb_mask[r_i, :len(bbg)] = True
+                ba = per_seed_B_arts[b]
+                if len(ba) > 0:
+                    ba_idx_pad[r_i, :len(ba)] = ba
+                    ba_mask[r_i, :len(ba)] = True
+
+            # Move to device
+            t_cand_idx = torch.from_numpy(cand_idx_pad).to(dev)
+            t_cand_mask = torch.from_numpy(cand_mask).to(dev, dtype=kdtype)
+            t_supp_idx = torch.from_numpy(supp_idx_pad).to(dev)
+            t_w_supp = torch.from_numpy(w_supp_pad).to(dev, dtype=kdtype)
+            t_supp_mask = torch.from_numpy(supp_mask).to(dev, dtype=kdtype)
+            t_bb_idx = torch.from_numpy(bb_idx_pad).to(dev)
+            t_bb_mass = torch.from_numpy(bb_mass_pad).to(dev, dtype=kdtype)
+            t_bb_mask = torch.from_numpy(bb_mask).to(dev, dtype=kdtype)
+            t_ba_idx = torch.from_numpy(ba_idx_pad).to(dev)
+            t_ba_mask = torch.from_numpy(ba_mask).to(dev, dtype=kdtype)
+
+            # Gather embeddings & sigmas: emb_gpu[t_cand_idx] -> (B, max_C, d)
+            cand_emb = emb_gpu[t_cand_idx].to(kdtype)         # (B, max_C, d)
+            cand_sigma = sigma_gpu[t_cand_idx].to(kdtype)     # (B, max_C)
+            supp_emb = emb_gpu[t_supp_idx].to(kdtype)         # (B, max_S, d)
+            supp_sigma = sigma_gpu[t_supp_idx].to(kdtype)     # (B, max_S)
+            bb_emb = emb_gpu[t_bb_idx].to(kdtype)             # (B, max_Nb, d)
+            bb_sigma = sigma_gpu[t_bb_idx].to(kdtype)         # (B, max_Nb)
+            ba_emb = emb_gpu[t_ba_idx].to(kdtype)             # (B, max_Na, d)
+            ba_sigma = sigma_gpu[t_ba_idx].to(kdtype)         # (B, max_Na)
+
+            c2 = (cand_emb * cand_emb).sum(dim=-1, keepdim=True)            # (B, max_C, 1)
+
+            # K_G: candidates vs support
+            s2 = (supp_emb * supp_emb).sum(dim=-1, keepdim=True).transpose(1, 2)  # (B,1,max_S)
+            dot_cs = torch.bmm(cand_emb, supp_emb.transpose(1, 2))                # (B,max_C,max_S)
+            d2_cs = torch.clamp(c2 + s2 - 2 * dot_cs, min=0.0)
+            sigma_outer_s = cand_sigma.unsqueeze(2) * supp_sigma.unsqueeze(1)
+            kern_cs = torch.exp(-d2_cs / (sigma_outer_s + 1e-30))
+            # Zero out padded support columns (so they contribute nothing)
+            kern_cs = kern_cs * t_supp_mask.unsqueeze(1)
+            # K_G[b,c] = sum_s kern_cs[b,c,s] * w_supp[b,s] (already zeroed via mask above
+            # for padded s; multiplying again is a no-op).
+            K_G = torch.bmm(kern_cs, t_w_supp.unsqueeze(2)).squeeze(2)            # (B, max_C)
+
+            # K_B from boundary books
+            b2 = (bb_emb * bb_emb).sum(dim=-1, keepdim=True).transpose(1, 2)
+            dot_cb = torch.bmm(cand_emb, bb_emb.transpose(1, 2))
+            d2_cb = torch.clamp(c2 + b2 - 2 * dot_cb, min=0.0)
+            sigma_outer_b = cand_sigma.unsqueeze(2) * bb_sigma.unsqueeze(1)
+            kern_cb = torch.exp(-d2_cb / (sigma_outer_b + 1e-30))
+            kern_cb = kern_cb * t_bb_mask.unsqueeze(1)
+            K_B_books = torch.bmm(kern_cb, t_bb_mass.unsqueeze(2)).squeeze(2)     # (B, max_C)
+
+            # K_B from boundary articles (mass = 1, so just sum kern over the mask)
+            a2 = (ba_emb * ba_emb).sum(dim=-1, keepdim=True).transpose(1, 2)
+            dot_ca = torch.bmm(cand_emb, ba_emb.transpose(1, 2))
+            d2_ca = torch.clamp(c2 + a2 - 2 * dot_ca, min=0.0)
+            sigma_outer_a = cand_sigma.unsqueeze(2) * ba_sigma.unsqueeze(1)
+            kern_ca = torch.exp(-d2_ca / (sigma_outer_a + 1e-30))
+            kern_ca = kern_ca * t_ba_mask.unsqueeze(1)
+            K_B_arts = kern_ca.sum(dim=-1)                                        # (B, max_C)
+
+            # Pull back to CPU as float64 for downstream arithmetic
+            K_G_cpu = K_G.to(torch.float64).cpu().numpy()
+            K_B_books_cpu = K_B_books.to(torch.float64).cpu().numpy()
+            K_B_arts_cpu = K_B_arts.to(torch.float64).cpu().numpy()
+
+            # ---- Phase E: per-seed CPU finalisation (self-subtract,
+            # posterior, weight update, delta) ----
+            for r_i, b in enumerate(ready):
+                ca = per_seed_candidates[b]
+                C = len(ca)
+                K_G_b = K_G_cpu[r_i, :C].copy()
+                K_B_books_b = K_B_books_cpu[r_i, :C]
+                K_B_arts_b = K_B_arts_cpu[r_i, :C]
+
+                # Self-subtract for candidates that are also in support.
+                supp = per_seed_supp[b]
+                wb = w_sparse[b]
+                supp_set = set(int(s) for s in supp)
+                # build position-of-cand lookup for the supp members only
+                supp_pos_in_cand = {int(s): i for i, s in enumerate(ca)
+                                    if int(s) in supp_set}
+                for s_global, c_idx in supp_pos_in_cand.items():
+                    K_G_b[c_idx] -= float(wb[s_global])
+
+                K_B_b = K_B_books_b + K_B_arts_b
+                new_w_cands = K_G_b / (K_G_b + K_B_b + 1e-30)
+
+                # Compute delta over cand region (matches single-seed:
+                # ‖new_w − old_w‖₂ over the whole vector, but only cand
+                # positions and supp positions can change between iters
+                # — supp's old w stays unless it's also in cand, and supp
+                # is always ⊆ cand here so delta is just over cand).
+                # Build old values aligned to cand:
+                old_vals = np.array([wb.get(int(c), 0.0) for c in ca], dtype=np.float64)
+                delta = float(np.linalg.norm(new_w_cands - old_vals))
+
+                # Update sparse w: clear all cand positions, then set new.
+                # (Positions outside cand keep their old values — supp is
+                # ⊆ cand by construction, so this is consistent.)
+                for c_global, new_v in zip(ca.tolist(), new_w_cands.tolist()):
+                    if new_v != 0.0:
+                        wb[c_global] = new_v
+                    else:
+                        # Don't grow the dict with zeros for candidates
+                        # that scored exactly 0; remove if previously set.
+                        wb.pop(c_global, None)
+
+                # ---- Phase F: per-seed termination checks ----
+                # Order matters for intra-batch confluence: process seeds in
+                # seed-order (already guaranteed by `enumerate(ready)`), and
+                # consult both prior-batch state (`frozen_cache`, `claimed`)
+                # AND batch-local state populated earlier this batch.
+                #
+                # The first seed in this batch to converge to a given hard
+                # support "wins" — adds to batch_local_cache, so later seeds
+                # in the same iter (and subsequent iters within this batch)
+                # see it as a cache-hit instead of running to redundant
+                # convergence. This recovers sequential-mode dedup.
+                cur_supp = frozenset(int(i) for i, v in wb.items() if v > tau_supp)
+
+                # 1. Cache check: prior-batch frozen_cache OR batch-local cache
+                cache_hit = False
+                if cur_supp:
+                    if frozen_cache is not None and cur_supp in frozen_cache:
+                        cache_hit = True
+                    elif cur_supp in batch_local_cache:
+                        cache_hit = True
+                if cache_hit:
+                    results[b] = cur_supp
+                    active[b] = False
+                    continue
+
+                # 2a. Within-batch claimed-overlap (EVERY iter). Decoupled
+                # from `claimed_check_every` because most seeds converge in
+                # ≤4 iters; gating this channel by check_every=5 means it
+                # never fires within a batch, and near-twin basins drifting
+                # by 1-2 members evade the exact-frozenset cache and produce
+                # duplicate basins. Cheap: |batch_local_claimed| ~ few
+                # hundred, set ∩ set.
+                if batch_local_claimed and cur_supp:
+                    overlap_local = len(cur_supp & batch_local_claimed)
+                    if overlap_local / max(len(cur_supp), 1) >= claimed_overlap_threshold:
+                        results[b] = None
+                        active[b] = False
+                        continue
+
+                # 2b. Prior-batch claimed-overlap (every claimed_check_every
+                # iters, matching single-seed cadence). Kept gated to preserve
+                # parity with sequential mode.
+                if (
+                    claimed is not None
+                    and claimed
+                    and (it + 1) % claimed_check_every == 0
+                    and cur_supp
+                ):
+                    overlap_prior = len(cur_supp & claimed)
+                    if overlap_prior / max(len(cur_supp), 1) >= claimed_overlap_threshold:
+                        results[b] = None
+                        active[b] = False
+                        continue
+
+                # 3. Convergence — first converger in seed-order updates
+                #    batch_local_cache / batch_local_claimed so subsequent
+                #    seeds in this batch (this iter or later iters) can
+                #    early-abort against it.
+                if delta < conv_eps:
+                    results[b] = _materialize_w(wb, n)
+                    active[b] = False
+                    if cur_supp:
+                        # Don't overwrite — first converger wins.
+                        if cur_supp not in batch_local_cache:
+                            batch_local_cache[cur_supp] = b
+                        batch_local_claimed |= cur_supp
+
+        if not active.any():
+            break
+
+    # Any seed still active (max_iters reached) gets its current w.
+    for b in range(B):
+        if active[b]:
+            results[b] = _materialize_w(w_sparse[b], n)
+            active[b] = False
+
+    return results
+
+
+def _materialize_w(w_sparse: dict[int, float], n: int) -> np.ndarray:
+    """Build a length-n dense weight vector from a sparse dict."""
+    w = np.zeros(n, dtype=np.float64)
+    if w_sparse:
+        idx = np.fromiter(w_sparse.keys(), dtype=np.int64, count=len(w_sparse))
+        val = np.fromiter(w_sparse.values(), dtype=np.float64, count=len(w_sparse))
+        w[idx] = val
+    return w
+
+
 def _compute_csv_stats(
     w: np.ndarray,
     tau_supp: float,
@@ -462,7 +959,15 @@ def main() -> None:
                         "Default float64 to match CPU. fp32 is 2× faster on "
                         "GPU but may slightly perturb basin shapes via float "
                         "precision; verify against fp64 baseline.")
+    p.add_argument("--gpu-batch", type=int, default=0,
+                   help="Process this many seeds in parallel on GPU per soft-EM "
+                        "iter (uses expand_soft_batched). Requires --gpu. 0 = "
+                        "disabled (single-seed loop). Try 32-128. Amortizes "
+                        "per-iter CUDA dispatch overhead across the batch.")
     args = p.parse_args()
+
+    if args.gpu_batch > 0 and args.adaptive_K:
+        raise SystemExit("--adaptive-K is not supported with --gpu-batch")
 
     print(f"Loading scope {args.scope}...")
     emb, ids, types, _titles, topic_ids, _refs = load_scope(args.scope, with_refs=False)
@@ -532,6 +1037,9 @@ def main() -> None:
 
     seeds = article_global_idx[::args.seed_stride]
     print(f"\nIterating {len(seeds):,} article seeds (stride {args.seed_stride})...")
+    if args.gpu_batch > 0:
+        print(f"  batched-GPU mode: {args.gpu_batch} seeds per soft-EM batch "
+              f"(expand_soft_batched, fp32={args.fp32 or True})")
 
     t_start = time.time()
     results: list[dict] = []
@@ -544,7 +1052,139 @@ def main() -> None:
     n_dup = 0
     n_cache_hit = 0
 
-    for seed_pos, seed in enumerate(seeds):
+    def _process_result(s: int, result, *, log_prefix: str = "") -> None:
+        """Update gap_hashes/claimed/counters from one expand_* result.
+
+        Closes over the various counter names via nonlocal. Used by both
+        the single-seed and batched code paths.
+        """
+        nonlocal n_aborted_overlap, n_cache_hit, n_below_min_size, n_dup
+        nonlocal claimed
+        if result is None:
+            n_aborted_overlap += 1
+            return
+        if isinstance(result, frozenset):
+            n_cache_hit += 1
+            if result in gap_hashes:
+                gap_hashes[result]["seed_types"].add("article")
+            return
+        w = result
+        stats = _compute_csv_stats(w, args.tau_supp, is_article, is_book)
+        if stats is None or stats["total_size"] < args.min_final_size:
+            n_below_min_size += 1
+            return
+        iter_counts.append(1)
+        members_set = stats["members_set"]
+        if members_set in gap_hashes:
+            n_dup += 1
+            gap_hashes[members_set]["seed_types"].add("article")
+            return
+        gap_hashes[members_set] = {
+            "seed_types": {"article"},
+            "first_seed": s,
+        }
+        results.append({
+            "first_seed": s,
+            "first_seed_type": "article",
+            "seed_types": gap_hashes[members_set]["seed_types"],
+            **stats,
+        })
+        claimed |= members_set
+
+    if args.gpu_batch > 0:
+        # ---- Batched-GPU path ----
+        assert emb_gpu is not None, "--gpu-batch requires --gpu"
+        seeds_list = [int(s) for s in seeds]
+        total = len(seeds_list)
+        seed_pos = 0
+        # Iterate in fixed-size batches, but filter out seeds already in
+        # `claimed` (skipped-claimed) before forming each batch.
+        while seed_pos < total:
+            chunk_seeds: list[int] = []
+            chunk_orig_pos: list[int] = []
+            while seed_pos < total and len(chunk_seeds) < args.gpu_batch:
+                s_int = seeds_list[seed_pos]
+                if not args.disable_fast_filters and s_int in claimed:
+                    n_skipped_claimed += 1
+                    seed_pos += 1
+                    # progress
+                    if seed_pos % 1000 == 0 or seed_pos == total:
+                        elapsed = time.time() - t_start
+                        rate = seed_pos / max(elapsed, 0.01)
+                        eta = (total - seed_pos) / max(rate, 0.01)
+                        print(
+                            f"  processed {seed_pos}/{total} seeds in {elapsed:.0f}s "
+                            f"({rate:.0f}/s, eta {eta:.0f}s); "
+                            f"discovered {len(results)} gaps; "
+                            f"skipped-claimed {n_skipped_claimed}, "
+                            f"cache-hit {n_cache_hit}, "
+                            f"early-abort {n_aborted_overlap}, "
+                            f"too-small {n_below_min_size}, "
+                            f"dup {n_dup}",
+                            flush=True,
+                        )
+                    continue
+                chunk_seeds.append(s_int)
+                chunk_orig_pos.append(seed_pos)
+                seed_pos += 1
+            if not chunk_seeds:
+                continue
+
+            claimed_arg = None if args.disable_fast_filters else claimed
+            cache_arg = None if args.disable_fast_filters else gap_hashes
+            chunk_results = expand_soft_batched(
+                seed_idxs=chunk_seeds,
+                emb=emb,
+                types_arr=types_arr,
+                sigma=sigma,
+                full_index=full_index,
+                book_index=book_index,
+                book_global_idx=book_global_idx,
+                article_global_idx=article_global_idx,
+                article_to_nearest_books_global=article_to_nearest_books_global,
+                article_index=article_index,
+                n=n,
+                emb_gpu=emb_gpu,
+                sigma_gpu=sigma_gpu,
+                tau_supp=args.tau_supp,
+                neighborhood_K=args.frontier_width,
+                max_iters=args.max_iters,
+                conv_eps=args.conv_eps,
+                claimed=claimed_arg,
+                claimed_overlap_threshold=args.claimed_overlap_threshold,
+                claimed_check_every=args.claimed_check_every,
+                frozen_cache=cache_arg,
+                gpu_fp32=args.fp32 or True,  # batched defaults fp32
+            )
+
+            for s_int, r in zip(chunk_seeds, chunk_results):
+                _process_result(s_int, r)
+
+            # progress at chunk boundary
+            if seed_pos % 1000 < args.gpu_batch or seed_pos == total:
+                elapsed = time.time() - t_start
+                rate = seed_pos / max(elapsed, 0.01)
+                eta = (total - seed_pos) / max(rate, 0.01)
+                print(
+                    f"  processed {seed_pos}/{total} seeds in {elapsed:.0f}s "
+                    f"({rate:.0f}/s, eta {eta:.0f}s); "
+                    f"discovered {len(results)} gaps; "
+                    f"skipped-claimed {n_skipped_claimed}, "
+                    f"cache-hit {n_cache_hit}, "
+                    f"early-abort {n_aborted_overlap}, "
+                    f"too-small {n_below_min_size}, "
+                    f"dup {n_dup}",
+                    flush=True,
+                )
+
+        # Skip the single-seed loop below by short-circuiting via an
+        # empty iterable. The original loop body is preserved verbatim
+        # for the non-batched case.
+        single_seed_iterable: list = []  # makes the `for` loop below a no-op
+    else:
+        single_seed_iterable = list(seeds)
+
+    for seed_pos, seed in enumerate(single_seed_iterable):
         # Progress every 1000 seeds (before any short-circuits so counters are accurate)
         if (seed_pos + 1) % 1000 == 0 or seed_pos == len(seeds) - 1:
             elapsed = time.time() - t_start
