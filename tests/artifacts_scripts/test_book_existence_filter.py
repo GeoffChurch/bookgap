@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from artifacts_scripts._keyword_helpers import (
+from artifacts_scripts.keyword_helpers import (
     compute_book_existence_signal,
     jaccard_set,
     tokenize_for_overlap,

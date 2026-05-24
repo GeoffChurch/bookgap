@@ -14,7 +14,7 @@ def test_compute_gap_keywords_with_weights_passes_relevance_to_extractor():
 
     Basin 0's top keyword should be alpha (mostly weighted alpha doc);
     basin 1's should be beta."""
-    from artifacts_scripts._keyword_helpers import compute_gap_keywords
+    from artifacts_scripts.keyword_helpers import compute_gap_keywords
 
     titles = [
         "alpha alpha alpha alpha alpha",
@@ -41,7 +41,7 @@ def test_compute_gap_keywords_with_weights_passes_relevance_to_extractor():
 def test_compute_gap_keywords_without_weights_unchanged():
     """When weights is None (default), behavior matches the original
     EQUAL doc weighting — backward-compatible."""
-    from artifacts_scripts._keyword_helpers import compute_gap_keywords
+    from artifacts_scripts.keyword_helpers import compute_gap_keywords
 
     titles = ["alpha alpha", "beta beta", "gamma gamma", "delta delta"]
     abstracts = [""] * 4
