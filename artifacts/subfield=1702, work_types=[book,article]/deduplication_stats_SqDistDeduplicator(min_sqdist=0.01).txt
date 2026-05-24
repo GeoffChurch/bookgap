@@ -1,5 +1,0 @@
-Total works before deduplication: 1550927
-Total works after deduplication: 1540274
-Fraction of works retained: 0.9931
-article: 1533354 -> 1522989 (0.9932)
-book: 17573 -> 17285 (0.9836)

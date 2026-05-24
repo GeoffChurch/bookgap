@@ -21,6 +21,7 @@ from bookgap.embedder import Embedder
 from bookgap.pyalex_client import pyalex, RATE_LIMITER
 from bookgap.util import (
     ARTIFACTS_DIR,
+    SCOPES_DIR,
     CACHE_DIR,
     Filter,
     LOGGER,
@@ -369,7 +370,7 @@ def _filter_works_iter(scope: ResolvedScope, works_iter):
     filter_stats = {f"{filter}": PerTypeCounter() for filter in filters}
     total = PerTypeCounter()
     num_removed = PerTypeCounter()
-    artifacts_dir = ARTIFACTS_DIR / str(scope)
+    artifacts_dir = SCOPES_DIR / str(scope)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     with (artifacts_dir / "invalid_works.txt").open("w") as f:
@@ -419,7 +420,7 @@ def _deduplicate_works(works: list[dict[str, Any]], scope: ResolvedScope) -> lis
         key = normalize_work(work)
         deduped.setdefault(key, []).append(work)
 
-    artifacts_dir = ARTIFACTS_DIR / create_unicode_safe_filename(f"{scope}")
+    artifacts_dir = SCOPES_DIR / create_unicode_safe_filename(f"{scope}")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     total_works = len(works)

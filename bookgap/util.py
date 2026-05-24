@@ -46,6 +46,9 @@ TIMER = Timer(print=LOGGER.info)
 ARTIFACTS_DIR = Path("artifacts")
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
+SCOPES_DIR = ARTIFACTS_DIR / "scopes"
+SCOPES_DIR.mkdir(parents=True, exist_ok=True)
+
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY = joblib.Memory(CACHE_DIR / "joblib", verbose=0)

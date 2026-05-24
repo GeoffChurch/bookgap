@@ -33,7 +33,7 @@ from bookgap.cloud import Cloud, SubCloud, WorkDenoisers
 from bookgap.cloud_index import get_avgrefs, get_kball_coverage, knn, batch_range_search_individual_radii
 from bookgap.index import HNSW, FlatL2, IndexInfo, IndexType, build_index, range_search_radii_
 from bookgap.parse_args import get_explicit_args, parse_args
-from bookgap.util import ARTIFACTS_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
+from bookgap.util import ARTIFACTS_DIR, SCOPES_DIR, CACHE_DIR, LOGGER, TIMER, MEMORY, Filters, WorkType, Filter, create_unicode_safe_filename, get_stats, setup_logging
 from bookgap.mp_ks_test import ks_2samp
 from bookgap.deduplicators import FractionalDeduplicator, SqDistDeduplicator
 # Import plotting utilities to eliminate duplication  
@@ -191,7 +191,7 @@ def get_rank_of_nearest_incloud_neighbor(selfcloud: Cloud, othercloud: Cloud, mi
     
     num_closer = np.array([len(closer) for closer in closer_points])
     
-    artifacts_dir = ARTIFACTS_DIR / create_unicode_safe_filename(f"{selfcloud.name} vs {othercloud.name}") / f"min_dist: {min_dist}"
+    artifacts_dir = SCOPES_DIR / create_unicode_safe_filename(f"{selfcloud.name} vs {othercloud.name}") / f"min_dist: {min_dist}"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     # Save statistics to file
     with (artifacts_dir / f"stats.json").open("w") as f:
@@ -275,7 +275,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
     assert len(index_clouds) == 1
     LOGGER.info(f"do_avgref_analysis({query_cloud.name=}) for {len(index_clouds)} index clouds")
     
-    artifacts_dir = ARTIFACTS_DIR / str(query_cloud.filter_pair) / "avgref_analysis"
+    artifacts_dir = SCOPES_DIR / str(query_cloud.filter_pair) / "avgref_analysis"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     
     avgref_result = get_avgrefs(index_clouds, query_cloud, normalize_avgref_embeddings=query_cloud.normalize_embeddings)
@@ -729,7 +729,7 @@ def get_points_by_coverage_ball(cloud: Cloud, index_work_type: str, query_work_t
     query_subcloud = SubCloud(parent=cloud, post_filter=Filter(work_types=(query_work_type,)))
     
     filter_pair = cloud.filter_pair
-    artifacts_dir = ARTIFACTS_DIR / f"{filter_pair}" / f"{index_work_type}s covered by {query_work_type}s"
+    artifacts_dir = SCOPES_DIR / f"{filter_pair}" / f"{index_work_type}s covered by {query_work_type}s"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     # index_cloud = get_cloud(topic, index_work_type, **kwargs) 
     # query_cloud = get_cloud(topic, query_work_type, **kwargs)
@@ -1111,7 +1111,7 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
 
     global ARTIFACTS_DIR
     # ARTIFACTS_DIR /= create_unicode_safe_filename("_".join(f"{k}:{v}" for k, v in sorted(vars(config).items())))
-    ARTIFACTS_DIR /= create_unicode_safe_filename(" ".join(f"{k}={v}" for k, v in sorted(vars(config).items())))
+    ARTIFACTS_DIR = SCOPES_DIR / create_unicode_safe_filename(" ".join(f"{k}={v}" for k, v in sorted(vars(config).items())))
     LOGGER.info(f"Artifacts directory: {ARTIFACTS_DIR}")
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1142,7 +1142,7 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
     # for work_type, topic in itertools.product(WorkType, Topic):
     for topic in Filters:
         work_type = WorkType.ARTICLE
-        fname = ARTIFACTS_DIR / f"{topic}" / f"{work_type}" / "closest_pairs.txt"
+        fname = SCOPES_DIR / f"{topic}" / f"{work_type}" / "closest_pairs.txt"
         fname.parent.mkdir(parents=True, exist_ok=True)
         with open(fname, "w") as f:
             cloud = clouds[topic]
@@ -1190,7 +1190,7 @@ def main(drop_k: int, max_works: Optional[int], duplicate_expectation: float, ra
         ax.set_ylabel("Frequency")
         ax.set_title(f"{topic} - {work_type} - Number of referenced works")
         ax.set_yscale("log")
-        fig_dir = ARTIFACTS_DIR / f"{topic}" / f"{work_type}"
+        fig_dir = SCOPES_DIR / f"{topic}" / f"{work_type}"
         fig_dir.mkdir(parents=True, exist_ok=True)
         fig.savefig(fig_dir / "referenced_works.png", dpi=DPI)
         plt.close(fig)

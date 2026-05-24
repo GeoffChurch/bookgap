@@ -20,6 +20,7 @@ from bookgap.index import IndexInfo, build_index
 import scipy.sparse as sp
 from bookgap.util import (
     ARTIFACTS_DIR,
+    SCOPES_DIR,
     CACHE_DIR,
     FilterPair,
     Filter,
@@ -985,7 +986,7 @@ def _deduplicate_semantic(
     )
 
     # Log dedup stats by work type
-    artifacts_dir = ARTIFACTS_DIR / str(cloud.filter_pair.pre)
+    artifacts_dir = SCOPES_DIR / str(cloud.filter_pair.pre)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     # Read only the type column for the sorted subset using take()
