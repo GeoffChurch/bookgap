@@ -26,9 +26,10 @@ from numpy.typing import NDArray
 
 from bookgap.cloud import Cloud
 from bookgap.configs.config_store import register_configs
+from bookgap.filters import TemporalFilter, _extract_year
 from bookgap.subcloud import SubCloud
 from bookgap.types import CellType
-from bookgap.util import LOGGER, MEMORY, TIMER, WorkType, Filter, get_stats, create_unicode_safe_filename, setup_logging
+from bookgap.util import LOGGER, MEMORY, TIMER, WorkType, get_stats, create_unicode_safe_filename, setup_logging
 
 from .config import HistoricalAnalysisConfig
 
@@ -42,49 +43,6 @@ register_configs()
 from hydra.core.config_store import ConfigStore
 cs = ConfigStore.instance()
 cs.store(name="historical_analysis", node=HistoricalAnalysisConfig(year=2010))
-
-
-@dataclass(frozen=True)
-class TemporalFilter(Filter):
-    """Filter works by publication year and type."""
-    
-    max_year: Optional[int] = None
-    exact_year: Optional[int] = None
-    work_type: Optional[WorkType] = None
-    
-    def check_work(self, work: dict[str, Any]) -> bool:
-        # Check parent filter first
-        if not super().check_work(work):
-            LOGGER.info(f"[TF] Excluded by parent filter: {work.get('id', '')}")
-            return False
-
-        pub_year = _extract_year(work.get("publication_date"))
-        if pub_year is None:
-            LOGGER.info(f"[TF] No pub_year: {work.get('id', '')} pub_date={work.get('publication_date')}")
-            return False
-
-        if self.max_year is not None and pub_year > self.max_year:
-            # LOGGER.info(f"[TF] Excluded by max_year: {work.get('id', '')} pub_year={pub_year} max_year={self.max_year}")
-            return False
-
-        if self.exact_year is not None and pub_year != self.exact_year:
-            # LOGGER.info(f"[TF] Excluded by exact_year: {work.get('id', '')} pub_year={pub_year} exact_year={self.exact_year}")
-            return False
-
-        if self.work_type is not None:
-            work_type_str = work.get("type", "").lower()
-            # Handle both WorkType enum and string values
-            target_work_type = self.work_type.value if isinstance(self.work_type, WorkType) else self.work_type
-            if target_work_type == "book" and work_type_str != "book":
-                # LOGGER.info(f"[TF] Excluded by work_type=BOOK: {work.get('id', '')} type={work_type_str}")
-                return False
-            elif target_work_type in ["article", "preprint"] and work_type_str not in ["article", "preprint"]:
-                # LOGGER.info(f"[TF] Excluded by work_type=ARTICLE: {work.get('id', '')} type={work_type_str}")
-                return False
-
-        # Uncomment to see all passing works:
-        # LOGGER.info(f"[TF] Included: {work.get('id', '')} pub_year={pub_year} type={work.get('type', '')}")
-        return True
 
 
 @TIMER.time()
@@ -155,25 +113,6 @@ def _build_temporal_test_set(
     )
     
     return subcloud
-
-
-def _extract_year(date_str: Optional[str]) -> Optional[int]:
-    """Extract year from publication_date string.
-    
-    Args:
-        date_str: Date string in format "YYYY-MM-DD" or "YYYY"
-        
-    Returns:
-        Year as integer, or None if invalid/missing
-    """
-    if not date_str:
-        return None
-    
-    try:
-        # Handle "YYYY-MM-DD" or just "YYYY"
-        return int(date_str.split("-")[0])
-    except (ValueError, IndexError):
-        raise ValueError(f"Invalid date string: {date_str}")
 
 
 @TIMER.time()

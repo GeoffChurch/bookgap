@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 import enum
 import logging
 from functools import wraps
 import inspect
 import re
-from typing import Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 from pathlib import Path
 import time
 
@@ -14,6 +16,9 @@ from numpy.typing import NDArray
 import scipy.sparse as sp
 from typing import List, Tuple, Dict, Any
 from sklearn.preprocessing import normalize as sk_normalize
+
+if TYPE_CHECKING:
+    from bookgap.cloud import Cloud
 
 class Timer:
     def __init__(self, print=print):
@@ -139,6 +144,26 @@ class Filter:
             if wtype not in self.work_types:
                 return False
         return True
+
+    def compute_columnar_mask(self, cloud: Cloud) -> Optional[NDArray[np.bool_]]:
+        """Optional vectorised fast path for SubCloud retention.
+
+        Returning ``None`` (the base-class default) tells
+        :func:`bookgap.subcloud.get_subcloud_retained_idxs` to fall back to
+        iterating Python work dicts through :meth:`check_work` — the safe
+        general path. Subclasses can override to return a 1-D boolean
+        ``ndarray`` of length ``len(cloud.work_ids())`` over ``cloud.works()``
+        row positions, avoiding the ~6-10 GB load of the full work dicts when
+        only a few columns are inspected.
+
+        ``Cloud`` is imported under ``TYPE_CHECKING`` because ``cloud.py``
+        imports this module; concrete subclasses living above ``cloud.py``
+        (see :mod:`bookgap.filters`) can import it directly.
+
+        See ``docs/backlog/infrastructure/columnar-works-audit.md`` for the
+        broader audit motivating this hook.
+        """
+        return None
     
     def __str__(self) -> str:
         parts = []

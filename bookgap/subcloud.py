@@ -60,6 +60,17 @@ class SubCloud:
 @lru_cache(maxsize=8)
 @MEMORY.cache
 def get_subcloud_retained_idxs(subcloud: SubCloud) -> NDArray[np.uint64]:
+    # Fast path: if the post_filter implements a vectorised columnar mask,
+    # skip the ~6-10 GB load of every work dict and just do numpy ops.
+    mask = subcloud.post_filter.compute_columnar_mask(subcloud.parent)
+    if mask is not None:
+        expected_len = len(subcloud.parent.work_ids())
+        assert mask.shape == (expected_len,), (
+            f"compute_columnar_mask returned shape {mask.shape}, "
+            f"expected ({expected_len},); the mask must be 1-D and aligned "
+            f"with cloud.works() row positions."
+        )
+        return np.where(np.asarray(mask, dtype=bool))[0].astype(np.uint64)
     return np.array(
         [i for i, work in enumerate(subcloud.parent.works()) if subcloud.post_filter.check_work(work)],
         dtype=np.uint64,
