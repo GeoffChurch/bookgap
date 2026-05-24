@@ -86,6 +86,56 @@ def load_enriched_csv(
     return M0, basin_meta
 
 
+def fuzzy_deduplicate_basins(
+    M0: np.ndarray,
+    basin_meta: list[dict],
+    threshold: float,
+) -> tuple[np.ndarray, list[dict], list[int]]:
+    """Deduplicate basins based on L1-generalized Szymkiewicz-Simpson overlap.
+    
+    Greedy size-ordered fold-in: computes overlaps against the current largest 
+    basin's original shape, consumes all smaller basins exceeding the threshold, 
+    and updates the largest basin to the elementwise maximum of the consumed basins.
+    """
+    n_articles, n_basins = M0.shape
+    masses = M0.sum(axis=0)
+    
+    order = np.argsort(-masses).tolist()
+    active = np.ones(n_basins, dtype=bool)
+    M_out_cols = []
+    keep_meta = []
+    keep_indices = []
+    
+    for i in order:
+        if not active[i]:
+            continue
+            
+        base_col = M0[:, i].copy()
+        
+        for j in order:
+            if j == i or not active[j]:
+                continue
+            
+            min_mass = masses[j]
+            if min_mass <= 0:
+                continue
+                
+            overlap = np.minimum(base_col, M0[:, j]).sum() / min_mass
+            if overlap >= threshold:
+                # Immediate fold-in: update base_col immediately so subsequent
+                # candidates are compared against the expanded union.
+                base_col = np.maximum(base_col, M0[:, j])
+                active[j] = False
+            
+        M_out_cols.append(base_col)
+        keep_meta.append(basin_meta[i])
+        keep_indices.append(i)
+        active[i] = False
+        
+    M_new = np.stack(M_out_cols, axis=1)
+    return M_new, keep_meta, keep_indices
+
+
 def softmax_with_optional_empty(
     log_K: np.ndarray,
     log_K_empty: np.ndarray | None,
@@ -578,10 +628,12 @@ def main() -> None:
                         "thus centroids) fixed across iterations. The "
                         "parent doc's 'fixed competitors' framing — most "
                         "likely fix for variant A and B iterated divergence.")
+    p.add_argument("--fuzzy-dedup-threshold", type=float, default=None,
+                   help="Optional L1-generalized overlap threshold for greedy fold-in dedup before softmax. Default None (disabled).")
     args = p.parse_args()
 
     # Imports kept local to avoid heavy startup cost in unit tests
-    from artifacts_scripts.hdbscan_gap_probe import load_scope
+    from artifacts_scripts.scope_loader import load_scope
     from scipy.sparse import csr_matrix, save_npz
 
     out_dir = Path(args.output_dir)
@@ -605,6 +657,13 @@ def main() -> None:
     print("Loading enriched CSV...", flush=True)
     M0, basin_meta = load_enriched_csv(Path(args.enriched_csv), is_article)
     print(f"  M0 shape: {M0.shape}", flush=True)
+
+    if args.fuzzy_dedup_threshold is not None:
+        print(f"Fuzzy deduplicating basins (threshold={args.fuzzy_dedup_threshold})...", flush=True)
+        M0, basin_meta, keep_indices = fuzzy_deduplicate_basins(
+            M0, basin_meta, args.fuzzy_dedup_threshold
+        )
+        print(f"  reduced to {M0.shape[1]} basins; M0 shape {M0.shape}", flush=True)
 
     print(f"Computing self-tuning σ (k={args.k_sigma})...", flush=True)
     article_sigma = compute_self_tuning_sigma(article_emb, k_sigma=args.k_sigma)

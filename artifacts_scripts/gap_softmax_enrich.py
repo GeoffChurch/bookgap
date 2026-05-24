@@ -27,13 +27,14 @@ from artifacts_scripts.gap_softmax_reassign import (
     compute_self_tuning_sigma,
     knn_basin_lookup,
     load_enriched_csv,
+    fuzzy_deduplicate_basins,
     softmax_e_step,
     softmax_with_optional_empty,
     tune_tau_for_perplexity,
 )
 
 from artifacts_scripts.keyword_helpers import compute_gap_keywords
-from artifacts_scripts.hdbscan_gap_probe import load_scope
+from artifacts_scripts.scope_loader import load_scope
 from bookgap.index import build_index, FlatL2
 
 
@@ -328,16 +329,18 @@ def run(
     keywords_per_gap: int = 5,
     bigram_iterations: int = 2,
     k_top_books: int = 10,
+    fuzzy_dedup_threshold: float | None = None,
 ) -> None:
     """Phase 3 enrichment pipeline.
 
     1. Load scope embeddings + soft-EM CSV → M0
-    2. Self-tuning σ (articles) + one-shot softmax E-step → M_new (full kNN-truncated)
-    3. Compute book σ + book→basin softmax → M_books → top-k books per basin
-    4. Compute weighted keywords per basin (input: full kNN-truncated
+    2. (Optional) L1-generalized fuzzy deduplication on M0
+    3. Self-tuning σ (articles) + one-shot softmax E-step → M_new (full kNN-truncated)
+    4. Compute book σ + book→basin softmax → M_books → top-k books per basin
+    5. Compute weighted keywords per basin (input: full kNN-truncated
        softmax members + weights)
-    5. Compute effective_size = Σ_a M_new[a, G] per basin
-    6. Write 12-column CSV + sidecar .memberships.npz (includes M_books)
+    6. Compute effective_size = Σ_a M_new[a, G] per basin
+    7. Write 12-column CSV + sidecar .memberships.npz (includes M_books)
     """
     print(f"Loading scope {scope}...", flush=True)
     emb, ids, types, titles, _topic_ids, _refs = load_scope(scope, with_refs=False)
@@ -363,6 +366,15 @@ def run(
     n_basins = M0.shape[1]
     book_members_per_basin = _carry_book_members(input_path, n_basins)
     print(f"  {n_basins} basins; M0 shape {M0.shape}", flush=True)
+
+    if fuzzy_dedup_threshold is not None:
+        print(f"Fuzzy deduplicating basins (threshold={fuzzy_dedup_threshold})...", flush=True)
+        M0, basin_meta, keep_indices = fuzzy_deduplicate_basins(
+            M0, basin_meta, fuzzy_dedup_threshold
+        )
+        n_basins = M0.shape[1]
+        book_members_per_basin = {k: book_members_per_basin[idx] for k, idx in enumerate(keep_indices)}
+        print(f"  reduced to {n_basins} basins; M0 shape {M0.shape}", flush=True)
 
     # Article abstracts for keyword extraction
     print("Loading article abstracts...", flush=True)
@@ -492,6 +504,8 @@ def main() -> None:
     p.add_argument("--bigram-iterations", type=int, default=2)
     p.add_argument("--k-top-books", type=int, default=10,
                    help="How many top-membership books to retain per basin.")
+    p.add_argument("--fuzzy-dedup-threshold", type=float, default=0.75,
+                   help="Optional L1-generalized overlap threshold for greedy fold-in dedup before softmax. Default 0.75.")
     args = p.parse_args()
     run(
         scope=args.scope,
@@ -504,6 +518,7 @@ def main() -> None:
         keywords_per_gap=args.keywords_per_gap,
         bigram_iterations=args.bigram_iterations,
         k_top_books=args.k_top_books,
+        fuzzy_dedup_threshold=args.fuzzy_dedup_threshold,
     )
 
 
