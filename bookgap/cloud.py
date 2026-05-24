@@ -260,7 +260,10 @@ class Cloud:
     
     def work_publication_dates(self) -> List[str]:
         return get_cloud_work_publication_dates(self)
-    
+
+    def work_types(self) -> List[str]:
+        return get_cloud_work_types(self)
+
     def index(self) -> faiss.Index:
         return get_cloud_index(self)
     
@@ -907,6 +910,24 @@ def get_cloud_work_publication_dates(cloud: Cloud) -> List[str]:
     corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
     dates = _read_corpus_column(corpus, "publication_date", sorted_idxs[retained_positions])
     return [d.isoformat() if isinstance(d, (date, datetime)) else d for d in dates]
+
+
+@lru_cache(maxsize=1)
+@MEMORY.cache
+def get_cloud_work_types(cloud: Cloud) -> List[str]:
+    """Get OpenAlex ``type`` (book / article / preprint / …) for all works.
+
+    Note: missing ``type`` values come through as Python ``None`` here,
+    unlike the full-dict path :func:`get_cloud_works`, where
+    :func:`_read_corpus_dicts` rewrites ``None`` to the sentinel string
+    ``"UNKNOWN"``. Callers comparing against concrete WorkType strings
+    (``"book"``, ``"article"``, ``"preprint"``) get the same behavior in
+    both paths — neither ``None`` nor ``"UNKNOWN"`` matches — but anyone
+    depending on the sentinel literal would be surprised.
+    """
+    corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    corpus = corpus_dataset(cloud.filter_pair.pre, cloud.snapshot_date)
+    return _read_corpus_column(corpus, "type", sorted_idxs[retained_positions])
 
 
 @lru_cache(maxsize=1)
