@@ -57,7 +57,7 @@ from pathlib import Path
 
 import numpy as np
 
-from artifacts_scripts.hdbscan_gap_probe import load_scope
+from artifacts_scripts.scope_loader import load_scope
 from bookgap.index import build_index, FlatL2, HNSW
 
 
