@@ -156,6 +156,50 @@ def test_local_csls_posterior_half_fuzzy_membership():
     assert (posts_half < posts_full).all()
 
 
+def test_local_csls_posterior_subsample_uses_full_background():
+    """aggregate_member_indices: only sampled rows are aggregated, but
+    in_G_hard and CSLS background still reflect ALL members."""
+    from artifacts_scripts.gap_kball_llr_refine import compute_local_csls_posterior
+    members = [0, 1, 2, 3, 4]
+    n_total = 7  # 5 members + 1 book (5) + 1 bg article (6)
+    sigma = np.ones(n_total, dtype=np.float32)
+    nearest_book_per_member = np.array([5, 5, 5, 5, 5], dtype=np.int64)
+    book_to_arts = {5: np.array([6], dtype=np.int64)}
+    fuzzy_full = np.zeros(n_total)
+    fuzzy_full[:5] = 1.0
+    # Full pass: D_NN/I_NN for ALL 5 members. Each member has 4 gap-neighbors
+    # plus the background article 6.
+    D_NN_full = np.full((5, 5), 0.1, dtype=np.float32)
+    I_NN_full = np.array([
+        [1, 2, 3, 4, 6],
+        [0, 2, 3, 4, 6],
+        [0, 1, 3, 4, 6],
+        [0, 1, 2, 4, 6],
+        [0, 1, 2, 3, 6],
+    ], dtype=np.int64)
+    posts_full = compute_local_csls_posterior(
+        members=members, D_NN=D_NN_full, I_NN=I_NN_full, sigma=sigma,
+        nearest_book_per_member=nearest_book_per_member,
+        book_to_arts=book_to_arts, n_total=n_total,
+        fuzzy_gap_membership=fuzzy_full,
+    )
+    # Subset pass: aggregate only over rows 1 and 3 (members 1 and 3).
+    # Pass D_NN/I_NN with only those rows.
+    agg_indices = np.array([1, 3], dtype=np.int64)
+    D_NN_sub = D_NN_full[agg_indices]
+    I_NN_sub = I_NN_full[agg_indices]
+    posts_sub = compute_local_csls_posterior(
+        members=members, D_NN=D_NN_sub, I_NN=I_NN_sub, sigma=sigma,
+        nearest_book_per_member=nearest_book_per_member,
+        book_to_arts=book_to_arts, n_total=n_total,
+        fuzzy_gap_membership=fuzzy_full,
+        aggregate_member_indices=agg_indices,
+    )
+    # The sampled rows must equal the corresponding rows of the full pass —
+    # background built from all members is identical in both calls.
+    np.testing.assert_allclose(posts_sub, posts_full[agg_indices], rtol=1e-6)
+
+
 def test_dedup_via_binary_jaccard_merges_near_duplicates():
     """Two gaps sharing 90% of their members at threshold 0.5 merge."""
     from artifacts_scripts.gap_kball_llr_refine import dedup_via_binary_jaccard
