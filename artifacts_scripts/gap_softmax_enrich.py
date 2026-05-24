@@ -32,7 +32,7 @@ from artifacts_scripts.gap_softmax_reassign import (
     tune_tau_for_perplexity,
 )
 
-from artifacts_scripts._keyword_helpers import compute_gap_keywords
+from artifacts_scripts.keyword_helpers import compute_gap_keywords
 from artifacts_scripts.hdbscan_gap_probe import load_scope
 from bookgap.index import build_index, FlatL2
 

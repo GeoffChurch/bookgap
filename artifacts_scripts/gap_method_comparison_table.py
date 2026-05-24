@@ -44,7 +44,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from artifacts_scripts._keyword_helpers import compute_gap_keywords, compute_top_books
+from artifacts_scripts.keyword_helpers import compute_gap_keywords, compute_top_books
 from artifacts_scripts.scope_loader import load_scope
 from bookgap.index import build_index, FlatL2
 
