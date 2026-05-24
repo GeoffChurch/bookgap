@@ -29,12 +29,12 @@ python -m artifacts_scripts.output_run_summary
 - `--output-file path/to/summary.csv`: where to write the summary.
 - `--overwrite/--no-overwrite`: control whether an existing summary is replaced.
 
-## `generate_latex_tables.py`
+## `paper/generate_latex_tables.py`
 
 Create LaTeX tables for each `(embedder_model, llm_num_articles, llm_num_books)` group using the summary CSV and per-run gap analysis files. Each group receives its own directory under `artifacts/latex_tables/` containing `run_gap_summary.tex` and `best_run_gaps_analysis.tex`.
 
 ```bash
-python -m artifacts_scripts.generate_latex_tables --overwrite
+python -m artifacts_scripts.paper.generate_latex_tables --overwrite
 ```
 
 ### Handy options
