@@ -32,6 +32,7 @@ from pathlib import Path
 from bookgap.llm.prompt_record import (
     ArticleEntry,
     BookCoverage,
+    BookEntry,
     LocalProjection2D,
     ProposalCoverage,
     read_context_record,
@@ -113,7 +114,6 @@ def tex(text: str, max_chars: int | None = None) -> str:
 
 _PROMPT_TITLE_MAX = 75
 _PROMPT_ABSTRACT_MAX = 0
-_BOOK_ABSTRACT_MAX = 600  # highest-coverage book abstract (one per topic)
 
 _OPENALEX_ID_RE = re.compile(r"https?://openalex\.org/(?:works/|topics/)?([A-Z]\d+)")
 
@@ -136,69 +136,74 @@ def _gray(text: str) -> str:
     return f"\\textcolor{{gray}}{{{text}}}"
 
 
-_BAR_CHART_MAX_WIDTH_EM = 16.0
-_BAR_HEIGHT_EM = 0.35
-_BAR_VSEP_EM = 0.4
+_FIGURE_HEIGHT_CM = 6.0       # shared height of both side-by-side figures
+_STACK_BAR_WIDTH_CM = 0.5     # width of each stack column
+_STACK_GAP_CM = 0.15          # horizontal gap between pre and post stacks
 
 
-def _render_bar_chart_tikz(
-    book_labels: list[str],   # short labels (e.g. shortened titles)
-    pre_counts: list[int],    # parallel
-    post_counts: list[int],   # parallel
+def _render_twin_stacks_tikz(
+    pre_counts: list[int],
+    post_counts: list[int],
     proposal_post_count: int,
 ) -> str:
-    """Horizontal bar chart: existing books (with overlaid pre/post bars)
-    sorted by pre desc, then the proposal at the end (pre=0).
-    """
-    rows: list[tuple[str, int, int]] = list(
-        zip(book_labels, pre_counts, post_counts, strict=True)
-    )
-    rows.append(("\\textit{proposal}", 0, proposal_post_count))
+    """Twin stacks (pre on the left, post on the right) of equal total
+    height — articles redistribute when the proposal is added as a book,
+    they aren't created or destroyed. Each stack is a single column with
+    one segment per existing book, sorted by pre-coverage desc; segments
+    alternate between dark and light blue so adjacent books are visually
+    separable. The post stack tops with a green slab for the proposal's
+    net absorption.
 
-    max_count = max(
-        [pre for _, pre, _ in rows] + [post for _, _, post in rows] + [1]
-    )
-    xscale = _BAR_CHART_MAX_WIDTH_EM / max_count
+    Total figure height is fixed to ``_FIGURE_HEIGHT_CM`` (matching the
+    scatter helper) via an explicit bounding box, so the two figures
+    align cleanly side-by-side.
+    """
+    total = max(sum(pre_counts), sum(post_counts) + proposal_post_count, 1)
+    yscale = _FIGURE_HEIGHT_CM / total
+    x_right = _STACK_BAR_WIDTH_CM + _STACK_GAP_CM
+    total_width = 2 * _STACK_BAR_WIDTH_CM + _STACK_GAP_CM
 
     out: list[str] = []
-    out.append("\\begin{tikzpicture}[every node/.style={font=\\scriptsize}]")
-    for i, (label, pre, post) in enumerate(rows):
-        y = -i * (_BAR_HEIGHT_EM + _BAR_VSEP_EM)
-        pre_w = pre * xscale
-        post_w = post * xscale
-        # Pre bar: pale gray.
-        if pre > 0:
-            out.append(
-                f"\\fill[gray!25] (0em,{y:.3f}em) rectangle "
-                f"({pre_w:.3f}em,{y + _BAR_HEIGHT_EM:.3f}em);"
-            )
-        # Post bar overlay: blue for existing books, green for proposal.
-        color = "green!60!black" if label == "\\textit{proposal}" else "blue!50"
-        if post > 0:
-            out.append(
-                f"\\fill[{color}] (0em,{y:.3f}em) rectangle "
-                f"({post_w:.3f}em,{y + _BAR_HEIGHT_EM:.3f}em);"
-            )
-        # Label to the left, count to the right.
+    out.append("\\begin{tikzpicture}")
+    out.append(
+        f"\\useasboundingbox (0,0) rectangle "
+        f"({total_width:.3f}cm,{_FIGURE_HEIGHT_CM:.3f}cm);"
+    )
+    if not pre_counts and proposal_post_count == 0:
+        out.append("\\end{tikzpicture}")
+        return "\n".join(out)
+    # Left stack: pre counts.
+    bottom = 0
+    for i, c in enumerate(pre_counts):
+        if c <= 0:
+            continue
+        color = "blue!70" if i % 2 == 0 else "blue!35"
         out.append(
-            f"\\node[anchor=east] at (-0.5em,{y + _BAR_HEIGHT_EM / 2:.3f}em) "
-            f"{{{label}}};"
+            f"\\fill[{color}] (0cm,{bottom * yscale:.4f}cm) rectangle "
+            f"({_STACK_BAR_WIDTH_CM:.3f}cm,{(bottom + c) * yscale:.4f}cm);"
         )
-        right_text = (
-            f"{post}"
-            if pre == 0
-            else f"{pre} {{\\color{{gray}}\\textrightarrow}} {post}"
-        )
-        right_x = max(pre_w, post_w) + 0.3
+        bottom += c
+    # Right stack: post counts (same alternating shades, same book order).
+    bottom = 0
+    for i, c in enumerate(post_counts):
+        if c <= 0:
+            continue
+        color = "blue!70" if i % 2 == 0 else "blue!35"
         out.append(
-            f"\\node[anchor=west] at ({right_x:.3f}em,{y + _BAR_HEIGHT_EM / 2:.3f}em) "
-            f"{{{right_text}}};"
+            f"\\fill[{color}] ({x_right:.3f}cm,{bottom * yscale:.4f}cm) "
+            f"rectangle ({x_right + _STACK_BAR_WIDTH_CM:.3f}cm,"
+            f"{(bottom + c) * yscale:.4f}cm);"
+        )
+        bottom += c
+    # Proposal slab on top of right stack.
+    if proposal_post_count > 0:
+        out.append(
+            f"\\fill[green!60!black] ({x_right:.3f}cm,{bottom * yscale:.4f}cm) "
+            f"rectangle ({x_right + _STACK_BAR_WIDTH_CM:.3f}cm,"
+            f"{(bottom + proposal_post_count) * yscale:.4f}cm);"
         )
     out.append("\\end{tikzpicture}")
     return "\n".join(out)
-
-
-_SCATTER_HALF_SIDE_CM = 3.5  # half of the plot box width in cm
 
 
 def _render_projection_scatter_tikz(
@@ -226,10 +231,20 @@ def _render_projection_scatter_tikz(
         abs(min(all_ys)), abs(max(all_ys)),
         1e-6,
     )
-    scale = _SCATTER_HALF_SIDE_CM / extent  # cm per unit
+    # Square plot of side _FIGURE_HEIGHT_CM, centered at the origin.
+    half_side_cm = _FIGURE_HEIGHT_CM / 2
+    scale = half_side_cm / extent  # cm per ND unit
+    # Legend rendered below the plot in two rows; reserve vertical space
+    # in the bounding box so the surrounding LaTeX flow accounts for it.
+    legend_band_cm = 1.0
 
     out: list[str] = []
     out.append("\\begin{tikzpicture}")
+    out.append(
+        f"\\useasboundingbox ({-half_side_cm:.3f}cm,"
+        f"{-half_side_cm - legend_band_cm:.3f}cm) "
+        f"rectangle ({half_side_cm:.3f}cm,{half_side_cm:.3f}cm);"
+    )
     # Books FIRST so articles render on top (a dense gap-article cloud
     # is the main thing; books should peek through where they overlap).
     # Per-book opacity: scale from 0.15 (no in-gap coverage) up to 1.0
@@ -243,24 +258,65 @@ def _render_projection_scatter_tikz(
                 f"\\node[blue, opacity={alpha:.3f}, font=\\scriptsize] at "
                 f"({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) {{$\\times$}};"
             )
-    # Gap articles: subdued grey for those still covered by an existing
-    # book, green for those that flip to the proposal's Voronoi cell.
+    # Gap articles: orange for those still covered by an existing book,
+    # green for those that flip to the proposal's Voronoi cell.
     for pt, flipped in zip(
         projection.gap_articles,
         projection.gap_articles_flipped_to_proposal,
         strict=True,
     ):
-        color = "green!60!black" if flipped else "gray!60"
+        color = "green!60!black" if flipped else "orange!80!black"
         out.append(
             f"\\fill[{color}] ({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) "
             f"circle (0.5pt);"
         )
-    # Proposal on top.
+    # Proposal on top. Drawn as a TikZ `star` shape so we get a black
+    # border around the green fill; this requires
+    # \usetikzlibrary{shapes.geometric} (loaded by main.tex).
     out.append(
-        f"\\node[green!60!black, font=\\bfseries] at "
+        f"\\node[star, star points=5, star point ratio=2.25, "
+        f"draw=black, line width=0.4pt, fill=green!60!black, "
+        f"minimum size=9pt, inner sep=0pt] at "
         f"({projection.proposal.x * scale:.4f}cm,"
-        f"{projection.proposal.y * scale:.4f}cm) {{$\\star$}};"
+        f"{projection.proposal.y * scale:.4f}cm) {{}};"
     )
+    # Legend: two rows of two entries each, below the plot. Marker
+    # styles mirror those used inside the plot.
+    legend_y1 = -half_side_cm - 0.35
+    legend_y2 = -half_side_cm - 0.75
+    col_left_marker = -half_side_cm + 0.20
+    col_left_text = -half_side_cm + 0.45
+    col_right_marker = 0.20
+    col_right_text = 0.45
+    # Each entry: (marker_x, text_x, y, marker_tikz, label).
+    # The proposal entry uses the bordered TikZ star shape to mirror the
+    # in-plot marker; the others are inline math glyphs in scriptsize.
+    legend_entries = [
+        (col_left_marker, col_left_text, legend_y1,
+         "\\node[blue, font=\\scriptsize] at "
+         f"({col_left_marker:.3f}cm,{legend_y1:.3f}cm) {{$\\times$}};",
+         "existing books"),
+        (col_left_marker, col_left_text, legend_y2,
+         "\\node[orange!80!black, font=\\scriptsize] at "
+         f"({col_left_marker:.3f}cm,{legend_y2:.3f}cm) {{$\\bullet$}};",
+         "gap articles"),
+        (col_right_marker, col_right_text, legend_y1,
+         "\\node[green!60!black, font=\\scriptsize] at "
+         f"({col_right_marker:.3f}cm,{legend_y1:.3f}cm) {{$\\bullet$}};",
+         "articles flipped to proposal"),
+        (col_right_marker, col_right_text, legend_y2,
+         "\\node[star, star points=5, star point ratio=2.25, "
+         "draw=black, line width=0.3pt, fill=green!60!black, "
+         "minimum size=6pt, inner sep=0pt] at "
+         f"({col_right_marker:.3f}cm,{legend_y2:.3f}cm) {{}};",
+         "proposal"),
+    ]
+    for _mx, tx, ly, marker_node, label in legend_entries:
+        out.append(marker_node)
+        out.append(
+            f"\\node[anchor=west, font=\\scriptsize] at "
+            f"({tx:.3f}cm,{ly:.3f}cm) {{{label}}};"
+        )
     out.append("\\end{tikzpicture}")
     return "\n".join(out)
 
@@ -276,7 +332,7 @@ def emit_topic_page(
     num_books: int,
     num_articles: int,
     articles: list[ArticleEntry],
-    top_book: BookCoverage | None,
+    prompt_books: list[BookEntry],
     proposal_coverage: ProposalCoverage,
     covering_books_for_chart: list[BookCoverage],
     local_projection: LocalProjection2D,
@@ -288,9 +344,10 @@ def emit_topic_page(
     topic_link = (
         f"\\href{{{topic_url}}}{{\\texttt{{{latex_escape(topic_id)}}}}}"
     )
+    # ID before the name, both in the subsection title and the TOC entry.
     out.append(
-        f"\\subsection[{tex(topic_name)} ({latex_escape(topic_id)})]"
-        f"{{{tex(topic_name)} ({topic_link})}}"
+        f"\\subsection[{latex_escape(topic_id)} {tex(topic_name)}]"
+        f"{{{topic_link} {tex(topic_name)}}}"
     )
     out.append(f"\\label{{appendix:proposal-{latex_escape(topic_id)}}}")
     pct_str = (
@@ -304,21 +361,12 @@ def emit_topic_page(
     )
     out.append("\\par\\medskip")
 
-    # Two figures, centered.
-    out.append("\\begin{center}")
-    out.append(_render_bar_chart_tikz(
-        book_labels=[tex(b.display_name, 40) for b in covering_books_for_chart],
-        pre_counts=[b.articles_covered for b in covering_books_for_chart],
-        post_counts=[
-            b.articles_covered_after_proposal for b in covering_books_for_chart
-        ],
-        proposal_post_count=proposal_coverage.articles_covered,
-    ))
-    out.append("\\quad")
-    out.append(_render_projection_scatter_tikz(
+    scatter_tikz = _render_projection_scatter_tikz(
         local_projection,
         book_coverages=[b.articles_covered for b in covering_books_for_chart],
-    ))
+    )
+    out.append("\\begin{center}")
+    out.append(scatter_tikz)
     out.append("\\end{center}")
     out.append("\\par\\medskip")
 
@@ -327,42 +375,34 @@ def emit_topic_page(
     out.append("")
     out.append(tex(prop_abstract))
 
-    out.append(
-        f"\\paragraph{{{_gray('Prompt articles')}}}"
-    )
+    out.append(f"\\paragraph{{{_gray('Prompt articles')}}}")
     out.append("\\begin{enumerate}\\setlength\\itemsep{0.25em}")
     for a in articles:
         link = _openalex_href(a.openalex_id)
-        url_part = f" ({link})" if link else ""
+        id_prefix = f"{link} " if link else ""
         out.append(
-            f"\\item \\textbf{{\\textsf{{{tex(a.display_name, _PROMPT_TITLE_MAX)}}}}}{url_part}"
+            f"\\item {id_prefix}\\textbf{{\\textsf{{{tex(a.display_name, _PROMPT_TITLE_MAX)}}}}}"
         )
-        out.append("")
         if _PROMPT_ABSTRACT_MAX > 0:
+            out.append("")
             out.append(tex(a.abstract, _PROMPT_ABSTRACT_MAX))
     out.append("\\end{enumerate}")
 
-    out.append(f"\\paragraph{{{_gray('Highest-coverage existing book')}}}")
-    if top_book is None:
-        out.append("\\textit{No books found in this topic.}")
+    out.append(f"\\paragraph{{{_gray('Prompt books')}}}")
+    if not prompt_books:
+        out.append("\\textit{No books were in the prompt.}")
     else:
-        link = _openalex_href(top_book.openalex_id)
-        url_part = f" ({link})" if link else ""
-        out.append(f"\\textbf{{{tex(top_book.display_name)}}}{url_part}")
-        out.append("")
-        pre = top_book.articles_covered
-        post = top_book.articles_covered_after_proposal
-        pre_pct = top_book.fraction_covered * 100
-        # post_pct = post / gap_size * 100. Since fraction = articles/gap_size,
-        # post_pct = pre_pct * (post / pre) when pre > 0.
-        post_pct = pre_pct * (post / pre) if pre > 0 else 0.0
-        out.append(
-            f"\\noindent\\textit{{Covers {pre} {{\\color{{gray}}\\textrightarrow}} {post} articles, "
-            f"{pre_pct:.2f}\\% {{\\color{{gray}}\\textrightarrow}} {post_pct:.2f}\\% of the gap "
-            f"after the proposal is added as a book.}}"
-        )
-        out.append("\\par\\medskip")
-        out.append(tex(top_book.abstract, _BOOK_ABSTRACT_MAX))
+        out.append("\\begin{enumerate}\\setlength\\itemsep{0.25em}")
+        for b in prompt_books:
+            link = _openalex_href(b.openalex_id)
+            id_prefix = f"{link} " if link else ""
+            out.append(
+                f"\\item {id_prefix}\\textbf{{\\textsf{{{tex(b.display_name, _PROMPT_TITLE_MAX)}}}}}"
+            )
+            if _PROMPT_ABSTRACT_MAX > 0:
+                out.append("")
+                out.append(tex(b.abstract, _PROMPT_ABSTRACT_MAX))
+        out.append("\\end{enumerate}")
 
     out.append("\\endgroup")
     return "\n".join(out)
@@ -419,7 +459,6 @@ def main() -> None:
                 f"expected {gap_idx}"
             )
         context = read_context_record(ctx_path)
-        top_book = context.covering_books[0] if context.covering_books else None
 
         chunks.append(
             emit_topic_page(
@@ -436,7 +475,7 @@ def main() -> None:
                 num_books=int(row["num_books"]),
                 num_articles=int(row["num_articles"]),
                 articles=prompt.sampled_articles,
-                top_book=top_book,
+                prompt_books=prompt.covering_books,
                 proposal_coverage=context.proposal_coverage,
                 covering_books_for_chart=context.covering_books,
                 local_projection=context.local_projection_2d,
