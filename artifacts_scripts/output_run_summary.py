@@ -44,7 +44,7 @@ class RunSummary:
     target_gap_zscore_mean: float
     target_gap_zscore_median: float
 
-def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
+def summarize_run(run_dir: Path, topic_subset: Optional[set] = None) -> Dict[int, RunSummary]:
     metadata = load_run_metadata(run_dir)
     if metadata is None:
         return {}
@@ -52,6 +52,15 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
     df = load_results_dataframe(run_dir)
     if df is None:
         return {}
+
+    if topic_subset is not None and "topic_id" in df.columns:
+        before = len(df)
+        df = df[df["topic_id"].isin(topic_subset)].copy()
+        if len(df) < before:
+            LOGGER.info(
+                "Filtered %s from %d to %d rows by topic_subset",
+                run_dir, before, len(df),
+            )
 
     try:
         mask = valid_rank_fraction_mask(df)
@@ -167,10 +176,12 @@ def summarize_run(run_dir: Path) -> Dict[int, RunSummary]:
     return summaries
 
 
-def collect_summaries(outputs_dir: Path) -> Dict[int, List[RunSummary]]:
+def collect_summaries(
+    outputs_dir: Path, topic_subset: Optional[set] = None,
+) -> Dict[int, List[RunSummary]]:
     summaries: DefaultDict[int, List[RunSummary]] = defaultdict(list)
     for run_dir in find_run_directories(outputs_dir):
-        summary = summarize_run(run_dir)
+        summary = summarize_run(run_dir, topic_subset=topic_subset)
         for gap_idx, run_summary in summary.items():
             summaries[gap_idx].append(run_summary)
 
@@ -270,6 +281,16 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Overwrite the output file if it already exists.",
     )
+    parser.add_argument(
+        "--topic-subset",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of topic IDs (e.g. 'T10028,T10181,...') to filter each "
+            "run's gaps_analysis_results.csv to before computing means/medians. Used to "
+            "compare 77-topic full runs against 20-topic subset runs on the same footing."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -277,7 +298,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
 
-    summaries_by_gap = collect_summaries(args.outputs_dir)
+    topic_subset = None
+    if args.topic_subset:
+        topic_subset = set(t.strip() for t in args.topic_subset.split(",") if t.strip())
+        LOGGER.info("Filtering each run's CSV to %d topics: %s", len(topic_subset), sorted(topic_subset))
+    summaries_by_gap = collect_summaries(args.outputs_dir, topic_subset=topic_subset)
     if not summaries_by_gap:
         LOGGER.warning("No summaries created from outputs in %s", args.outputs_dir)
 

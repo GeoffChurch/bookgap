@@ -248,7 +248,7 @@ def _run_analysis(cfg) -> None:
     # Build the cloud
     cloud: Cloud = instantiate(cfg.experiment.cloud)
     LOGGER.info(f"Cloud: {cloud.name()}")
-    LOGGER.info(f"Embedder: {cloud.embedder_model.value}")
+    LOGGER.info(f"Embedder: {cloud.embedder.model_name}")
     LOGGER.info(f"Denoiser: {cloud.denoiser}")
     LOGGER.info(f"Drop K: {cloud.drop_k}")
     
@@ -256,44 +256,27 @@ def _run_analysis(cfg) -> None:
     landmark_year = cfg.year
     test_year = cfg.year + 1
     
+    # Cache parent cloud size from id column (columnar, ~5 MB) instead of
+    # the full ``cloud.works()`` Python-dict materialisation (~6-10 GB).
+    parent_works_count = len(cloud.work_ids())
+
     LOGGER.info(f"Building landmark set (books up to {landmark_year})...")
     landmark_books = _build_temporal_subcloud(cloud, landmark_year, WorkType.BOOK)
     LOGGER.info(
         f"[Diagnostics] Landmark filter='{landmark_books.post_filter}' type={type(landmark_books.post_filter).__name__} "
-        f"parent_works={len(cloud.works())} filtered={len(landmark_books.embeddings())}"
+        f"parent_works={parent_works_count} filtered={len(landmark_books.embeddings())}"
     )
-    # Log filter attributes to verify construction
-    lf = landmark_books.post_filter
-    LOGGER.info(
-        f"[FilterAttrs] Landmark: max_year={getattr(lf, 'max_year', 'N/A')} "
-        f"exact_year={getattr(lf, 'exact_year', 'N/A')} work_type={getattr(lf, 'work_type', 'N/A')} "
-        f"subfield={getattr(lf, 'subfield', 'N/A')} topic={getattr(lf, 'topic', 'N/A')}"
-    )
-    # Log sample parent works to verify data fields
-    sample_parent_works = cloud.works()[:3]
-    LOGGER.info(f"[Sample] First 3 parent works:")
-    for i, w in enumerate(sample_parent_works):
-        LOGGER.info(
-            f"  [{i}] id={w.get('id', 'N/A')} pub_date={w.get('publication_date', 'N/A')} "
-            f"type={w.get('type', 'N/A')} primary_topic={w.get('primary_topic', {}).get('id', 'N/A')}"
-        )
-    
+
     LOGGER.info(f"Building test sets (year {test_year})...")
     test_books = _build_temporal_test_set(cloud, test_year, WorkType.BOOK)
     LOGGER.info(
         f"[Diagnostics] TestBooks filter='{test_books.post_filter}' type={type(test_books.post_filter).__name__} "
-        f"parent_works={len(cloud.works())} filtered={len(test_books.embeddings())}"
-    )
-    tbf = test_books.post_filter
-    LOGGER.info(
-        f"[FilterAttrs] TestBooks: max_year={getattr(tbf, 'max_year', 'N/A')} "
-        f"exact_year={getattr(tbf, 'exact_year', 'N/A')} work_type={getattr(tbf, 'work_type', 'N/A')} "
-        f"subfield={getattr(tbf, 'subfield', 'N/A')} topic={getattr(tbf, 'topic', 'N/A')}"
+        f"parent_works={parent_works_count} filtered={len(test_books.embeddings())}"
     )
     test_articles = _build_temporal_test_set(cloud, test_year, WorkType.ARTICLE)
     LOGGER.info(
         f"[Diagnostics] TestArticles filter='{test_articles.post_filter}' type={type(test_articles.post_filter).__name__} "
-        f"parent_works={len(cloud.works())} filtered={len(test_articles.embeddings())}"
+        f"parent_works={parent_works_count} filtered={len(test_articles.embeddings())}"
     )
     taf = test_articles.post_filter
     LOGGER.info(
@@ -380,7 +363,7 @@ def _run_analysis(cfg) -> None:
     
     # Prepare CSV output
     # Sanitize names for filesystem safety using shared utility
-    safe_embedder = create_unicode_safe_filename(cloud.embedder_model.value)
+    safe_embedder = create_unicode_safe_filename(cloud.embedder.model_name)
     safe_denoiser = create_unicode_safe_filename(cloud.denoiser)
     
     # Also write a summary CSV
@@ -436,7 +419,7 @@ def _run_analysis(cfg) -> None:
         row = [
             cfg.year,
             cfg.experiment.gap.radius_fraction,
-            cloud.embedder_model.value,
+            cloud.embedder.model_name,
             cloud.denoiser,
             cloud.drop_k,
             num_prior_books,

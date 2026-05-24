@@ -255,7 +255,7 @@ def plot_results(
                     )
         plt.xlabel('Year', fontsize=12)
         plt.ylabel('Mean Gap Size', fontsize=12)
-        plt.title(f'Evolution of Gap Sizes Over Time\n{config_desc}', fontsize=14)
+        plt.title('Evolution of Gap Sizes Over Time', fontsize=14)
         plt.legend(fontsize=10)
         plt.grid(True, alpha=0.3)
         
