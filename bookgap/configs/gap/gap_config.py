@@ -1,6 +1,7 @@
 """Gap detection configuration."""
 
 from dataclasses import dataclass
+from typing import Optional, Tuple
 
 from bookgap.types import CellType, DeflationStrategy
 from bookgap.util import WorkType
@@ -40,4 +41,12 @@ class GapConfig:
     # to rerank. Ignored when size_metric == "raw_kball" (raw-KBALL ranking == generator
     # order; the islice in _compute_gaps_for_topic is enough).
     candidate_pool_size: int = 10
+
+    # Optional whitelist of topic IDs to restrict gap detection to.
+    # None / empty (default) → run on all topics resolvable from
+    # cloud.filter_pair. When set, only topics whose ID appears here are
+    # gap-detected (and therefore proposal-generated against). Intended for
+    # rapid-iteration sweeps on a representative subset; not for paper-headline
+    # runs. Stored as Tuple[str, ...] for joblib hashability.
+    topic_subset: Optional[Tuple[str, ...]] = None
 

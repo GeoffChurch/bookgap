@@ -8,7 +8,7 @@ without importing generator-specific code.
 from __future__ import annotations
 
 from itertools import islice
-from typing import Any
+from typing import Any, Optional
 
 from bookgap.pyalex_client import pyalex
 
@@ -157,16 +157,17 @@ def _compute_gaps_impl(
     deflation_strategy: DeflationStrategy = DeflationStrategy.GREEDY_HARD,
     size_metric: str = "raw_kball",
     candidate_pool_size: int = 10,
+    topic_subset: Optional[tuple] = None,
 ) -> list[GapWithContext]:
     """Internal implementation that computes gaps for a single configuration.
 
     Cached by joblib.Memory using the hashable parameters (including
-    ``deflation_strategy``) as the cache key.
+    ``deflation_strategy`` and ``topic_subset``) as the cache key.
     """
 
     # Merge pre and post filters to get the most specific constraints
     merged_filter = cloud.filter_pair.merged()
-    
+
     # Resolve upward to fill in missing field/subfield, pinned to the cloud's snapshot.
     resolved_filter = resolve_filter_upward(merged_filter, snapshot_date=cloud.snapshot_date)
 
@@ -185,10 +186,25 @@ def _compute_gaps_impl(
         field_id = resolved_filter.field
         assert field_id is not None
         valid_topics = get_field_topics(field_id, snapshot_date=cloud.snapshot_date)
-    
+
+    if topic_subset:
+        subset_set = set(topic_subset)
+        filtered = [t for t in valid_topics if t in subset_set]
+        missing = subset_set - set(filtered)
+        if missing:
+            LOGGER.warning(
+                "topic_subset includes %d topic(s) not resolved from filter: %s",
+                len(missing), sorted(missing),
+            )
+        LOGGER.info(
+            "topic_subset restricts gap-detection to %d/%d topics",
+            len(filtered), len(valid_topics),
+        )
+        valid_topics = filtered
+
     if not valid_topics:
         raise ValueError("No topics resolved from cloud.filter_pair.merged()")
-    
+
     gaps: list[GapWithContext] = []
 
     from bookgap.snapshot_ingest import load_taxonomy
@@ -230,6 +246,7 @@ def compute_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
     Extracts hashable parameters from config and delegates to cached implementation.
     """
     cloud: Cloud = instantiate(config.cloud)
+    topic_subset = getattr(config.gap, "topic_subset", None)
     return _compute_gaps_impl(
         cloud=cloud,
         radius_fraction=config.gap.radius_fraction,
@@ -238,4 +255,5 @@ def compute_gaps_for_config(config: ExperimentConfig) -> list[GapWithContext]:
         deflation_strategy=config.gap.deflation_strategy,
         size_metric=getattr(config.gap, "size_metric", "raw_kball"),
         candidate_pool_size=getattr(config.gap, "candidate_pool_size", 10),
+        topic_subset=tuple(topic_subset) if topic_subset else None,
     )
