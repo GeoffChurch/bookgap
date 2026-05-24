@@ -20,3 +20,9 @@ __pycache__/
 
 /artifacts_scripts/sweeps/*.jsonl
 /artifacts_scripts/historical_gap_analysis/results/
+
+# The paper lives in its own nested git repo under /paper/. It is
+# intentionally not tracked here; edit and commit it from within the
+# paper repo itself. The explicit ignore line prevents an accidental
+# `git add` from registering it as a stray gitlink.
+/paper/
