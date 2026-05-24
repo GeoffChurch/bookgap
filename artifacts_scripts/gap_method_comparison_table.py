@@ -18,7 +18,7 @@ markdown form. For each gap:
 - Gap size and key cohesion metrics (article-as-seed only).
 - 2 example article titles.
 - Unanchored flag (top-CSLS book < 0.3) derived from the Phase 3
-  ``top_books_csls_json`` column; replaces the old categorical
+  ``top_books_membership_json`` column; replaces the old categorical
   coverage_label_v2 / templated_leak_flag scheme.
 
 The CSVs should be the Phase 3 enriched outputs of ``gap_soft_em``
@@ -81,7 +81,7 @@ def _load_kball(path: Path) -> list[dict]:
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
-                "top_books_csls_json": r.get("top_books_csls_json", ""),
+                "top_books_membership_json": r.get("top_books_membership_json", ""),
                 "effective_size": r.get("effective_size", ""),
             })
     return rows
@@ -106,7 +106,7 @@ def _load_hdbscan(path: Path) -> list[dict]:
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
-                "top_books_csls_json": r.get("top_books_csls_json", ""),
+                "top_books_membership_json": r.get("top_books_membership_json", ""),
                 "effective_size": r.get("effective_size", ""),
                 "top_keywords": r.get("top_keywords", ""),
             })
@@ -130,7 +130,7 @@ def _load_article_seed(path: Path) -> list[dict]:
                 "book_anchored": int(r.get("book_anchored") or 0),
                 "top_book_title": r.get("top_book_title", ""),
                 "vote_concentration": float(r.get("vote_concentration") or 0),
-                "top_books_csls_json": r.get("top_books_csls_json", ""),
+                "top_books_membership_json": r.get("top_books_membership_json", ""),
                 "effective_size": r.get("effective_size", ""),
                 "top_keywords": r.get("top_keywords", ""),
                 "inherited_coverage_median_post": (
@@ -364,8 +364,8 @@ def main() -> None:
     out.append("### Article-as-seed top-N — unanchored only")
     out.append("")
     out.append("_Filtered to basins where no book strongly owns the space "
-               "(top-CSLS book < 0.3). Phase 3 drops the inherited-coverage "
-               "tier; use `top_books_csls_json` and `effective_size` directly "
+               "(top-membership book < 0.3). Phase 3.5 drops the inherited-coverage "
+               "tier; use `top_books_membership_json` and `effective_size` directly "
                "to gauge coverage strength._")
     out.append("")
     seed_real = [g for g in seed_top if _is_unanchored(g)][:args.top_n]
