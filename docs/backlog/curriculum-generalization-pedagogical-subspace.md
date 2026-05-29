@@ -77,3 +77,28 @@ starting point / inspiration for the pedagogical alignment.
 - Corpus-alignment machinery to repurpose: `bookgap/denoisers.py` (CCLIP/GEP),
   `bookgap/cloud_denoiser.py`.
 - Curricula this would generalize/improve: `docs/backlog/subjective-curriculum-eval.md`.
+
+## Cached Wikipedia data in `~/src/bookgen` (scouted 2026-05-29)
+
+Reusable assets exist, but **embeddings are the gating limit**:
+
+- ✅ **Full enwiki link graph** (dump `enwiki-20260201`): `data/wikidumps/.../{page,
+  pagelinks,categorylinks,linktarget}.sql.gz` + parsed pickle caches. Standalone loaders:
+  `src/eval/topics/dump_parser.py` (`load_page_table`, `load_pagelinks`, …) and
+  `src/eval/topics/wiki_graph.py:build_link_subgraph(edges, article_ids) → (scipy CSR,
+  id_list[page_id])`; title↔id via `src/eval/wiki_corpus.py:WikiCorpus`. → usable as a
+  `GraphSource` (graph + id-map ready; also a category DAG for scoping).
+- ⚠️ **Embeddings cover only 879 articles** — `data/rag_index/` (LlamaIndex), model
+  **BAAI/bge-small-en-v1.5, 384-D, chunk-level** (7,125 chunks; page_id recoverable from
+  node metadata). NOT enwiki-wide, and a *different* model than bookgap's GIST/Gemma.
+- ✅ Cleaned text for those 879: `data/corpus/{page_id}.txt` + `manifest.json`.
+
+**Implications:**
+- *Direct Wikipedia curricula:* graph is enwiki-scale but embeddings exist for only 879
+  articles → ready only at that small scope; enwiki-scale needs embedding the bulk (a real
+  GPU job, ~hours). Cleanest quick probe: embed a targeted Wikipedia slice (e.g. CS /
+  physical-sciences via the category graph) **with GIST-small** so it shares bookgap's
+  space (no CCA needed for direct use).
+- *CCA pedagogical subspace:* hard anchors are capped by 879 embedded articles ∩
+  OpenAlex-matchable (DOI / title / Wikidata) → realistically tens-to-low-hundreds — small
+  but maybe enough for a prototype. Wikidata/DOI linking is the setup cost.
