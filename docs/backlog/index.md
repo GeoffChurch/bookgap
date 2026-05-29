@@ -18,6 +18,8 @@ How candidate gaps are produced and refined.
 - [port-refine-pipeline-for-resid](gap-detection-methods/port-refine-pipeline-for-resid.md) — production resid is raw-deflation only; port LLR-refine→dedup→effective_size behind the resid option if the deferred ollama LLM-coverage check shows raw resid underperforms its refined bake-off numbers
 - [radius-fraction-bakeoff](gap-detection-methods/radius-fraction-bakeoff.md) — sweep the never-tuned k-ball `radius_fraction` (fixed 0.75/k=1 all along) with resid+recall@K curve across the 4 topics, plus a **data-driven per-seed radius** arm (σ-tied / margin / density-adaptive) — directly tests whether n_eff's book-rich shortfall is a fixed-radius handicap vs a formula issue
 - [kball-residual-mass](gap-detection-methods/kball-residual-mass.md) — four discount-by-book-claim variants for k-ball gap sizing (virtual-centroid / partition mutual-NN / global k-NN discount / KDE-on-KDE), implemented sequentially as alternative `gap.size_metric` options
+- [nearest-book-radius](gap-detection-methods/nearest-book-radius.md) — replace `radius_fraction` with per-seed adaptive radius = distance to nearest book × rank-fraction safety margin. Probably inferior to existing n_eff-based approaches (see entry for full cross-refs to `gap_effective_size*.py`, `kde_ratio`, etc.) but cleanly aligns with the d=0 random-shuffle null
+- [gap-algorithm-sweep-axis](gap-detection-methods/gap-algorithm-sweep-axis.md) — **living doc**: 3-tier plan for adding gap-selection/scoring algorithm as a sweep axis alongside embedder/denoiser/d. Tier 1 = post-hoc rescoring of fixed gaps (apples-to-apples by construction); Tier 2 = alternative algorithms with random-baseline normalization; Tier 3 = external held-out-book-recovery metric
 
 ## Cohesion metric design
 
@@ -32,6 +34,16 @@ Per-gap quality measurement and filtering.
 - [book-rediscovery-eval-candidates](cohesion-metric-design/book-rediscovery-eval-candidates.md) — **living tracker**: methods worth running through the held-out eval. ⚠ Metric caveat: the eval was a full-set-coverage misnomer until fixed to genuine recall@20 (see `docs/gap_deflation_results.md`); prior conclusions resting on it must be re-checked
 - [heldout-book-recovery-production-eval](cohesion-metric-design/heldout-book-recovery-production-eval.md) — promote held-out recovery to a production-grade standalone eval emitting a paper-ready recall@K table (genuine recall@K, not the full-set misnomer)
 
+## Denoiser methods
+
+- [denoiser-bakeoff-expansion](denoiser-bakeoff-expansion.md) — **living doc**: candidate arms (existing + published + CSLS-inspired), $k$-extension plans, results log
+
+## Document representations
+
+Alternative document-embedding constructions (distinct from denoising existing dense embeddings).
+
+- [zscored-logodds-doc-embeddings](document-representations/zscored-logodds-doc-embeddings.md) — per-doc Fightin' Words as a sparse principled alternative to TF-IDF; CCA bridge variant for combining with GIST/Gemma
+
 ## Keyword extraction
 
 (Mostly migrated from `artifacts_scripts/curriculum/TODO.md`. Some are cross-pollination from `mycooc/docs/backlog/`.)
@@ -43,6 +55,12 @@ Per-gap quality measurement and filtering.
 - [doc-level-boilerplate-filter](keyword-extraction/doc-level-boilerplate-filter.md) — regex blacklist at ingest for scraped UI fragments in abstracts
 - [display-side-keyword-dedup](keyword-extraction/display-side-keyword-dedup.md) — drop shorter-phrase keywords whose token sets are subsets of longer-phrase keywords (cosmetic only)
 - [wire-keywords-into-batch-generator](keyword-extraction/wire-keywords-into-batch-generator.md) — attach `keywords` to every `GapWithContext` in `_compute_gaps_for_topic`; opportunity to audit `artifacts_scripts/curriculum/` for primitives that should move into `bookgap/`
+- [topic-fisher-signatures](keyword-extraction/topic-fisher-signatures.md) — continuous Fightin' Words via Fisher discriminant on embedded docs; theoretical cousin of word-level log-odds
+
+## Curriculum generation
+
+- [subjective-curriculum-eval](subjective-curriculum-eval.md) — **living doc**: pick best-proposal topics from the 77-topic paper run, recover each gap's exact in-gap articles, and generate a Physical-Sciences-domain (`domain=3`) curriculum per gap (PageRank seeded at the gap → prerequisites). Includes copy-paste recipes for extracting run titles/abstracts/metrics, recovering gap articles, and invoking the curriculum pipeline.
+- [curriculum-generalization-pedagogical-subspace](curriculum-generalization-pedagogical-subspace.md) — extract the curriculum engine into a standalone, input-agnostic project (OpenAlex citation graph, Wikipedia link graph, …); explore Wikipedia for more pedagogical curricula, and a CCA-learned "pedagogical subspace" of OpenAlex embeddings to get Wikipedia's pedagogy + OpenAlex's coverage of niche/new work.
 
 ## Infrastructure
 
