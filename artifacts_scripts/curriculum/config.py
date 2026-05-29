@@ -686,10 +686,31 @@ class CurriculumConfig:
     
     ranking_top_k: int = 5000
     """Number of top works by relevance mass to include in clustering when rank_before_clustering=True.
-    
+
     With 100k works, Ward's linkage is tractable (~8GB memory).
     """
-    
+
+    background_normalize: bool = False
+    """If True, rank the top-k SELECTION by a background-normalized score
+    ``p^a * log((p+eps)/(g+eps))`` instead of raw PR mass, where ``p`` is the
+    foreground (gap-seeded) PR and ``g`` is a global (uniform-teleport) PR. Demotes
+    popularity-explained mass (off-topic global hubs) while keeping works the gap
+    specifically elevates (``p/g > 1``). Cluster weights stay raw PR mass.
+    See docs/backlog/curriculum-ranking-input-levers.md. PageRank methods only."""
+
+    background_exponent: float = 0.5
+    """Exponent ``a`` in ``p^a * log(p/g)``. a=0 = raw log-lift; a=0.5 =
+    Fightin'-Words variance-normalized (canonical default, trust ∝ support);
+    a=1 = pointwise KL / Bayesian surprise."""
+
+    background_alpha: Optional[float] = None
+    """Damping for the background global PR. ``None`` => match the foreground
+    ``pagerank.alpha`` (canonical default: same kernel, teleport-only contrast).
+    Higher => coarser baseline that discounts more global/universal mass."""
+
+    background_eps: float = 1e-12
+    """Laplace floor in ``log((p+eps)/(g+eps))``; guards p=0 nodes (matters for a=0)."""
+
     topic_work_ids_mass_threshold: float = 0.99
     """Fraction of topic mass to retain when saving topic_work_ids.json."""
     

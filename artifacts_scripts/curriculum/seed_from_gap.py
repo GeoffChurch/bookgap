@@ -54,6 +54,17 @@ def load_gap_article_ids(
     return ids, ctx.get("topic_name", topic_id)
 
 
+def load_covering_book_ids(run_dir: Path, topic_id: str, gap_idx: int = 0) -> list[str]:
+    """Return the gap's covering-book OpenAlex IDs (established foundations).
+
+    Used as ``source_work_ids`` so bidirectional PageRank's product highlights the
+    corridor between established foundations and the gap frontier.
+    """
+    ctx_path = Path(run_dir) / "contexts" / f"gap_{gap_idx}_topic_{topic_id}.json"
+    ctx = json.loads(ctx_path.read_text())
+    return [b["openalex_id"] for b in ctx.get("covering_books", [])]
+
+
 def build_curriculum_for_gap(
     run_dir: Path,
     topic_id: str,
@@ -62,11 +73,23 @@ def build_curriculum_for_gap(
     top_k: Optional[int] = None,
     desired_n_topics: int = 15,
     output_dir: Optional[str] = None,
+    source_from_books: bool = False,
+    background_normalize: bool = False,
+    background_exponent: float = 0.5,
+    background_alpha: Optional[float] = None,
 ) -> Path:
-    """Build one curriculum seeded by a gap's in-gap articles. Returns output dir."""
+    """Build one curriculum seeded by a gap's in-gap articles. Returns output dir.
+
+    If ``source_from_books`` is set, the gap's covering books are used as
+    ``source_work_ids``, so bidirectional PageRank's ``product`` highlights the
+    corridor between established foundations and the gap frontier (experiment:
+    does this suppress off-topic intrusions?).
+    """
     ids, topic_name = load_gap_article_ids(run_dir, topic_id, gap_idx, top_k)
     if not ids:
         raise ValueError(f"No in-gap articles found for {topic_id} gap {gap_idx}")
+
+    source_ids = load_covering_book_ids(run_dir, topic_id, gap_idx) if source_from_books else []
 
     name = output_dir or f"gap_curriculum_{topic_id}"
 
@@ -76,11 +99,19 @@ def build_curriculum_for_gap(
     # so clustering only ever sees ranking_top_k works, never the full ~42M corpus.
     cfg = OmegaConf.structured(CurriculumConfig())
     cfg.target_work_ids = ids
+    if source_ids:
+        cfg.source_work_ids = source_ids
     cfg.output_dir = name
     cfg.desired_n_topics = desired_n_topics
     cfg.rank_before_clustering = True
     cfg.ranking_top_k = 5000
-    # method stays BIDIRECTIONAL_PAGE_RANK -> forward-only with no source seeds.
+    if background_normalize:
+        cfg.background_normalize = True
+        cfg.background_exponent = background_exponent
+        if background_alpha is not None:
+            cfg.background_alpha = background_alpha
+    # method stays BIDIRECTIONAL_PAGE_RANK: with source seeds it runs the product
+    # (foundations<->gap corridor); without, it degrades to forward-only PR.
 
     out = get_curriculum_output_dir(name, auto_derived=False)
     setup_logging(
@@ -94,8 +125,8 @@ def build_curriculum_for_gap(
     LOGGER.info("SEED-FROM-GAP CURRICULUM")
     LOGGER.info("=" * 60)
     LOGGER.info(
-        "Topic %s (%s) gap %d: seeding %d in-gap articles (top_k=%s)",
-        topic_id, topic_name, gap_idx, len(ids), top_k,
+        "Topic %s (%s) gap %d: seeding %d in-gap articles (top_k=%s); %d source books",
+        topic_id, topic_name, gap_idx, len(ids), top_k, len(source_ids),
     )
 
     # Replicate main()'s body: build -> keywords -> summary -> plot.
@@ -124,6 +155,20 @@ def main() -> None:
     )
     ap.add_argument("--desired-n-topics", type=int, default=15)
     ap.add_argument("--output-dir", default=None)
+    ap.add_argument(
+        "--source-from-books", action="store_true",
+        help="Use the gap's covering books as source_work_ids (bidirectional PR "
+             "product: foundations<->gap corridor).",
+    )
+    ap.add_argument(
+        "--background-normalize", action="store_true",
+        help="Rank top-k selection by background-normalized score p^a*log(p/g).",
+    )
+    ap.add_argument("--background-exponent", type=float, default=0.5)
+    ap.add_argument(
+        "--background-alpha", type=float, default=None,
+        help="Background-PR damping; default None = match foreground pagerank.alpha.",
+    )
     args = ap.parse_args()
 
     out = build_curriculum_for_gap(
@@ -133,6 +178,10 @@ def main() -> None:
         top_k=args.top_k,
         desired_n_topics=args.desired_n_topics,
         output_dir=args.output_dir,
+        source_from_books=args.source_from_books,
+        background_normalize=args.background_normalize,
+        background_exponent=args.background_exponent,
+        background_alpha=args.background_alpha,
     )
     print(f"DONE {args.topic_id} -> {out}")
 

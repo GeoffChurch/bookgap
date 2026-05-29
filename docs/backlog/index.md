@@ -61,6 +61,7 @@ Alternative document-embedding constructions (distinct from denoising existing d
 
 - [subjective-curriculum-eval](subjective-curriculum-eval.md) — **living doc**: pick best-proposal topics from the 77-topic paper run, recover each gap's exact in-gap articles, and generate a Physical-Sciences-domain (`domain=3`) curriculum per gap (PageRank seeded at the gap → prerequisites). Includes copy-paste recipes for extracting run titles/abstracts/metrics, recovering gap articles, and invoking the curriculum pipeline.
 - [curriculum-generalization-pedagogical-subspace](curriculum-generalization-pedagogical-subspace.md) — extract the curriculum engine into a standalone, input-agnostic project (OpenAlex citation graph, Wikipedia link graph, …); explore Wikipedia for more pedagogical curricula, and a CCA-learned "pedagogical subspace" of OpenAlex embeddings to get Wikipedia's pedagogy + OpenAlex's coverage of niche/new work.
+- [curriculum-ranking-input-levers](curriculum-ranking-input-levers.md) — keep PageRank (scalable + sound), fix the off-topic-intrusion / diffuse-foundations defects input-side: source seeds for a bidirectional foundations↔gap corridor, semantic edge weighting, background normalization, weighted seeds; plus separating PR-for-relevance from a directional method (CircuitRank/DAG) for the prerequisite ordering.
 
 ## Infrastructure
 

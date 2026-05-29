@@ -49,6 +49,7 @@ from .dendrogram_ops import (
 )
 from .pagerank import (
     compute_frontier_adjacency,
+    compute_pagerank,
     two_direction_pagerank,
 )
 from .circuitrank import (
@@ -1075,8 +1076,41 @@ def run_curriculum_building(
         top_k = min(cfg.ranking_top_k, n_total)
         LOGGER.info(f"Selecting top {top_k} works by PPR mass...")
         
-        # Get indices of top-k works by mass
-        top_k_indices = np.argsort(full_point_masses)[-top_k:][::-1]  # Descending order
+        # Optional background normalization of the SELECTION score: rank on
+        # p^a * log((p+eps)/(g+eps)) where p = foreground PR and g = global
+        # (uniform-teleport) PR at alpha_bg, to demote popularity-explained mass.
+        # Cluster weights below stay raw PR mass (nonneg). Canonical defaults:
+        # a=0.5 (variance-normalized), alpha_bg=alpha_fg (matched kernel).
+        # See docs/backlog/curriculum-ranking-input-levers.md.
+        selection_masses = full_point_masses
+        if cfg.background_normalize and cfg.method in (
+            RankMethod.PAGE_RANK, RankMethod.BIDIRECTIONAL_PAGE_RANK
+        ):
+            a_exp = float(cfg.background_exponent)
+            alpha_bg = (
+                float(cfg.background_alpha)
+                if cfg.background_alpha is not None
+                else float(cfg.pagerank.alpha)
+            )
+            eps = float(cfg.background_eps)
+            LOGGER.info(
+                "Background normalization: a=%.3f, alpha_bg=%.3f, eps=%.1e",
+                a_exp, alpha_bg, eps,
+            )
+            uniform_seeds = np.full(n_total, 1.0 / n_total, dtype=np.float64)
+            g_bg = compute_pagerank(
+                adj_for_solver, uniform_seeds, alpha=alpha_bg,
+                tol=cfg.pagerank.tol, max_iter=cfg.pagerank.max_iter, normalize=True,
+            )
+            p_fg = np.maximum(full_point_masses, 0.0)
+            selection_masses = np.power(p_fg, a_exp) * np.log((p_fg + eps) / (g_bg + eps))
+            LOGGER.info(
+                "Normalized selection score: min=%.3e max=%.3e",
+                float(selection_masses.min()), float(selection_masses.max()),
+            )
+
+        # Get indices of top-k works by (possibly normalized) selection score
+        top_k_indices = np.argsort(selection_masses)[-top_k:][::-1]  # Descending order
         
         # Create filtered data structures
         filtered_work_ids = [work_ids[i] for i in top_k_indices]
