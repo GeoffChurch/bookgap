@@ -57,6 +57,21 @@ citation-DAG topological / longest-path order. Keep PR for relevance.
 The **pedagogical-subspace** idea (`curriculum-generalization-pedagogical-subspace.md`)
 compounds with #2 and clustering — it changes the embeddings both consume.
 
+## Canonical defaults (derived)
+
+The score is one family `p^a · log(p/g)`; given `α_fg`, the other two knobs are pinned:
+
+- **`a = ½`** — rank by elevation *per unit of graph-noise*. PR is deterministic, so
+  the "variance" is over the citation graph as a noisy sample of latent dependencies:
+  Var(log p) ∝ 1/(p·M) ⇒ z ∝ √p·log(p/g) ⇒ a=½ (the Fightin'-Words variance-norm).
+  a=0 = raw log-lift (tail-noisy, wants a Laplace ε); a=1 = KL / Bayesian-surprise.
+- **`α_bg = α_fg`** — read `log(p/g)` as a likelihood-ratio test of the gap-restart vs
+  uniform-restart model; a clean LRT needs the *same kernel*, differing only in teleport.
+- **`α_fg`** is the lone free knob = curriculum depth (data-derivable via a
+  community-scale knee that also fixes K; else PR-standard 0.85). α_fg and α_bg are
+  independent — `p` depends only on α_fg, `g` only on α_bg, and no ratio/combination
+  collapses them (changing α reshapes, doesn't rescale).
+
 ## Status / working notes
 
 - [x] **Experiment 1 — source-from-books on T11902** (2026-05-29). All 29 covering
@@ -73,11 +88,25 @@ compounds with #2 and clustering — it changes the embeddings both consume.
     The `product` of two PR distributions is too peaked: seed nodes dominate the
     top-k and the rest collapses into one residual blob. Not usable as a curriculum
     structure as-is.
-- [ ] **Experiment 2 — `combine="linear"`** (θ·fwd + (1−θ)·rev, gentler additive
-  blend) on T11902: should keep the topical focus without the over-concentration.
-  Also consider **excluding exact seed nodes** from the clusterable set (so source
-  books don't become singleton "topics"). `linear_theta` is exposed; `combine` is
-  hardcoded `"product"` at `build_curriculum.py:791` — needs to be config-surfaced.
+- [x] **Experiment 2 — background normalization on T11902, no sources** (2026-05-29).
+  Canonical default `a=0.5`, `α_bg=α_fg=0.85` (`seed_from_gap --background-normalize`).
+  **Result: clean win — implemented and validated.**
+  - ✅ **Off-topic intrusion gone** — signal/speech clusters 2 → 0; the PCM sz-693
+    cluster vanished.
+  - ✅ **Clusters stayed balanced** — 1 singleton (= baseline), max 780 vs 817, no
+    collapse (vs the corridor's 8 singletons) — confirms the no-multiplication theory.
+  - ✅ **Better foundations surfaced** — *Statistical Theories of Mental Test Scores*
+    (IRT/psychometrics), *Foundations of Intelligent Tutoring*, *Representing Student
+    Performance*, PDP, Bayes-net methods replaced the generic *AI:AMA* + PCM. Demoting
+    universally-popular mass let the genuinely-prerequisite roots rise. simT ascent
+    clean (0.84 → 0.96). Output `gap_curriculum_T11902_bgnorm`.
+- [ ] **Regression — background normalization on T11273** (a known-good topic):
+  confirm bgnorm doesn't *degrade* curricula that didn't need it, before considering
+  `background_normalize` default-on. Output `gap_curriculum_T11273_bgnorm`. *Result: TBD.*
+- Deferred (source path only): `combine="linear"` additive blend + excluding seed
+  nodes from clustering — relevant only if source seeds are reintroduced (currently
+  out of scope; source-picking left to downstream users). `combine` is hardcoded
+  `"product"` at `build_curriculum.py:791` if revisited.
 
 ## Pointers
 
