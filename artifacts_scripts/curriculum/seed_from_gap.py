@@ -77,6 +77,9 @@ def build_curriculum_for_gap(
     background_normalize: bool = False,
     background_exponent: float = 0.5,
     background_alpha: Optional[float] = None,
+    similarity: bool = False,
+    similarity_mix_weight: Optional[float] = None,
+    similarity_knn_k: Optional[int] = None,
 ) -> Path:
     """Build one curriculum seeded by a gap's in-gap articles. Returns output dir.
 
@@ -110,6 +113,12 @@ def build_curriculum_for_gap(
         cfg.background_exponent = background_exponent
         if background_alpha is not None:
             cfg.background_alpha = background_alpha
+    if similarity:
+        cfg.similarity.enabled = True
+        if similarity_mix_weight is not None:
+            cfg.similarity.mix_weight = similarity_mix_weight
+        if similarity_knn_k is not None:
+            cfg.similarity.knn_k = similarity_knn_k
     # method stays BIDIRECTIONAL_PAGE_RANK: with source seeds it runs the product
     # (foundations<->gap corridor); without, it degrades to forward-only PR.
 
@@ -169,6 +178,14 @@ def main() -> None:
         "--background-alpha", type=float, default=None,
         help="Background-PR damping; default None = match foreground pagerank.alpha.",
     )
+    ap.add_argument(
+        "--similarity", action="store_true",
+        help="Blend an embedding-kNN graph into the citation graph (semantic backbone).",
+    )
+    ap.add_argument("--similarity-mix-weight", type=float, default=None,
+                    help="Convex blend weight for the similarity graph (default cfg 0.1).")
+    ap.add_argument("--similarity-knn-k", type=int, default=None,
+                    help="kNN neighbors per node for the similarity graph (default cfg 5).")
     args = ap.parse_args()
 
     out = build_curriculum_for_gap(
@@ -182,6 +199,9 @@ def main() -> None:
         background_normalize=args.background_normalize,
         background_exponent=args.background_exponent,
         background_alpha=args.background_alpha,
+        similarity=args.similarity,
+        similarity_mix_weight=args.similarity_mix_weight,
+        similarity_knn_k=args.similarity_knn_k,
     )
     print(f"DONE {args.topic_id} -> {out}")
 

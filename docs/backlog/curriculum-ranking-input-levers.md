@@ -111,7 +111,26 @@ The score is one family `p^a · log(p/g)`; given `α_fg`, the other two knobs ar
   **Conclusion: keep `background_normalize` opt-in (NOT default-on).** Clean win only
   where there's a real off-topic intrusion (T11902); on already-good topics it's
   lateral. `α_bg` is the aggressiveness dial — a gentler `α_bg` (e.g. 0.5) might retain
-  foundations like Laplacian Eigenmaps while still removing egregious hubs (open).
+  foundations like Laplacian Eigenmaps while still removing egregious hubs.
+- [x] **Sweep — decoupled `α_bg=0.5` (`α_fg=0.85`, `a=0.5`)** on both topics (2026-05-29).
+  **Result: not a sweet spot — scalar tuning reshuffles, doesn't separate.**
+  - T11902: PCM still gone, but a borderline speech/RNN-LM cluster returns (off-topic
+    1 vs 0 at `α_bg=0.85`) — leakier.
+  - T11273: **Laplacian Eigenmaps still absent**; foundations reshuffled (PageRank +
+    PDP return, Matrix Analysis drops) — lateral, not a recovery.
+  - **Confirms the theory:** the legit foundation (Laplacian) and the intruder (PCM)
+    are near-identical in `(p, g)` — high-mass, high-g, modest-lift — so no `f(p,g)`
+    (any `α_bg`, and by the same argument any `a`) separates them; scalar tuning only
+    moves the operating point. **No `a`-sweep warranted.**
+- **Conclusion: `background_normalize` stays opt-in** (clean win on intrusion topics like
+  T11902 @ matched `α_bg`; lateral on already-good topics). The separating signal is
+  semantic/structural, not in `(p, g)` — so a true "keep foundations AND drop intruders"
+  global solution needs the **kNN semantic backbone** (lever #2, build-once-cache), not
+  more scalar tuning.
+- **Next / deferred:** (1) trying the kNN semantic backbone now (lever #2); (2) the
+  **final background-norm decision is deferred** until the Wikipedia pedagogical-subspace
+  approach is tried (see `curriculum-generalization-pedagogical-subspace.md`) — checking
+  whether cached Wikipedia data under `~/src/bookgen` is reusable.
 - Deferred (source path only): `combine="linear"` additive blend + excluding seed
   nodes from clustering — relevant only if source seeds are reintroduced (currently
   out of scope; source-picking left to downstream users). `combine` is hardcoded
