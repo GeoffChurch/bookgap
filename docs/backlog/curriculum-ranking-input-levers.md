@@ -100,9 +100,18 @@ The score is one family `p^a · log(p/g)`; given `α_fg`, the other two knobs ar
     Performance*, PDP, Bayes-net methods replaced the generic *AI:AMA* + PCM. Demoting
     universally-popular mass let the genuinely-prerequisite roots rise. simT ascent
     clean (0.84 → 0.96). Output `gap_curriculum_T11902_bgnorm`.
-- [ ] **Regression — background normalization on T11273** (a known-good topic):
-  confirm bgnorm doesn't *degrade* curricula that didn't need it, before considering
-  `background_normalize` default-on. Output `gap_curriculum_T11273_bgnorm`. *Result: TBD.*
+- [x] **Regression — background normalization on T11273** (2026-05-29, a known-good
+  topic). **Result: nuanced — a lateral trade, not a strict win.** Stayed on-topic
+  (0 off-topic) and balanced (no singletons, max 543). Surfaced *more* network-
+  embedding-specific works (Katz's *Status Index*, SDNE, *Watch Your Step*, *Learning
+  From Networks*). **But demoted semi-universal foundations** — notably *Laplacian
+  Eigenmaps* and *PageRank* — which are gap-relevant yet globally popular, so their
+  `p/g` wasn't high enough to survive. Confirms the predicted universal-foundation
+  casualty: bgnorm trades universal foundations for gap-specificity.
+  **Conclusion: keep `background_normalize` opt-in (NOT default-on).** Clean win only
+  where there's a real off-topic intrusion (T11902); on already-good topics it's
+  lateral. `α_bg` is the aggressiveness dial — a gentler `α_bg` (e.g. 0.5) might retain
+  foundations like Laplacian Eigenmaps while still removing egregious hubs (open).
 - Deferred (source path only): `combine="linear"` additive blend + excluding seed
   nodes from clustering — relevant only if source seeds are reintroduced (currently
   out of scope; source-picking left to downstream users). `combine` is hardcoded
