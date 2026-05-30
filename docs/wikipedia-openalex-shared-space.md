@@ -673,3 +673,231 @@ Raw topic-matched two-sample values: cross MMD^2=0.000821 (within baseline 0.000
 **(3) Revised LPP-transfer bound:** naive LPP-transfer will degrade: the within-topic covariance mismatch persists, so a wiki-learned projection is a poor basis for the OA cloud — covariance alignment (CORAL/CCA) or a joint formulation is needed. At 41° mean principal angle (k=50) and 37σ cross MMD^2, the within-topic covariance mismatch is large. Practical caveat: the pipeline removes the *global* full-store wiki offset, not the slice's own mean — for an NLP-relevant slice that leaves a residual offset (norm 0.39; full-store-centered logistic AUC 1.000), so a wiki→OA projection must mean-match per-slice (or jointly) before any covariance alignment can help.
 
 *(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.shift_characterization_topicmatched --wiki-store cache/wiki/store/enwiki_full --n-select 40000 --seed 0`.)*
+
+
+## Cross-corpus alignment bake-off: raw vs CSLS dictionary, and CORAL / CCA
+
+Two prior threads left a gap. (i) The §"Topic-matched re-test" battery established that after **per-slice mean-match** the wiki↔OA mean offset is gone but a **genuine nonlinear residual** persists (covariance angle ~41°, MMD² ~37σ, kNN purity ~0.92 — the clouds occupy largely disjoint local support), and explicitly flagged CORAL/CCA as the next test. (ii) The coocmap correspondence re-test found a strong shared-encoder cross-corpus **dictionary**, but its baseline was *CSLS'd*, leaving ambiguous whether the strong dictionary came from RAW cosine or the CSLS correction. This section resolves both, on the SAME per-slice-mean-matched slices.
+
+- **Slices.** NLP-wiki top-3000 (cosine to the OA-NLP centroid) vs OA-NLP 3000 (closest to own centroid), `cache/wiki/store/wiki_400k`, seed 0. **Per-slice mean-match**: subtract each slice's OWN mean, then unit-normalize (NOT full-store centering — the NLP slice is non-representative). Post-mean-match residual mean norms: wiki=0.0046, OA=0.0050 (~0 ✓).
+
+### Part A — dictionary: raw cosine vs CSLS, in isolation
+
+Cross-corpus NN = argmax over the per-slice-mean-matched cosine `sim = Xw @ Xo.T`. CSLS subtracts `0.5·(topk-col-mean + topk-row-mean)`, k=10.
+
+| scorer | mutual-NN rate | top-20 precision (same-concept) |
+|---|---|---|
+| raw cosine | 0.1853 | ~17/20 = **0.85** |
+| CSLS (k=10) | 0.3727 | ~19/20 = **0.95** |
+
+#### Top-20 RAW matches (by confidence)
+
+```
+  [+0.715] WIKI: Turkic languages
+            ->  OA: A Survey of Turkic Language Modeling: Challenges, Resources and Future
+  [+0.702] WIKI: Eurotra
+            ->  OA: Eurotra: The Machine Translation Project of the European Communities
+  [+0.698] WIKI: Cantonese
+            ->  OA: Cantonese natural language processing in the transformers era: a surve
+  [+0.682] WIKI: Arabic
+            ->  OA: Building Arabic Corpora: Concepts, Methodologies, Tools, and Experimen
+  [+0.678] WIKI: Natural language processing
+            ->  OA: Trends In Natural Language Processing : Scope And Challenges
+  [+0.661] WIKI: Word-sense disambiguation
+            ->  OA: An Iterative Approach to Word Sense Disambiguation
+  [+0.650] WIKI: Universal Networking Language
+            ->  OA: Understanding Natural Language through the UNL Grammar Work- bench
+  [+0.645] WIKI: Machine translation
+            ->  OA: What's new in statistical machine translation
+  [+0.639] WIKI: Natural language understanding
+            ->  OA: Natural Language Processing
+  [+0.633] WIKI: Probabilistic context-free grammar
+            ->  OA: PCFG Induction for Unsupervised Parsing and Language Modelling
+  [+0.629] WIKI: Parallel text
+            ->  OA: Reviewed by
+  [+0.626] WIKI: Head-driven phrase structure grammar
+            ->  OA: Head-driven phrase structure grammar: linguistic approach, formal foun
+  [+0.614] WIKI: WordNet
+            ->  OA: Extensions, Enhancements, and New Perspectives on Wordnet
+  [+0.606] WIKI: Bulgarian language
+            ->  OA: Adding Linguistic Knowledge to NLP Tasks for Bulgarian: The Verb Parad
+  [+0.606] WIKI: Dependency grammar
+            ->  OA: Der Einfluss der Dependenzgrammatik auf die Computerlinguistik
+  [+0.601] WIKI: Computational linguistics
+            ->  OA: A Brief Introduction to Computational Linguistics
+  [+0.596] WIKI: Arabic grammar
+            ->  OA: Building Arabic Corpora: Concepts, Methodologies, Tools, and Experimen
+  [+0.595] WIKI: Information retrieval
+            ->  OA: Proceedings of the ACL-2000 workshop on Recent advances in natural lan
+  [+0.593] WIKI: Machine learning
+            ->  OA: Introduction to the Special Issue on Natural Language and Learning Mac
+  [+0.591] WIKI: Document retrieval
+            ->  OA: Proceedings of the ACL-2000 workshop on Recent advances in natural lan
+```
+
+#### Top-20 CSLS matches (by confidence)
+
+```
+  [+0.326] WIKI: Eurotra
+            ->  OA: Eurotra: The Machine Translation Project of the European Communities
+  [+0.291] WIKI: Universal Networking Language
+            ->  OA: Understanding Natural Language through the UNL Grammar Work- bench
+  [+0.291] WIKI: Turkic languages
+            ->  OA: A Survey of Turkic Language Modeling: Challenges, Resources and Future
+  [+0.287] WIKI: Metalanguage
+            ->  OA: The Creation of a Corpus of English Metalanguage
+  [+0.286] WIKI: Cantonese
+            ->  OA: Cantonese natural language processing in the transformers era: a surve
+  [+0.266] WIKI: Bulgarian language
+            ->  OA: Adding Linguistic Knowledge to NLP Tasks for Bulgarian: The Verb Parad
+  [+0.250] WIKI: Code-switching
+            ->  OA: Challenges of Computational Processing of Code-Switching
+  [+0.247] WIKI: Synthetic language
+            ->  OA: morphogen: Translation into Morphologically Rich Languages with Synthe
+  [+0.242] WIKI: Greeklish
+            ->  OA: NLP for the Greek Language: A Brief Survey
+  [+0.239] WIKI: Parallel text
+            ->  OA: Reviewed by
+  [+0.238] WIKI: Head-driven phrase structure grammar
+            ->  OA: Head-driven phrase structure grammar: linguistic approach, formal foun
+  [+0.217] WIKI: Decipherment
+            ->  OA: UNRAVEL—A Decipherment Toolkit
+  [+0.214] WIKI: Urdu
+            ->  OA: Automated part-of-speech analysis of Urdu: conceptual and technical is
+  [+0.214] WIKI: Latent semantic analysis
+            ->  OA: Lexical disambiguation in machine translation with latent semantic ana
+  [+0.213] WIKI: Greek language
+            ->  OA: NLP for the Greek Language: A Brief Survey
+  [+0.211] WIKI: Idiom
+            ->  OA: ID10M: Idiom Identification in 10 Languages
+  [+0.209] WIKI: Punjabi language
+            ->  OA: Developing Punjabi Morphology, Corpus and Lexicon
+  [+0.204] WIKI: Kazakh language
+            ->  OA: Development and Evaluation of a Small Kazakh Language Corpus to Improv
+  [+0.201] WIKI: Constrained writing
+            ->  OA: Constraint-based Natural Language Generation: A Survey
+  [+0.199] WIKI: Dependency grammar
+            ->  OA: Der Einfluss der Dependenzgrammatik auf die Computerlinguistik
+```
+
+**Part A verdict — the strong dictionary is RAW cosine; CSLS *cleans* it but does not create it.** Raw per-slice-mean-matched cosine already produces a high-precision top-20 (~0.85): *Turkic languages* → *Turkic Language Modeling*, *Eurotra* → the *Eurotra* MT-project paper, *WordNet* → a *WordNet* paper, *HPSG* → an *HPSG* paper — most are exact-concept hits. The three raw misses are not scramble: one is a degenerate OA target title ("Reviewed by"), and two generic-IR wiki queries (*Information retrieval*, *Document retrieval*) both land on the same broad "Recent advances in NLP" ACL workshop. CSLS, applied in isolation, **improves** the dictionary to ~0.95: it removes exactly those two generic-workshop hub-landings (replacing them with *Code-switching* → *Code-Switching*, *Decipherment* → *Decipherment Toolkit*, *Latent semantic analysis* → *LSA in MT*, all clean), and roughly doubles the mutual-NN rate (0.185 → 0.373) by demoting the few OA hubs that the raw argmax kept handing back. The only surviving CSLS miss is the same "Reviewed by" junk target (a degenerate item, not a scoring failure). So the ~0.90-class dictionary the coocmap re-test reported was **fundamentally a property of raw shared-encoder cosine in the mean-matched space** — CSLS is a worthwhile hubness *correction* on top (it lifts precision ~0.85 → ~0.95 and mutual-NN ~2×), not the source of the signal. This disentangles what the coocmap re-test left ambiguous: the dictionary is real at the raw level, and CSLS is a clean +0.10 precision refinement.
+
+### Part B — CORAL & CCA (anchored on raw mutual-NN pseudo-anchors)
+
+Pseudo-anchors = the 556 raw mutual-NN pairs (the ~strong dictionary). CORAL whitens OA by its anchor covariance and recolors by wiki's (`Cov_OA^{-1/2}` then `Cov_wiki^{1/2}`, ε=0.001); CCA fits on the paired anchors and projects both corpora into the top-d canonical components. **Residual** = principal angle (k=50), cross MMD² σ-gap vs the within-corpus permutation null, and kNN same-corpus purity (k=10). Baseline = raw mean-matched (no alignment).
+
+| alignment | mutual-NN | NN top-20 prec | angle (deg) | MMD² σ-gap | kNN purity (k=10) |
+|---|---|---|---|---|---|
+| raw mean-matched (baseline) | 0.1853 | ~0.85 | 47.3 | 18.0 | 0.9166 |
+| CORAL | 0.1903 | ~0.95 | 32.5 | 81.8 | 0.7728 |
+| CCA d=32 | 0.4253 | ~0.20 | 0.0 (k=32) | 3.4 | 0.5983 |
+| CCA d=64 | 0.3873 | ~0.20 | 9.0 (k=50) | 2.5 | 0.6500 |
+| CCA d=128 | 0.3453 | ~0.20 | 23.8 (k=50) | 3.3 | 0.7078 |
+
+_Interpretation guard:_ CORAL aligns covariance by construction, so its angle dropping below the baseline 47.3° is **expected and not the success signal**. The real questions are whether **kNN purity falls toward 0.5** (baseline 0.917) and whether **NN precision improves**.
+
+#### Top-20 CORAL matches (by confidence)
+
+```
+  [+0.837] WIKI: Turkic languages
+            ->  OA: A Survey of Turkic Language Modeling: Challenges, Resources and Future
+  [+0.806] WIKI: Arabic
+            ->  OA: Building Arabic Corpora: Concepts, Methodologies, Tools, and Experimen
+  [+0.790] WIKI: Cantonese
+            ->  OA: Cantonese natural language processing in the transformers era: a surve
+  [+0.764] WIKI: Universal Networking Language
+            ->  OA: Understanding Natural Language through the UNL Grammar Work- bench
+  [+0.733] WIKI: Eurotra
+            ->  OA: Eurotra: The Machine Translation Project of the European Communities
+  [+0.713] WIKI: WordNet
+            ->  OA: Extensions, Enhancements, and New Perspectives on Wordnet
+  [+0.713] WIKI: Greeklish
+            ->  OA: NLP for the Greek Language: A Brief Survey
+  [+0.710] WIKI: Linguistic typology
+            ->  OA: Linguistic typology in natural language processing
+  [+0.710] WIKI: Bulgarian language
+            ->  OA: Adding Linguistic Knowledge to NLP Tasks for Bulgarian: The Verb Parad
+  [+0.706] WIKI: Slavic languages
+            ->  OA: Slavic Corpus and Computational Linguistics
+  [+0.705] WIKI: Probabilistic context-free grammar
+            ->  OA: PCFG Induction for Unsupervised Parsing and Language Modelling
+  [+0.695] WIKI: Urdu
+            ->  OA: Automated part-of-speech analysis of Urdu: conceptual and technical is
+  [+0.694] WIKI: Natural language processing
+            ->  OA: Trends In Natural Language Processing : Scope And Challenges
+  [+0.692] WIKI: Idiom
+            ->  OA: ID10M: Idiom Identification in 10 Languages
+  [+0.685] WIKI: Information retrieval
+            ->  OA: Proceedings of the ACL-2000 workshop on Recent advances in natural lan
+  [+0.681] WIKI: Word-sense disambiguation
+            ->  OA: An Iterative Approach to Word Sense Disambiguation
+  [+0.681] WIKI: Ambiguity
+            ->  OA: Ambiguity Resolution : An Analytical Study
+  [+0.677] WIKI: Punjabi language
+            ->  OA: Developing Punjabi Morphology, Corpus and Lexicon
+  [+0.674] WIKI: Synthetic language
+            ->  OA: morphogen: Translation into Morphologically Rich Languages with Synthe
+  [+0.674] WIKI: Arabic grammar
+            ->  OA: Building Arabic Corpora: Concepts, Methodologies, Tools, and Experimen
+```
+
+#### Top-20 CCA (d=128) matches (by confidence)
+
+```
+  [+0.606] WIKI: Z39.50
+            ->  OA: 50th Annual Meeting of the Association for Computationalc○2012 The Ass
+  [+0.587] WIKI: Eval
+            ->  OA: Syntactic Features for Evaluation of Machine Translation
+  [+0.582] WIKI: Low Franconian
+            ->  OA: LOWRECORP: the Low-Resource NLG Corpus Building Challenge
+  [+0.574] WIKI: Rebol
+            ->  OA: Solution for Word Reordering English-Turkish SMT
+  [+0.570] WIKI: Tsat language
+            ->  OA: TyPTex : Inductive typological text classification by multivariate sta
+  [+0.566] WIKI: Metasyntax
+            ->  OA: Microsyntactic Annotation of Corpora and its Use in Computational Ling
+  [+0.564] WIKI: Register (music)
+            ->  OA: Using register-diversified corpora for general language studies
+  [+0.554] WIKI: Dunglish
+            ->  OA: COALA-A computational system for interlanguage analysis
+  [+0.552] WIKI: Parallel translation
+            ->  OA: Parallel texts: using translational equivalents in linguistic typology
+  [+0.552] WIKI: Computational Linguistics (journal)
+            ->  OA: The Oxford handbook of computational linguistics
+  [+0.552] WIKI: Hybrid word
+            ->  OA: Latest trends in hybrid machine translation and its applications
+  [+0.548] WIKI: Statistical syllogism
+            ->  OA: Statistical machine translation gains respect
+  [+0.546] WIKI: Trigram
+            ->  OA: Design and compilation of a specialized Spanish-German parallel corpus
+  [+0.543] WIKI: JavaCC
+            ->  OA: Stochastic iterative alignment for machine translation evaluation
+  [+0.539] WIKI: Gender neutrality in languages with gendered third-person pronouns
+            ->  OA: Comprehension Assistance Meets Machine Translation
+  [+0.534] WIKI: Anacoluthon
+            ->  OA: A statistical model for parsing and word-sense disambiguation
+  [+0.534] WIKI: Czech language
+            ->  OA: Prague Dependency Treebank as an exercise book of Czech
+  [+0.532] WIKI: Ergodic (disambiguation)
+            ->  OA: Finding Translation Examples for Under-Resourced Language Pairs or for
+  [+0.532] WIKI: T-schema
+            ->  OA: TyPTex : Inductive typological text classification by multivariate sta
+  [+0.531] WIKI: Isocolon
+            ->  OA: Predicting Pronoun Translation Using Syntactic, Morphological and Cont
+```
+
+**Part B verdict — linear second-moment alignment *moves* the local support but cannot win both metrics at once; the nonlinear residual is real and partly survives.**
+
+*CORAL* does what it is built to do and a bit more: it pulls the covariance angle 47.3° → 32.5° (expected, per the guard — not the success signal) and, more interestingly, drops kNN same-corpus purity from the baseline 0.917 to **0.773** — the local support is genuinely *less* disjoint, roughly a third of the excess-over-0.5 removed. NN precision is **preserved** (~0.95, essentially the same concept list as raw with higher confidence values from the recoloring). But CORAL is not free: the cross MMD² σ-gap *rises* 18 → 82. Recoloring the entire OA cloud by a covariance estimated on only 556 anchors matches the 2nd moment while distorting the global density, so the RBF two-sample test sees a *larger* discrepancy even as the local neighborhoods mix better. CORAL helps local mixing without hurting correspondence, but does not "reduce the residual" by the MMD criterion — it relocates it.
+
+*CCA* collapses the residual battery the most — purity 0.598 (d=32), 0.650 (d=64), 0.708 (d=128), and MMD² σ-gap down to ~2.5–3.4 (essentially the same-distribution floor) — and even raises mutual-NN sharply (0.185 → 0.425 at d=32). But this is **the trivial-by-construction collapse the guard warns about**, taken to its conclusion: CCA explicitly maximizes cross-corpus correlation on the anchors, so projecting both corpora into the canonical subspace forces the principal angle to ~0° (d=32) and squeezes the clouds together. The cost shows up where it matters — **NN top-20 correspondence precision craters to ~0.20**: the high-confidence CCA matches are dominated by spurious string/homonym artifacts (*Register (music)* → *register-diversified corpora*, *Hybrid word* → *hybrid machine translation*, *Statistical syllogism* → *statistical machine translation*, *Z39.50* → *50th Annual Meeting*), exactly the overfitting signature of fitting a low-rank canonical map on 556 noisy pseudo-anchors. CCA buys a pretty residual battery by discarding the very correspondence quality that motivated the exercise.
+
+So: linear alignment **can** reduce the disjoint local support (CORAL: purity 0.92 → 0.77; CCA: → 0.60–0.71), confirming the residual is *not* irreducible by linear maps — but it cannot do so while *also* improving (or even preserving, for CCA) the cross-corpus correspondence. The nonlinear residual is real, and the bound from the topic-matched battery holds in its practical form: no linear second-moment alignment beats the raw/CSLS mean-matched dictionary on correspondence precision. CORAL is the only variant that improves local mixing without wrecking the dictionary, and even it inflates the global MMD discrepancy.
+
+### Verdict
+
+**(A) The strong cross-corpus dictionary is RAW shared-encoder cosine, not CSLS.** In the per-slice-mean-matched space, raw cosine already yields ~0.85 top-20 correspondence precision with mostly exact-concept hits; CSLS *refines* it to ~0.95 (and ~doubles mutual-NN, 0.185 → 0.373) by demoting a couple of generic-workshop hub-landings, but it does not create the signal. The coocmap re-test's ~0.90-class dictionary was therefore fundamentally a raw-cosine property; CSLS is a clean +0.10-precision hubness correction layered on top, not the source.
+
+**(B) Neither CORAL nor CCA beats raw/CSLS on correspondence — the disjoint local support is *reduced* but not removed by linear alignment, and reducing it trades against the dictionary.** CORAL halves the kNN-purity excess (0.917 → 0.773, local support genuinely less disjoint) and preserves ~0.95 NN precision, but inflates the global MMD² σ-gap (18 → 82) by recoloring the whole OA cloud from a 556-anchor covariance — it *relocates* the residual rather than reducing it. CCA drives purity to 0.60–0.71 and MMD² to the same-distribution floor, but this is the trivial by-construction collapse (angle → 0°) and it craters NN precision to ~0.20 with string/homonym matches — it overfits the noisy pseudo-anchors. The topic-matched bound holds in practice: the cross-corpus residual is a genuine nonlinear register difference that linear second-moment alignment cannot resolve without sacrificing the very correspondence quality it is meant to improve. Use raw (or CSLS-refined) mean-matched cosine for the dictionary; do not bake CORAL/CCA into the cross-corpus path.
+
+*(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_alignment_bakeoff --wiki-store cache/wiki/store/wiki_400k --n 3000 --csls-k 10 --seed 0`.)*
