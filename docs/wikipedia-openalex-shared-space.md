@@ -378,3 +378,152 @@ not the gap machinery, which is sound.
 *(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo
 --wiki-store cache/wiki/store/wiki_400k --topic-filter --wiki-topk 3000
 --oa-limit 4000 --num-gaps 5 --radius-fraction 0.75 --seed 0`.)*
+
+
+## CSLS + topic-relevant reverse NN
+
+The cross-corpus NN block in §2 had two weaknesses, fixed here. **(A)** Its *reverse* direction sampled **uniform** Wikipedia rows (*Varazdin*, *Pearl Drums*, ...) — off-topic encyclopedic pages with no genuine NLP neighbor, so "do they map to sensible OpenAlex NLP articles?" was unanswerable. Here both directions use **NLP-relevant** samples: the Wikipedia query points are drawn from the **top-3000** Wikipedia by cosine to the mean-centered OpenAlex-NLP-article centroid (the same selection `cross_corpus_gap_demo.py --topic-filter` uses). **(B)** It scored NN with raw cosine, which is hubness-prone (a few generic target points become everyone's nearest neighbor). We add **CSLS** (Cross-domain Similarity Local Scaling) as an alternative and measure whether it reduces hubness.
+
+CSLS(x, y) = 2·cos(x, y) − r_T(x) − r_S(y), where r_T(x) is the mean cosine of the source query x to its k=10 nearest *target*-corpus points and r_S(y) is the mean cosine of the target candidate y to its k=10 nearest *source*-corpus points. A target **hub** is densely surrounded by source points, so it has a high r_S(y) and CSLS subtracts it off — demoting the hub from the top-1 slot.
+
+### Setup
+
+- Same raw 384-D GIST space as §1–2: OpenAlex NLP articles (N=87408, denoiser=NONE drop_k=0) and the full Wikipedia store `cache/wiki/store/wiki_400k` (N=400000, fp `6bcf5b5e02946b7e`).
+- Each corpus mean-centered (OpenAlex centroid over the NLP articles, Wikipedia centroid over the **full** store) then re-normalized — identical alignment to the topic-filtered gap demo.
+- NLP-relevant Wikipedia subset = top-3000 by cosine to the mean-centered NLP-article centroid. Hub-share over 200 (OA→wiki) / 200 (wiki→OA) sampled queries, seed 0.
+
+### Hub top-1 share — raw cosine vs CSLS (both directions)
+
+Top-1 hub share = fraction of sampled queries whose single nearest target is the *same* most-popular target across the sample. Lower = less hub collapse. (unique NN / queries in parentheses.)
+
+| direction | scorer | NN top-1 hub share | unique NN / queries |
+|---|---|---|---|
+| OpenAlex → Wikipedia | raw cosine | 0.040 | 156 / 200 |
+| OpenAlex → Wikipedia | CSLS | 0.015 | 177 / 200 |
+| Wikipedia → OpenAlex | raw cosine | 0.030 | 182 / 200 |
+| Wikipedia → OpenAlex | CSLS | 0.010 | 196 / 200 |
+
+### Example NN lists — raw vs CSLS
+
+#### OpenAlex NLP article → nearest NLP-relevant Wikipedia
+
+- **Towards a computational processing of oral dialectal data**
+  - raw : Dialect, Greek language, Accent (sociolinguistics)
+  - csls: Dialect, Yola dialect, Greek language
+- **Où en sommes-nous dans la reconnaissance des entités nommées structurées à partir de la pa**
+  - raw : Voice recognition, Transcription (linguistics), Maria Schneider
+  - csls: Nas (disambiguation), Sylvester, NNN
+- **Fast Computing Grammar-driven Convolution Tree Kernel for Semantic Role Labeling.**
+  - raw : Supervised learning, Role and reference grammar, Kernel
+  - csls: Supervised learning, Kernel, Role and reference grammar
+- **Discontinuity and Non-Projectivity: Using Mildly Context-Sensitive Formalisms for Data-Dri**
+  - raw : L-attributed grammar, Dangling else, Recursive descent parser
+  - csls: Coco/R, Dangling else, L-attributed grammar
+- **Fast computation of maximum entropy / minimum divergence feature gain**
+  - raw : Machine learning, Boosting (machine learning), Prediction by partial matching
+  - csls: Prediction by partial matching, Machine learning, Boosting (machine learning)
+
+#### NLP-relevant Wikipedia → nearest OpenAlex NLP article
+
+- **IPS**
+  - raw : Enriching a Lexicographic Tool with Domain Definitions:, Syntactic Approach Of Pronominal Anaphora Resolution In, Méthode d'accès informatisé aux combinaisons lexicales 
+  - csls: Syntactic Approach Of Pronominal Anaphora Resolution In, Enriching a Lexicographic Tool with Domain Definitions:, Semantic classification of noun phrases using web count
+- **Azari**
+  - raw : Lexical Disambiguation of Polysemeous Adjectives in MT , LEXICAL DISAMBIGUATION OF POLYSEMEOUS ADJECTIVES IN MAC, Arabic word analogies and semantics of simple phrases
+  - csls: Arabic word analogies and semantics of simple phrases, LEXICAL DISAMBIGUATION OF POLYSEMEOUS ADJECTIVES IN MAC, Lexical Disambiguation of Polysemeous Adjectives in MT 
+- **Kosice (disambiguation)**
+  - raw : L'évaluation des résultats de la levée d'ambiguïtés lex, Linking and Harmonizing Different Lexical Resources: a , A Large-Scale Multilingual Disambiguation of Glosses
+  - csls: A Large-Scale Multilingual Disambiguation of Glosses, L'évaluation des résultats de la levée d'ambiguïtés lex, Extraction of Verb Synonyms Using Graph-based Clusterin
+- **KL-ONE**
+  - raw : Semantic interpretation using KL-ONE, Knowledge representation for syntactic/semantic process, Mapping knowledge to language with LOOM
+  - csls: Semantic interpretation using KL-ONE, Mapping knowledge to language with LOOM, Zur Wissensrepraesentation in der Maschinellen Ueberset
+- **Frankish language (disambiguation)**
+  - raw : Interactive disambguation of natural language input: a , Fragmentation and part of speech disambiguation, Traduction automatique pour une paire de langues peu do
+  - csls: Interactive disambguation of natural language input: a , Traitement des clitiques dans un environnement multilin, La linguistique textuelle en fenno-scandie
+
+
+### Verdict
+
+**(A) The topic-relevant reverse NN is now meaningful, and the answer is yes.**
+With the reverse queries drawn from the NLP-relevant Wikipedia subset (instead of
+the off-topic *Varazdin* / *Pearl Drums* uniform sample of §2), the wiki→OpenAlex
+NN are topically sensible: *KL-ONE* lands on *"Semantic interpretation using
+KL-ONE"* (an exact topical hit), and the lexical/disambiguation/anaphora wiki
+pages land on lexical-disambiguation, anaphora-resolution, and semantic-classification
+OpenAlex papers. The residual junk is exactly the noise already flagged in the
+topic-filter verdict: short, weakly-NLP **disambiguation stubs** (*IPS*, *Azari*,
+*Kosice (disambiguation)*, *Frankish language (disambiguation)*) that survive the
+top-3000 cosine cut. Their NN are arbitrary because the *query* is degenerate, not
+because the mapping is broken — a Wikipedia-namespace prefilter (drop
+`(disambiguation)` pages before selection) would clean these up.
+
+**(B) CSLS reduces hubness in both directions.** Top-1 hub share drops from 0.040
+to 0.015 (OA→wiki) and from 0.030 to 0.010 (wiki→OA), and unique-NN diversity
+rises (156→177 and 182→196 of 200). So CSLS does what it promises: it demotes the
+few generic target points that the raw cosine kept handing back. Two honest
+caveats: (i) the absolute hub share is **already low** here (~0.03–0.04) because
+this is the *topic-relevant, mean-centered* setting — the §1 raw-space hub share
+of 0.139 was the genuinely hub-prone regime, and centering + topic-filtering
+already removed most of the collapse before CSLS is even applied; (ii) CSLS is not
+free — on the NER paper *"Où en sommes-nous dans la reconnaissance des entités
+nommées…"* it replaced sensible raw neighbors (*Voice recognition*,
+*Transcription*) with anti-hub junk (*Nas (disambiguation)*, *NNN*). The r_S(y)
+penalty over-rewards *under*-connected target points, so when the genuinely-correct
+neighbor happens to be moderately popular, CSLS can over-penalize it and surface an
+isolated stub instead. Net for the NN check: **CSLS is a worthwhile
+hubness diagnostic and a mild improvement, but not a dramatic one in this
+already-centered regime, and it has a failure mode of its own (anti-hub promotion).**
+
+### Should CSLS be applied inside the cross-corpus gap k-ball?
+
+The gap algorithm's ambient↔landmark relationship is a **k-ball radius**, not a
+top-1 NN: a query point's ball radius is `radius_fraction ×` (distance to its
+k-th nearest *landmark* book), and the gap size is how many ambient points fall in
+that ball (`kball_algorithm.py` / `get_kball_coverage`). The hubness concern maps
+onto this as follows. An **anti-hub** ambient point — one that is far from *every*
+book because it sits in a region the landmark corpus does not reach (e.g. a
+mean-centered Wikipedia language-family cluster with no nearby NLP *book*) — gets a
+**large** nearest-book distance, hence a **large** ball radius, hence sweeps in
+many neighbors and is flagged as a large gap. That is precisely the §"Topic-filtered
+cross-corpus gaps" result: the top gaps are ~100% Wikipedia language pages, which
+are real book-coverage holes but also the most anti-hub-like points relative to the
+*book* landmarks.
+
+**Recommendation: do NOT bake CSLS into the cross-corpus gap k-ball, at least not
+on this evidence — but keep it on the backlog as an opt-in radius correction.**
+Reasoning:
+
+1. **The hubness we measured is in the *cross-corpus NN* score, which the k-ball
+   does not use.** The k-ball uses the query→landmark (article/wiki → book)
+   distance to set a radius and then a query→ambient range search to count
+   members — neither is the OA↔wiki top-1 NN that CSLS rescales. The 0.04→0.015
+   hub-share improvement therefore does not directly transfer to "fewer spurious
+   gaps."
+
+2. **The all-Wikipedia gaps are a *topical* statement, not a hubness artifact.**
+   The shared-space verdict (§1) already established that after mean-centering the
+   corpora share an origin and the topical geometry is intact; the language-family
+   gaps are genuine "no NLP *book* covers the world's languages" holes, not points
+   that are spuriously close to a hub. So the symptom CSLS fixes (collapse onto a
+   generic hub) is **not** what is producing those gaps.
+
+3. **Where CSLS *could* help is the radius term, and that is a different, untested
+   correction.** If one wanted to suppress anti-hub points from dominating gaps,
+   the lever is the *nearest-landmark distance* that sets the radius: an
+   anti-hub-corrected radius (shrink the ball for points whose large
+   nearest-book distance is an anti-hubness artifact rather than a real
+   coverage hole) — i.e. apply a CSLS-style local-scaling term to the
+   query→landmark distance, not the cross-corpus NN. This is plausible but
+   **unmeasured**, would change gap *sizes* (not just orderings), and risks
+   suppressing exactly the real cross-corpus holes we are trying to surface. It
+   should be validated on its own before touching the gap algorithm.
+
+This is logged as the backlog item
+`docs/backlog/keyword-extraction/soft-hubness-correction-csls.md` (CSLS soft
+hubness correction, ported from `mycooc/soft_coocmap.py:_gep_csls`); the
+gap-radius variant above is a distinct application of the same idea and is noted
+there.
+
+*(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.csls_nn_check
+--wiki-store cache/wiki/store/wiki_400k --wiki-topk 3000 --csls-k 10
+--n-nn-examples 200 --seed 0`.)*
