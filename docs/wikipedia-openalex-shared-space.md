@@ -594,3 +594,82 @@ Pool both centered+renorm samples; for each query point, the fraction of its k=1
 **Verdict: MEAN-SHIFT-DOMINANT WITH RESIDUAL.** After per-corpus centering+renormalization the *mean* separation is gone — the single-direction logistic AUC collapses to chance (0.545, §0), and no successive LDA direction recovers it (all five deflation AUCs ~0.54, §1), so there is **no residual *linear* structure** beyond the matched means. But the two clouds are still NOT translates of each other: the residual is **nonlinear — a difference in covariance, shape, and local support** that a hyperplane cannot see. (2) Their top-50 PC subspaces sit at mean principal angle 54.9 deg with mismatched variance spectra (rel-L1 0.27; OA's leading PCs carry markedly more variance than wiki's) — materially different covariance/orientation. (3) The cross-corpus MMD^2 sits 71 sigma above its permutation null and the energy distance is 2.8x the within-corpus (half-vs-half) baseline (both p=0.0050) — far above the same-distribution noise floor, confirming a residual higher-order/shape difference. (4) Local kNN same-corpus purity is 0.988 vs the 0.500 mixing-ratio baseline (excess +0.488) — the points overwhelmingly neighbor their own corpus, so the two centered clouds occupy largely *disjoint local regions* of the sphere despite sharing a mean and admitting no separating hyperplane. Practical bound: a wiki-learned linear projection (e.g. LPP) transfers to OpenAlex only to the extent these covariances align — at 55 deg mean principal angle (k=50) the wiki principal axes are a poor basis for the OA cloud, so expect material degradation, not a clean transfer.
 
 *(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.shift_characterization --wiki-store cache/wiki/store/enwiki_full --n-each 50000 --seed 0`.)*
+
+
+## Topic-matched re-test
+
+The battery above used a **random** Wikipedia sample drawn from all 7.1M pages. That sample is dominated by non-NLP topics (footballers, villages, chemical compounds), so part of the residual it found — especially the 0.988 kNN same-corpus purity — could be *topic-distribution mismatch* (NLP vs all-of-Wikipedia) rather than a genuine corpus/register shift. The decision-relevant question is the **within-topic** one: take only NLP-relevant Wikipedia and re-run.
+
+- **Wiki side (topic-matched).** Top-40000 Wikipedia pages by cosine to the OpenAlex-NLP centroid — the exact `select_nlp_pages` selection the wiki curriculum uses (cosine 0.145..0.362 to the centered NLP direction).
+- **OA side.** SAME OA-NLP slice (topic T10181, raw 384-D GIST) as the prior run, subsampled to 40000 to balance against wiki. Seed 0.
+
+**Centering — two variants, and the distinction matters.** The prior random-sample run subtracted each *sample's own* mean. For a random 50k sample that mean ≈ the full-store mean, so it was implicitly removing the global wiki offset. The NLP-relevant slice is **not** representative of the store, so its own mean sits ~0.25 off the full-store centroid; the two centerings now diverge:
+
+- **Own-mean (primary).** Subtract each sample's own mean, renormalize — the apples-to-apples analog of the prior run. This is the battery used for the side-by-side below and the verdicts: it removes the *same kind* of offset the prior run did, so any surviving residual is a genuine topic-vs-register comparison.
+- **Full-store (practical caveat).** Subtract the global full-store wiki centroid (the offset `cross_corpus_gap_demo` removes in the pipeline). Because the slice is non-representative, this leaves a residual wiki mean of norm 0.388 on the sphere, and the clouds stay trivially separable (logistic AUC 1.0000). Reported as the §0 secondary row; NOT run through the full battery, since this leftover *offset* — not a shape residual — would dominate every downstream metric.
+
+Side-by-side with the prior random-sample run (battery identical; only the wiki sample + centering scope changed):
+
+### 0. Sanity — raw vs centered logistic AUC
+
+| centering | random-sample (prior) | topic-matched (new) |
+|---|---|---|
+| raw (uncentered) | 0.9992 | 0.9955 |
+| own-mean centered (primary) | 0.5446 | 0.5344 |
+| full-store centered (caveat) | — | 1.0000 |
+
+### 1. Multi-direction linear separability (LDA deflation)
+
+| direction | random-sample 1-D LDA AUC | topic-matched 1-D LDA AUC |
+|---|---|---|
+| 1 | 0.5379 | 0.5282 |
+| 2 | 0.5391 | 0.5285 |
+| 3 | 0.5344 | 0.5299 |
+| 4 | 0.5373 | 0.5273 |
+| 5 | 0.5379 | 0.5310 |
+
+### 2. Covariance / shape (principal angles + spectra)
+
+| k | random-sample mean angle | topic-matched mean angle | random spec rel-L1 | topic-matched spec rel-L1 |
+|---|---|---|---|---|
+| 10 | 71.9 | 53.8 | 0.470 | 0.333 |
+| 20 | — | 49.0 | — | 0.295 |
+| 50 | 54.9 | 40.7 | 0.274 | 0.218 |
+
+First 10 topic-matched principal angles at k=50 (deg): 12.6, 14.1, 14.8, 15.4, 16.2, 17.2, 18.0, 18.1, 19.0, 19.8
+
+Top-8 PC variances (topic-matched) — OA: 0.0577, 0.0474, 0.0406, 0.0315, 0.0288, 0.0265, 0.0247, 0.0197; wiki: 0.0645, 0.0361, 0.0249, 0.0208, 0.0193, 0.0158, 0.0150, 0.0135
+
+### 3. Nonlinear two-sample test (MMD + energy distance)
+
+On 4000 centered+renorm points/group (RBF bandwidth sigma=1.4190, median heuristic; 200-permutation null).
+
+| statistic | random-sample (prior) | topic-matched (new) |
+|---|---|---|
+| cross MMD^2 (sigma above null) | 71σ | 37σ |
+| energy distance (× within baseline) | 2.8× | 1.9× |
+| permutation p-value | 0.0050 | 0.0050 |
+
+Raw topic-matched two-sample values: cross MMD^2=0.000821 (within baseline 0.000017, null 0.000002±0.000022); cross energy=0.002774 (within baseline 0.001451).
+
+### 4. Local kNN same-corpus purity (k=10)
+
+| | random-sample (prior) | topic-matched (new) |
+|---|---|---|
+| mean purity | 0.9879 | 0.9234 |
+| mixing-ratio baseline | 0.5000 | 0.5000 |
+| excess over baseline | +0.4879 | +0.4234 |
+| OA-query purity | 0.9971 | 0.9403 |
+| wiki-query purity | 0.9787 | 0.9066 |
+
+### Verdict (topic-matched)
+
+**Topic-matched verdict: GENUINE NONLINEAR REGISTER RESIDUAL (residual persists).** Restricting Wikipedia to its NLP-relevant slice changes the picture markedly relative to the random sample.
+
+**(1) How much was topic-distribution vs genuine corpus shift?** Local kNN same-corpus purity drops from 0.988 (random) to 0.923 (topic-matched), excess over the 0.5 baseline collapsing from +0.488 to +0.423 (~13% of the local clumping removed). The covariance mean principal angle (k=50) moves 55° → 41° (Δ-14°), and the cross MMD^2 σ-gap moves 71σ → 37σ (Δ-34σ). So a modest fraction of the prior residual was **topic-distribution mismatch**, not corpus/register.
+
+**(2) Within-topic, after the offset:** the residual is a genuine nonlinear register residual — it persists. After per-corpus (own-mean) centering the means coincide (centered logistic AUC 0.534, no LDA deflation direction recovers it), and the covariance still differs materially (angle 41°), with kNN purity still elevated.
+
+**(3) Revised LPP-transfer bound:** naive LPP-transfer will degrade: the within-topic covariance mismatch persists, so a wiki-learned projection is a poor basis for the OA cloud — covariance alignment (CORAL/CCA) or a joint formulation is needed. At 41° mean principal angle (k=50) and 37σ cross MMD^2, the within-topic covariance mismatch is large. Practical caveat: the pipeline removes the *global* full-store wiki offset, not the slice's own mean — for an NLP-relevant slice that leaves a residual offset (norm 0.39; full-store-centered logistic AUC 1.000), so a wiki→OA projection must mean-match per-slice (or jointly) before any covariance alignment can help.
+
+*(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.shift_characterization_topicmatched --wiki-store cache/wiki/store/enwiki_full --n-select 40000 --seed 0`.)*
