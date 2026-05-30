@@ -54,6 +54,14 @@ Usage::
         --wiki-store cache/wiki/store/enwiki_full \
         --n-select 40000 --ranking-top-k 4000 --desired-n-topics 12 \
         --use-abstracts
+
+Add ``--bg-norm`` (with optional ``--bg-alpha``, default 0.5) to rank the top-k
+SELECTION by the background-normalized score ``p^a · log((p+ε)/(g+ε))`` instead
+of raw seeded PR mass ``p`` — where ``g`` is a uniform-teleport (no-seed)
+background PR on the same adjacency. This demotes globally-popular
+bibliographic-infrastructure hubs (DOI/ISBN/PubMed/ArXiv/ISO), which have huge
+``g``. Reuses the OpenAlex curriculum's scoring (see
+``artifacts_scripts/curriculum/build_curriculum.py``).
 """
 from __future__ import annotations
 
@@ -577,6 +585,18 @@ def main() -> None:
                     help="top-k pages by PageRank mass to cluster")
     ap.add_argument("--desired-n-topics", type=int, default=12)
     ap.add_argument("--alpha", type=float, default=0.85, help="PageRank damping")
+    ap.add_argument("--bg-norm", action="store_true",
+                    help="rank the top-k SELECTION by the background-normalized "
+                         "score p^a * log((p+eps)/(g+eps)) instead of raw seeded "
+                         "PR mass p, where g is a uniform-teleport (no-seed) "
+                         "background PR on the same adjacency. Demotes globally "
+                         "popular hubs (DOI/ISBN/PubMed) that have huge g. Reuses "
+                         "the OpenAlex curriculum's scoring (see "
+                         "artifacts_scripts/curriculum/build_curriculum.py).")
+    ap.add_argument("--bg-alpha", type=float, default=0.5,
+                    help="exponent a in p^a * log(p/g). 0.0 = raw log-lift, "
+                         "0.5 = Fightin'-Words variance-norm (default, matches the "
+                         "OpenAlex curriculum default), 1.0 = pointwise KL.")
     ap.add_argument("--use-abstracts", action="store_true",
                     help="join opening_text abstracts (from the store's "
                          "articles.parquet — NO extra dump pass) for keyword text")
@@ -624,18 +644,53 @@ def main() -> None:
     # Forward PageRank: A[i,j]=1 means i links to j, so mass flows i->j and
     # accumulates on foundational (heavily-linked-to) prerequisite pages —
     # exactly the citation-graph semantics the engine assumes.
+    adj_csr = adj.tocsr()
     t = time.time()
     masses = compute_pagerank(
-        adj.tocsr(), seeds, alpha=args.alpha, tol=1e-9, max_iter=200, normalize=True
+        adj_csr, seeds, alpha=args.alpha, tol=1e-9, max_iter=200, normalize=True
     )
     log.info(f"pagerank converged in {time.time()-t:.1f}s")
 
-    # --- Top-k by mass, then cluster -----------------------------------------
+    # --- Optional background normalization of the SELECTION score ------------
+    # Reuses the OpenAlex curriculum's scoring (build_curriculum.py): rank the
+    # top-k by p^a * log((p+eps)/(g+eps)) where p = seeded forward PR (=`masses`)
+    # and g = a uniform-teleport (no-seed) background PR on the SAME adjacency,
+    # at the same damping (alpha_bg = alpha_fg, the curriculum's canonical
+    # default). Hubs like DOI/ISBN/PubMed have huge background mass g, so their
+    # log-lift log(p/g) is small/negative and they sink in the ranking. Cluster
+    # weights (`top_masses` below) stay RAW seeded PR mass, matching the
+    # curriculum (background norm is a selection-only re-rank).
+    selection_masses = masses
+    if args.bg_norm:
+        a_exp = float(args.bg_alpha)
+        eps = 1e-12  # matches CurriculumConfig.background_eps
+        log.phase(f"background-normalize (a={a_exp}, alpha_bg={args.alpha}, eps={eps:.0e})")
+        t = time.time()
+        uniform_seeds = np.full(len(id_list), 1.0 / len(id_list), dtype=np.float64)
+        g_bg = compute_pagerank(
+            adj_csr, uniform_seeds, alpha=args.alpha, tol=1e-9, max_iter=200,
+            normalize=True,
+        )
+        p_fg = np.maximum(masses, 0.0)
+        selection_masses = np.power(p_fg, a_exp) * np.log((p_fg + eps) / (g_bg + eps))
+        log.info(
+            f"background PR converged in {time.time()-t:.1f}s; "
+            f"selection score min={float(selection_masses.min()):.3e} "
+            f"max={float(selection_masses.max()):.3e}"
+        )
+
+    # --- Top-k by (possibly normalized) selection score, then cluster --------
     top_k = min(args.ranking_top_k, len(id_list))
-    top_idx = np.argsort(masses)[-top_k:][::-1]
+    top_idx = np.argsort(selection_masses)[-top_k:][::-1]
     log.phase(f"cluster top-{top_k} (retains {100*masses[top_idx].sum():.1f}% PR mass)")
     top_emb = emb_aligned[top_idx]
+    # Cluster weights stay RAW seeded PR mass (matches the OpenAlex curriculum;
+    # background norm is a selection-only re-rank). When bg-norm is on, topic
+    # ordering and representative-page selection use the background-normalized
+    # selection score so the demotion of global hubs is reflected in the
+    # prerequisite-first ordering, not just in which nodes survive the top-k cut.
     top_masses = masses[top_idx]
+    top_rank = selection_masses[top_idx]
     top_texts = [texts_aligned[i] for i in top_idx]
     top_titles = [titles_aligned[i] for i in top_idx]
 
@@ -644,11 +699,18 @@ def main() -> None:
     n_topics = int(point_to_cluster.max()) + 1
     log.info(f"clustered into {n_topics} topics in {time.time()-t:.1f}s")
 
-    # Topic ordering: prerequisites first = highest total PR mass first
-    # (foundational pages accumulate mass under forward PR).
-    topic_mass = np.array(
-        [top_masses[point_to_cluster == t].sum() for t in range(n_topics)]
-    )
+    # Topic ordering: prerequisites first. Without bg-norm, that's highest total
+    # raw PR mass (foundational pages accumulate mass under forward PR). With
+    # bg-norm, order by mean background-normalized lift so popularity-explained
+    # clusters sink below gap-specific foundations.
+    if args.bg_norm:
+        topic_mass = np.array(
+            [top_rank[point_to_cluster == t].mean() for t in range(n_topics)]
+        )
+    else:
+        topic_mass = np.array(
+            [top_masses[point_to_cluster == t].sum() for t in range(n_topics)]
+        )
     order = np.argsort(-topic_mass)
 
     # --- Keywords ------------------------------------------------------------
@@ -681,22 +743,39 @@ def main() -> None:
         f"max {int(out_deg.max())}).\n"
         f"- **PageRank:** forward (mass→prerequisites), α={args.alpha}, seeded at "
         f"{[titles_aligned[i] for i in seed_idx]}.\n"
-        f"- **Clustering:** bisecting K-Means on GIST embeddings of the top-"
-        f"{top_k} pages by PR mass, cut to ~{args.desired_n_topics} topics.\n"
-        f"- **Ordering:** topics sorted by total PageRank mass (foundational → frontier).\n"
+        + (
+            f"- **Background normalization:** top-k SELECTION ranked by "
+            f"`p^a · log((p+ε)/(g+ε))` (a={args.bg_alpha}, α_bg={args.alpha}, "
+            f"ε=1e-12), where p = seeded forward PR and g = uniform-teleport "
+            f"background PR on the same adjacency. Demotes globally-popular hubs. "
+            f"Topic ordering uses the mean lift score; cluster weights stay raw "
+            f"PR mass.\n"
+            if args.bg_norm else ""
+        )
+        + f"- **Clustering:** bisecting K-Means on GIST embeddings of the top-"
+        f"{top_k} pages by "
+        f"{'background-normalized score' if args.bg_norm else 'PR mass'}, "
+        f"cut to ~{args.desired_n_topics} topics.\n"
+        f"- **Ordering:** topics sorted by "
+        f"{'mean background-normalized lift' if args.bg_norm else 'total PageRank mass'} "
+        f"(foundational → frontier).\n"
         f"- **Keywords:** log-odds + lattice phrase mining (same as engine "
         f"`summarize_topics`), over page "
         f"{'title + opening_text' if (args.use_abstracts and any(abstracts_aligned)) else 'titles'}.\n"
     )
 
+    # Under bg-norm, order representative pages within a topic by lift too, and
+    # label the score column accordingly.
+    sub_rank = top_rank if args.bg_norm else top_masses
+    score_label = "lift" if args.bg_norm else "PR mass"
     lines.append("\n## Topics (prerequisite → frontier order)\n")
-    lines.append("| Rank | Size | PR mass | Top keywords | Sample pages |")
+    lines.append(f"| Rank | Size | {score_label} | Top keywords | Sample pages |")
     lines.append("| :--: | ---: | ---: | :-- | :-- |")
     for rank, t in enumerate(order):
         idxs = np.where(point_to_cluster == t)[0]
         m = float(topic_mass[t])
         size = int(idxs.size)
-        sub_order = np.argsort(top_masses[idxs])[::-1]
+        sub_order = np.argsort(sub_rank[idxs])[::-1]
         sample_titles = [top_titles[idxs[j]] for j in sub_order[:6]]
         kw_str = ", ".join(w for w, _ in kw[t][:8])
         samp_str = "; ".join(s[:40] for s in sample_titles[:5])
@@ -708,10 +787,10 @@ def main() -> None:
         idxs = np.where(point_to_cluster == t)[0]
         m = float(topic_mass[t])
         size = int(idxs.size)
-        sub_order = np.argsort(top_masses[idxs])[::-1]
+        sub_order = np.argsort(sub_rank[idxs])[::-1]
         sample_titles = [top_titles[idxs[j]] for j in sub_order[:5]]
         kw_str = ", ".join(w for w, _ in kw[t][:10])
-        lines.append(f"### [{rank+1}] Topic (size={size}, PR mass={m:.4f})\n")
+        lines.append(f"### [{rank+1}] Topic (size={size}, {score_label}={m:.4f})\n")
         lines.append(f"**Keywords:** {kw_str}\n")
         lines.append("**Representative pages:**")
         for s in sample_titles:

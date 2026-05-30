@@ -197,3 +197,101 @@ cached under `cache/wiki/store/enwiki_full/`, so re-running with
 `--reuse-subgraph` skips the 43 GB dump entirely — seed/α/clustering/hub-filter
 tuning is seconds, not 50 minutes.
 
+## Background-normalized PageRank
+
+Salvage path 3 above, executed. The `--bg-norm` flag ranks the top-k SELECTION
+by the background-normalized score `p^a · log((p+ε)/(g+ε))` instead of raw
+seeded PR mass `p`, where `g` is a **uniform-teleport (no-seed) background
+PageRank on the same adjacency** at the same damping (α_bg = α_fg = 0.85),
+ε = 1e-12. This is exactly the scoring the OpenAlex curriculum added in commit
+`dbef012` (`background_normalize` in `artifacts_scripts/curriculum/`), reused
+verbatim here — `a` is the `--bg-alpha` exponent (canonical default 0.5 =
+Fightin'-Words variance-normalized). Cluster weights stay raw PR mass; topic
+ordering uses mean lift, so the demotion shows in the prerequisite ordering.
+
+The background distribution `g` is the global PageRank with no seeds, so
+DOI / ISBN / PubMed / ArXiv / ISO — linked from nearly every article via
+citation templates — carry enormous `g`. Their seeded mass `p` is also large,
+but `p/g ≈ 1` (the gap doesn't elevate them beyond their baseline popularity),
+so `log(p/g)` is near zero and they sink. The genuine NLP foundations have
+`p ≫ g` (the seeds specifically elevate them), so they survive.
+
+Run (`--bg-norm --bg-alpha 0.5`, same subgraph / seeds / top-4000 / ~12 topics):
+
+| Rank | Size | Mean lift | Top keywords | Sample pages |
+| :--: | ---: | ---: | :-- | :-- |
+| 1 | 1 | 1.344 | representation, embeddings, word_embedding, embedding | Word embedding |
+| 2 | 1 | 1.249 | superseded, gram, recurrent_neural, induction | Language model |
+| 3 | 1 | 1.188 | sentence, constituents, grammatical, parse | Parsing |
+| 4 | 1 | 1.163 | computational, anthropology, cognitive_science, neuroscience | Computational linguistics |
+| 5 | 1 | 1.043 | processing_tasks, natural_language_processing_nlp, subfield, knowledge_representation | Natural language processing |
+| 6 | 1 | 0.971 | statistical_algorithms, optimisation, minimisation, generalise | Machine learning |
+| 7 | 136 | 0.047 | gpt, large_language, openai, chatgpt, deep_learning | Transformer (deep learning); Seq2seq; Neural machine translation; Word2vec; Deep learning |
+| 8 | 304 | 0.024 | language, text, parser, programming_language | Machine translation; Transfer-based MT; Rule-based MT; Concordancer |
+| 9 | 479 | 0.019 | artificial_intelligence, machine_learning, deep_learning | Joseph Weizenbaum; Restricted Boltzmann machine; Yoshua Bengio; ICLR |
+| 10 | 312 | 0.017 | software, system, hardware | Automated essay scoring; Human-in-the-loop; Robot control |
+| 11 | 357 | 0.015 | statistical, statistics, population, sample, variance | Topic model; Latent Dirichlet allocation; Overfitting; Bias–variance tradeoff |
+| 12 | 461 | 0.011 | mathematics, logic, set, function, computer_science | Chomsky normal form; Simple precedence grammar; Semi-Thue system; String operations |
+
+### Verdict: it fixes it
+
+**Background normalization fully removes the bibliographic-hub contamination.**
+DOI, ISBN, PubMed, ArXiv, ISO, Wikidata, Bibcode, OCLC, ISSN, PDF, CiteSeerX,
+PubMed Central, Handle System — every infrastructure hub that owned three of
+the top-five topics in the raw-PR run — is gone from the topic table and from
+every representative-page list. ISBN dropped out of the top-4000 selection
+entirely; the rest survive only at rank 501+ (ArXiv 501, DOI 1241, PubMed 1358,
+ISSN 3170), where they are absorbed as ordinary members of large clusters or
+left unassigned (intermediary-only), never anchoring a topic.
+
+Genuine foundations surface where the raw run had bureaucracy:
+
+- **Statistics / probability** — topic 11 (statistics, population, sample,
+  variance; Latent Dirichlet allocation, bias–variance tradeoff, overfitting).
+- **Logic / set theory / formal grammar** — topic 12 (mathematics, logic, set,
+  function; Chomsky normal form, Semi-Thue system, simple precedence grammar).
+- **Linguistics** — the Computational linguistics and Parsing seeds, plus the
+  rule-based / transfer-based MT cluster (topic 8).
+
+**Frontier at sensible depth.** Transformer, Seq2seq, Neural machine
+translation, Word2vec, Deep learning, GPT/ChatGPT cluster at topic 7 — *after*
+the six foundational seeds and the statistics/logic prerequisites, which is the
+correct prerequisite→frontier ordering.
+
+**The seeds are still singletons** (topics 1–6, size 1 each). This is unchanged
+from the raw run and is not a bg-norm artifact: the six seed pages carry by far
+the largest seeded mass `p` (they *are* the personalization vector) and the
+largest lift, so they rank first and cluster alone. Bg-norm reorders them by
+lift but doesn't merge them — that would need a separate fix (e.g. excluding
+seeds from the ranked selection, or down-weighting seed self-mass).
+
+### `--bg-alpha` tuning (0.0 / 0.5 / 1.0)
+
+`a = 0.5` (the OpenAlex canonical default) is the sweet spot — it neither
+under- nor over-corrects:
+
+- **a = 0.5 (variance-norm, default):** highest hub pushed to rank 501; zero
+  hubs in any topic table or representative list; clean foundation/frontier
+  split (table above).
+- **a = 1.0 (pointwise KL):** still demotes the hubs out of the top-5 topics,
+  but **slightly under-corrects** — ArXiv climbs back to rank 26 and resurfaces
+  as the *top representative page* of an infrastructure-flavored cluster
+  ("web, information, published, online, documents"). The pure-`log(p/g)`
+  weighting (no `p^a` support term) over-rewards low-support nodes.
+- **a = 0.0 (raw log-lift):** also removes all hubs from the topic tables, but
+  the frontier becomes noisier — low-support oddities ("1 the Road",
+  "Jabberwacky", "Kling AI", "DBRX") become top representatives because there is
+  no `p^a` support term to anchor on well-attested pages.
+
+So no tuning is needed: **keep the canonical `a = 0.5`.** a=1.0 lets one hub
+leak back; a=0.0 trades hub-cleanliness for a flakier frontier.
+
+Reproduce (seconds, reuses the cached subgraph):
+
+```bash
+conda run -p .conda python -m artifacts_scripts.wiki.wiki_curriculum_demo \
+    --wiki-store cache/wiki/store/enwiki_full --reuse-subgraph \
+    --ranking-top-k 4000 --desired-n-topics 12 --use-abstracts \
+    --bg-norm --bg-alpha 0.5
+```
+
