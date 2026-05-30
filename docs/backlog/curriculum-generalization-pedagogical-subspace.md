@@ -197,8 +197,16 @@ topic-distribution — the rest is corpus/register.
   finding, worth a note on the mycooc side *if* they add a dense-embedding input path (none today).
 
 **Alignment approaches to track (don't lose these).** Shared preprocessing: per-slice mean-match.
-1. **LPP on the wiki link graph** — wiki's *own* pedagogical subspace (anchor-free; well-posed now,
-   independent of the transfer problem). *Firing 2026-05-30 → `docs/wikipedia-pedagogical-lpp.md`.*
+1. **LPP on the wiki link graph** — wiki's *own* pedagogical subspace (anchor-free).
+   **VALIDATED 2026-05-30** (`docs/wikipedia-pedagogical-lpp.md`, `e8f978e`): hub-suppressed LPP
+   with the *link-graph* affinity at k≈64 raises link-modularity +23% (Q 0.240→0.295) and
+   link-flow capture +24% over raw GIST (same selection + clusterer), demotes DOI/ISSN/ArXiv
+   infra out of the top AI/ML topic, and surfaces CS/statistics/math-logic foundations. Crucially
+   attributable to the **human-curated links specifically**: link-LPP and kNN-of-embeddings-LPP
+   subspaces are near-orthogonal (mean canonical corr **0.016**) and kNN-LPP does *not* improve
+   link-clustering — so the gain is the links, not generic graph regularization. Captures
+   *community*, not prerequisite *direction* (ordering stays graph-based: frontier-adjacency /
+   voltage). k must be re-swept per scope (k=32 underfits, k=128 regresses to baseline).
 2. **coocmap anchor-space** — **REFUTED 2026-05-30**, now correctly (verified intra-cloud
    relational loop + correspondence metric; `docs/dead_ends/shared-space-alignment/coocmap-anchor-space-wiki-oa.md`).
    It doesn't recover wiki↔OA correspondences and is beaten badly by the raw shared-encoder cosine
