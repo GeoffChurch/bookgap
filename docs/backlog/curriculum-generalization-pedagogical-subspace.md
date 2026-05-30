@@ -231,3 +231,29 @@ is genuine and linear second-moment alignment can't resolve it without sacrifici
 correspondence. **Recommendation: use raw (or CSLS-refined) mean-matched cosine for cross-corpus
 correspondence; do NOT bake CORAL/CCA/coocmap into the cross-corpus path.** The pedagogical win is
 wiki-native (LPP, item 1).
+
+### The realistic best-of-both path: dictionary-bridged joint graph (2026-05-30)
+
+Since cross-corpus *space alignment* is bounded (above) but the cross-corpus *correspondence
+dictionary* is strong (raw ~0.85 / CSLS ~0.95), realize best-of-both **graph-side, not
+embedding-side**: build a JOINT graph over `wiki articles ∪ OA works` with three edge types —
+**wiki links** (pedagogical structure), **OA citations** (coverage + frontier), and **cross-corpus
+bridge edges from the cosine dictionary** — then run the validated wiki-native pipeline
+(hub-suppressed PageRank + link-LPP + curriculum) on the union. The dictionary is bridge *edges*,
+not a space map, so this sidesteps the alignment problem entirely.
+
+**Precision is NOT the binding constraint.** The 0.95 covers the *overlap* (canonical concepts in
+both corpora) — but the dream's payload is OA-only niche/frontier work with *no* wiki counterpart,
+which has no dictionary entry, and mutual-NN recall is only ~0.37 even on a topic-matched slice. So
+the OA-only frontier is placed not by a direct match but by (a) its topically-nearest wiki concept
+as a soft bridge (cross-corpus NN stays topical post-centering — KL-ONE→its paper) and (b)
+propagation through OA citations to anchored neighbors. **Binding constraints: bridge coverage +
+whether the OA frontier inherits pedagogy via propagation — untested.** Caveat: frontier placement
+leans partly on OA citations (recency-biased — the thing wiki was meant to fix), so best-of-both
+would be *partial* (clean wiki-pedagogy for canonical work, blended for the frontier; likely OK
+since frontier work *is* recent).
+
+**Test that decides it:** build the NLP joint graph (wiki-NLP links + OA-NLP citations +
+high-confidence cosine bridges), run the curriculum, and check whether OA-only frontier works land
+near their prerequisite wiki concepts. That experiment — not the dictionary precision — answers
+whether the dream is realizable.
