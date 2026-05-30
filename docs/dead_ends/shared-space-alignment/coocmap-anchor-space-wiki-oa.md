@@ -64,8 +64,11 @@ collapses), not the prior run's mixing argument.
 - **The live pedagogical direction is wiki-native** LPP on the link graph
   (`docs/wikipedia-pedagogical-lpp.md`) — no cross-corpus alignment needed.
 - **CSLS** stays useful as an opt-in NN re-ranking knob (already ported / backlogged).
-- The earlier "this bounds CORAL/CCA too" claim is **withdrawn** — it rested on the
-  wrong-metric run. CORAL/CCA remain untested; they now have a strong anchor source.
+- CORAL/CCA were subsequently **tested** in the cross-corpus bake-off (`a973699`,
+  `docs/wikipedia-openalex-shared-space.md`) and **confirmed not to help**: CORAL relocates the
+  residual (kNN-purity excess halved but global MMD² 18σ→82σ), CCA craters NN precision to ~0.20
+  (homonym overfitting). The raw/CSLS mean-matched cosine dictionary is the cross-corpus answer;
+  no learned alignment (coocmap, CORAL, or CCA) earns its keep.
 
 **Pointers.**
 - Verified prototype: `artifacts_scripts/wiki/coocmap_correspondence_retest.py`.

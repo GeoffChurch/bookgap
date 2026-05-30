@@ -213,13 +213,21 @@ topic-distribution — the rest is corpus/register.
    NN (top-20 precision ~0.90 vs ~0.15–0.40; MNN 0.373→0.13, *collapses* instead of climbing). The
    shared encoder already solves the matching (no cold-start), and wiki/OA intra-cloud relational
    structure isn't analogous (register residual).
-3. **CSLS-mutual-NN pseudo-anchors → CORAL** — match second moments. Linear, cheap, no external anchors.
-4. **CSLS-mutual-NN pseudo-anchors → CCA** — align shared directions. Linear; needs the induced anchors.
+3. **CSLS-mutual-NN pseudo-anchors → CORAL** — **TESTED, don't bake in 2026-05-30** (`a973699`;
+   bake-off in `docs/wikipedia-openalex-shared-space.md`). Halves the kNN-purity excess
+   (0.917→0.773) at ~0.95 NN precision, but **relocates** the residual rather than reducing it —
+   inflates global MMD² 18σ→82σ (recoloring the whole OA cloud from a 556-anchor covariance).
+   Lateral, not a win.
+4. **CSLS-mutual-NN pseudo-anchors → CCA** — **TESTED, refuted 2026-05-30** (same). The battery
+   "improves" only via the trivial by-construction angle→0° squeeze; NN precision **craters to
+   ~0.20** (string/homonym overfitting, e.g. Register-music→register corpora).
 
-(1) is wiki-only and the **live direction.** (2)–(4) target cross-corpus *transfer*. **Positive
-finding from the coocmap re-test:** the raw shared-encoder cross-corpus cosine NN is itself a
-strong dictionary (~0.90 top-confidence precision), so (3)/(4) have a good anchor source for free.
-The earlier "the whole mixing program is bounded" inference is **withdrawn** (it rested on the
-wrong-metric coocmap run); CORAL/CCA remain **untested** — bounded in principle only by the
-covariance residual, an open empirical question — kept tracked per request. For cross-corpus
-*NN retrieval*, per-corpus mean-centering already suffices.
+**Cross-corpus alignment — CLOSED (2026-05-30).** The usable cross-corpus signal is the **raw
+mean-matched shared-encoder cosine dictionary** (~0.85 top-20 precision; **CSLS** refines it to
+~0.95 and ~2× mutual-NN) — which resolves the coocmap "~0.90" ambiguity: it was *raw*, and CSLS is
+a clean +0.10 hubness refinement, not the source. No learned alignment earns its keep — coocmap is
+beaten by raw, CORAL relocates the residual, CCA craters precision. The nonlinear register residual
+is genuine and linear second-moment alignment can't resolve it without sacrificing the
+correspondence. **Recommendation: use raw (or CSLS-refined) mean-matched cosine for cross-corpus
+correspondence; do NOT bake CORAL/CCA/coocmap into the cross-corpus path.** The pedagogical win is
+wiki-native (LPP, item 1).
