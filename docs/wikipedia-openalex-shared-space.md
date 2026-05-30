@@ -279,3 +279,102 @@ SP3 capstone: the gap algorithms now accept any `Corpus`, so `detect_gaps` runs 
 caps keep the single-threaded run tractable: kball coverage does one range search
 per union point against the full ambient index, ~50 ms/point at 400k, so the full
 uncapped union is a multi-hour job, not a demo.)*
+
+
+## Topic-filtered cross-corpus gaps (NLP-relevant Wikipedia ambient)
+
+The uniform-sample run above had a known weakness flagged in its own takeaway: a
+uniform 400k Wikipedia slice is ~entirely non-NLP, so the densest book-free
+regions it produces are generic encyclopedic stubs (US townships, bare
+disambiguation pages) — *true* k-ball gaps, but not a useful "what does the NLP
+literature discuss that no NLP book covers" signal. This follow-up replaces the
+uniform Wikipedia slice with a **topic-filtered** one, reusing the
+already-embedded `wiki_400k` store (**no re-embedding**) and changing only which
+rows enter the union.
+
+### Selection (semantic, no new embed)
+
+After mean-centering each corpus (OpenAlex centroid for books+articles, the
+**full-store** Wikipedia centroid for wiki) and re-normalizing, we form the
+mean-centered NLP direction = the L2-normalized mean of the centered OpenAlex
+NLP article embeddings, and keep the **top-3000** Wikipedia articles by cosine to
+it. The selection is exactly what you'd hope for — the 15 highest-cosine
+Wikipedia pages are textbook NLP/computational-linguistics topics, not township
+stubs:
+
+> Machine translation (0.657), Word-sense disambiguation (0.625), Corpus
+> linguistics (0.608), Text corpus (0.587), Sentence extraction (0.560),
+> Part-of-speech tagging (0.544), Information extraction (0.542), WordNet
+> (0.538), Parsing (0.534), Cross-language information retrieval (0.523),
+> Dictionary-based machine translation (0.522), Parse tree (0.519),
+> Probabilistic context-free grammar (0.516), Translation memory (0.505),
+> Lemmatization (0.505).
+
+### Setup
+
+- **Landmark:** OpenAlex NLP books (topic `T10181`), N=1231.
+- **Ambient/query:** `UnionCorpus` of OpenAlex NLP articles (N=4000) +
+  top-3000 NLP-relevant Wikipedia from `cache/wiki/store/wiki_400k` (N=3000);
+  total N=7000. Each corpus mean-centered then L2-renormalized.
+- `CellType.KBALL`, `num_gaps=5`, `radius_fraction=0.75`, single-thread faiss,
+  seed 0.
+
+### Result — the 5 gaps
+
+All five are at percentile 1.000 (largest gaps among the books' own k-ball
+sizes). The dominant theme across **every** gap is **individual world languages
+and language families** — NLP/linguistics-adjacent Wikipedia pages that the
+OpenAlex *NLP-techniques* book landmarks sit nowhere near.
+
+| gap | size | OA / wiki | disambig titles | character (highest-NLP-cosine members) |
+|---|---|---|---|---|
+| 0 | 725 | 0 / 725 | 135 | language names + bare disambiguation pages: *Italian*, *Japanese*, *Finnish*, *Croatian*, *Kara language*, *Cantonese (disambiguation)* |
+| 1 | 280 | 0 / 280 | 100 | language + prosody, still disambig-heavy: *Prosody*, *Gypsy language*, *South Slavic*, *Gallo*, *Frisian language (disambiguation)* |
+| 2 | 128 | 0 / 128 | 1 | **clean: language families** — *Language family*, *Romance languages*, *Indo-European languages*, *Esperanto*, *Hindi*, *Russian language*, *Language isolate* |
+| 3 | 100 | 0 / 100 | 45 | languages + phonetics, disambig-mixed: *Slovene*, *Phrasing*, *Tati language*, *Lingala (disambiguation)* |
+| 4 | 82 | **1** / 81 | 0 | **clean cross-corpus: African / creole languages** — OA *"LMF for a selection of African Languages"* co-occupies with *Bambara*, *Songhay*, *Swahili*, *Bantu languages*, *Tunisian Arabic*, *Creole language*, *Portuguese-based creoles* |
+
+(Representative members shown are the highest-cosine-to-NLP-centroid members of
+each gap; "disambig titles" counts members whose title contains
+"(disambiguation)".)
+
+### Uniform vs topic-filtered
+
+| | uniform 400k sample (above) | topic-filtered top-3000 |
+|---|---|---|
+| top-3 gap themes | US township stubs (*Danville, Kansas*); bare disambig (*Descent*, *Mere*, *Blast*) | world languages / language families (*Italian*, *Indo-European languages*, *Bantu*); some residual disambig |
+| any NLP content? | **none** — gaps are pure general-knowledge noise | **yes** — every gap is a language/linguistics cluster; Gaps 2 & 4 are clean |
+| cross-corpus (OA + wiki co-membership)? | no (all gaps 100% wiki) | mostly no, **but Gap 4 mixes an OpenAlex NLP article with wiki language pages** |
+| residual noise | dominant | bare disambiguation pages survive (they are short, high-degree, weakly-NLP, and cluster tightly) |
+
+### Verdict
+
+Topic-filtering the Wikipedia ambient **works and is clearly the right move**:
+the gaps go from general-knowledge noise (townships, raw disambiguation) to a
+coherent **languages-and-linguistics** signal, and one gap (Gap 4) realizes the
+intended *cross-corpus* shape — an OpenAlex NLP article sharing a book-free
+region with topically-matched Wikipedia language pages. The interpretation is
+genuinely useful: *the NLP-techniques book landmarks have essentially no
+coverage of the world's individual languages and language families, which both
+Wikipedia and the preprint/article literature document heavily.* That is a real,
+actionable "gap in book coverage" rather than a corpus-boundary artifact (the
+per-corpus mean-centering ensures the offset is removed, §1).
+
+Two honest caveats keep this short of "deploy as-is." (i) The membership is still
+overwhelmingly Wikipedia (4 of 5 gaps are 100% wiki): mean-centered Wikipedia
+language pages form their own tight, OpenAlex-sparse mass, so they out-compete
+mixed OA+wiki clusters for the *largest* gaps. Surfacing more cross-corpus gaps
+likely needs either a tighter topic filter (push cosine threshold up so only
+densely-NLP wiki survives), a Wikipedia-namespace prefilter (drop
+`(disambiguation)` pages and stubs before selection), or a size metric that
+rewards OA/wiki co-membership over raw mass. (ii) Bare disambiguation pages
+(*DA*, *PL*, *Malta (disambiguation)*) still leak into Gaps 0/1/3 — they are
+short, high-degree, weakly-on-topic, and cluster tightly, so a title/namespace
+filter would be the cheapest cleanup. Net: cross-corpus gap detection with
+Wikipedia-as-ambient **is useful** for finding book-coverage holes once the
+Wikipedia slice is topic-relevant; the remaining work is noise-pruning the slice,
+not the gap machinery, which is sound.
+
+*(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo
+--wiki-store cache/wiki/store/wiki_400k --topic-filter --wiki-topk 3000
+--oa-limit 4000 --num-gaps 5 --radius-fraction 0.75 --seed 0`.)*

@@ -25,6 +25,19 @@ Usage::
     conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo \
         --wiki-store cache/wiki/store/wiki_400k \
         --num-gaps 3 --radius-fraction 0.75 --seed 0
+
+Topic-filtered variant (``--topic-filter``): instead of a uniform Wikipedia
+subsample (dominated by off-topic stubs), keep the ``--wiki-topk`` Wikipedia
+articles whose mean-centered embedding has the highest cosine to the
+mean-centered OpenAlex-NLP-article centroid. This surfaces *cross-corpus*
+NLP gaps (regions where OpenAlex articles and topically-relevant Wikipedia
+articles co-occupy a book-free region) rather than generic encyclopedic stubs.
+No re-embedding: it reuses the already-embedded ``wiki_400k`` store and only
+changes which rows enter the union::
+
+    conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo \
+        --wiki-store cache/wiki/store/wiki_400k --topic-filter --wiki-topk 3000 \
+        --oa-limit 4000 --num-gaps 5 --radius-fraction 0.75 --seed 0
 """
 from __future__ import annotations
 
@@ -138,7 +151,14 @@ def main() -> None:
     ap.add_argument("--oa-limit", type=int, default=8000,
                     help="max OpenAlex NLP articles in the union (0 = all ~87k)")
     ap.add_argument("--wiki-limit", type=int, default=8000,
-                    help="max Wikipedia articles in the union (0 = all in store)")
+                    help="max Wikipedia articles in the union (0 = all in store); "
+                         "ignored when --topic-filter is set (the top-k selection caps it)")
+    ap.add_argument("--topic-filter", action="store_true",
+                    help="select NLP-relevant Wikipedia articles (highest cosine to the "
+                         "mean-centered OpenAlex-NLP-article centroid) instead of a uniform "
+                         "subsample. Reuses the embedded store; no re-embedding.")
+    ap.add_argument("--wiki-topk", type=int, default=3000,
+                    help="with --topic-filter: how many top-cosine Wikipedia articles to keep")
     ap.add_argument("--out", type=Path, default=Path("docs/wikipedia-openalex-shared-space.md"))
     args = ap.parse_args()
 
@@ -168,27 +188,55 @@ def main() -> None:
 
     print("Loading Wikipedia corpus ...")
     wiki = WikipediaCorpus(args.wiki_store)
-    wiki_emb_full = _normalize(np.ascontiguousarray(wiki.embeddings(), dtype=np.float32))
-    wiki_titles_full = wiki.work_titles()
-    wiki_ids_full = wiki.work_ids()
+    wiki_emb_all = _normalize(np.ascontiguousarray(wiki.embeddings(), dtype=np.float32))
+    wiki_titles_all = wiki.work_titles()
+    wiki_ids_all = wiki.work_ids()
     wiki_fp = wiki.embedder_fingerprint
-    wiki_sel = _subsample(wiki_emb_full.shape[0], args.wiki_limit)
-    wiki_emb = np.ascontiguousarray(wiki_emb_full[wiki_sel])
-    wiki_titles_full = [wiki_titles_full[i] for i in wiki_sel.tolist()]
-    wiki_ids_full = [wiki_ids_full[i] for i in wiki_sel.tolist()]
-    print(f"  Wiki: {wiki_emb.shape}  (subsampled from {wiki_emb_full.shape[0]}), fp={wiki_fp}")
     assert oa_fp == wiki_fp, f"fingerprint mismatch: OA={oa_fp} wiki={wiki_fp}"
+    print(f"  Wiki store: {wiki_emb_all.shape}, fp={wiki_fp}")
 
     # --- Mean-center each corpus, then re-normalize (the validated alignment) ----
     # Books and articles are both OpenAlex -> they share the OpenAlex centroid so
     # the (books -> articles) landmark geometry is preserved; only the
     # OpenAlex<->Wikipedia offset is removed. The OpenAlex centroid is taken over
-    # the OpenAlex *articles* (the OA child of the union ambient).
+    # the OpenAlex *articles* (the OA child of the union ambient). The Wikipedia
+    # centroid is taken over the WHOLE store (the corpus-offset estimate must
+    # reflect the full encyclopedic distribution, not a topical subset), and
+    # topic-filter selection then happens on the already-centered Wikipedia rows.
     oa_centroid = arts_emb.mean(axis=0, keepdims=True)
-    wiki_centroid = wiki_emb.mean(axis=0, keepdims=True)
+    wiki_centroid = wiki_emb_all.mean(axis=0, keepdims=True)
     books_c = _normalize(books_emb - oa_centroid)
     arts_c = _normalize(arts_emb - oa_centroid)
-    wiki_c = _normalize(wiki_emb - wiki_centroid)
+    wiki_c_all = _normalize(wiki_emb_all - wiki_centroid)
+
+    # --- Select which Wikipedia rows enter the union -----------------------------
+    if args.topic_filter:
+        # NLP-relevant selection: keep the wiki rows whose mean-centered embedding
+        # has the highest cosine to the mean-centered OpenAlex-NLP-article centroid.
+        # arts_c is already unit-norm; its mean is the centered NLP direction. We
+        # L2-normalize that direction so the score is a true cosine, then rank.
+        nlp_dir = arts_c.mean(axis=0)
+        nlp_norm = np.linalg.norm(nlp_dir)
+        nlp_dir = (nlp_dir / nlp_norm).astype(np.float32) if nlp_norm > 0 else nlp_dir
+        wiki_cos = wiki_c_all @ nlp_dir  # cosine (both unit-norm)
+        topk = min(args.wiki_topk, wiki_cos.shape[0])
+        # argpartition for the top-k, then sort that slice by cosine descending.
+        part = np.argpartition(-wiki_cos, topk - 1)[:topk]
+        wiki_sel = part[np.argsort(-wiki_cos[part])].astype(np.int64)
+        print(f"  Topic-filter: kept top-{topk} Wikipedia by cosine to NLP centroid "
+              f"(cos range {wiki_cos[wiki_sel].min():.3f}..{wiki_cos[wiki_sel].max():.3f}).")
+        print("  Example selected Wikipedia titles (top 15 by cosine):")
+        for i in wiki_sel[:15].tolist():
+            print(f"    [{wiki_cos[i]:.3f}] {wiki_titles_all[i][:80]}")
+    else:
+        wiki_sel = _subsample(wiki_emb_all.shape[0], args.wiki_limit)
+
+    wiki_c = np.ascontiguousarray(wiki_c_all[wiki_sel])
+    wiki_titles_full = [wiki_titles_all[i] for i in wiki_sel.tolist()]
+    wiki_ids_full = [wiki_ids_all[i] for i in wiki_sel.tolist()]
+    print(f"  Wiki in union: {wiki_c.shape}  "
+          f"({'topic-filtered' if args.topic_filter else 'uniform subsample'} "
+          f"from {wiki_emb_all.shape[0]})")
 
     # Bare ids inside each child; UnionCorpus.work_ids() applies the source
     # prefix derived from child .name() -> "openalex:" / "wiki:" (per task spec).
@@ -197,7 +245,8 @@ def main() -> None:
     wiki_ids = tuple(wiki_ids_full)
     wiki_titles = tuple(wiki_titles_full)
 
-    sub_tag = (args.seed, args.oa_limit, args.wiki_limit)
+    sel_tag = ("topk", args.wiki_topk) if args.topic_filter else ("uniform", args.wiki_limit)
+    sub_tag = (args.seed, args.oa_limit, sel_tag)
     landmark = MemCorpus(
         _embeddings=books_c, _work_ids=tuple(f"openalex:{w}" for w in oa_books.work_ids()),
         _work_titles=tuple(oa_books.work_titles()), _fingerprint=oa_fp,
@@ -233,21 +282,38 @@ def main() -> None:
     print(f"  detect_gaps returned {len(gaps)} gap(s).")
 
     report_lines: list[str] = []
-    report_lines.append("## Cross-corpus gap detection (OpenAlex books vs OpenAlex+Wikipedia ambient)\n")
-    report_lines.append(
-        "SP3 capstone: the gap algorithms now accept any `Corpus`, so `detect_gaps` "
-        "runs with a cross-corpus `UnionCorpus` ambient. Landmarks are OpenAlex NLP "
-        f"books (topic `{NLP_TOPIC}`); the ambient/query is a `UnionCorpus` of OpenAlex "
-        "NLP articles + a Wikipedia slice, all in raw 384-D GIST. Each corpus is "
-        "**mean-centered then re-normalized before the union** (the validated alignment: "
-        "the OpenAlex<->Wikipedia shift is a pure per-corpus offset). faiss is pinned to "
-        "one thread.\n"
-    )
+    if args.topic_filter:
+        report_lines.append("## Topic-filtered cross-corpus gaps (NLP-relevant Wikipedia ambient)\n")
+        report_lines.append(
+            "Follow-up to the uniform-sample run below: instead of a uniform Wikipedia "
+            "subsample (dominated by off-topic stubs), the Wikipedia ambient is the "
+            f"**top-{args.wiki_topk}** Wikipedia articles by cosine to the mean-centered "
+            "OpenAlex-NLP-article centroid (reusing the already-embedded store; no "
+            "re-embedding). Everything else is identical: OpenAlex NLP books are the "
+            "landmarks, the ambient/query is a `UnionCorpus` of OpenAlex NLP articles + "
+            "the NLP-relevant Wikipedia slice, all raw 384-D GIST, each corpus "
+            "mean-centered then re-normalized, faiss pinned to one thread.\n"
+        )
+    else:
+        report_lines.append("## Cross-corpus gap detection (OpenAlex books vs OpenAlex+Wikipedia ambient)\n")
+        report_lines.append(
+            "SP3 capstone: the gap algorithms now accept any `Corpus`, so `detect_gaps` "
+            "runs with a cross-corpus `UnionCorpus` ambient. Landmarks are OpenAlex NLP "
+            f"books (topic `{NLP_TOPIC}`); the ambient/query is a `UnionCorpus` of OpenAlex "
+            "NLP articles + a Wikipedia slice, all in raw 384-D GIST. Each corpus is "
+            "**mean-centered then re-normalized before the union** (the validated alignment: "
+            "the OpenAlex<->Wikipedia shift is a pure per-corpus offset). faiss is pinned to "
+            "one thread.\n"
+        )
     report_lines.append("### Setup\n")
     report_lines.append(f"- **Landmark:** OpenAlex NLP books, N={books_c.shape[0]}.")
+    wiki_desc = (
+        f"top-{args.wiki_topk} NLP-relevant" if args.topic_filter else "uniform-sampled"
+    )
     report_lines.append(
         f"- **Ambient/query:** `UnionCorpus` of OpenAlex NLP articles (N={n_oa}) + "
-        f"Wikipedia `{args.wiki_store}` (N={len(wiki_ids)}); total N={union.embeddings().shape[0]}."
+        f"{wiki_desc} Wikipedia `{args.wiki_store}` (N={len(wiki_ids)}); "
+        f"total N={union.embeddings().shape[0]}."
     )
     report_lines.append(
         f"- Each corpus mean-centered (OpenAlex centroid for books+articles, "
