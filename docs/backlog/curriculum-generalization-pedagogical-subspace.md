@@ -311,3 +311,11 @@ at selection, not at the PageRank/teleport level.)*
 - **v3 direction (open):** corpus-aware clustering / mass-cut — cut top-k *per corpus*, or cluster on
   a shared LPP basis with separate per-corpus frontier budgets — to recover more of the OA long tail
   without destabilizing.
+- **Ablation (2026-05-30): the two fixes are synergistic — both needed, and #1 alone backfires.**
+  OA papers reaching a named topic: **neither 247** (v1) · **#3-only 378** (per-corpus-select, sparse
+  OA) · **#1-only 45** (dense OA, *global* select — WORSE than v1: without rebalancing the OA pool
+  collapses to 145 as the 11k low-relevance cited nodes dilute OA's global scores and wiki dominates
+  the cut) · **both 644** (v2). Mechanism: **#3 controls pool membership** (how many OA survive the
+  top-k cut), **#1 controls the assignment rate** (sparse ~12% → dense ~20% of pooled OA cluster into
+  named topics). #1 is only useful once #3 has filled the pool. Pedagogy stayed clean in every cell
+  (≥93% of assigned OA in wiki-anchored topics).
