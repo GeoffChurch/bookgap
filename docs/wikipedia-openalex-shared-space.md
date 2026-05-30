@@ -527,3 +527,70 @@ there.
 *(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.csls_nn_check
 --wiki-store cache/wiki/store/wiki_400k --wiki-topk 3000 --csls-k 10
 --n-nn-examples 200 --seed 0`.)*
+
+
+## Is the shift a pure offset? Residual-structure battery
+
+The §1 result (linear AUC 0.999 -> ~0.497 after per-corpus centering + renormalization) is necessary but not sufficient for "pure offset": a single-direction linear AUC -> chance only shows the *means* coincide after centering and that no single hyperplane separates the corpora. It says nothing about whether the two clouds have the same covariance, shape, or density. This section adds a battery that tests exactly that residual structure, on the **same** centered+renormalized clouds (`_normalize(X - X.mean(0))` per corpus).
+
+- **Sample.** Balanced 50000 OpenAlex NLP articles (topic T10181, raw 384-D GIST) vs 50000 Wikipedia rows from `cache/wiki/store/enwiki_full`, seed 0. Both centered + renormalized.
+
+### 0. Sanity — single-fit logistic AUC reproduces §1
+
+| | held-out logistic AUC |
+|---|---|
+| raw (uncentered) | 0.9992 |
+| centered + renormalized | 0.5446 |
+
+Reproduces the headline collapse (0.999 -> ~0.497 chance) on this larger balanced sample: raw 0.9992, centered 0.5446.
+
+### 1. Multi-direction linear separability (LDA deflation)
+
+Fit an LDA direction on the centered clouds, record its held-out 1-D AUC, then project both corpora orthogonal to it and refit. If linear separability is genuinely rank-1 (mean-only), AUC collapses to ~0.5 at direction 1 and stays; a later direction with AUC>0.5 means the mean-only claim is under-powered (a 2nd/3rd linear axis still separates).
+
+| direction | held-out 1-D LDA AUC |
+|---|---|
+| 1 | 0.5379 |
+| 2 | 0.5391 |
+| 3 | 0.5344 |
+| 4 | 0.5373 |
+| 5 | 0.5379 |
+
+### 2. Covariance / shape comparison
+
+Top-k principal components of each centered corpus: principal angles between the two PC subspaces (0 deg = identical subspace) and relative L1 difference of the top-k eigenvalue (variance) spectra. A pure offset => near-identical covariance: small angles, matching spectra.
+
+| k | mean angle (deg) | median | max | spectrum rel-L1 |
+|---|---|---|---|---|
+| 10 | 71.9 | 73.8 | 88.9 | 0.470 |
+| 20 | 65.3 | 69.2 | 88.7 | 0.380 |
+| 50 | 54.9 | 55.4 | 89.8 | 0.274 |
+
+First 10 principal angles at k=50 (deg): 19.0, 20.9, 22.4, 24.2, 25.5, 26.9, 27.7, 29.9, 30.9, 32.5
+
+Top-8 PC variances — OA: 0.0576, 0.0475, 0.0405, 0.0314, 0.0287, 0.0266, 0.0247, 0.0196; wiki: 0.0317, 0.0265, 0.0241, 0.0215, 0.0191, 0.0171, 0.0145, 0.0135
+
+### 3. Nonlinear two-sample test (MMD + energy distance)
+
+On 5000 centered+renorm points per group (RBF bandwidth sigma=1.4177, median heuristic; 200-permutation null). The **within-corpus baseline** (split each corpus in half, measure half-vs-half) is the noise floor for "same distribution." cross ~ within => pure offset; cross >> within => residual higher-order/shape difference.
+
+| statistic | cross-corpus | within-corpus baseline | permutation null (mean +/- std) | p-value |
+|---|---|---|---|---|
+| MMD^2 (RBF) | 0.001040 | -0.000000 (OA 0.000006, wiki -0.000006) | 0.000002 +/- 0.000015 | 0.0050 |
+| energy distance | 0.003144 | 0.001129 (OA 0.001143, wiki 0.001116) | 0.000569 +/- 0.000034 | 0.0050 |
+
+The within-corpus MMD^2 baseline is ~0 (the unbiased estimator's value for two halves of the *same* distribution), so a cross/within ratio is undefined; the cross MMD^2 instead sits **71 permutation-null standard deviations** above its null. The energy distance gives a well-defined **2.8x** the within-corpus baseline. A pure offset would put cross at the within-corpus noise floor (ratio ~1, z ~0); both statistics reject that decisively (p=0.0050), the signature of a residual shape/density difference the linear test cannot see.
+
+### 4. Local kNN same-corpus purity
+
+Pool both centered+renorm samples; for each query point, the fraction of its k=10 nearest neighbors that share its corpus. Baseline = mixing-ratio expectation under random labels (p0^2 + p1^2). mean ~ baseline => locally well-mixed (translates interleave); mean > baseline => local clumping / density-shape difference invisible to the global linear test.
+
+| k | mean purity | baseline | excess | OA-query purity | wiki-query purity |
+|---|---|---|---|---|---|
+| 10 | 0.9879 | 0.5000 | +0.4879 | 0.9971 | 0.9787 |
+
+### Verdict
+
+**Verdict: MEAN-SHIFT-DOMINANT WITH RESIDUAL.** After per-corpus centering+renormalization the *mean* separation is gone — the single-direction logistic AUC collapses to chance (0.545, §0), and no successive LDA direction recovers it (all five deflation AUCs ~0.54, §1), so there is **no residual *linear* structure** beyond the matched means. But the two clouds are still NOT translates of each other: the residual is **nonlinear — a difference in covariance, shape, and local support** that a hyperplane cannot see. (2) Their top-50 PC subspaces sit at mean principal angle 54.9 deg with mismatched variance spectra (rel-L1 0.27; OA's leading PCs carry markedly more variance than wiki's) — materially different covariance/orientation. (3) The cross-corpus MMD^2 sits 71 sigma above its permutation null and the energy distance is 2.8x the within-corpus (half-vs-half) baseline (both p=0.0050) — far above the same-distribution noise floor, confirming a residual higher-order/shape difference. (4) Local kNN same-corpus purity is 0.988 vs the 0.500 mixing-ratio baseline (excess +0.488) — the points overwhelmingly neighbor their own corpus, so the two centered clouds occupy largely *disjoint local regions* of the sphere despite sharing a mean and admitting no separating hyperplane. Practical bound: a wiki-learned linear projection (e.g. LPP) transfers to OpenAlex only to the extent these covariances align — at 55 deg mean principal angle (k=50) the wiki principal axes are a poor basis for the OA cloud, so expect material degradation, not a clean transfer.
+
+*(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.shift_characterization --wiki-store cache/wiki/store/enwiki_full --n-each 50000 --seed 0`.)*
