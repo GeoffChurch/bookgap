@@ -102,3 +102,40 @@ Reusable assets exist, but **embeddings are the gating limit**:
 - *CCA pedagogical subspace:* hard anchors are capped by 879 embedded articles ∩
   OpenAlex-matchable (DOI / title / Wikidata) → realistically tens-to-low-hundreds — small
   but maybe enough for a prototype. Wikidata/DOI linking is the setup cost.
+
+## Status / working notes
+
+**2026-05-30 — first direct Wikipedia curriculum built + run (cirrus-native).**
+Superseded the `~/src/bookgen` path above: rather than the `enwiki-20260201`
+pagelinks SQL dump (which forced a page_id intersection across two dumps), we
+build the link graph from the **same** `enwiki-20251229` CirrusSearch *content*
+dump that produced the GIST embeddings — `outgoing_link` carries the graph
+natively, so it's internally coherent (one date, no cross-dump mismatch, no
+bookgen). New code: `bookgap/wikipedia/link_graph.py` (+ test),
+`artifacts_scripts/wiki/wiki_curriculum_demo.py`. Caches `title_maps.parquet`
++ `curriculum_subgraph_n40000.npz` so re-runs skip the 43 GB dump
+(`--reuse-subgraph`).
+
+**Result (full write-up: `docs/wikipedia-curriculum.md`): worse than the
+OpenAlex-citation curriculum as-is — bibliographic-infrastructure hub
+contamination.** Forward PageRank on the raw link graph put **DOI / ISBN /
+PubMed / ArXiv / ISO / Wikidata** at the top (linked from ~every article via
+citation templates), outranking the real NLP foundations; the six seeds each
+collapsed to a singleton cluster below them; frontier (Transformers/BERT) barely
+appeared. So the hypothesis "Wikipedia → better curricula" is **not confirmed for
+the raw link graph** — but topics 1–2 (CS/AI/Algorithm/Turing; Formal
+grammar/Compiler) are sensible foundations, so there's real signal under the
+noise.
+
+**Next (the actual open idea now):** hub suppression before this is worth
+pursuing as the pedagogical graph. Three salvage paths, cheapest first:
+1. **Background-normalized PageRank** — reuse the existing `p^a·log(p/g)`
+   background normalization (built for the OpenAlex curriculum): DOI/ISBN/PubMed
+   have huge background (un-seeded) mass → demoted automatically. Most principled,
+   reuses machinery.
+2. **Infrastructure category filter** — the cirrus dump carries each page's
+   `category`; drop identifier/database/standards-org pages in a one-pass filter.
+3. **In-degree hub suppression** — downweight/drop edges into extreme-in-degree
+   targets.
+The CCA "pedagogical subspace" idea (above) is untouched and still open; this
+note only covers the *direct Wikipedia link-graph curriculum* probe.
