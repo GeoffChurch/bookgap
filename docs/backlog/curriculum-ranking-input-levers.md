@@ -149,15 +149,24 @@ The score is one family `p^a · log(p/g)`; given `α_fg`, the other two knobs ar
     (`compute_frontier_adjacency` + `_compute_linearization_order_from_adjacency`, 35 s on
     478k nodes) put the seeds last and foundations first. **Keep bg-norm for SELECTION,
     raw-fg-PR for ORDERING.**
-  - **Residual ordering coarseness:** the in−out heuristic still ranks the broad AI/ML
-    *umbrella* topic above Statistics / Math-Logic (raw inter-topic in-degree rewards
-    broadly-linked-to topics — the hub effect at the topic level). Upgrades: (a)
-    **background-normalize the frontier adjacency** (same `p^a·log(p/g)` on inter-topic
-    in-flow — *under test 2026-05-30*); (b) **voltage/potential method**
-    (`_compute_linearization_order_from_potentials` / CircuitRank, the directional method
-    flagged above) — needs a source/target voltage-clamp for the wiki graph (no natural
-    *source* seed; candidate: clamp highest-background/most-general nodes to 1V, the NLP
-    seeds to 0V).
+  - **Residual ordering coarseness + what we tried:** the in−out heuristic ranks the broad
+    AI/ML *umbrella* above Statistics / Math-Logic (raw inter-topic in-degree rewards
+    broadly-linked-to topics — the hub effect at the topic level).
+    - (a) **Background-normalizing the frontier adjacency** (`--order-by frontier-bgnorm`,
+      `inflow_fg^a·log(inflow_fg/inflow_bg) − outflow_fg`, a=0.5) was **tried and FAILED**
+      (2026-05-30, `83a7dfb`; kept in code for comparison only). At the *topic* level the
+      umbrella is a high-*seeded*-in-flow topic, not a popular-everywhere hub (bg-ratio
+      mid-pack), so `p/g` doesn't demote it (1→2); Statistics got *worse* (4→6); and the
+      genuine frontier (Transformer/GPT) has near-zero background in-flow → `log(p/g)` blows
+      up → it jumps to rank 1 (the low-support log-lift pathology, same as `a=0` in selection).
+      `p/g` measures background-relative *surprise*, not prerequisite *depth* — wrong axis.
+    - (b) **Voltage/potential method** (`_compute_linearization_order_from_potentials` /
+      CircuitRank) is the recommended fix — order by a solved potential that separates
+      source→target along the flow direction (the axis both in−out and `frontier-bgnorm` miss).
+      **Open design decision:** the wiki graph has no natural *source* seed — candidates: (i)
+      CircuitRank's leakage-only "Goal=1V + high leakage" mode (no explicit source — cleanest);
+      (ii) clamp named foundations (Mathematics/Logic/Statistics) to 1 V; (iii) graph-derived
+      sources (high in-degree / low out-degree DAG roots).
 
 ## Pointers
 
