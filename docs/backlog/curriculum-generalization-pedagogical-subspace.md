@@ -199,18 +199,18 @@ topic-distribution — the rest is corpus/register.
 **Alignment approaches to track (don't lose these).** Shared preprocessing: per-slice mean-match.
 1. **LPP on the wiki link graph** — wiki's *own* pedagogical subspace (anchor-free; well-posed now,
    independent of the transfer problem). *Firing 2026-05-30 → `docs/wikipedia-pedagogical-lpp.md`.*
-2. **coocmap anchor-space** — **REFUTED 2026-05-30**
-   (`docs/dead_ends/shared-space-alignment/coocmap-anchor-space-wiki-oa.md`). Correctly nonlinear
-   (not VecMap) and feedable via kNN-gram, but the **shared-anchor upper bound** still can't mix
-   the corpora (purity 0.964 > 0.938 raw floor): near-disjoint local support makes anchor-relative
-   profiles corpus-predictive, re-encoding corpus identity instead of removing it.
+2. **coocmap anchor-space** — **PROVISIONAL, RE-TESTING 2026-05-30**
+   (`docs/dead_ends/shared-space-alignment/coocmap-anchor-space-wiki-oa.md`). First refutation in
+   doubt: it measured *mixing* (kNN purity → 0.5), which is **not** coocmap's objective — coocmap
+   is a cross-corpus *correspondence/dictionary* method (clouds can stay disjoint while matches are
+   correct). Re-testing with the correct metric (correspondence quality), verified intra-cloud
+   relational column-extraction (`Xf = M_W[:, inds1]`, intra-cloud), and dictionary priming. The
+   real open question: do wiki and OA have **analogous internal relational structure**?
 3. **CSLS-mutual-NN pseudo-anchors → CORAL** — match second moments. Linear, cheap, no external anchors.
 4. **CSLS-mutual-NN pseudo-anchors → CCA** — align shared directions. Linear; needs the induced anchors.
 
-(1) is wiki-only and the **live direction.** (2)–(4) target cross-corpus *transfer*/mixing — but
-coocmap's upper-bound control (even *perfect* anchors fail to mix) is strong evidence the whole
-**mixing program is bounded by near-disjoint local support**, so **(3) CORAL and (4) CCA are now
-higher-risk** (a global linear second-moment match can't mix locally-disjoint clouds any better
-than perfect anchors could). Kept tracked per request; worth testing only if a concrete transfer
-need re-motivates them. For cross-corpus *NN retrieval* (not mixing), per-corpus mean-centering
-already suffices.
+(1) is wiki-only and the **live direction.** (2)–(4) target cross-corpus *transfer*/mixing.
+**Pending the coocmap re-test**, the earlier inference that the whole mixing program is bounded
+(and thus (3) CORAL / (4) CCA are higher-risk) is **on hold** — it rested on the coocmap
+upper-bound result now under re-examination. For cross-corpus *NN retrieval* (not mixing),
+per-corpus mean-centering already suffices regardless.

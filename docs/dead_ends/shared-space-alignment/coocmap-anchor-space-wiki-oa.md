@@ -1,5 +1,18 @@
 # coocmap anchor-space re-representation for wiki↔OA alignment — refuted
 
+> **⚠ PROVISIONAL — RE-TESTING (2026-05-30).** This refutation is in doubt and is being
+> re-run. The prototype it rests on measured **mixing** (kNN same-corpus purity → 0.5), which
+> is **not coocmap's objective**: coocmap is a cross-corpus *correspondence/dictionary* method
+> (unsupervised translation) — two clouds can stay locally disjoint while the matches are
+> correct, exactly as English/French embedding clouds never merge yet yield a translation
+> dictionary. The "Why" diagnosis below also describes an **inter-cloud** affinity, which
+> contradicts the **intra-cloud** relational column-extraction coocmap actually performs
+> (`Xf = M_src[:, inds1]` — each item profiles only against its *own* cloud's anchor columns;
+> the cross-corpus comparison is between corresponding-anchor profile *shapes*). A corrected
+> re-test (verified intra-cloud relational loop, dictionary priming, and a **correspondence**
+> metric instead of mixing) is running before this is treated as settled. The "bounds CORAL/CCA
+> too" implication is likewise on hold pending that re-test.
+
 **Idea.** Borrow `~/src/mycooc`'s **coocmap** (the hard variant of softcoocmap): use
 cross-domain nearest-neighbors to define **anchors**, re-represent every point in every
 corpus by its similarity profile to those anchors (an "anchor space" of dim = #anchors,
