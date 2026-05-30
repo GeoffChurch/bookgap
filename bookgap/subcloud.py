@@ -89,8 +89,16 @@ def get_subcloud_retained_idxs(subcloud: SubCloud) -> NDArray[np.uint64]:
     )
 
 
-def get_subclouds_for_topic(cloud: Cloud, topic_id: Optional[str]) -> tuple[SubCloud, SubCloud]:
-    """Return (books, articles) slices for the given topic using the parent cloud cache."""
-    books = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=("book",)))
-    articles = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=("article",)))
-    return books, articles
+def get_subclouds_for_topic(
+    cloud: Cloud,
+    topic_id: Optional[str],
+    ambient_work_type: str = "article",
+    landmark_work_type: str = "book",
+) -> tuple[SubCloud, SubCloud]:
+    """Return (landmark, ambient) slices for the topic.
+
+    Defaults reproduce the historical (books, articles) split byte-for-byte.
+    """
+    landmark = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=(landmark_work_type,)))
+    ambient = SubCloud(parent=cloud, post_filter=Filter(topic=topic_id, work_types=(ambient_work_type,)))
+    return landmark, ambient

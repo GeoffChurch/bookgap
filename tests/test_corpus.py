@@ -40,6 +40,18 @@ def test_union_merge_index_matches_bruteforce(tiny_subcloud, _ai_cloud):
     assert np.array_equal(i_ref, i_got)
 
 
+def test_get_subclouds_for_topic_respects_work_types(_ai_cloud):
+    from bookgap.subcloud import get_subclouds_for_topic
+    landmark, ambient = get_subclouds_for_topic(
+        _ai_cloud, "T13629", ambient_work_type="article", landmark_work_type="book"
+    )
+    assert landmark.post_filter.work_types == ("book",)
+    assert ambient.post_filter.work_types == ("article",)
+    # default args reproduce historical (book, article) split
+    l2, a2 = get_subclouds_for_topic(_ai_cloud, "T13629")
+    assert (l2.post_filter.work_types, a2.post_filter.work_types) == (("book",), ("article",))
+
+
 def test_union_rejects_mismatched_embedders(tiny_subcloud):
     import pytest
     # Construct a child whose embedder_fingerprint differs; expect ValueError.
