@@ -87,7 +87,13 @@ from artifacts_scripts.curriculum.keyword_extraction import (
     parse_with_phrases,
     tokenize,
 )
-from artifacts_scripts.curriculum.pagerank import compute_pagerank
+from artifacts_scripts.curriculum.build_curriculum import (
+    _compute_linearization_order_from_adjacency,
+)
+from artifacts_scripts.curriculum.pagerank import (
+    compute_frontier_adjacency,
+    compute_pagerank,
+)
 from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
 from bookgap.util import CACHE_DIR
 from bookgap.wikipedia.corpus import WikipediaCorpus
@@ -597,6 +603,20 @@ def main() -> None:
                     help="exponent a in p^a * log(p/g). 0.0 = raw log-lift, "
                          "0.5 = Fightin'-Words variance-norm (default, matches the "
                          "OpenAlex curriculum default), 1.0 = pointwise KL.")
+    ap.add_argument("--order-by", choices=["lift", "mass", "frontier"], default=None,
+                    help="how to ORDER the topics (decoupled from SELECTION):\n"
+                         "  lift  = mean background-normalized lift (relevance "
+                         "axis; default when --bg-norm is set);\n"
+                         "  mass  = total raw forward-PR mass (default without "
+                         "--bg-norm);\n"
+                         "  frontier = directional pairwise-PR-DAG ordering via "
+                         "compute_frontier_adjacency over the RAW forward-PR flow "
+                         "(adj[i,j]=how much topic i depends on j), then "
+                         "in-degree minus out-degree (prerequisites first). This "
+                         "decouples ORDERING (raw forward PR) from SELECTION "
+                         "(--bg-norm), so genuine foundations land first and "
+                         "frontier seeds land last regardless of how the top-k "
+                         "was chosen.")
     ap.add_argument("--use-abstracts", action="store_true",
                     help="join opening_text abstracts (from the store's "
                          "articles.parquet — NO extra dump pass) for keyword text")
@@ -699,11 +719,29 @@ def main() -> None:
     n_topics = int(point_to_cluster.max()) + 1
     log.info(f"clustered into {n_topics} topics in {time.time()-t:.1f}s")
 
-    # Topic ordering: prerequisites first. Without bg-norm, that's highest total
-    # raw PR mass (foundational pages accumulate mass under forward PR). With
-    # bg-norm, order by mean background-normalized lift so popularity-explained
-    # clusters sink below gap-specific foundations.
-    if args.bg_norm:
+    # --- Topic ordering (DECOUPLED from selection) ---------------------------
+    # SELECTION (which nodes survive the top-k cut + the cluster weights) is
+    # always governed by --bg-norm above. ORDERING is a separate axis:
+    #   * lift  = mean background-normalized lift. A RELEVANCE axis — it puts the
+    #             6 seeds first and genuine foundations last, which is backwards
+    #             for a curriculum. Kept as the legacy bg-norm default.
+    #   * mass  = total raw forward-PR mass (foundational pages accumulate mass
+    #             under forward PR). Legacy default without --bg-norm.
+    #   * frontier = directional pairwise-PR-DAG ordering: build the inter-topic
+    #             dependency matrix with compute_frontier_adjacency over the RAW
+    #             forward-PR flow (NOT the bg-normalized scores), where
+    #             adj[i,j] = how much topic i depends on topic j, then sort by
+    #             (in-degree − out-degree) so prerequisites come first. A target
+    #             that depends on everything has high out-degree / low in-degree
+    #             and is ordered LAST; a broadly-depended-on foundation is FIRST.
+    order_by = args.order_by or ("lift" if args.bg_norm else "mass")
+
+    # `topic_mass` is the score column shown in the report. For lift/mass it is
+    # also the sort key; for frontier it is reported for context (the sort uses
+    # the directional in−out score below). Its meaning tracks the SELECTION
+    # score so it matches the report's column label (`score_label`): mean lift
+    # under --bg-norm, total raw PR mass otherwise.
+    if order_by == "lift" or (order_by == "frontier" and args.bg_norm):
         topic_mass = np.array(
             [top_rank[point_to_cluster == t].mean() for t in range(n_topics)]
         )
@@ -711,7 +749,46 @@ def main() -> None:
         topic_mass = np.array(
             [top_masses[point_to_cluster == t].sum() for t in range(n_topics)]
         )
-    order = np.argsort(-topic_mass)
+
+    frontier_in_out: NDArray[np.float64] | None = None
+    if order_by == "frontier":
+        # Map EVERY subgraph node to a topic id (or -1 if it was not in the
+        # top-k that got clustered). compute_frontier_adjacency expects this
+        # full-graph leaf_to_cluster (length == n nodes) plus frontier_nodes
+        # whose length is the topic count (the values are only used for |T|).
+        # It then runs its OWN absorbing/batched forward PageRank seeded from
+        # each topic's nodes over the raw adjacency — so the dependency matrix
+        # is built from the RAW forward-PR flow, fully decoupled from the
+        # bg-normalized selection score.
+        log.phase(f"frontier-adjacency (raw forward-PR DAG over {n_topics} topics)")
+        leaf_to_cluster_full = np.full(len(id_list), -1, dtype=np.int64)
+        leaf_to_cluster_full[top_idx] = point_to_cluster.astype(np.int64)
+        frontier_nodes = np.arange(n_topics, dtype=np.int64)
+        t = time.time()
+        adj_frontier = compute_frontier_adjacency(
+            adj_csr,                 # RAW directed link subgraph
+            frontier_nodes,
+            leaf_to_cluster_full,
+            alpha=args.alpha,        # same damping as the forward PR
+            tol=1e-6,
+            max_iter=200,
+        )
+        fa_secs = time.time() - t
+        log.info(
+            f"compute_frontier_adjacency took {fa_secs:.1f}s "
+            f"({fa_secs/60:.1f} min) on the {adj_csr.shape[0]}-node subgraph"
+        )
+        # in-degree (depended-on) minus out-degree (depends-on); prereqs first.
+        frontier_in_out = np.array(
+            [adj_frontier[:, k].sum() - adj_frontier[k, :].sum() for k in range(n_topics)]
+        )
+        order = _compute_linearization_order_from_adjacency(adj_frontier)
+        log.info(
+            "frontier in−out scores (topic: score): "
+            + ", ".join(f"{t}:{frontier_in_out[t]:+.4f}" for t in range(n_topics))
+        )
+    else:
+        order = np.argsort(-topic_mass)
 
     # --- Keywords ------------------------------------------------------------
     log.phase(f"summary: keywords for {n_topics} topics")
@@ -756,10 +833,20 @@ def main() -> None:
         f"{top_k} pages by "
         f"{'background-normalized score' if args.bg_norm else 'PR mass'}, "
         f"cut to ~{args.desired_n_topics} topics.\n"
-        f"- **Ordering:** topics sorted by "
-        f"{'mean background-normalized lift' if args.bg_norm else 'total PageRank mass'} "
-        f"(foundational → frontier).\n"
-        f"- **Keywords:** log-odds + lattice phrase mining (same as engine "
+        + {
+            "lift": "- **Ordering:** topics sorted by mean background-normalized "
+                    "lift (a relevance axis — seeds first, foundations last).\n",
+            "mass": "- **Ordering:** topics sorted by total PageRank mass "
+                    "(foundational → frontier).\n",
+            "frontier": "- **Ordering (directional):** inter-topic dependency "
+                    "matrix built with `compute_frontier_adjacency` over the RAW "
+                    "forward-PR flow (`adj[i,j]` = how much topic i depends on "
+                    "topic j), then sorted by in-degree − out-degree "
+                    "(`_compute_linearization_order_from_adjacency`) so "
+                    "prerequisites come first and frontier targets come last. "
+                    "Decoupled from the bg-norm SELECTION.\n",
+        }[order_by]
+        + f"- **Keywords:** log-odds + lattice phrase mining (same as engine "
         f"`summarize_topics`), over page "
         f"{'title + opening_text' if (args.use_abstracts and any(abstracts_aligned)) else 'titles'}.\n"
     )
@@ -769,8 +856,14 @@ def main() -> None:
     sub_rank = top_rank if args.bg_norm else top_masses
     score_label = "lift" if args.bg_norm else "PR mass"
     lines.append("\n## Topics (prerequisite → frontier order)\n")
-    lines.append(f"| Rank | Size | {score_label} | Top keywords | Sample pages |")
-    lines.append("| :--: | ---: | ---: | :-- | :-- |")
+    if frontier_in_out is not None:
+        lines.append(
+            f"| Rank | Size | {score_label} | in−out | Top keywords | Sample pages |"
+        )
+        lines.append("| :--: | ---: | ---: | ---: | :-- | :-- |")
+    else:
+        lines.append(f"| Rank | Size | {score_label} | Top keywords | Sample pages |")
+        lines.append("| :--: | ---: | ---: | :-- | :-- |")
     for rank, t in enumerate(order):
         idxs = np.where(point_to_cluster == t)[0]
         m = float(topic_mass[t])
@@ -779,7 +872,13 @@ def main() -> None:
         sample_titles = [top_titles[idxs[j]] for j in sub_order[:6]]
         kw_str = ", ".join(w for w, _ in kw[t][:8])
         samp_str = "; ".join(s[:40] for s in sample_titles[:5])
-        lines.append(f"| {rank+1} | {size} | {m:.4f} | {kw_str} | {samp_str} |")
+        if frontier_in_out is not None:
+            lines.append(
+                f"| {rank+1} | {size} | {m:.4f} | {frontier_in_out[t]:+.4f} "
+                f"| {kw_str} | {samp_str} |"
+            )
+        else:
+            lines.append(f"| {rank+1} | {size} | {m:.4f} | {kw_str} | {samp_str} |")
 
     # Per-topic detail (keywords + 5 representative titles).
     lines.append("\n## Topic detail\n")

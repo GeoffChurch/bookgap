@@ -295,3 +295,110 @@ conda run -p .conda python -m artifacts_scripts.wiki.wiki_curriculum_demo \
     --bg-norm --bg-alpha 0.5
 ```
 
+## Directional ordering (raw-fg-PR frontier adjacency)
+
+`--bg-norm` fixes *selection* (which nodes survive the top-k cut) but leaves a
+*backwards ordering*: ordering the topics by mean bg-norm **lift** is a
+*relevance* axis, so the six seeds — the most NLP-relevant pages by
+construction — sort **first** and the genuine foundations (Statistics,
+Math/Logic) sort **last**. That is the wrong way round for a curriculum.
+
+The fix decouples the two axes. **SELECTION stays bg-norm** (`--bg-norm
+--bg-alpha 0.5`, all six seeds retained). **ORDERING** switches to a
+directional pairwise-PR-DAG built from the **raw forward PageRank flow**, via
+`--order-by frontier`:
+
+1. Cluster the bg-norm-selected top-4000 into 12 topics (unchanged).
+2. Build a full-graph `leaf_to_cluster` over all 477 833 subgraph nodes
+   (cluster id for the top-k, `-1` for everything else — those still act as
+   intermediaries) and call the engine's
+   `compute_frontier_adjacency(adj, frontier_nodes, leaf_to_cluster, α=0.85)`.
+   It runs an **absorbing, batched** forward PageRank seeded from each topic's
+   own nodes over the **raw** directed link adjacency (NOT the bg-norm scores),
+   producing `adj[i,j]` = how much topic *i* depends on topic *j* (*j* is a
+   prerequisite for *i*).
+3. Order topics with `_compute_linearization_order_from_adjacency(adj)` —
+   in-degree (depended-on) minus out-degree (depends-on), descending, so
+   prerequisites come first.
+
+No reimplementation: both functions are reused verbatim from
+`artifacts_scripts/curriculum/{pagerank,build_curriculum}.py`. The only
+adapter is the full-graph `leaf_to_cluster` and a `frontier_nodes =
+arange(n_topics)` placeholder (its values are only used for `|T|`).
+
+**Timing.** `compute_frontier_adjacency` ran in **35 s** on the 477 833-node /
+68.5 M-edge subgraph (the 12 topic-batches converge together in 41 power
+iterations). This is far below the ~28 min it took on the full OpenAlex graph,
+so the coarser pairwise-forward-PR-mass-flow fallback is unnecessary here.
+
+### New ordering (the inversion is fixed)
+
+The `lift` column is the mean bg-norm selection score (what the **old** ordering
+sorted on); `in−out` is the new directional sort key. They now point in
+**opposite** directions — which is exactly the decoupling working.
+
+| Rank | Size | lift | in−out | Sample pages |
+| :--: | ---: | ---: | ---: | :-- |
+| 1 | 479 | 0.019 | **+0.2932** | AI/ML hub — Yoshua Bengio, Restricted Boltzmann machine, Joseph Weizenbaum, ICLR |
+| 2 | 312 | 0.017 | **+0.2450** | Software/systems — Human-in-the-loop, Robot control, automatic data capture |
+| 3 | 304 | 0.024 | **+0.1560** | Language/text/parsers — Machine translation (rule/transfer-based), Concordancer |
+| 4 | 357 | 0.015 | **+0.1089** | **Statistics/probability** — Latent Dirichlet allocation, Overfitting, Bias–variance tradeoff |
+| 5 | 136 | 0.047 | **+0.1082** | Neural NLP — Transformer, Seq2seq, Word2vec, Deep learning, GPT/ChatGPT |
+| 6 | 461 | 0.012 | **+0.1002** | **Math/logic/formal grammar** — Chomsky normal form, Semi-Thue system, set/function |
+| 7 | 1 | 1.043 | −0.1242 | **Natural language processing** (seed) |
+| 8 | 1 | 1.163 | −0.1408 | **Computational linguistics** (seed) |
+| 9 | 1 | 1.188 | −0.1587 | **Parsing** (seed) |
+| 10 | 1 | 0.971 | −0.1897 | **Machine learning** (seed) |
+| 11 | 1 | 1.249 | −0.1985 | **Language model** (seed) |
+| 12 | 1 | 1.344 | −0.1998 | **Word embedding** (seed) |
+
+**Prediction confirmed.** All six seed singletons now land at the very end
+(ranks 7–12), each with negative in−out — a target that depends on everything
+has high out-degree and low in-degree, so it is ordered last. The
+broadly-depended-on foundations rise to the front: Statistics/probability
+(rank 4) and Math/Logic/formal-grammar (rank 6) carry positive in−out, exactly
+inverting their last-place position under the lift ordering.
+
+The `lift` column makes the inversion vivid: the six seeds have by far the
+**highest** lift (≈1.0–1.34) — they *are* the most NLP-relevant pages, which is
+precisely why the old lift ordering put them first — yet the directional in−out
+score correctly ranks them **last**. `lift` (relevance) and `in−out`
+(dependency direction) now disagree in sign across the whole table; that
+disagreement is the decoupling.
+
+### Verdict
+
+This is a **sensible foundations→frontier curriculum** at the gross level: the
+hard inversion (seeds first) is gone, and the seed *frontier* targets now
+trail the *prerequisite* foundations. Keep `--order-by frontier` with bg-norm
+selection as the recommended setting.
+
+**Caveat — the in−out heuristic is still coarse.** Within the front block the
+order is not pedagogically monotone: the broad AI/ML umbrella (rank 1) outranks
+Statistics (rank 4) and Math/Logic (rank 6) purely because almost every NLP
+topic links *into* broad-AI articles, inflating its in-degree — even though
+Math and Statistics are the deeper prerequisites. This is the documented
+weakness of `_compute_linearization_order_from_adjacency` (marked DEPRECATED
+for "not distinguishing source from target"): a high-in-degree *hub* and a
+high-in-degree *foundation* are indistinguishable to in−out.
+
+The principled upgrade is the **voltage / potential method**
+(`_compute_linearization_order_from_potentials` + `circuitrank.py`): clamp the
+seeds to 0 V (target) and a foundational reference to 1 V, solve the graph
+Laplacian, and order by node potential. That genuinely separates source from
+target along the flow direction rather than counting raw degree. It needs a
+source/target clamp definition for the Wikipedia graph (the OpenAlex pipeline
+gets `point_potentials` from CircuitRank; the wiki demo would have to compute
+them), so it is the right escalation **if** the front-block mis-ordering of
+foundations vs. the AI hub turns out to matter. For fixing the original
+seeds-first inversion, raw-fg-PR frontier adjacency is sufficient.
+
+Reproduce (seconds, reuses the cached subgraph — never touches the 43 GB dump):
+
+```bash
+conda run -p .conda python -m artifacts_scripts.wiki.wiki_curriculum_demo \
+    --wiki-store cache/wiki/store/enwiki_full --reuse-subgraph \
+    --ranking-top-k 4000 --desired-n-topics 12 --use-abstracts \
+    --bg-norm --order-by frontier
+```
+
