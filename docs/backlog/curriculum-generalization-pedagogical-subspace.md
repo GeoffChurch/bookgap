@@ -287,3 +287,27 @@ Built and ran end-to-end. Results doc: **`docs/wikipedia-openalex-joint-curricul
   OA similarity-kNN graph, à la `seed_from_gap --similarity`) and/or boost OA seed mass so the OA
   frontier survives the mass cut. The bridge dictionary is already good enough; the fix is graph
   density on the OA side.
+
+**v2 — OA density + mass rebalancing (2026-05-30, `94c4425`): best-of-both VALIDATED at scale (sweet spot).**
+Executed that follow-up. **(1) OA citation-neighborhood expansion** (`--oa-expand`): seed top-12k →
+1-hop within the 87k slice; OA density **2.11 → 6.38 edges/node** (3×), OA 12k→23.2k nodes, joint
+35.2k nodes / ~1.77M edges. **(3) Mass rebalancing:** the median wiki node carries **~120×** the
+median OA node's PR mass even at 50/50 teleport (dense links amplify teleport; sparse OA citations
+barely propagate), so PR-level knobs (`--teleport-split`, `--mass-rebalance`) are **unstable**
+(chaotic, degenerate giant-OA cluster) and kept OFF — **the reliable lever is at pool selection**
+(`--per-corpus-select`: z-normalize the bg-norm score *within each corpus* before the top-k cut →
+OA pool share 38.8%→65.2%). *(Transferable: in a heterogeneous-density two-corpus graph, rebalance
+at selection, not at the PageRank/teleport level.)*
+- **OA coverage 12.7% → 19.8%** (644/3260 reach a named topic; **641 in wiki-anchored topics**) —
+  2.6× more OA, short of wiki's ~44%.
+- **Pedagogy intact + enriched:** the parsing win survives; **machine translation** joins as a 2nd
+  wiki-anchored OA-heavy topic; foundations→frontier clean, wiki backbone hub-free. **Cleaner than
+  v1** (v1 had a pytorch/keras toolkit topic; v2 has none) — **no recency takeover**.
+- **Verdict:** best-of-both holds at scale for the bridged + citation-anchored OA frontier (MT,
+  parsing, LMs, IE — the bulk of NLP's content). The residual 20%-vs-44% gap is a structural property
+  of the **single global dendrogram mass-cut on a two-corpus graph**; pushing the PR-level knobs
+  harder reintroduces takeover, so 19.8% is the **sweet spot, not an untuned knob**. Backward-compatible
+  (all knobs off = v1 exactly).
+- **v3 direction (open):** corpus-aware clustering / mass-cut — cut top-k *per corpus*, or cluster on
+  a shared LPP basis with separate per-corpus frontier budgets — to recover more of the OA long tail
+  without destabilizing.
