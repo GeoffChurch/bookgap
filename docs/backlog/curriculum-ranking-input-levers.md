@@ -135,6 +135,29 @@ The score is one family `p^a · log(p/g)`; given `α_fg`, the other two knobs ar
   nodes from clustering — relevant only if source seeds are reintroduced (currently
   out of scope; source-picking left to downstream users). `combine` is hardcoded
   `"product"` at `build_curriculum.py:791` if revisited.
+- [x] **Wikipedia link-graph curriculum — bg-norm + directional ordering** (2026-05-30).
+  Validated both levers on a new graph (cirrus Wikipedia link graph; full write-up
+  `docs/wikipedia-curriculum.md`).
+  - **Background normalization (lever #3) cleanly fixed bibliographic-hub contamination.**
+    DOI/ISBN/PubMed/ArXiv/ISO dominated raw forward PR (linked from ~every article via
+    citation templates); bg-norm `a=0.5` demotes them to rank 501+/out — huge `g`, so
+    `log(p/g)≈0` sinks them. (Unlike T11273, here the win is unambiguous: the intruders are
+    pure infrastructure with `p/g≈1`, well-separated from real foundations in `(p,g)`.)
+  - **Decoupling selection from ordering (the "relevance ≠ ordering" concern above) works.**
+    bg-norm *lift* ordering inverted the curriculum (seeds/highest-lift first, foundations
+    last); switching the ORDERING step to raw-fg-PR **frontier-adjacency**
+    (`compute_frontier_adjacency` + `_compute_linearization_order_from_adjacency`, 35 s on
+    478k nodes) put the seeds last and foundations first. **Keep bg-norm for SELECTION,
+    raw-fg-PR for ORDERING.**
+  - **Residual ordering coarseness:** the in−out heuristic still ranks the broad AI/ML
+    *umbrella* topic above Statistics / Math-Logic (raw inter-topic in-degree rewards
+    broadly-linked-to topics — the hub effect at the topic level). Upgrades: (a)
+    **background-normalize the frontier adjacency** (same `p^a·log(p/g)` on inter-topic
+    in-flow — *under test 2026-05-30*); (b) **voltage/potential method**
+    (`_compute_linearization_order_from_potentials` / CircuitRank, the directional method
+    flagged above) — needs a source/target voltage-clamp for the wiki graph (no natural
+    *source* seed; candidate: clamp highest-background/most-general nodes to 1V, the NLP
+    seeds to 0V).
 
 ## Pointers
 

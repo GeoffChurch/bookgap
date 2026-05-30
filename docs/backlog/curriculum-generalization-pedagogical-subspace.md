@@ -139,3 +139,47 @@ pursuing as the pedagogical graph. Three salvage paths, cheapest first:
    targets.
 The CCA "pedagogical subspace" idea (above) is untouched and still open; this
 note only covers the *direct Wikipedia link-graph curriculum* probe.
+
+### 2026-05-30 (later) — wiki↔OA shared-space geometry measured; alignment design space
+
+Before building the pedagogical subspace we measured whether wiki and OA actually
+*share geometry* (same GIST encoder, so naively "yes"). Full results:
+`docs/wikipedia-openalex-shared-space.md` (§"Is the shift a pure offset?" + "Topic-matched re-test").
+
+**Finding: NOT a pure offset — a genuine *nonlinear* register residual, even within one
+topic.** After per-corpus mean-centering the difference is linearly inseparable (AUC ≈ 0.53,
+no LDA direction recovers it), but covariance differs materially (PC-subspace principal
+angle 41° at k=50, topic-matched) and local kNN same-corpus purity stays 0.92 (37σ MMD
+above the within-corpus null). Topic-matching the wiki sample (NLP-wiki vs NLP-OA, not NLP
+vs all-of-Wikipedia) shrinks every metric but only ~13% of the clumping excess was
+topic-distribution — the rest is corpus/register.
+
+**Implications for the alignment (this revises the plan):**
+- **LPP-on-the-link-graph** (concrete, anchor-free): use the Wikipedia *link adjacency* as
+  the LPP affinity `W` (not kNN-of-embeddings) — solve `X L Xᵀ a = λ X D Xᵀ a` (L = D−W);
+  bottom non-trivial eigenvectors are directions where *linked* articles stay close →
+  "link-smooth" pedagogical axes. Cheap (384×384 eigenproblem; only the sparse `X·L` matmul
+  costs). Needs **no OA↔wiki anchor pairs** (unlike CCA). **Hub suppression essential** — the
+  Laplacian inherits PageRank's hub pathology (DOI/ISBN dominate degree), so weight edges by
+  the background-mass / inverse-target-in-degree `g` that already fixed the curriculum
+  PageRank (one hub-suppression scheme, two uses).
+- **But naive LPP-transfer (learn P on wiki, apply to OA) will degrade** — the measured
+  covariance mismatch means wiki-geometry ≠ OA-geometry, so a wiki-learned linear projection
+  is partly mis-specified on OA. The shift battery *bounds* the transfer; this walks back the
+  earlier "LPP beats CCA because it's anchor-free" lean (the anchor-free transfer is well-posed
+  only under shared geometry, which we don't have).
+- So the design splits: (a) for wiki's *own* pedagogical structure, LPP-on-graph is great;
+  (b) for **best-of-both transfer to OA**, align the second moment first — **CORAL** (whiten/
+  recolor to match covariance; cheap, no anchors) or **CCA** (aligns shared directions; needs
+  anchors) — *then* apply the link-graph LPP. A **joint** formulation (learn pedagogical axes
+  over both corpora at once, links supplying wiki affinity) is the principled version.
+- **Per-slice mean-matching caveat:** the pipeline removes the *global* per-corpus offset, but
+  a non-representative slice (NLP-only) keeps a residual mean (norm 0.39) — any wiki→OA map
+  must mean-match per slice (or jointly) before covariance alignment can help.
+- **mycooc angle (under investigation):** `~/src/mycooc`'s VecMap-style unsupervised
+  self-learning (mutual-NN dictionary → orthogonal Procrustes, iterated). Since wiki + OA
+  share an encoder we can **skip the sorted-signature init** and self-learn from the
+  shared-space NN dictionary directly — could induce article-level wiki↔OA correspondences
+  and/or a refining map. Honest ceiling: an *orthogonal* self-learning map is linear, and the
+  residual is nonlinear, so it's bounded like Procrustes. A subagent is assessing feasibility,
+  a fusion with LPP/CCA/CORAL, and whether "skip-init-when-encoder-shared" flows back to mycooc.
