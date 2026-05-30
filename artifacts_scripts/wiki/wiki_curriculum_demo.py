@@ -576,6 +576,62 @@ def build_subgraph(
     return id_list, adj, titles_aligned, abstracts_aligned, emb_aligned
 
 
+def compute_background_inflow(
+    adj_csr: sp.csr_matrix,
+    leaf_to_cluster_full: NDArray[np.int64],
+    n_topics: int,
+    alpha: float,
+    tol: float = 1e-6,
+    max_iter: int = 200,
+) -> NDArray[np.float64]:
+    """Background analog of ``compute_frontier_adjacency``'s column sums.
+
+    ``compute_frontier_adjacency`` builds ``A_fg[i,j]`` = absorbed PageRank mass
+    that lands on topic *j*'s nodes when seeded from topic *i*'s nodes, with all
+    OTHER topic nodes made absorbing (α=0) so only direct i→j flow is counted.
+    Its column sum ``A_fg[:,k].sum()`` is the **seeded in-flow** to topic *k* —
+    how much every other topic depends on *k*. That in-flow is inflated for a
+    globally-popular topic (lots of topics link into it regardless of any
+    genuine prerequisite relationship) — the topic-level version of the
+    bibliographic-hub effect that node-selection bg-norm fixes.
+
+    This computes the matching **background in-flow** ``inflow_bg(k)``: the same
+    absorbing PageRank, but seeded from a UNIFORM distribution over all nodes
+    (no NLP/topic seeding) — i.e. the un-seeded teleport ``g`` of the selection
+    bg-norm, projected through the same absorbing kernel. A topic that absorbs a
+    lot of mass purely from generic graph structure has a large ``inflow_bg``;
+    dividing the seeded in-flow by it removes the popularity baseline, exactly
+    mirroring ``p^a·log(p/g)`` at the topic level.
+
+    The absorbing-α construction (all assigned nodes absorb) is identical to
+    ``compute_frontier_adjacency`` — the only change is a single uniform source
+    column instead of per-topic seed columns — so ``inflow_fg`` and
+    ``inflow_bg`` are an apples-to-apples ratio.
+    """
+    n = adj_csr.shape[0]
+    # Uniform global source (un-seeded teleport), single batch.
+    uniform_seed = np.full((n, 1), 1.0 / n, dtype=np.float64)
+    # Absorbing α: every node assigned to ANY topic absorbs (α=0); all other
+    # (intermediary, -1) nodes follow links at α. This is the same rule as
+    # compute_frontier_adjacency, minus the "restore α on the source topic's own
+    # leaves" step — under a uniform source there is no single source topic, and
+    # we want flow to be absorbed the first time it reaches ANY topic so the
+    # in-flow is a direct (non-transitive) measure, matching A_fg's off-diagonal.
+    alpha_vec = np.full((n, 1), alpha, dtype=np.float64)
+    assigned = np.where(leaf_to_cluster_full != -1)[0]
+    alpha_vec[assigned, :] = 0.0
+    landed = compute_pagerank(
+        adj_csr, uniform_seed, alpha=alpha_vec, tol=tol, max_iter=max_iter,
+        normalize=True,
+    ).ravel()
+    inflow_bg = np.zeros(n_topics, dtype=np.float64)
+    for k in range(n_topics):
+        members = np.where(leaf_to_cluster_full == k)[0]
+        if members.size:
+            inflow_bg[k] = landed[members].sum()
+    return inflow_bg
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -603,7 +659,9 @@ def main() -> None:
                     help="exponent a in p^a * log(p/g). 0.0 = raw log-lift, "
                          "0.5 = Fightin'-Words variance-norm (default, matches the "
                          "OpenAlex curriculum default), 1.0 = pointwise KL.")
-    ap.add_argument("--order-by", choices=["lift", "mass", "frontier"], default=None,
+    ap.add_argument("--order-by",
+                    choices=["lift", "mass", "frontier", "frontier-bgnorm"],
+                    default=None,
                     help="how to ORDER the topics (decoupled from SELECTION):\n"
                          "  lift  = mean background-normalized lift (relevance "
                          "axis; default when --bg-norm is set);\n"
@@ -616,7 +674,17 @@ def main() -> None:
                          "decouples ORDERING (raw forward PR) from SELECTION "
                          "(--bg-norm), so genuine foundations land first and "
                          "frontier seeds land last regardless of how the top-k "
-                         "was chosen.")
+                         "was chosen.\n"
+                         "  frontier-bgnorm = like 'frontier', but the inter-topic "
+                         "IN-FLOW is background-normalized so a topic is not "
+                         "rewarded for being globally popular. Score(k) = "
+                         "inflow_fg(k)^a * log((inflow_fg(k)+ε)/(inflow_bg(k)+ε)) "
+                         "− outflow_fg(k), where inflow_fg/outflow_fg are the "
+                         "seeded absorbing-PR in/out flows on the frontier "
+                         "adjacency and inflow_bg is the same absorbing in-flow "
+                         "under a UNIFORM (un-seeded) global source. Mirrors the "
+                         "p^a·log(p/g) node-selection bg-norm, applied at the "
+                         "topic level (a = --bg-alpha).")
     ap.add_argument("--use-abstracts", action="store_true",
                     help="join opening_text abstracts (from the store's "
                          "articles.parquet — NO extra dump pass) for keyword text")
@@ -741,7 +809,9 @@ def main() -> None:
     # the directional in−out score below). Its meaning tracks the SELECTION
     # score so it matches the report's column label (`score_label`): mean lift
     # under --bg-norm, total raw PR mass otherwise.
-    if order_by == "lift" or (order_by == "frontier" and args.bg_norm):
+    if order_by == "lift" or (
+        order_by in ("frontier", "frontier-bgnorm") and args.bg_norm
+    ):
         topic_mass = np.array(
             [top_rank[point_to_cluster == t].mean() for t in range(n_topics)]
         )
@@ -751,7 +821,7 @@ def main() -> None:
         )
 
     frontier_in_out: NDArray[np.float64] | None = None
-    if order_by == "frontier":
+    if order_by in ("frontier", "frontier-bgnorm"):
         # Map EVERY subgraph node to a topic id (or -1 if it was not in the
         # top-k that got clustered). compute_frontier_adjacency expects this
         # full-graph leaf_to_cluster (length == n nodes) plus frontier_nodes
@@ -778,15 +848,54 @@ def main() -> None:
             f"compute_frontier_adjacency took {fa_secs:.1f}s "
             f"({fa_secs/60:.1f} min) on the {adj_csr.shape[0]}-node subgraph"
         )
-        # in-degree (depended-on) minus out-degree (depends-on); prereqs first.
-        frontier_in_out = np.array(
-            [adj_frontier[:, k].sum() - adj_frontier[k, :].sum() for k in range(n_topics)]
-        )
-        order = _compute_linearization_order_from_adjacency(adj_frontier)
-        log.info(
-            "frontier in−out scores (topic: score): "
-            + ", ".join(f"{t}:{frontier_in_out[t]:+.4f}" for t in range(n_topics))
-        )
+        inflow_fg = np.array([adj_frontier[:, k].sum() for k in range(n_topics)])
+        outflow_fg = np.array([adj_frontier[k, :].sum() for k in range(n_topics)])
+        if order_by == "frontier":
+            # in-degree (depended-on) minus out-degree (depends-on); prereqs first.
+            frontier_in_out = inflow_fg - outflow_fg
+            order = _compute_linearization_order_from_adjacency(adj_frontier)
+            log.info(
+                "frontier in−out scores (topic: score): "
+                + ", ".join(f"{t}:{frontier_in_out[t]:+.4f}" for t in range(n_topics))
+            )
+        else:
+            # frontier-bgnorm: background-normalize the inter-topic IN-FLOW so a
+            # topic is not rewarded for being globally popular. This is the
+            # node-selection p^a·log(p/g) bg-norm applied at the topic level:
+            #   p = inflow_fg(k)  (seeded absorbing in-flow on the frontier adj)
+            #   g = inflow_bg(k)  (same absorbing in-flow under a UNIFORM source)
+            #   score(k) = p^a · log((p+ε)/(g+ε)) − outflow_fg(k)
+            # The −outflow_fg keeps the directional signal of `frontier` (a topic
+            # that depends on everything has large outflow and is ordered last);
+            # the bg-normalized in-flow replaces the raw inflow_fg so a hub topic
+            # (high inflow only because everything links into it, large g too)
+            # gets a small log-lift instead of a big raw in-degree. a = --bg-alpha
+            # (canonical 0.5), ε = 1e-12, matching the selection bg-norm exactly.
+            a_exp = float(args.bg_alpha)
+            eps = 1e-12
+            log.phase(
+                f"frontier-bgnorm: background inter-topic in-flow "
+                f"(a={a_exp}, eps={eps:.0e})"
+            )
+            t = time.time()
+            inflow_bg = compute_background_inflow(
+                adj_csr, leaf_to_cluster_full, n_topics,
+                alpha=args.alpha, tol=1e-6, max_iter=200,
+            )
+            log.info(
+                f"background inter-topic in-flow computed in {time.time()-t:.1f}s"
+            )
+            p_in = np.maximum(inflow_fg, 0.0)
+            bgnorm_inflow = np.power(p_in, a_exp) * np.log((p_in + eps) / (inflow_bg + eps))
+            frontier_in_out = bgnorm_inflow - outflow_fg
+            order = np.argsort(-frontier_in_out)
+            log.info(
+                "frontier-bgnorm scores (topic: inflow_fg/inflow_bg → score): "
+                + ", ".join(
+                    f"{t}:{inflow_fg[t]:.4f}/{inflow_bg[t]:.4f}→{frontier_in_out[t]:+.4f}"
+                    for t in range(n_topics)
+                )
+            )
     else:
         order = np.argsort(-topic_mass)
 
@@ -845,6 +954,16 @@ def main() -> None:
                     "(`_compute_linearization_order_from_adjacency`) so "
                     "prerequisites come first and frontier targets come last. "
                     "Decoupled from the bg-norm SELECTION.\n",
+            "frontier-bgnorm": "- **Ordering (directional, bg-normalized):** "
+                    "inter-topic dependency matrix `compute_frontier_adjacency` "
+                    "over the RAW forward-PR flow, but the in-flow to each topic "
+                    "is background-normalized: "
+                    f"`inflow_fg^a · log((inflow_fg+ε)/(inflow_bg+ε)) − "
+                    f"outflow_fg` (a={args.bg_alpha}, ε=1e-12), where inflow_bg "
+                    "is the same absorbing in-flow under a UNIFORM (un-seeded) "
+                    "global source. Demotes globally-popular hub topics (the "
+                    "topic-level analog of the node-selection bg-norm). Decoupled "
+                    "from the bg-norm SELECTION.\n",
         }[order_by]
         + f"- **Keywords:** log-odds + lattice phrase mining (same as engine "
         f"`summarize_topics`), over page "
@@ -855,10 +974,11 @@ def main() -> None:
     # label the score column accordingly.
     sub_rank = top_rank if args.bg_norm else top_masses
     score_label = "lift" if args.bg_norm else "PR mass"
+    dir_label = "bgnorm-in−out" if order_by == "frontier-bgnorm" else "in−out"
     lines.append("\n## Topics (prerequisite → frontier order)\n")
     if frontier_in_out is not None:
         lines.append(
-            f"| Rank | Size | {score_label} | in−out | Top keywords | Sample pages |"
+            f"| Rank | Size | {score_label} | {dir_label} | Top keywords | Sample pages |"
         )
         lines.append("| :--: | ---: | ---: | ---: | :-- | :-- |")
     else:

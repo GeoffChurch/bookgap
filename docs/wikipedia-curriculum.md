@@ -402,3 +402,140 @@ conda run -p .conda python -m artifacts_scripts.wiki.wiki_curriculum_demo \
     --bg-norm --order-by frontier
 ```
 
+## Background-normalized directional ordering
+
+The `frontier` caveat above — the broad **AI/ML umbrella** (rank 1) sitting
+*above* Statistics (rank 4) and Math/Logic (rank 6) purely because nearly every
+NLP topic links *into* broad-AI articles, inflating its inter-topic in-degree —
+is the **topic-level version of the bibliographic-hub effect** that `--bg-norm`
+fixes for node selection. `--order-by frontier-bgnorm` is the natural attempt to
+fix it: background-normalize the inter-topic **in-flow** so a topic is not
+rewarded for being globally popular, mirroring `p^a·log(p/g)` at the topic
+level.
+
+### Scoring
+
+Same `compute_frontier_adjacency` as `frontier` (the seeded, absorbing,
+batched forward-PR inter-topic dependency `A_fg[i,j]` = how much topic *i*
+depends on topic *j*), but the column-sum **in-flow** is bg-normalized:
+
+```
+inflow_fg(k)  = A_fg[:,k].sum()      # seeded in-flow (how much others depend on k)
+outflow_fg(k) = A_fg[k,:].sum()      # seeded out-flow (how much k depends on others)
+score(k)      = inflow_fg(k)^a · log((inflow_fg(k)+ε)/(inflow_bg(k)+ε)) − outflow_fg(k)
+```
+
+with `a = --bg-alpha = 0.5`, `ε = 1e-12` (identical to the node-selection
+bg-norm). `inflow_bg(k)` is the **background in-flow**: the *same* absorbing
+PageRank kernel (every topic node absorbs at α=0, intermediaries follow links at
+α), but seeded from a **uniform global source over all 477 833 nodes** instead
+of per-topic — i.e. the un-seeded teleport `g` of the selection bg-norm pushed
+through the same absorbing projection (`compute_background_inflow`, which reuses
+`compute_pagerank` with the matched absorbing-α vector). So `inflow_fg/inflow_bg`
+is an apples-to-apples ratio: a topic that absorbs flow only because everything
+links into it carries a large `inflow_bg` and gets a small log-lift. The
+`−outflow_fg` retains the directional signal of `frontier`. Topics are sorted by
+`score` descending (background-surprising prerequisites first). Background
+in-flow ran in **2.4 s** (one extra single-batch absorbing PR); total wall
+**~78 s** reusing the cached subgraph (CPU-only, no dump).
+
+### Three-way ordering comparison
+
+Identical bg-norm SELECTION and identical clustering across all three (the
+cluster ids and `inflow_fg` are deterministic); only the ORDERING key differs.
+
+| Topic (content) | size | `lift` (relevance) | raw `frontier` | `frontier-bgnorm` |
+| :-- | ---: | --: | :--: | :--: |
+| Neural-NLP frontier (Transformer, Word2vec, seq2seq, GPT) | 136 | 0.047 | **5** | **1** |
+| AI/ML umbrella (Bengio, RBM, ICLR, ECML PKDD) | 479 | 0.019 | **1** | **2** |
+| Language / MT / parsers (rule/transfer-based MT) | 304 | 0.024 | 3 | 3 |
+| Software / systems (essay scoring, robot control) | 312 | 0.017 | 2 | 4 |
+| **Math / logic / formal grammar** (Chomsky NF, Semi-Thue) | 461 | 0.012 | 6 | **5** |
+| **Statistics / probability** (LDA, overfitting, bias–var) | 357 | 0.015 | 4 | **6** |
+| Natural language processing (seed) | 1 | 1.04 | 7 | 7 |
+| Computational linguistics (seed) | 1 | 1.16 | 8 | 8 |
+| Machine learning (seed) | 1 | 0.97 | 10 | 9 |
+| Parsing (seed) | 1 | 1.19 | 9 | 10 |
+| Word embedding (seed) | 1 | 1.34 | 12 | 11 |
+| Language model (seed) | 1 | 1.25 | 11 | 12 |
+
+Per-topic flow ratios that drive the new key:
+
+| Topic | `inflow_fg` | `inflow_bg` | ratio | `inflow_fg^.5·log(fg/bg)` | `score` (−outflow) |
+| :-- | --: | --: | --: | --: | --: |
+| AI/ML umbrella | 0.3315 | 0.0045 | 74 | +2.44 | +2.44 |
+| Neural-NLP frontier | 0.0093 | ~6e-12 | ~1.5e9 | +2.97 | **+2.88** |
+| Language/MT/parsers | 0.2395 | 0.0018 | 133 | +2.32 | +2.32 |
+| Software/systems | 0.2943 | 0.0067 | 44 | +2.00 | +2.00 |
+| Math/logic | 0.1455 | 0.0020 | 73 | +1.59 | +1.59 |
+| Statistics | 0.1511 | 0.0031 | 49 | +1.46 | +1.46 |
+
+### Verdict: it does NOT sharpen the front block — it overcorrects. Escalate to the voltage method.
+
+**Background-normalizing the frontier in-flow does not fix the AI-umbrella-vs-Math
+mis-ordering, and it introduces a worse regression.** Three things go wrong:
+
+1. **The AI/ML umbrella does not drop** — rank 1 → rank 2, essentially unchanged,
+   still *above* both Math/Logic and Statistics. Its background in-flow
+   (`inflow_bg=0.0045`) is *not* especially large relative to its seeded in-flow
+   (ratio 74, mid-pack), so bg-norm does not demote it. The topic-level hub
+   effect is real but it is **not** a high-background effect the way DOI/ISBN
+   were at the node level — the umbrella is a high-*seeded*-in-flow topic, not a
+   globally-popular-everywhere topic, so `p/g` leaves it near the top.
+
+2. **Statistics gets *worse*** — rank 4 → rank **6** (now last in the front
+   block), the opposite of the goal. Math/Logic rises only one slot (6 → 5),
+   still under the umbrella. The two deepest prerequisites end up at the *bottom*
+   of the front block.
+
+3. **The genuine frontier jumps to rank 1** — the Neural-NLP cluster
+   (Transformer, Word2vec, seq2seq, GPT), which under raw `frontier` correctly
+   sat at rank 5 (latest foundation, just before the seeds), rockets to **rank
+   1**. Its background in-flow underflows to ≈0 (almost no generic graph traffic
+   lands on Transformer/GPT pages), so `log(inflow_fg/inflow_bg)` blows up and
+   the `^0.5` support term cannot tame it (0.0093^0.5 ≈ 0.10, but the log is
+   ≈30). This is exactly the **low-support log-lift pathology** that made
+   `--bg-alpha 0.0` unusable for node selection — here it surfaces at the topic
+   level and *inverts* the prerequisite→frontier direction for the lowest-traffic
+   topic.
+
+The gross structure survives — all six seeds still land last (ranks 7–12,
+unchanged relative ordering) because their seeded in-flow `p` is tiny — so the
+original seeds-first inversion that `frontier` fixed stays fixed. But within the
+front block the ordering is now driven by *background-relative surprise* of the
+in-flow, which is **not** prerequisite depth: a low-traffic frontier topic is
+maximally "surprising" and a broadly-linked foundation is not, so the key sorts
+them the wrong way round.
+
+**Root cause: `p/g` measures seeded-relevance surprise, not flow direction.** A
+*frontier* topic (low background, modest seeded in-flow) and a *foundation*
+topic both score high on `p/g`; the ratio cannot tell "depended-on by many" from
+"rarely-traversed-but-seeded." The raw `frontier` in−out at least counts
+*direction* (in-degree − out-degree); bg-normalizing the in-flow throws that
+direction away in favor of a popularity-surprise axis. The `−outflow_fg` term is
+swamped (outflows are ~0.1–0.4 while the bg-normalized in-flow term is +1.5 to
++2.9), so it no longer separates seeds from foundations the way it did in raw
+`frontier` (where in and out were the same scale).
+
+**The real fix is the voltage / potential method**
+(`_compute_linearization_order_from_potentials` + `circuitrank.py`), as the
+`frontier` caveat already flagged. Clamping the seeds to 0 V (target) and a
+foundational reference to 1 V and ordering by solved node potential separates
+*source from target along the flow direction* — which is precisely the axis both
+in−out (too coarse: hub ≡ foundation) and `frontier-bgnorm` (wrong axis:
+surprise ≠ depth) fail to capture. That escalation needs a source/target clamp
+definition for the Wikipedia graph (the wiki demo would have to compute
+`point_potentials`, which the OpenAlex pipeline gets from CircuitRank). The
+front-block mis-ordering of foundations vs. the AI hub is the symptom that now
+clearly justifies it; bg-normalizing the frontier adjacency is **not** the right
+lever and is left in place only for comparison (`--order-by frontier-bgnorm`).
+
+Reproduce (seconds, reuses the cached subgraph — never touches the 43 GB dump):
+
+```bash
+conda run -p .conda python -m artifacts_scripts.wiki.wiki_curriculum_demo \
+    --wiki-store cache/wiki/store/enwiki_full --reuse-subgraph \
+    --ranking-top-k 4000 --desired-n-topics 12 --use-abstracts \
+    --bg-norm --order-by frontier-bgnorm
+```
+
