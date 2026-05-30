@@ -193,3 +193,89 @@ Dropping the top corpus-discriminating generalized-eigendirections leaves AUC ~0
 | 8 | 0.9604 | 0.242 |
 | 16 | 0.9620 | 0.247 |
 | 32 | 0.9611 | 0.239 |
+
+
+## Cross-corpus gap detection (OpenAlex books vs OpenAlex+Wikipedia ambient)
+
+SP3 capstone: the gap algorithms now accept any `Corpus`, so `detect_gaps` runs with a cross-corpus `UnionCorpus` ambient. Landmarks are OpenAlex NLP books (topic `T10181`); the ambient/query is a `UnionCorpus` of OpenAlex NLP articles + a Wikipedia slice, all in raw 384-D GIST. Each corpus is **mean-centered then re-normalized before the union** (the validated alignment: the OpenAlex<->Wikipedia shift is a pure per-corpus offset). faiss is pinned to one thread.
+
+### Setup
+
+- **Landmark:** OpenAlex NLP books, N=1231.
+- **Ambient/query:** `UnionCorpus` of OpenAlex NLP articles (N=4000) + Wikipedia `cache/wiki/store/wiki_400k` (N=4000); total N=8000.
+- Each corpus mean-centered (OpenAlex centroid for books+articles, Wikipedia centroid for wiki) then L2-renormalized. `CellType.KBALL`, `num_gaps=3`, `radius_fraction=0.75`, single-thread faiss.
+
+### Result
+
+- `detect_gaps` ran end-to-end and returned **3 gap(s)**.
+
+#### Gap 0 — size 52 (percentile 1.000)
+
+- Membership: **0 OpenAlex** + **52 Wikipedia** = 52 in-gap points.
+
+- Example Wikipedia members:
+  - wiki:114605  —  Danville, Kansas
+  - wiki:96802  —  Cobb County, Georgia
+  - wiki:110659  —  Bancroft, Idaho
+  - wiki:110686  —  Weston, Idaho
+  - wiki:136034  —  Haskell, Texas
+
+#### Gap 1 — size 50 (percentile 1.000)
+
+- Membership: **0 OpenAlex** + **50 Wikipedia** = 50 in-gap points.
+
+- Example Wikipedia members:
+  - wiki:876817  —  Crescent moon
+  - wiki:38325  —  Descent
+  - wiki:256138  —  Mere
+  - wiki:238971  —  Kira
+  - wiki:87562  —  Blast
+
+#### Gap 2 — size 42 (percentile 1.000)
+
+- Membership: **0 OpenAlex** + **42 Wikipedia** = 42 in-gap points.
+
+- Example Wikipedia members:
+  - wiki:117325  —  Hamilton Township, Clare County, Michigan
+  - wiki:126244  —  Gerry, New York
+  - wiki:131938  —  New Bethlehem, Pennsylvania
+  - wiki:117151  —  Bertrand Township, Michigan
+  - wiki:134183  —  South Huntingdon Township, Pennsylvania
+
+### Interpretation
+
+- **The cross-corpus machinery works end-to-end.** `detect_gaps` consumed a
+  `UnionCorpus` ambient/query with no shared `SubCloud.parent` — exercising the
+  relaxed `get_kball_coverage` (now `Corpus`-generic: shared-embedder check, not
+  `isinstance(SubCloud)`/shared-`.parent`) and the range-searchable
+  `UnionCorpus.index()` (a `FlatL2` over the concatenated centered embeddings, so
+  `range_search` works where `IndexShards` raised "range search not implemented").
+- **The top gaps are 100% Wikipedia, and that is the correct result, not a bug.**
+  The landmarks are NLP *books*. The densest book-free regions are therefore the
+  Wikipedia general-knowledge clusters that no NLP book sits near: tight masses of
+  US place/township stubs (*Danville, Kansas*; *Cobb County, Georgia*) and short
+  high-degree disambiguation pages (*Descent*, *Mere*, *Blast*, *Crescent moon*).
+  These are far from any NLP book yet densely packed in GIST space, so k-ball
+  coverage flags them as large uncovered gaps. The OpenAlex NLP articles, by
+  contrast, are well-covered by their natural NLP-book landmarks, so they do not
+  form the *largest* gaps and are absent from the top-3.
+- **Why mean-centering still matters here.** Without per-corpus centering the raw
+  academic↔encyclopedic offset (AUC 0.999, §1) would let a gap land purely on the
+  corpus boundary — every gap would trivially be "all of Wikipedia, because it's
+  offset from the books." After centering, the corpora share an origin, so the
+  gaps reflect genuine local density (specific town/disambig clusters), not the
+  global offset. The all-Wikipedia membership is a *topical* statement (random
+  Wikipedia is mostly non-NLP and unbooked), not a corpus-offset artifact.
+- **Takeaway for a targeted run.** To surface *cross-corpus* NLP gaps (where
+  OpenAlex articles and topically-relevant Wikipedia articles co-occupy a
+  book-free region), the Wikipedia slice should be filtered to the topic rather
+  than sampled uniformly from all 400k pages; a uniform sample is dominated by
+  off-topic stubs that out-mass any NLP cluster. The infrastructure is ready for
+  that — only the Wikipedia slice's selection changes.
+
+*(Reproduce: `conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo
+--wiki-store cache/wiki/store/wiki_400k --oa-limit 4000 --wiki-limit 4000
+--num-gaps 3 --radius-fraction 0.75 --seed 0`. The `--oa-limit`/`--wiki-limit`
+caps keep the single-threaded run tractable: kball coverage does one range search
+per union point against the full ambient index, ~50 ms/point at 400k, so the full
+uncapped union is a multi-hour job, not a demo.)*

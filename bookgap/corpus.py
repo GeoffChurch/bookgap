@@ -66,14 +66,19 @@ class UnionCorpus:
         return np.vstack([c.embeddings() for c in self.children]).astype(np.float32)
 
     def index(self) -> faiss.Index:
-        d = self.children[0].embeddings().shape[1]
-        # threaded=False, successive_ids=True: shard-local ids are remapped to
+        # A single flat index over the concatenated embeddings. Its ids are the
         # successive global ranges aligned with the embeddings()/work_ids()
-        # concatenation order (contract: matches a brute-force concat index).
-        shards = faiss.IndexShards(d, False, True)
-        for c in self.children:
-            shards.add_shard(c.index())
-        return shards
+        # concatenation order — identically to the brute-force concat contract.
+        #
+        # Why not faiss.IndexShards(successive_ids=True)? It satisfies .search()
+        # equivalently, but does NOT implement .range_search() (faiss raises
+        # "range search not implemented"), which get_kball_coverage requires when
+        # a UnionCorpus is the *ambient* of gap detection. A FlatL2 over the
+        # concat supports both search() and range_search() and keeps the same
+        # successive-id geometry, so it is the range-searchable equivalent.
+        emb = self.embeddings()
+        from bookgap.index import FlatL2, build_index
+        return build_index(FlatL2(), np.ascontiguousarray(emb, dtype=np.float32))
 
     def work_ids(self) -> list[str]:
         out: list[str] = []

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from bookgap.subcloud import SubCloud
 from bookgap.corpus import Corpus
 from bookgap.cloud_index import get_kball_coverage, knn
 from bookgap.gap_types import DistsAndIdxs
@@ -48,7 +47,7 @@ class KballAlgorithm:
                                          deflation_strategy=deflation_strategy)
 
     @staticmethod
-    def kball_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud,
+    def kball_gaps(ambient: Corpus, landmark: Corpus, query: Corpus,
             radius_fraction: float, k: int, is_intra_cloud: bool,
             deflation_strategy: "DeflationStrategy | None" = None):
         """
@@ -102,7 +101,7 @@ class KballAlgorithm:
                 covered_ambient_points[idx] = (dists_[mask], idxs_[mask])
 
     @staticmethod
-    def _resid_gaps(*, ambient: SubCloud, landmark: SubCloud, query: SubCloud,
+    def _resid_gaps(*, ambient: Corpus, landmark: Corpus, query: Corpus,
                     radius_fraction: float, k: int, is_intra_cloud: bool):
         """Opt-in fl_bookdemand_resid deflation, wrapped as KballGap.
 
@@ -231,9 +230,9 @@ class KballAlgorithm:
 
 @dataclass(frozen=True)
 class KballGap:
-    ambient: SubCloud  # The ambient space to count points in (e.g., articles)
-    landmark: SubCloud  # The landmarks used to define distances (e.g., books)
-    query: SubCloud  # The query points to analyze for gaps (e.g., articles)
+    ambient: Corpus  # The ambient space to count points in (e.g., articles)
+    landmark: Corpus  # The landmarks used to define distances (e.g., books)
+    query: Corpus  # The query points to analyze for gaps (e.g., articles)
     radius_fraction: float
     k: int  # Which nearest landmark to use
     dists_idxs: DistsAndIdxs  # Squared distances and indices of the ambient points that are in the gap.
@@ -241,20 +240,20 @@ class KballGap:
     def get_dists_idxs(self) -> DistsAndIdxs:
         """Return the distances and indices of articles in the gap."""
         return self.dists_idxs
-    
-    def get_ambient(self) -> SubCloud:
+
+    def get_ambient(self) -> Corpus:
         """Return the ambient space (articles)."""
         return self.ambient
 
-    def get_landmark(self) -> SubCloud:
+    def get_landmark(self) -> Corpus:
         """Return the landmark space (books)."""
         return self.landmark
 
     @dataclass(frozen=True)
     class CoveredPoints:
-        ambient: SubCloud
-        landmark: SubCloud
-        query: SubCloud
+        ambient: Corpus
+        landmark: Corpus
+        query: Corpus
         radius_fraction: float
         landmark_to_covered_ambient_points: dict[np.intp, DistsAndIdxs]  # List of squared distances and idxs for each ambient point covered by the corresponding landmark point.
     def closest_query_points(self):

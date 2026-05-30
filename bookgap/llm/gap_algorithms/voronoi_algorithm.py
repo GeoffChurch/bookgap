@@ -11,7 +11,6 @@ from numpy.typing import NDArray
 from bookgap.cloud_index import knn
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import hypothetical_voronoi_coverage
-from bookgap.subcloud import SubCloud
 from bookgap.corpus import Corpus
 
 
@@ -104,9 +103,9 @@ class VoronoiAlgorithm:
 
 @dataclass(frozen=True)
 class VoronoiGap:
-    ambient: SubCloud
-    landmark: SubCloud
-    query: SubCloud
+    ambient: Corpus
+    landmark: Corpus
+    query: Corpus
     ambient_idxs: NDArray[np.intp]
     ambient_to_nearest_landmark_idxs: NDArray[np.intp]
     ambient_to_query_sqdists: NDArray[np.float32]  # Squared distances from query point to ambient points (sorted)
@@ -124,11 +123,11 @@ class VoronoiGap:
         """Return the distances and indices of articles in the gap."""
         return self.dists_idxs
     
-    def get_ambient(self) -> SubCloud:
+    def get_ambient(self) -> Corpus:
         """Return the ambient space (articles)."""
         return self.ambient
 
-    def get_landmark(self) -> SubCloud:
+    def get_landmark(self) -> Corpus:
         """Return the landmark space (books)."""
         return self.landmark
 

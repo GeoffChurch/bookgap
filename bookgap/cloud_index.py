@@ -6,33 +6,39 @@ from numpy.typing import NDArray
 import tqdm
 
 from bookgap.cloud import Cloud
+from bookgap.corpus import Corpus
 from bookgap.index import range_search_, range_search_radii_, FlatWithLims, from_flat_with_lims
 from bookgap.subcloud import SubCloud
 from bookgap.util import TIMER, MEMORY, LOGGER, get_stats
 
-def get_kball_coverage(ambient: SubCloud, landmark: SubCloud, query: SubCloud, 
+def get_kball_coverage(ambient: Corpus, landmark: Corpus, query: Corpus,
                        radius_fraction: float, k: int, is_intra_cloud: bool):
     """
-    Get k-ball coverage statistics between three SubClouds.
-    
+    Get k-ball coverage statistics between three corpora.
+
     For each query point, find its k-th nearest landmark point, then find all ambient
     points within radius_fraction of that distance from the query point.
-    
+
     Args:
         ambient: The ambient space to cover points in (e.g., articles)
-        landmark: The landmarks used to define distances (e.g., books)  
+        landmark: The landmarks used to define distances (e.g., books)
         query: The query points to analyze (e.g., articles for gap analysis)
         radius_fraction: Fraction of distance to k-th nearest landmark to use as radius
         k: Which nearest landmark to use (1 = nearest, 2 = second nearest, etc.)
         is_intra_cloud_search: Whether landmark and query are the same cloud
-        
+
     Returns:
         GetKBallCoverageResult with coverage statistics
     """
-    # All must be SubClouds of the same parent
-    assert isinstance(ambient, SubCloud) and isinstance(landmark, SubCloud) and isinstance(query, SubCloud), "All arguments must be SubClouds"
-    assert ambient.parent == landmark.parent == query.parent, "SubClouds must share the same parent Cloud"
-    
+    # ambient/landmark/query only need to share one embedding space — the same
+    # contract detect_gaps enforces (equal embedder_fingerprint). The k-th-nearest
+    # search and the range search consume nothing but .index()/.embeddings(), and
+    # the returned ids are ambient-LOCAL (0..len(ambient)-1), so no shared .parent
+    # or parent-wide index is required. This admits any Corpus (incl. UnionCorpus,
+    # which has no .parent) while staying byte-identical on the SubCloud path.
+    assert ambient.embedder_fingerprint == landmark.embedder_fingerprint == query.embedder_fingerprint, \
+        "ambient/landmark/query must share one embedder (shared embedding space)"
+
     # For each query point, find the k-th nearest landmark point
     # res = kth_nearest(landmark, query, k=k)
     if is_intra_cloud:
@@ -67,8 +73,8 @@ class FaissSearchOutsideEpsilonResult:
 
 @MEMORY.cache
 def knn(
-    index: Union[Cloud, SubCloud],
-    query: Union[Cloud, SubCloud],
+    index: Union[Cloud, SubCloud, Corpus],
+    query: Union[Cloud, SubCloud, Corpus],
     k: int = 1,
     radius_of_exclusion: float = 0.0,
 ) -> FaissSearchOutsideEpsilonResult:

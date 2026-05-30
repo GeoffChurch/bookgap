@@ -40,6 +40,36 @@ def test_union_merge_index_matches_bruteforce(tiny_subcloud, _ai_cloud):
     assert np.array_equal(i_ref, i_got)
 
 
+def test_detect_gaps_runs_on_union_corpus_ambient(_ai_cloud):
+    """SP3: gap algorithms accept any Corpus, so detect_gaps runs with a
+    UnionCorpus ambient/query (no shared .parent) and returns gaps."""
+    from bookgap.gaps import detect_gaps
+    from bookgap.subcloud import SubCloud
+    from bookgap.types import CellType
+    from bookgap.util import Filter
+    from scripts.capture_gap_parity_golden import pin_faiss_single_thread
+
+    pin_faiss_single_thread()
+    landmark = SubCloud(parent=_ai_cloud, post_filter=Filter(topic="T13629", work_types=("book",)))
+    a1 = SubCloud(parent=_ai_cloud, post_filter=Filter(topic="T13629", work_types=("article",)))
+    a2 = SubCloud(parent=_ai_cloud, post_filter=Filter(topic="T12761", work_types=("article",)))
+    union = UnionCorpus(children=(a1, a2))
+
+    # The union ambient has no .parent; the old isinstance(SubCloud)/shared-parent
+    # assert in get_kball_coverage would have rejected it. detect_gaps must now run.
+    gaps = detect_gaps(
+        ambient=union, landmark=landmark, query=union,
+        cell_type=CellType.KBALL, num_gaps=3, radius_fraction=0.75,
+        label_id="union-smoke", label_name="union-smoke",
+    )
+    assert len(gaps) > 0
+    for gwc in gaps:
+        members = gwc.gap.get_dists_idxs().idxs
+        assert members.ndim == 1 and len(members) >= 1
+        # ambient-local ids index into the union concatenation (0..N_union-1)
+        assert int(members.max()) < union.embeddings().shape[0]
+
+
 def test_get_subclouds_for_topic_respects_work_types(_ai_cloud):
     from bookgap.subcloud import get_subclouds_for_topic
     landmark, ambient = get_subclouds_for_topic(
