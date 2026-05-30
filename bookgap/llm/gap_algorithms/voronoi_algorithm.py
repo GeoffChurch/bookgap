@@ -12,13 +12,14 @@ from bookgap.cloud_index import knn
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import hypothetical_voronoi_coverage
 from bookgap.subcloud import SubCloud
+from bookgap.corpus import Corpus
 
 
 class VoronoiAlgorithm:
     """Wrapper class for Voronoi gap finding algorithm."""
     
     @staticmethod
-    def find_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud, radius_fraction=None, k=None, is_intra_cloud=None, deflation_strategy=None):
+    def find_gaps(ambient: Corpus, landmark: Corpus, query: Corpus, radius_fraction=None, k=None, is_intra_cloud=None, deflation_strategy=None):
         # deflation_strategy is accepted for a uniform CellType.value.find_gaps
         # signature but intentionally ignored: Voronoi gaps come from its own
         # tessellation ordering (descending cell size), not k-ball candidate
@@ -67,8 +68,8 @@ class VoronoiAlgorithm:
     @staticmethod
     def compute_gap_sizes_for_embeddings(
         *,
-        ambient: SubCloud,
-        landmark: SubCloud,
+        ambient: Corpus,
+        landmark: Corpus,
         embeddings: NDArray[np.float32],
         radius_fraction: float | None,
         k: int | None,
@@ -126,11 +127,11 @@ class VoronoiGap:
     def get_ambient(self) -> SubCloud:
         """Return the ambient space (articles)."""
         return self.ambient
-        
+
     def get_landmark(self) -> SubCloud:
         """Return the landmark space (books)."""
         return self.landmark
-        
+
     def get_covering_book_indices(self) -> list[np.intp]:
         """Get the indices of books that cover articles in the gap."""
         return list(np.unique(self.ambient_to_nearest_landmark_idxs))

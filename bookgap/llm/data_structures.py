@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bookgap.configs.config import ExperimentConfig
-from bookgap.subcloud import SubCloud
+from bookgap.corpus import Corpus
 from .protocols import GapProtocol, ParsedProposal
 
 
@@ -21,8 +21,8 @@ class GapWithContext:
     topic_name: str
     topic_id: str
     gap_idx: int
-    books: SubCloud
-    articles: SubCloud
+    books: Corpus
+    articles: Corpus
     book_gap_sizes: list[int]  # Gap sizes for all books in topic (for statistics)
     gap_size: int
     gap_size_percentile: float

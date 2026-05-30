@@ -15,6 +15,7 @@ from bookgap.pyalex_client import pyalex
 from hydra.utils import instantiate
 
 from bookgap.cloud import Cloud
+from bookgap.corpus import Corpus
 from bookgap.openalex_scopes import resolve_filter_upward, get_subfield_topics, get_field_topics
 from bookgap.configs.config import ExperimentConfig
 from bookgap.gap_statistics import compute_gap_statistics
@@ -52,101 +53,90 @@ def _compute_gaps_for_topic(
     "raw_kball"``: take the first ``num_gaps`` candidates from the
     generator (byte-identical to historical behaviour).
     """
-    books, articles = get_subclouds_for_topic(cloud, topic_id)
-    num_books = len(books.embeddings())
-    num_articles = len(articles.embeddings())
-    LOGGER.info("Topic %s: %s books, %s articles", topic_name, num_books, num_articles)
-
-    if num_articles == 0:
-        LOGGER.warning("No articles found for topic %s", topic_id)
-        return []
-
-    # Compute per-book gap sizes using the algorithm's explicit size helper to ensure
-    # one gap size per book (find_gaps can drop books with zero coverage, causing length mismatches).
-    book_embeddings = books.embeddings()
-    # Single call: k-ball requires is_intra_cloud=True (query==landmark so drop self-neighbor);
-    # Voronoi ignores is_intra_cloud, so keeping it True is harmless and simplifies branching.
-    book_gap_sizes = cell_type.value.compute_gap_sizes_for_embeddings(
-        ambient=articles,
-        landmark=books,
-        embeddings=book_embeddings,
-        radius_fraction=radius_fraction,
-        k=1,
-        is_intra_cloud=True,
+    landmark, ambient = get_subclouds_for_topic(cloud, topic_id)  # defaults book/article
+    return detect_gaps(
+        ambient=ambient, landmark=landmark, query=ambient,
+        cell_type=cell_type, num_gaps=num_gaps, radius_fraction=radius_fraction,
+        deflation_strategy=deflation_strategy, size_metric=size_metric,
+        candidate_pool_size=candidate_pool_size, label_id=topic_id, label_name=topic_name,
     )
 
-    if len(book_gap_sizes) != len(book_embeddings):
+
+def detect_gaps(
+    ambient: Corpus,
+    landmark: Corpus,
+    *,
+    query: Corpus | None = None,
+    cell_type: CellType,
+    num_gaps: int,
+    radius_fraction: float,
+    deflation_strategy: DeflationStrategy = DeflationStrategy.GREEDY_HARD,
+    size_metric: str = "raw_kball",
+    candidate_pool_size: int = 10,
+    label_id: str = "",
+    label_name: str = "",
+) -> list[GapWithContext]:
+    """Source-agnostic gap detection: gaps in `landmark` w.r.t. `ambient` density.
+
+    `query` (default = `ambient`) is the set of points evaluated for gap-membership.
+    `label_id`/`label_name` are opaque labels stored on the result (the OpenAlex
+    sweep fills them with topic id/name). Requires ambient/landmark/query share an
+    embedder (shared embedding space).
+    """
+    query = query if query is not None else ambient
+    if not (ambient.embedder_fingerprint == landmark.embedder_fingerprint == query.embedder_fingerprint):
+        raise ValueError("ambient/landmark/query must share one embedder (shared embedding space)")
+
+    num_landmark = len(landmark.embeddings())
+    num_ambient = len(ambient.embeddings())
+    LOGGER.info("%s: %s landmark, %s ambient", label_name or label_id, num_landmark, num_ambient)
+    if num_ambient == 0:
+        LOGGER.warning("No ambient points for %s", label_id)
+        return []
+
+    landmark_embeddings = landmark.embeddings()
+    book_gap_sizes = cell_type.value.compute_gap_sizes_for_embeddings(
+        ambient=ambient, landmark=landmark, embeddings=landmark_embeddings,
+        radius_fraction=radius_fraction, k=1, is_intra_cloud=True,
+    )
+    if len(book_gap_sizes) != len(landmark_embeddings):
         raise ValueError(
-            "book_gap_sizes length mismatch: "
-            f"{len(book_gap_sizes)} sizes vs {len(book_embeddings)} books for topic {topic_name}"
+            f"book_gap_sizes length mismatch: {len(book_gap_sizes)} vs {len(landmark_embeddings)} for {label_name}"
         )
 
-    # Find article-query gaps with configured parameters
     gap_generator = cell_type.value.find_gaps(
-        ambient=articles,
-        landmark=books,
-        query=articles,
-        radius_fraction=radius_fraction,
-        k=1,
-        is_intra_cloud=False,
+        ambient=ambient, landmark=landmark, query=query,
+        radius_fraction=radius_fraction, k=1, is_intra_cloud=False,
         deflation_strategy=deflation_strategy,
     )
 
-    # Re-rank by size_metric if it isn't the historical default. raw_kball
-    # is the no-op: the generator already yields candidates by descending
-    # raw size (greedy_hard) or in FL_BOOKDEMAND_RESID's own order.
     if size_metric == "raw_kball":
         ordered_gaps = list(islice(gap_generator, num_gaps))
     else:
         metric_fn = gap_size_metrics.get(size_metric)
-        pool_size = max(num_gaps, candidate_pool_size)
-        pool = list(islice(gap_generator, pool_size))
-        article_emb = np.ascontiguousarray(articles.embeddings(), dtype=np.float32)
-        book_emb_arr = np.ascontiguousarray(book_embeddings, dtype=np.float32)
+        pool = list(islice(gap_generator, max(num_gaps, candidate_pool_size)))
+        ambient_emb = np.ascontiguousarray(ambient.embeddings(), dtype=np.float32)
+        landmark_emb_arr = np.ascontiguousarray(landmark_embeddings, dtype=np.float32)
         scored = []
         for gap in pool:
             members = np.asarray(gap.get_dists_idxs().idxs, dtype=np.int64)
-            score = metric_fn(members, article_emb, book_emb_arr)
-            scored.append((score, gap))
-        # Sort by score desc; stable so that ties preserve generator order.
+            scored.append((metric_fn(members, ambient_emb, landmark_emb_arr), gap))
         scored.sort(key=lambda sg: sg[0], reverse=True)
         ordered_gaps = [g for _, g in scored[:num_gaps]]
-        LOGGER.info(
-            "Topic %s: re-ranked %d candidates by %s; "
-            "top score=%.1f (raw_size=%d), bottom=%.1f (raw_size=%d)",
-            topic_name, len(scored), size_metric,
-            scored[0][0], len(scored[0][1].get_dists_idxs().idxs),
-            scored[-1][0], len(scored[-1][1].get_dists_idxs().idxs),
-        )
 
-    topic_gaps: list[GapWithContext] = []
+    out: list[GapWithContext] = []
     for i, gap in enumerate(ordered_gaps):
         gap_size = len(gap.get_dists_idxs().idxs)
-        LOGGER.info("Found gap of size %s articles", gap_size)
-        gap_size_percentile, gap_zscore, shapiro_log10_pval = compute_gap_statistics(
-            gap_size, book_gap_sizes
-        )
+        pct, z, shap = compute_gap_statistics(gap_size, book_gap_sizes)
+        out.append(GapWithContext(
+            gap=gap, topic_name=label_name, topic_id=label_id, gap_idx=i,
+            books=landmark, articles=ambient, book_gap_sizes=book_gap_sizes,
+            gap_size=gap_size, gap_size_percentile=pct, gap_zscore=z, shapiro_log10_pval=shap,
+        ))
+    if not out:
+        LOGGER.warning("No gaps found for %s", label_name)
+    return out
 
-        topic_gaps.append(
-            GapWithContext(
-                gap=gap,
-                topic_name=topic_name,
-                topic_id=topic_id,
-                gap_idx=i,
-                books=books,
-                articles=articles,
-                book_gap_sizes=book_gap_sizes,
-                gap_size=gap_size,
-                gap_size_percentile=gap_size_percentile,
-                gap_zscore=gap_zscore,
-                shapiro_log10_pval=shapiro_log10_pval,
-            )
-        )
-
-    if not topic_gaps:
-        LOGGER.warning("No gaps found for topic %s", topic_name)
-
-    return topic_gaps
 
 @MEMORY.cache
 def _compute_gaps_impl(

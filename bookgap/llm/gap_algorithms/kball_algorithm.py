@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bookgap.subcloud import SubCloud
+from bookgap.corpus import Corpus
 from bookgap.cloud_index import get_kball_coverage, knn
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.index import kballs_with
@@ -24,7 +25,7 @@ class KballAlgorithm:
     """Wrapper class for k-ball gap finding algorithm."""
 
     @staticmethod
-    def find_gaps(ambient: SubCloud, landmark: SubCloud, query: SubCloud,
+    def find_gaps(ambient: Corpus, landmark: Corpus, query: Corpus,
             radius_fraction: float, k: int, is_intra_cloud: bool,
             deflation_strategy: "DeflationStrategy | None" = None):
         """
@@ -186,8 +187,8 @@ class KballAlgorithm:
     @staticmethod
     def compute_gap_sizes_for_embeddings(
         *,
-        ambient: SubCloud,
-        landmark: SubCloud,
+        ambient: Corpus,
+        landmark: Corpus,
         embeddings: NDArray[np.float32],
         radius_fraction: float,
         k: int,
@@ -244,7 +245,7 @@ class KballGap:
     def get_ambient(self) -> SubCloud:
         """Return the ambient space (articles)."""
         return self.ambient
-        
+
     def get_landmark(self) -> SubCloud:
         """Return the landmark space (books)."""
         return self.landmark

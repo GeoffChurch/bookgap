@@ -54,6 +54,12 @@ class _SubCloudStub:
         self._embeddings = embeddings
     def embeddings(self) -> np.ndarray:
         return self._embeddings
+    @property
+    def embedder_fingerprint(self) -> str:
+        # All stubs are slices of one (conceptual) cloud, so they share an
+        # embedder — mirrors real SubClouds over a single Cloud and lets
+        # detect_gaps's shared-embedder check pass.
+        return "stub-embedder"
 
 
 def _make_cloud_mock(merged_filter: Filter) -> Mock:
