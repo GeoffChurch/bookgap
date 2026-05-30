@@ -46,6 +46,27 @@ ordered after the relevant wiki foundations)? Concrete examples. Honest failure
 modes (scatter if bridges too sparse; recency bias if OA citations dominate);
 τ-sweep effect on frontier placement.
 
+v2 — undoing OA mass starvation (the v1 bottleneck)
+--------------------------------------------------------------------------------
+v1 found only ~13% of top-k OA nodes reached a named topic vs ~43% of wiki,
+because (a) the OA citation graph was restricted to edges *within the top-12k
+cosine slice*, leaving ~2 edges/node, while (b) the dense wiki link backbone
+hoarded the joint PageRank mass so the long OA tail was discarded before
+clustering. v2 adds two structural knobs:
+
+  * **Fix(1) ``--oa-expand`` (default on):** build the OA citation graph over the
+    **1-hop citation neighborhood within the full 87k NLP slice** (add cited works
+    present in the 87k as nodes), recovering OA's real citation degree
+    (~2.1 → ~6.4 edges/node) at a tractable node count (~23k OA).
+  * **Fix(3) ``--per-corpus-select`` (default on):** z-normalize the bg-norm
+    selection score WITHIN each corpus before the top-k clustering-pool cut, so
+    OA's presence in the pool tracks "high for its own corpus" rather than its
+    (much smaller) absolute PageRank mass. Two further mass-cut levers,
+    ``--teleport-split`` and ``--mass-rebalance``, are exposed but default OFF:
+    on the bimodal joint mass distribution they destabilize the dendrogram cut
+    (degenerate OA singletons / OA-takeover topics) rather than helping — see the
+    v2 verdict in the results doc.
+
 Reuses: ``wiki_curriculum_demo`` (subgraph load, cluster_embeddings,
 keywords_for_topics, bg-norm selection logic), ``wiki_pedagogical_lpp``
 (hub_suppressed_link_affinity, lpp_projection), ``curriculum.pagerank``
@@ -57,9 +78,15 @@ Prerequisite: run ``_prep_oa_nlp_cache`` once to materialize
 
 Usage::
 
+    # v2 default (OA expansion + per-corpus pool selection on):
     conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
         --n-wiki 12000 --n-oa 12000 --tau 0.5 0.6 0.7 \
-        --lpp-k 64 --desired-n-topics 14
+        --bridge-scorer csls --lpp-k 64 --desired-n-topics 14
+
+    # reproduce v1 exactly (no expansion, no rebalancing):
+    conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
+        --no-oa-expand --mass-rebalance none --teleport-split -1 \
+        --no-per-corpus-select --bridge-scorer csls
 """
 from __future__ import annotations
 
@@ -163,23 +190,61 @@ def select_wiki_nodes(
 
 def select_oa_nodes(
     emb: NDArray, titles: List[str], ids: List[str], refs: List[List[str]],
-    n_oa: int, log: PhaseLog,
-) -> Tuple[NDArray[np.int64], sp.csr_matrix, List[str], List[str], NDArray]:
-    """Top-n_oa OA-NLP slice articles by cosine to the NLP centroid; build the
-    intra-set OA citation graph (A[i,j]=1 iff i cites j, + self loops) from
-    ``referenced_works``. Returns ``(orig_idx, oa_adj, sub_titles, sub_ids,
-    sub_emb)``. Centroid + selection on raw L2-normed GIST (matches the
-    cross-corpus slice convention)."""
+    n_oa: int, log: PhaseLog, expand: bool = True,
+) -> Tuple[NDArray[np.int64], sp.csr_matrix, List[str], List[str], NDArray, Dict[str, float]]:
+    """Build the OA node set + intra-set citation graph (A[i,j]=1 iff i cites j,
+    + self loops) from ``referenced_works``. Returns ``(orig_idx, oa_adj,
+    sub_titles, sub_ids, sub_emb, density_stats)``. Centroid + cosine selection on
+    raw L2-normed GIST (matches the cross-corpus slice convention).
+
+    **v2 Fix(1) — OA citation-neighborhood expansion (``expand=True``).** v1
+    restricted OA citation edges to *within the top-n_oa cosine slice*, but most
+    NLP-paper citations point OUTSIDE it (only ~2 edges/node survived). We instead
+    take the top-n_oa cosine *seeds*, then expand the node set to the **1-hop
+    citation neighborhood within the FULL 87k NLP slice**: any work cited by a seed
+    that is itself present in the 87k is added as a node, and the citation graph is
+    built over the union. This recovers OA's real citation degree (~6 edges/node)
+    instead of the v1 artificial sparsity, while keeping the node count tractable
+    (tens of thousands). With ``expand=False`` the v1 within-slice behavior is
+    reproduced exactly (for the before/after comparison).
+
+    ``density_stats`` reports the v1-equivalent within-seed-set edge count and the
+    expanded edge count so the report can quote OA edges/node before vs after."""
     En = _normalize_np(emb)
     centroid = _normalize_np(En.mean(axis=0, keepdims=True))[0]
     cos = En @ centroid
-    k = min(n_oa, len(ids))
-    sel = np.argsort(-cos)[:k].astype(np.int64)
-    sel_sorted = np.sort(sel)
+    k_seed = min(n_oa, len(ids))
+    seed = np.argsort(-cos)[:k_seed].astype(np.int64)
+    seed_set = set(int(i) for i in seed)
+    id_to_global = {wid: i for i, wid in enumerate(ids)}
+
+    # v1-equivalent density: citation edges among the top-n_oa cosine seeds only.
+    seed_ids = set(ids[i] for i in seed)
+    v1_edges = sum(
+        1 for i in seed for ref in (refs[i] or ()) if ref in seed_ids
+    )
+
+    if expand:
+        # 1-hop expansion: add every seed-cited work that is itself in the 87k slice.
+        node_globals = set(seed_set)
+        for i in seed:
+            for ref in (refs[i] or ()):
+                g = id_to_global.get(ref)
+                if g is not None:
+                    node_globals.add(g)
+        sel_sorted = np.array(sorted(node_globals), dtype=np.int64)
+    else:
+        sel_sorted = np.sort(seed)
+
     sub_ids = [ids[i] for i in sel_sorted]
     sub_titles = [titles[i] for i in sel_sorted]
     sub_emb = emb[sel_sorted]
+    k = len(sel_sorted)
 
+    # Build the citation graph over ALL nodes in the (possibly expanded) set.
+    # An edge i→j is kept whenever both endpoints are in the node set, regardless
+    # of whether i was a cosine seed or an expansion node — this is what gives the
+    # expansion nodes real degree rather than only being citation targets.
     id_to_local = {wid: i for i, wid in enumerate(sub_ids)}
     rows: List[int] = []
     cols: List[int] = []
@@ -193,9 +258,23 @@ def select_oa_nodes(
         (np.ones(len(rows), dtype=np.float32), (rows, cols)), shape=(k, k)
     )
     intra_edges = oa_adj.nnz - k  # minus self loops
-    log(f"  OA node set: {k} nodes, {intra_edges} intra-set citation edges "
-        f"(cos→centroid {cos[sel_sorted].min():.3f}..{cos[sel_sorted].max():.3f})")
-    return sel_sorted, oa_adj, sub_titles, sub_ids, sub_emb
+    density_stats = {
+        "n_seed": int(k_seed),
+        "n_nodes": int(k),
+        "n_expansion_nodes": int(k - k_seed),
+        "v1_edges": int(v1_edges),
+        "v1_edges_per_node": float(v1_edges) / max(k_seed, 1),
+        "edges": int(intra_edges),
+        "edges_per_node": float(intra_edges) / max(k, 1),
+    }
+    log(f"  OA node set: {k} nodes "
+        f"({k_seed} cosine seeds + {k - k_seed} 1-hop cited)"
+        if expand else f"  OA node set: {k} nodes (within-slice, no expansion)")
+    log(f"    citation edges: v1-within-seed={v1_edges} "
+        f"({density_stats['v1_edges_per_node']:.2f}/node) → "
+        f"expanded={intra_edges} ({density_stats['edges_per_node']:.2f}/node); "
+        f"cos→centroid {cos[seed].min():.3f}..{cos[seed].max():.3f}")
+    return sel_sorted, oa_adj, sub_titles, sub_ids, sub_emb, density_stats
 
 
 # ---------------------------------------------------------------------------
@@ -326,14 +405,31 @@ def build_joint_graph(
 
 def joint_seeded_pagerank(
     joint: sp.csr_matrix, wiki_titles: List[str], oa_titles: List[str], n_w: int,
-    log: PhaseLog,
+    node_type: NDArray[np.int64], log: PhaseLog, teleport_split: float = -1.0,
 ) -> Tuple[NDArray, NDArray, List[int]]:
     """Hub-suppressed forward PR seeded at the NLP core (wiki SEED_TITLES + OA
-    seed substrings), plus uniform-teleport background PR. Returns
-    ``(masses, g_bg, seed_local_idx)``."""
+    seed substrings), plus a background PR. Returns ``(masses, g_bg,
+    seed_local_idx)``.
+
+    **v2 Fix(3) — balanced teleport.** PageRank stationary mass tracks in-degree,
+    so the dense wiki link backbone hoards mass even after row-normalization. The
+    ``teleport_split`` knob rebalances BOTH the seed personalization vector AND the
+    background-PR teleport vector across the two corpora:
+
+      * ``teleport_split < 0`` (default ``-1.0``): v1 behavior — seed mass split
+        uniformly across whatever named seeds resolve (so wiki's 6 seeds vs OA's
+        ~3 already tilt toward wiki) and uniform background teleport over ALL
+        nodes (which, with far denser wiki edges, pools on wiki).
+      * ``0 ≤ teleport_split ≤ 1``: ``teleport_split`` of the teleport mass goes to
+        the WIKI side, ``1-teleport_split`` to the OA side. Within each side mass
+        is spread over that side's seeds (foreground) / uniformly over that side's
+        nodes (background). ``0.5`` = even 50/50 split regardless of node count.
+
+    The background PR ``g`` is rebalanced the SAME way so the ``p/g`` bg-norm ratio
+    stays a within-graph contrast rather than silently re-tilting the cut."""
     n = joint.shape[0]
     title_to_w = {t: i for i, t in enumerate(wiki_titles)}
-    seed_idx = [title_to_w[t] for t in SEED_TITLES if t in title_to_w]
+    wiki_seed_idx = [title_to_w[t] for t in SEED_TITLES if t in title_to_w]
     oa_lower = [t.lower() for t in oa_titles]
     oa_seeds: List[int] = []
     for sub in OA_SEED_SUBSTRINGS:
@@ -341,14 +437,37 @@ def joint_seeded_pagerank(
             if sub in t:
                 oa_seeds.append(n_w + li)
                 break
-    seed_idx = seed_idx + oa_seeds
-    log(f"  joint seeds: {len(seed_idx)} ("
-        f"{len([s for s in seed_idx if s < n_w])} wiki + {len(oa_seeds)} OA)")
+    seed_idx = wiki_seed_idx + oa_seeds
+
     seeds = np.zeros(n, dtype=np.float64)
-    for i in seed_idx:
-        seeds[i] = 1.0 / len(seed_idx)
+    uniform = np.zeros(n, dtype=np.float64)
+    is_wiki = node_type == 0
+    is_oa = node_type == 1
+    if teleport_split < 0:
+        # v1: uniform over named seeds; uniform background over all nodes.
+        for i in seed_idx:
+            seeds[i] = 1.0 / len(seed_idx)
+        uniform[:] = 1.0 / n
+        log(f"  joint seeds: {len(seed_idx)} ({len(wiki_seed_idx)} wiki + "
+            f"{len(oa_seeds)} OA); teleport=uniform-over-all (v1)")
+    else:
+        ws, os = teleport_split, 1.0 - teleport_split
+        # Foreground: split seed mass ws:os across corpora, spread within side.
+        if wiki_seed_idx:
+            for i in wiki_seed_idx:
+                seeds[i] = ws / len(wiki_seed_idx)
+        if oa_seeds:
+            for i in oa_seeds:
+                seeds[i] = os / len(oa_seeds)
+        # Background: ws of teleport over all wiki nodes, os over all OA nodes.
+        nw, no = int(is_wiki.sum()), int(is_oa.sum())
+        if nw:
+            uniform[is_wiki] = ws / nw
+        if no:
+            uniform[is_oa] = os / no
+        log(f"  joint seeds: {len(seed_idx)} ({len(wiki_seed_idx)} wiki + "
+            f"{len(oa_seeds)} OA); balanced teleport split wiki:OA={ws:.2f}:{os:.2f}")
     masses = compute_pagerank(joint, seeds, alpha=ALPHA, tol=1e-9, max_iter=300, normalize=True)
-    uniform = np.full(n, 1.0 / n, dtype=np.float64)
     g_bg = compute_pagerank(joint, uniform, alpha=ALPHA, tol=1e-9, max_iter=300, normalize=True)
     return masses, g_bg, seed_idx
 
@@ -371,7 +490,40 @@ def main() -> None:
     ap.add_argument("--ranking-top-k", type=int, default=5000,
                     help="top-k joint nodes by bg-norm score to cluster")
     ap.add_argument("--desired-n-topics", type=int, default=14)
-    ap.add_argument("--out", type=Path, default=Path("docs/wikipedia-openalex-joint-curriculum.md"))
+    # --- v2 rebalancing knobs (Fix 1 + Fix 3) ---------------------------------
+    ap.add_argument("--oa-expand", dest="oa_expand", action="store_true", default=True,
+                    help="Fix(1): expand OA nodes to the 1-hop citation neighborhood "
+                         "within the full 87k slice (denser OA citation graph). On by default.")
+    ap.add_argument("--no-oa-expand", dest="oa_expand", action="store_false",
+                    help="reproduce v1: OA citation edges within the top-n_oa cosine slice only.")
+    ap.add_argument("--mass-rebalance", choices=["none", "count"], default="none",
+                    help="Fix(3) frontier-cut lever: per-corpus mass rebalancing for "
+                         "the dendrogram mass-cut. 'count' rescales each corpus's "
+                         "masses so the two corpora contribute mass proportional to "
+                         "their node count in the clustered set. NOTE: on the bimodal "
+                         "joint mass distribution this destabilizes the dendrogram cut "
+                         "(spawns degenerate OA singletons) rather than helping — the "
+                         "reliable OA-into-curriculum lever is --per-corpus-select at "
+                         "the POOL stage. Default 'none' (off).")
+    ap.add_argument("--teleport-split", type=float, default=-1.0,
+                    help="Fix(3) secondary lever: fraction of PageRank teleport/seed "
+                         "mass given to the WIKI side (rest to OA); applied to BOTH "
+                         "the seeded foreground PR and the background PR. <0 = v1 "
+                         "(uniform-over-all teleport). NOTE: tilting teleport is an "
+                         "unstable lever (the dense wiki backbone re-concentrates the "
+                         "mass regardless); --mass-rebalance is the reliable fix. "
+                         "Default -1 (off).")
+    ap.add_argument("--per-corpus-select", action="store_true", default=True,
+                    help="Fix(3): z-normalize the bg-norm selection score WITHIN each "
+                         "corpus before the top-k cut, so OA representation in the "
+                         "clustered POOL doesn't depend on its absolute PR mass. On by default.")
+    ap.add_argument("--no-per-corpus-select", dest="per_corpus_select", action="store_false",
+                    help="reproduce v1: single global top-k cut on the raw bg-norm score.")
+    ap.add_argument("--out", type=Path, default=ART_DIR / "report.md",
+                    help="machine report path (default: the artifacts dir). The "
+                         "curated results doc docs/wikipedia-openalex-joint-curriculum.md "
+                         "is hand-authored from this report's numbers and is NOT "
+                         "overwritten by re-runs.")
     args = ap.parse_args()
 
     torch.manual_seed(0); np.random.seed(0)
@@ -401,8 +553,9 @@ def main() -> None:
         w_adj_full, w_titles_full, w_emb_full, args.n_wiki, log
     )
     log("select OA nodes (top-cosine + intra-set citation graph)")
-    oa_sel, oa_adj, oa_titles, oa_ids, oa_emb = select_oa_nodes(
-        oa_emb_full, oa_titles_full, oa_ids_full, oa_refs_full, args.n_oa, log
+    oa_sel, oa_adj, oa_titles, oa_ids, oa_emb, oa_density = select_oa_nodes(
+        oa_emb_full, oa_titles_full, oa_ids_full, oa_refs_full, args.n_oa, log,
+        expand=args.oa_expand,
     )
     n_w, n_o = len(wiki_titles), len(oa_titles)
 
@@ -441,9 +594,30 @@ def main() -> None:
 
     # --- Hub-suppressed PageRank seeded at the NLP core ----------------------
     log("joint seeded PageRank (hub-suppressed via bg-norm) + background PR")
-    masses, g_bg, seed_idx = joint_seeded_pagerank(joint, wiki_titles, oa_titles, n_w, log)
+    masses, g_bg, seed_idx = joint_seeded_pagerank(
+        joint, wiki_titles, oa_titles, n_w, node_type, log,
+        teleport_split=args.teleport_split,
+    )
     p_fg = np.maximum(masses, 0.0)
     sel_score = np.power(p_fg, BG_ALPHA) * np.log((p_fg + BG_EPS) / (g_bg + BG_EPS))
+
+    # v2 Fix(3) — per-corpus selection normalization. The raw bg-norm score is an
+    # absolute-mass quantity, so a single global top-k cut keeps mostly wiki (its
+    # dense backbone carries higher mass). z-normalizing the score WITHIN each
+    # corpus before the cut makes "high for its corpus" the selection criterion, so
+    # OA's representation in the clustered set no longer depends on its absolute
+    # mass — the rank cut admits each corpus's own top tail. This is the mass-cut
+    # analog of "take top-k per corpus", but kept as a single ranking so the
+    # downstream frontier mass-cut and clustering are untouched.
+    if args.per_corpus_select:
+        cut_score = sel_score.copy()
+        for mask in (node_type == 0, node_type == 1):
+            s = sel_score[mask]
+            mu, sd = float(s.mean()), float(s.std())
+            cut_score[mask] = (s - mu) / (sd if sd > 0 else 1.0)
+        log("  per-corpus z-normalized selection score (Fix 3) for the top-k cut")
+    else:
+        cut_score = sel_score
 
     # --- link-LPP clustering subspace on the JOINT affinity ------------------
     log(f"link-LPP subspace on joint affinity (hub-suppressed, k={args.lpp_k})")
@@ -456,12 +630,39 @@ def main() -> None:
 
     # --- Top-k by bg-norm score, cluster in LPP space ------------------------
     top_k = min(args.ranking_top_k, joint.shape[0])
-    top_idx = np.argsort(sel_score)[-top_k:][::-1]
+    top_idx = np.argsort(cut_score)[-top_k:][::-1]
     log(f"cluster top-{top_k} joint nodes in LPP subspace "
         f"({100*node_type[top_idx].mean():.1f}% OA)")
     top_emb_lpp = np.ascontiguousarray(Y[top_idx], dtype=np.float32)
     top_masses = masses[top_idx]
-    point_to_cluster = cluster_embeddings(top_emb_lpp, top_masses, args.desired_n_topics)
+    top_is_oa_pre = node_type[top_idx] == 1
+
+    # v2 Fix(3) — per-corpus mass rebalancing for the dendrogram mass-cut.
+    # `cluster_embeddings` keeps only high-mass dendrogram subtrees (everything
+    # else → cluster -1). PageRank mass tracks in-degree, so even with a 50/50
+    # teleport split the median wiki node carries ~120× the mass of the median OA
+    # node (the dense wiki link backbone amplifies the teleport mass; the sparse OA
+    # citation graph barely propagates it). The dendrogram cut therefore demotes
+    # almost all OA below the topic-formation threshold REGARDLESS of teleport.
+    # We undo this at the cut itself: rescale each corpus's masses so the two
+    # corpora contribute mass proportional to their NODE COUNT in the clustered
+    # set (`mass_rebalance="count"`) — i.e. "important within your own corpus" is
+    # the cut criterion, not "high absolute mass". `"none"` keeps the raw masses
+    # (v1). The rescaled masses are used ONLY for the dendrogram cut; the true
+    # PageRank masses still drive frontier ordering, keyword salience, and the
+    # per-topic sample ordering, so the wiki backbone's foundations→frontier
+    # structure is unchanged — we only stop starving OA at the topic-formation gate.
+    cut_masses = top_masses.copy()
+    if args.mass_rebalance == "count":
+        for mask in (~top_is_oa_pre, top_is_oa_pre):
+            tot = float(top_masses[mask].sum())
+            if tot > 0:
+                # target mass for this corpus ∝ its share of clustered nodes
+                target = float(mask.sum()) / len(top_idx)
+                cut_masses[mask] = top_masses[mask] * (target / tot)
+        log(f"  per-corpus mass rebalance='count' for the dendrogram cut "
+            f"(equalizes each corpus's mass budget to its node share)")
+    point_to_cluster = cluster_embeddings(top_emb_lpp, cut_masses, args.desired_n_topics)
     n_topics = int(point_to_cluster.max()) + 1
     log(f"  {n_topics} topics")
 
@@ -497,15 +698,42 @@ def main() -> None:
     oa_total_topk = int(top_is_oa.sum())
     wiki_assigned = int(((point_to_cluster >= 0) & ~top_is_oa).sum())
     wiki_total_topk = int((~top_is_oa).sum())
+    # Cleaner sub-metrics: "reach a named topic" alone counts degenerate
+    # SINGLETON topics (a single OA node that the dendrogram mass-cut promoted to
+    # its own "topic") as a success, which inflates the number without any
+    # pedagogy. We additionally report OA reaching a NON-SINGLETON topic, and OA
+    # reaching a WIKI-ANCHORED (mixed: ≥3 wiki members) topic — the latter is the
+    # genuine best-of-both count (OA grafted onto a wiki-foundation-bearing topic).
+    topic_sizes = np.array([(point_to_cluster == t).sum() for t in range(n_topics)])
+    topic_n_wiki = np.array(
+        [int((~top_is_oa)[point_to_cluster == t].sum()) for t in range(n_topics)]
+    )
+    nonsingleton = topic_sizes >= 2
+    wiki_anchored = topic_n_wiki >= 3
+    oa_in_nonsingleton = int(sum(
+        ((point_to_cluster == t) & top_is_oa).sum()
+        for t in range(n_topics) if nonsingleton[t]
+    ))
+    oa_in_wiki_anchored = int(sum(
+        ((point_to_cluster == t) & top_is_oa).sum()
+        for t in range(n_topics) if wiki_anchored[t]
+    ))
+    n_singletons = int((topic_sizes == 1).sum())
     assign_stats = {
         "oa_assigned": oa_assigned, "oa_total_topk": oa_total_topk,
         "wiki_assigned": wiki_assigned, "wiki_total_topk": wiki_total_topk,
         "top_k": len(top_idx),
+        "oa_in_nonsingleton": oa_in_nonsingleton,
+        "oa_in_wiki_anchored": oa_in_wiki_anchored,
+        "n_singletons": n_singletons,
     }
     log(f"  assignment: OA {oa_assigned}/{oa_total_topk} reach a topic "
         f"({100*oa_assigned/max(oa_total_topk,1):.1f}%); "
         f"wiki {wiki_assigned}/{wiki_total_topk} "
         f"({100*wiki_assigned/max(wiki_total_topk,1):.1f}%)")
+    log(f"  of those OA: {oa_in_nonsingleton} in non-singleton topics, "
+        f"{oa_in_wiki_anchored} in wiki-anchored (≥3 wiki) topics; "
+        f"{n_singletons} singleton topics total")
 
     # =====================================================================
     # DECISIVE EVALUATION: OA-only frontier-work placement
@@ -579,7 +807,7 @@ def main() -> None:
         coverage_table, strict_mnn, eig_link, n_topics, order, point_to_cluster,
         top_idx, top_masses, node_type, joint_titles, kw, frontier_in_out,
         topic_oa_frac, topic_rank, oa_records, eval_examples, n_oa_clustered,
-        topic_wiki_foundations, assign_stats,
+        topic_wiki_foundations, assign_stats, oa_density,
     )
 
     # --- Persist artifacts ---------------------------------------------------
@@ -603,7 +831,7 @@ def write_report(
     coverage_table, strict_mnn, eig_link, n_topics, order, point_to_cluster,
     top_idx, top_masses, node_type, joint_titles, kw, frontier_in_out,
     topic_oa_frac, topic_rank, oa_records, eval_examples, n_oa_clustered,
-    topic_wiki_foundations, assign_stats,
+    topic_wiki_foundations, assign_stats, oa_density,
 ) -> None:
     L: List[str] = []
     L.append("# Dictionary-bridged joint-graph curriculum (wiki-NLP ∪ OA-NLP)\n")
@@ -624,17 +852,28 @@ def write_report(
         f"forward PR `p` / uniform-teleport background PR `g`, select by "
         f"`p^0.5·log(p/g)`, α={ALPHA}), wiki links restricted to that set "
         f"({wiki_adj.nnz} edges).\n"
-        f"- **OA nodes:** top-{n_o} OpenAlex NLP-Techniques (T10181) articles by "
-        f"cosine to the NLP-article centroid (raw GIST-384), with an **intra-set "
-        f"citation graph** built from their `referenced_works` "
-        f"({oa_adj.nnz - n_o} citation edges + self-loops). This is the OA set/"
-        f"graph: the same raw-GIST NLP slice used by the cross-corpus alignment "
-        f"work, NOT the domain-scale gap curriculum (whose 40.9M citation graph is "
-        f"intractable to slice without the full work-id map).\n"
+        f"- **OA nodes:** {oa_density['n_seed']} OpenAlex NLP-Techniques (T10181) "
+        f"cosine seeds (top cosine to the NLP-article centroid, raw GIST-384)"
+        + (
+            f", **expanded (Fix 1) to the 1-hop citation neighborhood within the "
+            f"full 87k NLP slice**: +{oa_density['n_expansion_nodes']} cited works "
+            f"present in the 87k → {n_o} OA nodes total.\n"
+            if args.oa_expand else
+            f" (no expansion; {n_o} OA nodes).\n"
+        )
+        + f"  **OA citation density (the v1 bottleneck):** "
+        f"v1-within-seed-set = {oa_density['v1_edges']} edges "
+        f"({oa_density['v1_edges_per_node']:.2f}/node) → "
+        f"{'expanded' if args.oa_expand else 'this run'} = {oa_adj.nnz - n_o} edges "
+        f"({oa_density['edges_per_node']:.2f}/node). Same raw-GIST NLP slice used by "
+        f"the cross-corpus alignment work, NOT the domain-scale gap curriculum.\n"
         f"- **Bridges:** bt_cos edges (below), {n_bridges} kept at τ={tau0} "
         f"(the curriculum-run threshold), added symmetrically, weighted by bt_cos.\n"
-        f"- **Joint graph:** {joint.shape[0]} nodes, {joint.nnz} directed edges, "
-        f"with a node-type vector (0=wiki, 1=OA).\n"
+        f"- **Mass rebalancing (Fix 3):** per-corpus-select="
+        f"{args.per_corpus_select}, mass-rebalance={args.mass_rebalance!r}, "
+        f"teleport-split={args.teleport_split} (<0 = uniform-over-all, v1).\n"
+        f"- **Joint graph:** {joint.shape[0]} nodes ({n_w} wiki + {n_o} OA), "
+        f"{joint.nnz} directed edges, with a node-type vector (0=wiki, 1=OA).\n"
     )
 
     L.append("## bt_cos bridge coverage (vs strict mutual-NN)\n")
@@ -680,18 +919,20 @@ def write_report(
              "wiki prerequisites?\n")
     oa_a = assign_stats["oa_assigned"]; oa_t = assign_stats["oa_total_topk"]
     wk_a = assign_stats["wiki_assigned"]; wk_t = assign_stats["wiki_total_topk"]
+    oa_ns = assign_stats.get("oa_in_nonsingleton", oa_a)
+    oa_wa = assign_stats.get("oa_in_wiki_anchored", oa_a)
+    n_sing = assign_stats.get("n_singletons", 0)
     L.append(
-        f"**First, the binding number — does the OA frontier even reach the "
-        f"curriculum?** The frontier mass-cut assigns only high-mass dendrogram "
-        f"nodes to named topics; everything else becomes a cluster `-1` "
-        f"intermediary. Of the **{oa_t} OA nodes in the top-{assign_stats['top_k']}**, "
-        f"only **{oa_a} ({100*oa_a/max(oa_t,1):.1f}%) reach a named topic** — the "
-        f"rest sink into the unassigned `-1` mass. Wiki: **{wk_a}/{wk_t} "
-        f"({100*wk_a/max(wk_t,1):.1f}%)**. The wiki backbone carries the PageRank "
-        f"mass, so most OA frontier work is demoted below the topic-formation "
-        f"threshold before clustering. This is the central tension: the bridges "
-        f"place the OA work that *does* survive, but the bulk of the OA frontier "
-        f"never makes it into a topic at all.\n"
+        f"**The binding number — does the OA frontier even reach the curriculum?** "
+        f"The dendrogram mass-cut assigns only high-mass subtrees to named topics; "
+        f"everything else becomes a cluster `-1` intermediary. Of the **{oa_t} OA "
+        f"nodes in the top-{assign_stats['top_k']}** clustering pool, **{oa_a} "
+        f"({100*oa_a/max(oa_t,1):.1f}%) reach a named topic**; wiki: **{wk_a}/{wk_t} "
+        f"({100*wk_a/max(wk_t,1):.1f}%)**. Stripping the degenerate single-OA-node "
+        f"\"topics\" the mass-cut sometimes promotes ({n_sing} singletons total), "
+        f"**{oa_ns} OA land in a non-singleton topic and {oa_wa} in a "
+        f"wiki-anchored (≥3 wiki members) topic** — the latter is the genuine "
+        f"best-of-both count (OA grafted onto a wiki-foundation-bearing topic).\n"
     )
     L.append(
         f"**OA-only frontier works** = clustered OA nodes with the weakest "
@@ -723,57 +964,25 @@ def write_report(
         L.append(f"  - wiki foundations in that topic: "
                  f"{', '.join(e['wiki_foundations'][:5]) or '(none — OA-dominated topic)'}\n")
 
-    L.append("## Verdict — partial best-of-both, bottlenecked by OA mass starvation\n")
+    L.append("## Auto-generated metric summary\n")
+    L.append("_Numbers only — the curated verdict (v1 + the v2 dual-eval) lives in "
+             "the hand-authored results doc "
+             "`docs/wikipedia-openalex-joint-curriculum.md`._\n")
     L.append(
-        f"**Realizable, but only partially, and the binding constraint is not "
-        f"bridge precision — it is OA mass starvation in the joint PageRank.**\n"
-    )
-    L.append(
-        f"- **bt_cos clears the coverage bar.** CSLS bt_cos at τ=0.5 reaches "
-        f"wiki/OA coverage ~0.43/0.46, comfortably above strict mutual-NN "
-        f"({strict_mnn:.2f}) and the ~0.37 prior baseline; raw cosine is much "
-        f"weaker (~0.25/0.29). So the dictionary *can* bridge a plurality of nodes "
-        f"— coverage is NOT the bottleneck.\n"
-        f"- **Where an OA-only paper survives the cut, it lands correctly.** The "
-        f"parsing/grammar topic is the clean win: niche OA parsing papers (Korean "
-        f"parser, PP-attachment, shallow parsing) cluster WITH the wiki "
-        f"foundations *Parsing / Formal grammar / Formal language / Syntax* and "
-        f"order at the frontier end — pedagogy inherited through the joint graph, "
-        f"exactly the dream. This is best-of-both in microcosm.\n"
-        f"- **But the OA frontier mostly never reaches a topic.** Only "
-        f"{100*oa_a/max(oa_t,1):.0f}% of top-k OA nodes get assigned to a named "
-        f"topic (vs {100*wk_a/max(wk_t,1):.0f}% of wiki); the rest sink into the "
-        f"`-1` mass. The wiki link backbone is dense (mean out-degree in the "
-        f"hundreds) while the intra-OA citation graph is sparse "
-        f"({oa_adj.nnz - n_o} edges over {n_o} nodes), so seeded PageRank mass "
-        f"pools on wiki, and the bg-norm + frontier-mass cut discards low-mass OA "
-        f"nodes. The result enriches the *canonical* frontier (parsing, embeddings) "
-        f"but loses most of the long-tail niche papers — the very payload the "
-        f"dream wanted.\n"
-        f"- **Honest failure modes seen:** (a) bridge misfires on polysemous "
-        f"titles route a few OA papers into wrong-but-plausible generic topics "
-        f"(e.g. a surface-realization paper bridged to *Surface triangulation* → "
-        f"landed in a generic CS topic); (b) a handful of unbridged OA papers form "
-        f"degenerate singleton topics at the extreme frontier (ranks "
-        f"{n_topics-2}–{n_topics}); (c) OA-dominated topics drift toward toolkit "
-        f"keywords (pytorch/keras/lightgbm) rather than concepts. No catastrophic "
-        f"recency-bias takeover — the sparse OA citation graph is too weak to "
-        f"dominate, which is the flip side of the mass-starvation problem.\n"
-        f"- **τ / density effect:** lowering τ (raw 0.5) admits ~2× more OA into "
-        f"the top-k (58.8% vs 38.8% OA) but those extra OA nodes are low-confidence "
-        f"and still fail the frontier-mass cut, so frontier *placement* barely "
-        f"improves — density helps coverage, not pedagogy transfer.\n"
-    )
-    L.append(
-        f"**Bottom line.** The joint graph keeps wiki's clean hub-free "
-        f"foundations→frontier backbone and *does* graft on OA frontier work where "
-        f"a bridge + citation anchor exist, with correct prerequisite adjacency. "
-        f"It is genuinely best-of-both for the canonical/bridged frontier. It is "
-        f"NOT yet best-of-both for the OA-only long tail: those papers are "
-        f"mass-starved out of the curriculum before clustering. The fix is on the "
-        f"OA side (denser intra-OA edges via citation expansion or an OA "
-        f"similarity-kNN backbone, and/or boosting OA seed mass), not on the "
-        f"bridge dictionary.\n"
+        f"- **OA citation density:** v1-within-seed "
+        f"{oa_density['v1_edges_per_node']:.2f}/node → this run "
+        f"{oa_density['edges_per_node']:.2f}/node "
+        f"({oa_density['n_nodes']} OA nodes, "
+        f"oa_expand={args.oa_expand}).\n"
+        f"- **OA into the curriculum:** {oa_a}/{oa_t} top-k OA reach a named topic "
+        f"({100*oa_a/max(oa_t,1):.1f}%); {oa_ns} in non-singleton topics, "
+        f"{oa_wa} in wiki-anchored (≥3 wiki) topics. Wiki: {wk_a}/{wk_t} "
+        f"({100*wk_a/max(wk_t,1):.1f}%). {n_sing} singleton topics.\n"
+        f"- **Rebalancing config:** per-corpus-select={args.per_corpus_select}, "
+        f"mass-rebalance={args.mass_rebalance!r}, "
+        f"teleport-split={args.teleport_split}.\n"
+        f"- **Bridge coverage (CSLS τ={tau0}):** see the coverage table above; "
+        f"strict mutual-NN baseline {strict_mnn:.3f}.\n"
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

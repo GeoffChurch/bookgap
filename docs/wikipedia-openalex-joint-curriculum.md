@@ -2,7 +2,9 @@
 
 The **best-of-both** test: ONE scipy-sparse graph fusing Wikipedia's pedagogical link backbone with OpenAlex's citation coverage/frontier, bridged by **bt_cos** (back-translation cosine) cross-corpus edges, then run through the validated wiki-native curriculum pipeline. Does it keep wiki's clean foundations→frontier ordering AND enrich the frontier with niche/recent OA papers the wiki-only curriculum (`docs/wikipedia-curriculum.md`) lacked?
 
-## Joint-graph construction
+> **v1 → v2.** The first build (below, committed `7b3429f`) found only ~13% of top-k OA nodes reached a named topic vs ~43% of wiki — **OA mass starvation**. The [**v2 section**](#v2-oa-density--mass-rebalancing) at the end fixes this with OA citation-neighborhood expansion + per-corpus pool selection; jump there for the current state.
+
+## v1 — Joint-graph construction
 
 - **Wiki nodes:** bg-norm top-12000 of the cached subgraph `cache/wiki/store/enwiki_full/curriculum_subgraph_n40000.npz` (seeded forward PR `p` / uniform-teleport background PR `g`, select by `p^0.5·log(p/g)`, α=0.85), wiki links restricted to that set (1573804 edges).
 - **OA nodes:** top-12000 OpenAlex NLP-Techniques (T10181) articles by cosine to the NLP-article centroid (raw GIST-384), with an **intra-set citation graph** built from their `referenced_works` (25284 citation edges + self-loops). This is the OA set/graph: the same raw-GIST NLP slice used by the cross-corpus alignment work, NOT the domain-scale gap curriculum (whose 40.9M citation graph is intractable to slice without the full work-id map).
@@ -105,4 +107,59 @@ LPP subspace (k=64) on the hub-suppressed JOINT link affinity; smallest λ [0.04
 - **τ / density effect:** lowering τ (raw 0.5) admits ~2× more OA into the top-k (58.8% vs 38.8% OA) but those extra OA nodes are low-confidence and still fail the frontier-mass cut, so frontier *placement* barely improves — density helps coverage, not pedagogy transfer.
 
 **Bottom line.** The joint graph keeps wiki's clean hub-free foundations→frontier backbone and *does* graft on OA frontier work where a bridge + citation anchor exist, with correct prerequisite adjacency. It is genuinely best-of-both for the canonical/bridged frontier. It is NOT yet best-of-both for the OA-only long tail: those papers are mass-starved out of the curriculum before clustering. The fix is on the OA side (denser intra-OA edges via citation expansion or an OA similarity-kNN backbone, and/or boosting OA seed mass), not on the bridge dictionary.
+
+---
+
+## v2: OA density + mass rebalancing
+
+v2 attacks the v1 bottleneck — OA mass starvation — with two structural knobs in `artifacts_scripts/wiki/joint_graph_curriculum.py`. All v2 runs use the **CSLS bt_cos bridges at τ=0.5** (the v1 winner). The v1-equivalent baseline below is the committed v1 pipeline re-run under the CSLS bridges with every v2 knob OFF (it reproduces v1 exactly: OA 247/1941 = 12.7%, 25,284 OA edges).
+
+### Fix (1) — OA citation-neighborhood expansion (`--oa-expand`, default on)
+
+v1 built the OA citation graph over edges *within the top-12k cosine slice only*, but most NLP-paper citations point outside it, leaving the OA side artificially sparse (~2 edges/node). v2 instead takes the top-12k cosine works as **seeds**, then expands the node set to the **1-hop citation neighborhood within the full 87,408-work NLP slice**: every seed-cited work that is itself present in the 87k is added as a node, and the citation graph is built over the union (an edge survives whenever both endpoints are in the node set, so expansion nodes carry real degree, not just inbound citations).
+
+| metric | v1 (within top-12k) | v2 (1-hop expanded) |
+| :-- | --: | --: |
+| OA nodes | 12,000 | **23,214** (12,000 seeds + 11,214 cited) |
+| OA citation edges | 25,284 | **147,995** |
+| OA edges/node | **2.11** | **6.38** (3.0×) |
+| joint-graph nodes | 24,000 | **35,214** |
+| joint-graph directed edges | 1,624,432 | 1,766,299 |
+
+The node set stays tractable (~35k joint) and OA citation degree triples — undoing the artificial sparsity, exactly as diagnosed. Bridge coverage also rises on the denser slice: CSLS τ=0.5 wiki/OA coverage **0.53 / 0.40** (v1 0.43 / 0.46), strict mutual-NN 0.39 (v1 0.32).
+
+### Fix (3) — mass rebalancing
+
+The diagnosis is that PageRank stationary mass tracks in-degree, so the dense wiki link backbone hoards mass: even with a 50/50 teleport split, **the median wiki node carries ~120× the mass of the median OA node** (wiki amplifies the teleport mass through its dense links; the sparse OA citation graph barely propagates it). The dendrogram mass-cut in `cluster_embeddings` therefore demotes almost all OA to cluster `-1` *regardless of teleport*. Three levers are exposed:
+
+- **`--per-corpus-select` (default ON, the reliable lever):** z-normalize the bg-norm selection score *within each corpus* before the top-k clustering-**pool** cut, so OA's presence in the pool tracks "high for its own corpus" rather than its (far smaller) absolute mass. This raises the OA share of the 5,000-node clustering pool from 38.8% (v1) to 65.2%, putting **3,260 OA into the pool** (v1: 1,941).
+- **`--teleport-split` (default OFF, `-1`):** split the PageRank teleport/seed mass `wiki:OA` across corpora. Found to be an **unstable lever** — the dense wiki backbone re-concentrates the mass regardless, and the dendrogram cut on the bimodal mass distribution responds chaotically (a sweep over splits 0.5→0.1 gave OA coverage 16.5%, 8.5%, 59.3%, 13.5%, 7.2% — non-monotone, driven by whether one giant OA cluster happens to form). Kept available, defaulted off.
+- **`--mass-rebalance count` (default OFF, `none`):** rescale each corpus's masses to its node share *for the dendrogram cut*. Same instability — it spawns degenerate OA singletons (7 vs 3) and *lowers* clean coverage to 12.1%. Defaulted off.
+
+**Rebalancing actually used in the default v2 run: `--oa-expand` + `--per-corpus-select` (both on), mass-cut levers off.** The reliable fix is at the **pool-selection** stage (per-corpus z-norm), not the dendrogram mass-cut.
+
+### The dual evaluation
+
+**(1) OA coverage UP.** Re-run on the rebalanced, OA-denser joint graph:
+
+| metric | v1 (CSLS, knobs off) | v2 (expand + per-corpus-select) |
+| :-- | --: | --: |
+| OA nodes in clustering pool | 1,941 | 3,260 |
+| **OA reaching a named topic** | **247 (12.7%)** | **644 (19.8%)** |
+| — of those, in non-singleton topics | 244 | 641 |
+| — of those, in **wiki-anchored** (≥3 wiki) topics | 244 | **641** |
+| wiki reaching a named topic | 1,328 (43.4%) | 778 (44.7%) |
+| singleton topics | 3 | 3 |
+
+OA coverage rose from **12.7% → 19.8%**, and in *absolute* terms the curriculum now carries **644 OA papers vs 247 — 2.6× more OA frontier** — with **641 of the 644 landing in wiki-anchored topics** (genuine best-of-both, not isolated OA blobs). This is a large improvement but stops short of full parity with wiki's ~44%: the OA long tail that has neither a strong bridge nor a citation anchor in the pool still clusters into low-mass dendrogram subtrees and is cut. Pushing the rate further (the teleport/mass-rebalance levers) reintroduces takeover/degeneracy rather than parity — so 19.8% with 641 wiki-anchored is the honest **sweet spot**, not a hard ceiling on the idea.
+
+**(2) Pedagogy still intact.** The v1 parsing win survives and is enriched. v2 topic **rank 7** (`parser, parsing, dependency, parse, semantic, tree`, 66% OA) carries the wiki foundations **Parsing / Semantic parsing / Syntactic parsing**, and OA-only parsing papers (e.g. *Forest-guided Supertagger Training*, bt_cos 0.12) land there. The new dominant OA topic **rank 1** (`machine_translation`, 94% OA) is OA-dense because OA's NLP frontier genuinely *is* machine-translation-heavy — and it is correctly anchored by the wiki foundations **Machine translation / Interlingual MT / Neural MT**, with OA-only MT papers (*FBK MT systems*, *Word-to-Word Model of Translational Equivalence*, *phrase-based translation discrimination*, all bt_cos 0.07–0.18) attaching to it. The foundations→frontier ordering is clean: ranks 1–5 are wiki-foundation-heavy (scientists, CS, probability, open-science, computing), the NLP frontier (text/extraction, parsing, language models, NLP, linguistics, ML) sits at ranks 6–11, and `in−out` flow is positive at the foundations and negative at the frontier. The wiki backbone stays hub-free (bg-norm + hub-suppressed LPP as in v1).
+
+**(3) No recency takeover.** Boosting OA did **not** reintroduce citation-recency bias or toolkit-keyword swamping. Every v2 topic keyword set is concept-driven (machine_translation, parsing, logic, probability, linguistics, machine_learning) — in fact *cleaner* than v1, which had a `yooreeka / kubeflow / mlpack / mindspore` toolkit topic; **v2 has no toolkit-keyword topic at all**. The 3 frontier singletons (ranks 12–14) are *old* papers (Croatian word-embedding experiments, Papeaaij 1986, the 1978 workshop), confirming the absence of a recency tilt. The danger of overcorrection lives entirely in the two defaulted-off mass-cut levers (teleport-split / mass-rebalance), which when pushed produce a single 1,000+-node OA-takeover topic — avoided by keeping them off.
+
+### Verdict — best-of-both now holds at the scale that matters, with an honest residual
+
+v2 **substantially closes the v1 bottleneck without overcorrecting.** The structural fix is two-part and the two parts matter for different reasons: **OA expansion** (Fix 1) restores OA's real citation degree (2.1 → 6.4 edges/node) so OA nodes are no longer isolated, and **per-corpus pool selection** (Fix 3) stops the global mass-cut from starving OA out of the clustering pool. Together they take OA from 247 → 644 papers in the curriculum (12.7% → 19.8% coverage), with 641/644 grafted onto wiki-anchored, correctly-ordered topics — and the wiki backbone's clean hub-free foundations→frontier structure is untouched. The parsing win generalizes, machine translation joins it as a second well-anchored OA-heavy topic, and there is no recency or toolkit takeover.
+
+It is **not full parity with wiki** (~20% vs ~44%): the OA long tail with neither a bridge nor a citation anchor still falls below the dendrogram mass-cut. Crucially, the levers that *would* push the headline rate higher (teleport-split, per-corpus mass-rebalance for the cut) are **unstable on the bimodal joint mass distribution** — they buy a bigger number by spawning a degenerate OA-takeover cluster, which is worse pedagogy, so they are exposed but defaulted off. The remaining gap is therefore a real property of the dendrogram mass-cut on a two-corpus graph, not a knob left untuned; closing it cleanly would need a clustering/cut that is corpus-aware by construction (e.g. per-corpus dendrograms merged at the bridges) rather than a single global mass threshold — a v3 direction. As of v2, **best-of-both holds at scale for the bridged + citation-anchored OA frontier**, which is the majority of OA's actual NLP mass (MT, parsing, language models, IE), and the honest residual is the unanchored long tail.
 
