@@ -257,3 +257,33 @@ since frontier work *is* recent).
 high-confidence cosine bridges), run the curriculum, and check whether OA-only frontier works land
 near their prerequisite wiki concepts. That experiment — not the dictionary precision — answers
 whether the dream is realizable.
+
+#### Status / working notes (2026-05-30): joint graph RUN — partial best-of-both
+
+Built and ran end-to-end. Results doc: **`docs/wikipedia-openalex-joint-curriculum.md`**; script
+`artifacts_scripts/wiki/joint_graph_curriculum.py` (+ one-time OA-slice prep
+`artifacts_scripts/wiki/_prep_oa_nlp_cache.py`).
+
+- **Setup.** Joint graph over 12k wiki-NLP (bg-norm top-k of the cached
+  `curriculum_subgraph_n40000.npz`) ∪ 12k OA-NLP (top-cosine T10181 articles, intra-set citation
+  graph from `referenced_works`, 25k edges). bt_cos bridges (per-slice mean-matched cosine,
+  round-trip cos), raw AND CSLS, τ∈{0.5,0.6,0.7}. 24k nodes, ~1.6M edges. Pipeline: hub-suppressed
+  seeded PageRank → link-LPP (k=64) on the joint affinity → bisecting-KMeans (14 topics) →
+  frontier-adjacency order. ~30 s/run on CPU.
+- **bt_cos clears the coverage bar.** CSLS bt_cos τ=0.5 → wiki/OA coverage 0.43/0.46, above strict
+  mutual-NN (0.32) and the ~0.37 baseline; raw cosine weak (0.25/0.29). Coverage is NOT the
+  bottleneck.
+- **Where an OA-only paper survives the frontier cut, it lands correctly.** Clean win: niche OA
+  parsing papers (Korean parser, PP-attachment, shallow parsing) cluster WITH wiki *Parsing / Formal
+  grammar / Formal language / Syntax* and order at the frontier — pedagogy inherited through the
+  joint graph.
+- **BUT the binding constraint is OA mass starvation, not bridges.** Only ~13% of top-k OA nodes
+  (CSLS; ~7% raw) reach a NAMED frontier topic — the rest sink into the dendrogram's `-1` unassigned
+  mass (wiki: ~43%). The dense wiki link backbone pools PageRank mass; the sparse intra-OA citation
+  graph can't compete, so bg-norm + frontier-mass-cut discard the OA long tail before clustering.
+  Enriches the *canonical* frontier, loses the niche payload the dream wanted. No recency-bias
+  takeover (sparse OA graph too weak to dominate — flip side of the same problem).
+- **Next (live follow-up, OA side):** densify the OA backbone (citation-neighborhood expansion or an
+  OA similarity-kNN graph, à la `seed_from_gap --similarity`) and/or boost OA seed mass so the OA
+  frontier survives the mass cut. The bridge dictionary is already good enough; the fix is graph
+  density on the OA side.
