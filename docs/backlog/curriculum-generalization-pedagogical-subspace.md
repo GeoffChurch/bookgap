@@ -176,10 +176,22 @@ topic-distribution — the rest is corpus/register.
 - **Per-slice mean-matching caveat:** the pipeline removes the *global* per-corpus offset, but
   a non-representative slice (NLP-only) keeps a residual mean (norm 0.39) — any wiki→OA map
   must mean-match per slice (or jointly) before covariance alignment can help.
-- **mycooc angle (under investigation):** `~/src/mycooc`'s VecMap-style unsupervised
-  self-learning (mutual-NN dictionary → orthogonal Procrustes, iterated). Since wiki + OA
-  share an encoder we can **skip the sorted-signature init** and self-learn from the
-  shared-space NN dictionary directly — could induce article-level wiki↔OA correspondences
-  and/or a refining map. Honest ceiling: an *orthogonal* self-learning map is linear, and the
-  residual is nonlinear, so it's bounded like Procrustes. A subagent is assessing feasibility,
-  a fusion with LPP/CCA/CORAL, and whether "skip-init-when-encoder-shared" flows back to mycooc.
+- **mycooc angle — assessed; verdict: don't port (2026-05-30).** `~/src/mycooc` is a
+  *co-occurrence* word-translation system (VecMap/coocmap lineage) over V×V cooc matrices —
+  **no dense-embedding input path**, so it can't consume GIST vectors without rewriting its
+  data model. Its novel part is the sorted-signature *init* that defeats the unknown-basis
+  problem — exactly what a shared encoder makes unnecessary; what's left after skipping it is a
+  generic VecMap self-learning loop (~40 lines) whose **orthogonal** map provably can't fix a
+  *covariance/nonlinear* residual (a rotation can't change covariance spectra or repair disjoint
+  local support) — the same wall LPP/Procrustes hit. The one reusable primitive (CSLS) is
+  **already ported** (`_gep_csls`; `keyword-extraction/soft-hubness-correction-csls.md`).
+- **The covariance-capable path it points to (the actual next move):** (1) per-slice
+  mean-match → (2) one round of **CSLS mutual-NN to *induce* pseudo-anchor wiki↔OA pairs** in
+  the shared space (a *matching* product, already prototyped in the CSLS-NN experiment — the
+  only borrowed idea, and it's just CSLS) → (3) fit **CCA or CORAL** on those anchors to attack
+  the covariance residual the orthogonal map can't. Optionally wrap in a self-learning loop
+  (re-induce anchors after each map update), but the inner map must be covariance-capable.
+- **Back-flow to mycooc:** if mycooc ever aligns corpora that already share an encoder, it
+  should skip the sorted-signature init and self-learn from the identity NN dictionary — a clean
+  dual of this finding, worth a note on the mycooc side *if* they add a dense-embedding input
+  path (none today).
