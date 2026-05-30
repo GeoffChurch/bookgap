@@ -76,12 +76,33 @@ keywords_for_topics, bg-norm selection logic), ``wiki_pedagogical_lpp``
 Prerequisite: run ``_prep_oa_nlp_cache`` once to materialize
 ``/tmp/oa_nlp_slice.npz`` + ``/tmp/oa_nlp_refs.json`` (the OA-NLP slice + refs).
 
+v3 — smooth diffusion densification (replaces the hard 1-hop expansion)
+--------------------------------------------------------------------------------
+The v2 ``--oa-expand`` is a *hard*, truncated (k=1, unweighted) diffusion. v3 adds
+``--oa-densify {expand, diffuse}`` (default ``expand`` = v2, byte-identical). With
+``diffuse`` the OA backbone is densified by **Graph Diffusion Convolution** (heat
+``S = Σ_k e^{-t}t^k/k!·T^k`` or PPR ``S = Σ_k α(1-α)^k·T^k``) on the *symmetrized*
+OA citation graph, re-sparsified to top-``--diffusion-top-m``/row + renormalized,
+with the directed citation skeleton overlaid for forward PageRank. The diffusion
+scale is chosen by ``--select-t`` (primary: ``heldout-link``); all four criteria
+(heldout-link / mass-match / modularity / spectral) are reported for agreement.
+**Result (see docs/wikipedia-openalex-joint-curriculum.md §v3):** at the
+heldout-link ``t=8`` with ``--diffusion-top-m 32`` (the sweet spot — wiki's mean
+degree ~131 OVER-densifies and collapses coverage), diffuse beats the hard
+expansion: OA 644→874 into the curriculum (19.8%→27.0%), pedagogy preserved.
+
 Usage::
 
     # v2 default (OA expansion + per-corpus pool selection on):
     conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
         --n-wiki 12000 --n-oa 12000 --tau 0.5 0.6 0.7 \
         --bridge-scorer csls --lpp-k 64 --desired-n-topics 14
+
+    # v3 smooth diffusion densification (heat kernel, held-out-link T-selection):
+    conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
+        --n-wiki 12000 --n-oa 12000 --tau 0.5 --bridge-scorer csls \
+        --lpp-k 64 --desired-n-topics 14 \
+        --oa-densify diffuse --diffusion-kernel heat --select-t heldout-link
 
     # reproduce v1 exactly (no expansion, no rebalancing):
     conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
@@ -275,6 +296,392 @@ def select_oa_nodes(
         f"expanded={intra_edges} ({density_stats['edges_per_node']:.2f}/node); "
         f"cos→centroid {cos[seed].min():.3f}..{cos[seed].max():.3f}")
     return sel_sorted, oa_adj, sub_titles, sub_ids, sub_emb, density_stats
+
+
+# ---------------------------------------------------------------------------
+# v3 — smooth graph-diffusion densification of the OA backbone (GDC)
+# ---------------------------------------------------------------------------
+# The v2 ``--oa-expand`` is a *hard*, truncated (k=1, unweighted) diffusion: it
+# adds the 1-hop citation neighborhood as nodes and unit-weights the resulting
+# edges. ``--oa-densify diffuse`` replaces that hard truncation with **Graph
+# Diffusion Convolution** (Gasteiger/Klicpera et al., "Diffusion Improves Graph
+# Learning"): a *smooth*, weighted, multi-hop re-wiring `S = Σ_k θ_k T^k` of the
+# OA citation graph, with the scale (heat time ``t`` / PPR restart ``α``) CHOSEN
+# rather than fixed at one hop, then re-sparsified (top-m per row) + renormalized.
+#
+# Node set. Diffusion runs on the SAME (expanded) node set the hard expansion
+# uses, so the comparison is apples-to-apples: identical OA nodes, only the OA
+# EDGE structure differs (hard 1-hop adjacency vs smooth GDC affinity).
+#
+# Directedness. The OA citation graph is directed (i→j ≡ "i cites j"). GDC's
+# affinity is defined on an UNDIRECTED graph (the heat/PPR kernel of a directed
+# transition is not symmetric and the diffusion-map / spectral story assumes a
+# symmetric operator), so we SYMMETRIZE for the diffusion affinity. But the
+# curriculum's forward PageRank needs the citation DIRECTION (flow citer→cited so
+# foundational works accrue mass → frontier ordering). We therefore keep BOTH:
+# the symmetric GDC affinity ``S`` (the densified backbone, weighted) is written
+# into the joint graph's OA block AND the original directed citation skeleton is
+# overlaid (unit-weighted) so forward PageRank still flows along real citations.
+# This is the documented design choice: diffuse symmetric, orient via the
+# retained directed skeleton.
+
+
+def _row_topm(M: sp.csr_matrix, m: int) -> sp.csr_matrix:
+    """Keep only the top-``m`` entries (by magnitude) of each row of ``M``.
+
+    GDC re-sparsification. Also caps the intermediate diffusion powers so the
+    series stays sparse (an un-capped T^k fills in catastrophically — a random
+    23k-node graph reaches ~5e8 nnz by k=5).
+
+    Per-row ``argpartition`` (O(nnz) overall) — measured faster than a global
+    lexsort at the nnz scales seen here. Rows already ≤ m are left untouched."""
+    M = M.tocsr()
+    if M.nnz == 0:
+        return M
+    ptr, data, ind = M.indptr, M.data, M.indices
+    keep = np.ones(M.nnz, dtype=bool)
+    for i in range(M.shape[0]):
+        s, e = int(ptr[i]), int(ptr[i + 1])
+        if e - s > m:
+            # drop the (e-s-m) smallest in this row
+            drop = np.argpartition(data[s:e], e - s - m - 1)[: e - s - m]
+            keep[s + drop] = False
+    rows = np.repeat(np.arange(M.shape[0]), np.diff(ptr))
+    return sp.csr_matrix((data[keep], (rows[keep], ind[keep])), shape=M.shape)
+
+
+def _row_l1_normalize(M: sp.csr_matrix) -> sp.csr_matrix:
+    rs = np.asarray(M.sum(axis=1)).ravel()
+    rs[rs == 0] = 1.0
+    return (sp.diags(1.0 / rs) @ M).tocsr()
+
+
+def gdc_diffuse(
+    A_sym: sp.csr_matrix,
+    kernel: str,
+    t: float,
+    ppr_alpha: float,
+    top_m: int,
+    series_terms: int,
+    cap_m: int,
+) -> sp.csr_matrix:
+    """Graph Diffusion Convolution on a SYMMETRIC adjacency ``A_sym``.
+
+    Returns the re-sparsified (top-``top_m``/row) + row-L1-renormalized diffusion
+    affinity ``S``. Kernel:
+      * ``heat``: ``S = Σ_{k=0}^{K} e^{-t} t^k/k! · T^k`` (T = D^{-1}A_sym, the
+        random-walk transition). Truncated at ``series_terms`` = K (the Poisson
+        weights decay super-exponentially past k≈t, so a modest K suffices).
+      * ``ppr``:  ``S = Σ_{k=0}^{K} α(1-α)^k · T^k`` (Neumann series for the
+        Personalized-PageRank kernel ``α(I-(1-α)T)^{-1}``).
+    Each propagated power ``T^k`` is capped to top-``cap_m``/row so the sparse
+    series never densifies (the standard scalable-GDC trick)."""
+    import math
+
+    n = A_sym.shape[0]
+    deg = np.asarray(A_sym.sum(axis=1)).ravel()
+    deg[deg == 0] = 1.0
+    T = (sp.diags(1.0 / deg) @ A_sym).tocsr()  # row-stochastic random walk
+
+    if kernel == "heat":
+        coef = [math.exp(-t) * t**k / math.factorial(k) for k in range(series_terms + 1)]
+    elif kernel == "ppr":
+        coef = [ppr_alpha * (1.0 - ppr_alpha) ** k for k in range(series_terms + 1)]
+    else:  # pragma: no cover - guarded by argparse choices
+        raise ValueError(f"unknown diffusion kernel {kernel!r}")
+
+    Tk = sp.identity(n, format="csr", dtype=np.float64)
+    S = coef[0] * Tk
+    for k in range(1, series_terms + 1):
+        Tk = (Tk @ T).tocsr()
+        Tk = _row_topm(Tk, cap_m)  # keep the propagated power sparse
+        S = (S + coef[k] * Tk).tocsr()
+    S = _row_topm(S, top_m)
+    return _row_l1_normalize(S)
+
+
+def _withhold_edges(
+    A_dir: sp.csr_matrix, frac: float, seed: int,
+) -> Tuple[sp.csr_matrix, NDArray[np.int64], NDArray[np.int64]]:
+    """Withhold ``frac`` of the directed (non-self-loop) citation edges for the
+    held-out-link criterion. Returns ``(A_train_dir, held_rows, held_cols)`` —
+    the training directed graph (held-out edges removed) and the held-out edge
+    endpoints."""
+    coo = A_dir.tocoo()
+    mask = coo.row != coo.col  # exclude self loops from the held-out pool
+    er, ec = coo.row[mask], coo.col[mask]
+    rng = np.random.default_rng(seed)
+    n_held = int(round(frac * len(er)))
+    perm = rng.permutation(len(er))
+    held = perm[:n_held]
+    keep = perm[n_held:]
+    held_rows, held_cols = er[held], ec[held]
+    # training graph = kept directed edges + all self loops
+    self_mask = coo.row == coo.col
+    tr_rows = np.concatenate([er[keep], coo.row[self_mask]])
+    tr_cols = np.concatenate([ec[keep], coo.col[self_mask]])
+    A_train = sp.csr_matrix(
+        (np.ones(len(tr_rows), dtype=np.float32), (tr_rows, tr_cols)),
+        shape=A_dir.shape,
+    )
+    return A_train, held_rows.astype(np.int64), held_cols.astype(np.int64)
+
+
+def _heldout_link_auc(
+    S: sp.csr_matrix, held_rows: NDArray[np.int64], held_cols: NDArray[np.int64],
+    seed: int,
+) -> Tuple[float, float]:
+    """Score the diffusion affinity ``S`` at ranking held-out citation edges above
+    sampled negatives. Positives = ``S[held_rows, held_cols]``; negatives =
+    ``S[held_rows, random_j]`` (same source, random target, not a held-out pos).
+    Returns ``(AUC, AP)``.
+
+    The held-out set is pre-filtered (in ``select_t_heldout_link``) to edges whose
+    endpoints are NOT 1-hop neighbors in the TRAINING graph, so recovering them
+    genuinely requires ≥2-hop diffusion — that is what makes the score sensitive to
+    the diffusion scale (a 1-hop edge is trivially recovered at any t)."""
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    n = S.shape[0]
+    Scsr = S.tocsr()
+    pos = np.asarray(Scsr[held_rows, held_cols]).ravel()
+    rng = np.random.default_rng(seed + 1)
+    held_set = set(zip(held_rows.tolist(), held_cols.tolist()))
+    neg_cols = rng.integers(0, n, size=len(held_rows))
+    # avoid sampling an actual held-out positive or a self loop as a "negative"
+    for i in range(len(neg_cols)):
+        r = int(held_rows[i])
+        while int(neg_cols[i]) == r or (r, int(neg_cols[i])) in held_set:
+            neg_cols[i] = int(rng.integers(0, n))
+    neg = np.asarray(Scsr[held_rows, neg_cols]).ravel()
+    y = np.concatenate([np.ones_like(pos), np.zeros_like(neg)])
+    s = np.concatenate([pos, neg])
+    # constant scores (all-zero) → AUC undefined; treat as chance.
+    if np.allclose(s, s[0]):
+        return 0.5, float(y.mean())
+    return float(roc_auc_score(y, s)), float(average_precision_score(y, s))
+
+
+def select_t_heldout_link(
+    A_dir: sp.csr_matrix, kernel: str, t_grid: List[float], ppr_grid: List[float],
+    top_m: int, series_terms: int, cap_m: int, held_frac: float, seed: int,
+    log: PhaseLog,
+) -> Tuple[float, List[Dict[str, float]]]:
+    """PRIMARY T-selection: held-out citation-link reconstruction.
+
+    Withhold ``held_frac`` of directed citation edges, diffuse over the rest,
+    sweep the scale, score AUC/AP at ranking the held-out edges vs sampled
+    negatives, pick the max-AUC scale. Under-diffusion → low recall (the held-out
+    2-hop neighbor is unreached); over-diffusion → everything looks connected →
+    AUC collapses toward chance. The peak is interior; if the grid is monotone we
+    flag it (over-smoothing guard)."""
+    A_train_dir, hr, hc = _withhold_edges(A_dir, held_frac, seed)
+    A_train_sym = (A_train_dir + A_train_dir.T).astype(np.float64)
+    A_train_sym.data[:] = 1.0
+    # Keep only held-out edges whose endpoints are NOT 1-hop in the TRAINING graph
+    # — recovering those needs ≥2-hop diffusion, so the score is sensitive to the
+    # diffusion scale (1-hop held-out edges are trivially recovered at any t and
+    # only flatten the curve).
+    not_1hop = np.asarray(A_train_sym[hr, hc]).ravel() == 0
+    hr, hc = hr[not_1hop], hc[not_1hop]
+    grid = t_grid if kernel == "heat" else ppr_grid
+    curve: List[Dict[str, float]] = []
+    log(f"  held-out-link T-selection ({kernel}): withheld {int(not_1hop.size)} edges "
+        f"({100*held_frac:.0f}%), {len(hr)} are ≥2-hop (scored); sweeping {len(grid)} scales")
+    for scale in grid:
+        t_use = scale if kernel == "heat" else 0.0
+        a_use = scale if kernel == "ppr" else 0.0
+        S = gdc_diffuse(A_train_sym, kernel, t_use, a_use, top_m, series_terms, cap_m)
+        auc, ap = _heldout_link_auc(S, hr, hc, seed)
+        curve.append({"scale": float(scale), "auc": auc, "ap": ap})
+        log(f"    scale={scale:.3g}: AUC={auc:.4f} AP={ap:.4f}")
+    best = max(curve, key=lambda r: r["auc"])
+    aucs = [r["auc"] for r in curve]
+    interior = 0 < aucs.index(best["auc"]) < len(aucs) - 1
+    log(f"  held-out-link best scale={best['scale']:.3g} (AUC={best['auc']:.4f}); "
+        f"{'INTERIOR peak (good)' if interior else 'BOUNDARY peak — over/under-smoothing risk'}")
+    return float(best["scale"]), curve
+
+
+def _effective_degree(S: sp.csr_matrix) -> float:
+    """Mean per-row EFFECTIVE degree = perplexity exp(H(row)) of the row weight
+    distribution, averaged over rows. Unlike a raw nnz count it is not pinned at
+    the top-m cap — it measures how many neighbors each node *effectively* spreads
+    diffusion mass to, which grows smoothly with the diffusion scale (so it is a
+    genuine target-match quantity rather than a saturated one)."""
+    S = S.tocsr()
+    ptr, data = S.indptr, S.data
+    effs = []
+    for i in range(S.shape[0]):
+        s, e = int(ptr[i]), int(ptr[i + 1])
+        w = data[s:e]
+        tot = w.sum()
+        if tot <= 0 or e - s == 0:
+            continue
+        p = w / tot
+        H = -np.sum(p * np.log(p + 1e-12))
+        effs.append(np.exp(H))
+    return float(np.mean(effs)) if effs else 0.0
+
+
+def select_t_mass_match(
+    A_dir: sp.csr_matrix, wiki_adj: sp.csr_matrix, kernel: str,
+    t_grid: List[float], ppr_grid: List[float], top_m: int, series_terms: int,
+    cap_m: int, log: PhaseLog,
+) -> Tuple[float, List[Dict[str, float]]]:
+    """T where the diffused-OA EFFECTIVE mean degree best matches WIKI's. Target
+    -match; directly attacks the heterogeneity that caused starvation. Pick the
+    scale minimizing |log(oa_eff_deg / wiki_meandeg)|. Effective degree (row-weight
+    perplexity, see ``_effective_degree``) is used so the quantity is not pinned at
+    the top-m re-sparsification cap."""
+    A_sym = (A_dir + A_dir.T).astype(np.float64)
+    A_sym.data[:] = 1.0
+    wiki_deg = np.asarray((wiki_adj > 0).sum(axis=1)).ravel()
+    wiki_target = float(np.mean(wiki_deg))
+    grid = t_grid if kernel == "heat" else ppr_grid
+    curve: List[Dict[str, float]] = []
+    for scale in grid:
+        t_use = scale if kernel == "heat" else 0.0
+        a_use = scale if kernel == "ppr" else 0.0
+        S = gdc_diffuse(A_sym, kernel, t_use, a_use, top_m, series_terms, cap_m)
+        oa_deg = _effective_degree(S)
+        curve.append({"scale": float(scale), "oa_eff_deg": oa_deg,
+                      "wiki_meandeg": wiki_target,
+                      "logratio": float(np.log((oa_deg + 1e-9) / (wiki_target + 1e-9)))})
+    best = min(curve, key=lambda r: abs(r["logratio"]))
+    log(f"  mass-match: wiki mean degree={wiki_target:.1f}; "
+        f"best scale={best['scale']:.3g} (OA eff. degree={best['oa_eff_deg']:.1f})")
+    return float(best["scale"]), curve
+
+
+def select_t_modularity(
+    A_dir: sp.csr_matrix, kernel: str, t_grid: List[float], ppr_grid: List[float],
+    top_m: int, series_terms: int, cap_m: int, n_clusters: int, log: PhaseLog,
+) -> Tuple[float, List[Dict[str, float]]]:
+    """Interior modularity peak of the diffused OA graph vs scale. Under-diffusion
+    → fragmented (low Q); over-diffusion → one blob (low Q); interior max = best
+    community structure. Uses spectral clustering on the symmetric diffusion
+    affinity, Newman modularity on the symmetrized graph."""
+    from sklearn.cluster import KMeans
+
+    A_sym = (A_dir + A_dir.T).astype(np.float64)
+    A_sym.data[:] = 1.0
+    grid = t_grid if kernel == "heat" else ppr_grid
+    curve: List[Dict[str, float]] = []
+    for scale in grid:
+        t_use = scale if kernel == "heat" else 0.0
+        a_use = scale if kernel == "ppr" else 0.0
+        S = gdc_diffuse(A_sym, kernel, t_use, a_use, top_m, series_terms, cap_m)
+        Ssym = ((S + S.T) * 0.5).tocsr()
+        # diffusion-map embedding: top eigenvectors of the symmetric affinity
+        try:
+            from scipy.sparse.linalg import eigsh
+            k = min(n_clusters, Ssym.shape[0] - 2)
+            vals, vecs = eigsh(Ssym, k=k, which="LM")
+        except Exception:  # pragma: no cover - numerical fallback
+            curve.append({"scale": float(scale), "modularity": float("nan")})
+            continue
+        labels = KMeans(n_clusters=n_clusters, n_init=4, random_state=0).fit_predict(vecs)
+        q = _newman_modularity(Ssym, labels)
+        curve.append({"scale": float(scale), "modularity": q})
+    finite = [r for r in curve if np.isfinite(r["modularity"])]
+    best = max(finite, key=lambda r: r["modularity"]) if finite else curve[0]
+    qs = [r["modularity"] for r in curve]
+    idx = qs.index(best["modularity"]) if best["modularity"] in qs else 0
+    interior = 0 < idx < len(qs) - 1
+    log(f"  modularity: best scale={best['scale']:.3g} (Q={best['modularity']:.4f}); "
+        f"{'interior peak' if interior else 'BOUNDARY peak'}")
+    return float(best["scale"]), curve
+
+
+def _newman_modularity(A: sp.csr_matrix, labels: NDArray[np.int64]) -> float:
+    """Newman modularity Q of an undirected weighted graph under a partition."""
+    A = A.tocsr()
+    deg = np.asarray(A.sum(axis=1)).ravel()
+    two_m = float(deg.sum())
+    if two_m == 0:
+        return 0.0
+    q = 0.0
+    for c in np.unique(labels):
+        idx = np.where(labels == c)[0]
+        sub = A[idx][:, idx]
+        e_in = float(sub.sum())
+        d_c = float(deg[idx].sum())
+        q += e_in / two_m - (d_c / two_m) ** 2
+    return float(q)
+
+
+def select_t_spectral(
+    A_dir: sp.csr_matrix, kernel: str, t_grid: List[float], ppr_grid: List[float],
+    top_m: int, series_terms: int, cap_m: int, log: PhaseLog,
+) -> Tuple[float, List[Dict[str, float]]]:
+    """Largest relative eigengap of the diffusion operator (diffusion-map / Coifman
+    –Lafon). The scale with the cleanest gap in the leading spectrum of the
+    symmetric diffusion affinity = the best-resolved diffusion scale."""
+    from scipy.sparse.linalg import eigsh
+
+    A_sym = (A_dir + A_dir.T).astype(np.float64)
+    A_sym.data[:] = 1.0
+    grid = t_grid if kernel == "heat" else ppr_grid
+    curve: List[Dict[str, float]] = []
+    for scale in grid:
+        t_use = scale if kernel == "heat" else 0.0
+        a_use = scale if kernel == "ppr" else 0.0
+        S = gdc_diffuse(A_sym, kernel, t_use, a_use, top_m, series_terms, cap_m)
+        Ssym = ((S + S.T) * 0.5).tocsr()
+        try:
+            vals = eigsh(Ssym, k=min(12, Ssym.shape[0] - 2), which="LM",
+                         return_eigenvectors=False)
+            vals = np.sort(vals)[::-1]
+            gaps = vals[:-1] - vals[1:]
+            rel = gaps / (np.abs(vals[:-1]) + 1e-12)
+            best_gap = float(rel.max())
+        except Exception:  # pragma: no cover
+            best_gap = float("nan")
+        curve.append({"scale": float(scale), "max_rel_eigengap": best_gap})
+    finite = [r for r in curve if np.isfinite(r["max_rel_eigengap"])]
+    best = max(finite, key=lambda r: r["max_rel_eigengap"]) if finite else curve[0]
+    log(f"  spectral: best scale={best['scale']:.3g} "
+        f"(max rel eigengap={best['max_rel_eigengap']:.4f})")
+    return float(best["scale"]), curve
+
+
+def diffuse_oa_block(
+    oa_adj_dir: sp.csr_matrix, kernel: str, t: float, ppr_alpha: float,
+    top_m: int, series_terms: int, cap_m: int, log: PhaseLog,
+) -> Tuple[sp.csr_matrix, Dict[str, float]]:
+    """Produce the diffusion-densified OA block from the (directed, self-looped)
+    citation graph. Symmetrize → GDC → re-sparsify/renormalize → overlay the
+    directed citation skeleton (unit-weighted) so forward PageRank keeps citation
+    direction. Returns ``(oa_block, diffuse_stats)``."""
+    n = oa_adj_dir.shape[0]
+    A_sym = (oa_adj_dir + oa_adj_dir.T).astype(np.float64)
+    A_sym.data[:] = 1.0
+    A_sym.setdiag(0.0)
+    A_sym.eliminate_zeros()
+    S = gdc_diffuse(A_sym, kernel, t, ppr_alpha, top_m, series_terms, cap_m)
+    S.setdiag(0.0)
+    S.eliminate_zeros()
+    # overlay directed citation skeleton (citer→cited) at unit weight + self loops
+    skel = oa_adj_dir.copy().astype(np.float64)
+    skel.data[:] = 1.0
+    block = (S + skel).tocsr()
+    block.sum_duplicates()
+    diffuse_stats = {
+        "kernel": kernel,
+        "t": float(t),
+        "ppr_alpha": float(ppr_alpha),
+        "top_m": int(top_m),
+        "diffused_edges": int(S.nnz),
+        "diffused_edges_per_node": float(S.nnz) / max(n, 1),
+        "block_edges": int(block.nnz - n),  # minus self loops
+        "block_edges_per_node": float(block.nnz - n) / max(n, 1),
+    }
+    log(f"  diffusion ({kernel}, t={t:.3g}, α={ppr_alpha:.3g}, top_m={top_m}): "
+        f"diffused affinity {S.nnz} edges ({diffuse_stats['diffused_edges_per_node']:.2f}/node); "
+        f"+directed skeleton → OA block {block.nnz - n} edges "
+        f"({diffuse_stats['block_edges_per_node']:.2f}/node)")
+    return block, diffuse_stats
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +903,55 @@ def main() -> None:
                          "within the full 87k slice (denser OA citation graph). On by default.")
     ap.add_argument("--no-oa-expand", dest="oa_expand", action="store_false",
                     help="reproduce v1: OA citation edges within the top-n_oa cosine slice only.")
+    # --- v3 smooth diffusion densification (GDC) ------------------------------
+    ap.add_argument("--oa-densify", choices=["expand", "diffuse"], default="expand",
+                    help="OA backbone densification. 'expand' (DEFAULT) = the v2 hard "
+                         "1-hop citation expansion (byte-identical to the committed v2). "
+                         "'diffuse' = v3 smooth Graph Diffusion Convolution on the OA "
+                         "citation graph (heat/PPR kernel, re-sparsified + renormalized), "
+                         "with the scale chosen by --select-t. The expanded node set is "
+                         "used in both modes; only the OA edge structure differs.")
+    ap.add_argument("--diffusion-kernel", choices=["heat", "ppr"], default="heat",
+                    help="GDC kernel for --oa-densify diffuse: 'heat' = Σ e^{-t}t^k/k!·T^k, "
+                         "'ppr' = Σ α(1-α)^k·T^k.")
+    ap.add_argument("--diffusion-t", type=float, default=None,
+                    help="heat-kernel diffusion time (overrides --select-t). If unset, "
+                         "the scale is chosen by --select-t on the heat grid.")
+    ap.add_argument("--ppr-alpha", type=float, default=None,
+                    help="PPR restart probability (overrides --select-t for kernel=ppr).")
+    ap.add_argument("--diffusion-top-m", type=int, default=32,
+                    help="top-m diffusion edges kept per OA node after re-sparsification. "
+                         "Default 32 — the empirical sweet spot (a top_m sweep at the "
+                         "heldout-link t showed OA coverage peaks at m≈32 and COLLAPSES "
+                         "if top_m is set to wiki's mean degree ~131, which over-densifies "
+                         "the OA block into a few mega-hubs that starve the dendrogram cut). "
+                         "See the v3 section of the results doc.")
+    ap.add_argument("--diffusion-series-terms", type=int, default=16,
+                    help="truncation order K of the GDC power series.")
+    ap.add_argument("--diffusion-cap-m", type=int, default=128,
+                    help="per-row cap on each intermediate diffusion power T^k "
+                         "(keeps the sparse series from densifying). Higher = the "
+                         "held-out-link criterion sees more of the diffusion tail, so "
+                         "the (shallow) interior optimum is resolved.")
+    ap.add_argument("--select-t", choices=["heldout-link", "mass-match", "modularity", "spectral"],
+                    default="heldout-link",
+                    help="criterion that PICKS the diffusion scale (primary: heldout-link). "
+                         "All four are always REPORTED for agreement; this one is used for "
+                         "the actual build when --diffusion-t/--ppr-alpha are unset.")
+    ap.add_argument("--heat-t-grid", type=float, nargs="+",
+                    default=[0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+                    help="heat-time grid swept by the T-selection criteria (extends "
+                         "into the over-smoothing tail so the interior optimum + the "
+                         "AUC collapse at large t are both visible).")
+    ap.add_argument("--ppr-alpha-grid", type=float, nargs="+",
+                    default=[0.05, 0.1, 0.15, 0.2, 0.3, 0.5],
+                    help="PPR-alpha grid swept by the T-selection criteria.")
+    ap.add_argument("--heldout-frac", type=float, default=0.1,
+                    help="fraction of OA citation edges withheld for the heldout-link criterion.")
+    ap.add_argument("--report-all-t-criteria", action="store_true", default=True,
+                    help="report all four T-selection criteria (agreement check). On by default.")
+    ap.add_argument("--no-report-all-t-criteria", dest="report_all_t_criteria",
+                    action="store_false")
     ap.add_argument("--mass-rebalance", choices=["none", "count"], default="none",
                     help="Fix(3) frontier-cut lever: per-corpus mass rebalancing for "
                          "the dendrogram mass-cut. 'count' rescales each corpus's "
@@ -553,11 +1009,92 @@ def main() -> None:
         w_adj_full, w_titles_full, w_emb_full, args.n_wiki, log
     )
     log("select OA nodes (top-cosine + intra-set citation graph)")
-    oa_sel, oa_adj, oa_titles, oa_ids, oa_emb, oa_density = select_oa_nodes(
+    # The diffusion path operates on the EXPANDED node set so it is directly
+    # comparable to the hard expansion (same OA nodes; only the edge structure
+    # differs). So when --oa-densify diffuse, force the expanded node set.
+    node_expand = args.oa_expand or (args.oa_densify == "diffuse")
+    oa_sel, oa_adj_dir, oa_titles, oa_ids, oa_emb, oa_density = select_oa_nodes(
         oa_emb_full, oa_titles_full, oa_ids_full, oa_refs_full, args.n_oa, log,
-        expand=args.oa_expand,
+        expand=node_expand,
     )
     n_w, n_o = len(wiki_titles), len(oa_titles)
+
+    # --- v3: smooth diffusion densification of the OA backbone ---------------
+    # ``oa_adj`` is what the rest of the pipeline consumes. With --oa-densify
+    # expand (default) it is the hard 1-hop expanded citation graph (v2,
+    # byte-identical). With diffuse it is the GDC-densified block. The directed
+    # citation graph ``oa_adj_dir`` is retained either way.
+    oa_adj = oa_adj_dir
+    diffuse_stats: Dict[str, Any] = {}
+    t_criteria: Dict[str, Any] = {}
+    if args.oa_densify == "diffuse":
+        log("v3 smooth diffusion densification (GDC) of the OA backbone")
+        # top_m default 32 is the empirical sweet spot (see --diffusion-top-m help
+        # + the v3 results doc): matching it to wiki's mean degree (~131) over-
+        # densifies the OA block and COLLAPSES coverage. m≈32 ≈ a few× the hard-
+        # expansion density (6.4/node) and beats the hard expansion.
+        top_m = args.diffusion_top_m
+        log(f"  --diffusion-top-m = {top_m} (sweet spot; 131≈wiki-degree over-densifies)")
+        kernel = args.diffusion_kernel
+        scale_fixed = (
+            (kernel == "heat" and args.diffusion_t is not None)
+            or (kernel == "ppr" and args.ppr_alpha is not None)
+        )
+        sel_kwargs = dict(
+            kernel=kernel, t_grid=args.heat_t_grid, ppr_grid=args.ppr_alpha_grid,
+            top_m=top_m, series_terms=args.diffusion_series_terms,
+            cap_m=args.diffusion_cap_m, log=log,
+        )
+        # Run the four T-selection criteria unless the scale is fixed on the CLI
+        # AND we are not asked to report them (a fixed-scale build, e.g. a top_m
+        # sweep, skips the ~15-min sweep). --select-t still names the criterion
+        # that WOULD pick the scale when unfixed.
+        if scale_fixed and not args.report_all_t_criteria:
+            log("  T-selection skipped (scale fixed on CLI, --no-report-all-t-criteria)")
+            picks = {}
+            t_criteria = {"kernel": kernel, "selected_by": args.select_t,
+                          "t_selection_skipped": True}
+        else:
+            log("  T-selection criteria (all reported; primary = heldout-link):")
+            t_hl, curve_hl = select_t_heldout_link(
+                oa_adj_dir, held_frac=args.heldout_frac, seed=0, **sel_kwargs
+            )
+            t_mm, curve_mm = select_t_mass_match(oa_adj_dir, wiki_adj, **sel_kwargs)
+            t_mod, curve_mod = select_t_modularity(
+                oa_adj_dir, n_clusters=args.desired_n_topics, **sel_kwargs
+            )
+            t_sp, curve_sp = select_t_spectral(oa_adj_dir, **sel_kwargs)
+            t_criteria = {
+                "kernel": kernel,
+                "heldout-link": {"scale": t_hl, "curve": curve_hl},
+                "mass-match": {"scale": t_mm, "curve": curve_mm},
+                "modularity": {"scale": t_mod, "curve": curve_mod},
+                "spectral": {"scale": t_sp, "curve": curve_sp},
+                "selected_by": args.select_t,
+            }
+            picks = {"heldout-link": t_hl, "mass-match": t_mm,
+                     "modularity": t_mod, "spectral": t_sp}
+            log(f"  T per criterion ({kernel}): " +
+                ", ".join(f"{k}={v:.3g}" for k, v in picks.items()))
+        # The scale actually used: CLI override > --select-t pick.
+        if kernel == "heat":
+            t_use = args.diffusion_t if args.diffusion_t is not None else picks[args.select_t]
+            a_use = 0.0
+            t_criteria["used_t"] = float(t_use)
+        else:
+            a_use = args.ppr_alpha if args.ppr_alpha is not None else picks[args.select_t]
+            t_use = 0.0
+            t_criteria["used_alpha"] = float(a_use)
+        log(f"  building diffusion-densified OA block at "
+            f"{'t' if kernel=='heat' else 'α'}="
+            f"{t_use if kernel=='heat' else a_use:.3g} (via {args.select_t})")
+        oa_adj, diffuse_stats = diffuse_oa_block(
+            oa_adj_dir, kernel, t_use, a_use, top_m,
+            args.diffusion_series_terms, args.diffusion_cap_m, log,
+        )
+        # refresh density stats so the report reflects the diffused block
+        oa_density["edges"] = int(oa_adj.nnz - n_o)
+        oa_density["edges_per_node"] = float(oa_adj.nnz - n_o) / max(n_o, 1)
 
     # --- bt_cos bridges + coverage sweep -------------------------------------
     log(f"bt_cos bridges ({args.bridge_scorer})")
@@ -807,7 +1344,7 @@ def main() -> None:
         coverage_table, strict_mnn, eig_link, n_topics, order, point_to_cluster,
         top_idx, top_masses, node_type, joint_titles, kw, frontier_in_out,
         topic_oa_frac, topic_rank, oa_records, eval_examples, n_oa_clustered,
-        topic_wiki_foundations, assign_stats, oa_density,
+        topic_wiki_foundations, assign_stats, oa_density, diffuse_stats, t_criteria,
     )
 
     # --- Persist artifacts ---------------------------------------------------
@@ -822,6 +1359,9 @@ def main() -> None:
         json.dump({int(t): kw[t] for t in range(n_topics)}, f, indent=2)
     with open(ART_DIR / "eval_examples.json", "w") as f:
         json.dump(eval_examples, f, indent=2)
+    if t_criteria:
+        with open(ART_DIR / "t_selection.json", "w") as f:
+            json.dump(t_criteria, f, indent=2)
     log(f"saved artifacts to {ART_DIR}/")
     log.close()
 
@@ -831,7 +1371,8 @@ def write_report(
     coverage_table, strict_mnn, eig_link, n_topics, order, point_to_cluster,
     top_idx, top_masses, node_type, joint_titles, kw, frontier_in_out,
     topic_oa_frac, topic_rank, oa_records, eval_examples, n_oa_clustered,
-    topic_wiki_foundations, assign_stats, oa_density,
+    topic_wiki_foundations, assign_stats, oa_density, diffuse_stats=None,
+    t_criteria=None,
 ) -> None:
     L: List[str] = []
     L.append("# Dictionary-bridged joint-graph curriculum (wiki-NLP ∪ OA-NLP)\n")
@@ -872,9 +1413,65 @@ def write_report(
         f"- **Mass rebalancing (Fix 3):** per-corpus-select="
         f"{args.per_corpus_select}, mass-rebalance={args.mass_rebalance!r}, "
         f"teleport-split={args.teleport_split} (<0 = uniform-over-all, v1).\n"
-        f"- **Joint graph:** {joint.shape[0]} nodes ({n_w} wiki + {n_o} OA), "
+        f"- **OA densification (v3):** `--oa-densify {args.oa_densify}`"
+        + (
+            f" (smooth GDC, kernel={diffuse_stats.get('kernel')}, "
+            f"t={diffuse_stats.get('t'):.3g}, top_m={diffuse_stats.get('top_m')}).\n"
+            if (diffuse_stats and args.oa_densify == "diffuse") else
+            " (hard 1-hop expansion, v2 default).\n"
+        )
+        + f"- **Joint graph:** {joint.shape[0]} nodes ({n_w} wiki + {n_o} OA), "
         f"{joint.nnz} directed edges, with a node-type vector (0=wiki, 1=OA).\n"
     )
+
+    if (t_criteria and args.oa_densify == "diffuse"
+            and not t_criteria.get("t_selection_skipped")):
+        kernel = t_criteria.get("kernel", "heat")
+        unit = "t" if kernel == "heat" else "α"
+        L.append("## v3 smooth diffusion densification — T-selection\n")
+        L.append(
+            f"GDC ({kernel} kernel) on the symmetrized OA citation graph, "
+            f"re-sparsified to top-{diffuse_stats.get('top_m')}/node + row-renormalized, "
+            f"with the directed citation skeleton overlaid for forward PageRank. The "
+            f"diffusion scale is chosen by **{t_criteria.get('selected_by')}** (primary "
+            f"= heldout-link); all four criteria are reported below for agreement.\n"
+        )
+        picks = {k: t_criteria[k]["scale"] for k in
+                 ("heldout-link", "mass-match", "modularity", "spectral")}
+        L.append("| criterion | picked " + unit + " | (notes) |")
+        L.append("| :-- | --: | :-- |")
+        L.append(f"| heldout-link (primary) | {picks['heldout-link']:.3g} | "
+                 "max AUC ranking held-out citation edges vs negatives |")
+        L.append(f"| mass-match | {picks['mass-match']:.3g} | "
+                 "OA mean degree ≈ wiki mean degree |")
+        L.append(f"| modularity | {picks['modularity']:.3g} | "
+                 "interior peak of diffused-graph Newman Q |")
+        L.append(f"| spectral | {picks['spectral']:.3g} | "
+                 "largest relative eigengap of the diffusion operator |")
+        agree = len(set(round(v, 3) for v in picks.values())) == 1
+        L.append(f"\n**Agreement:** the four criteria "
+                 f"{'agree on' if agree else 'span'} "
+                 f"{unit} ∈ [{min(picks.values()):.3g}, {max(picks.values()):.3g}]"
+                 f"{'.' if agree else ' (see curves in t_selection.json).'} "
+                 f"Scale actually used for the build: "
+                 f"{unit}={diffuse_stats.get('t') if kernel=='heat' else diffuse_stats.get('ppr_alpha'):.3g}.\n")
+        hl = t_criteria["heldout-link"]["curve"]
+        L.append("Held-out-link AUC curve (over-smoothing guard — interior peak expected):\n")
+        L.append("| " + unit + " | AUC | AP |")
+        L.append("| --: | --: | --: |")
+        for r in hl:
+            L.append(f"| {r['scale']:.3g} | {r['auc']:.4f} | {r['ap']:.4f} |")
+        L.append("")
+        L.append(
+            f"**OA density (diffusion vs hard expansion):** diffused affinity "
+            f"{diffuse_stats.get('diffused_edges')} edges "
+            f"({diffuse_stats.get('diffused_edges_per_node'):.2f}/node); with the "
+            f"directed skeleton overlaid the OA block carries "
+            f"{diffuse_stats.get('block_edges')} edges "
+            f"({diffuse_stats.get('block_edges_per_node'):.2f}/node). "
+            f"Compare the v2 hard-expansion default at 6.38 edges/node "
+            f"(147,995 edges over 23,214 OA nodes).\n"
+        )
 
     L.append("## bt_cos bridge coverage (vs strict mutual-NN)\n")
     L.append(

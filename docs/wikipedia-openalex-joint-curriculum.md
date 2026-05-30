@@ -163,3 +163,48 @@ v2 **substantially closes the v1 bottleneck without overcorrecting.** The struct
 
 It is **not full parity with wiki** (~20% vs ~44%): the OA long tail with neither a bridge nor a citation anchor still falls below the dendrogram mass-cut. Crucially, the levers that *would* push the headline rate higher (teleport-split, per-corpus mass-rebalance for the cut) are **unstable on the bimodal joint mass distribution** — they buy a bigger number by spawning a degenerate OA-takeover cluster, which is worse pedagogy, so they are exposed but defaulted off. The remaining gap is therefore a real property of the dendrogram mass-cut on a two-corpus graph, not a knob left untuned; closing it cleanly would need a clustering/cut that is corpus-aware by construction (e.g. per-corpus dendrograms merged at the bridges) rather than a single global mass threshold — a v3 direction. As of v2, **best-of-both holds at scale for the bridged + citation-anchored OA frontier**, which is the majority of OA's actual NLP mass (MT, parsing, language models, IE), and the honest residual is the unanchored long tail.
 
+---
+
+## v3: smooth diffusion densification of the OA backbone
+
+The v2 `--oa-expand` is a **hard, truncated diffusion**: a single (k=1, unweighted) hop that adds the 1-hop citation neighborhood as nodes and unit-weights the edges. v3 replaces that hard truncation with **Graph Diffusion Convolution** (GDC; Gasteiger/Klicpera et al., *"Diffusion Improves Graph Learning"*): a smooth, weighted, multi-hop re-wiring `S = Σ_k θ_k T^k` of the OA citation graph, with the diffusion **scale chosen** rather than fixed at one hop, then re-sparsified (top-`m`/row) + row-renormalized. Selected via `--oa-densify diffuse` (default stays `expand`; the expand path is **byte-identical** to v2 — re-verified at 644/3260 = 19.8%, 1,766,299 joint edges). Implementation: `artifacts_scripts/wiki/joint_graph_curriculum.py`.
+
+**Node set + directedness.** Diffusion runs on the **same expanded node set** as the hard expansion (23,214 OA nodes), so the comparison is apples-to-apples — identical nodes, only the OA *edge structure* differs. The OA citation graph is directed (i→j ≡ "i cites j"); GDC's kernel is defined on an undirected graph (the heat/PPR kernel of a directed transition is not symmetric and the spectral/diffusion-map story assumes a symmetric operator), so we **symmetrize for the diffusion affinity**. But the curriculum's forward PageRank needs the citation *direction* (flow citer→cited so foundational works accrue mass → frontier ordering), so we **keep both**: the symmetric GDC affinity `S` (the densified backbone, weighted) is written into the joint graph's OA block AND the original directed citation skeleton is overlaid (unit-weighted). Diffuse symmetric, orient via the retained directed skeleton.
+
+### Choosing the diffusion scale T — four criteria, all with interior optima
+
+All four are computed and reported; the primary, used for the build, is **held-out-link** (`--select-t`, default). Heat kernel, grid `t ∈ {0.2, 0.5, 1, 2, 4, 8, 16, 32}`, on the real OA citation graph (147,995 directed edges over 23,214 nodes):
+
+| criterion | picked `t` | curve shape (over-smoothing guard) |
+| :-- | --: | :-- |
+| **held-out-link** *(primary)* | **8** | interior peak — AUC 0.81 (t=0.2) → **0.836 (t=8)** → 0.79 (t=32) |
+| modularity | 8 | interior peak — Q 0.05 (t=0.2) → **0.459 (t=8)** → 0.36 (t=32) |
+| spectral (eigengap) | 4–16 | interior peak — gap rises to t=4–8, decays by t=32 |
+| mass-match (eff. degree) | 16 | OA effective degree maxes below wiki's (OA is genuinely sparser), so it drifts to the high end of the grid |
+
+**Agreement is strong:** three of four criteria land in `t ∈ [4, 16]`, with held-out-link and modularity **agreeing exactly at t=8**. Every criterion has a genuine **interior optimum** with a clear collapse at large `t` — the over-smoothing guard fires as designed (a naive "more diffusion = better" criterion would peg the grid maximum; none do). mass-match is the outlier only because OA's citation graph cannot reach wiki's link density at *any* scale, so "match wiki's degree" pushes it as high as the grid allows — a target-match limitation, not a disagreement about resolution. The held-out-link curve is the right primary: it is self-supervised, circularity-free (not a curriculum metric), and has the cleanest interior peak.
+
+The held-out-link metric scores only held-out edges whose endpoints are **not 1-hop neighbors in the training graph** (recovering a 1-hop edge is trivial at any `t` and flattens the curve); ≥2-hop held-out edges are what make the AUC sensitive to the diffusion scale.
+
+### top_m is the binding knob — and it must NOT match wiki's degree
+
+The re-sparsification budget `top_m` (diffusion edges kept per OA node) turned out to dominate the outcome. Sweeping `top_m` at the held-out-link `t=8`:
+
+| `top_m` | diffused edges/node | OA block edges/node | **OA reaching a named topic** | wiki-anchored | wiki coverage |
+| --: | --: | --: | --: | --: | --: |
+| 8 | 6.0 | 9.9 | 409 (12.2%) | 402 | 44.5% |
+| 16 | 15.2 | — | 799 (24.3%) | 753 | 62.0% |
+| **32 (default)** | **26.2** | **27.5** | **874 (27.0%)** | **770** | 68.4% |
+| 131 (≈ wiki mean degree) | 109.9 | 110.1 | 209 (6.6%) | 205 | 27.6% |
+| — *v2 hard expansion* | *6.4* | *6.4* | *644 (19.8%)* | *641* | *44.7%* |
+
+Coverage is **non-monotone in `top_m`**, peaking near `top_m ≈ 32` then **collapsing** at `top_m = 131`. The natural first guess — set `top_m` to wiki's per-node link density (~131) so the two corpora "match" — is exactly wrong: at that budget the symmetric multi-hop diffusion floods the OA block with 110 edges/node, a handful of OA nodes become mega-hubs that hoard the PageRank mass, and the dendrogram mass-cut then promotes *fewer* subtrees (wiki coverage also craters, 68% → 28%, and the v2 MT win disappears). The default is therefore **`top_m = 32`** — a few× the hard-expansion density, the empirical sweet spot.
+
+### Verdict — smooth diffusion BEATS the hard 1-hop expansion (at the right top_m)
+
+At the held-out-link-chosen `t=8` with `top_m=32`, the v3 default carries **874 OA papers into the curriculum (27.0%) vs v2's 644 (19.8%)** — a 1.36× lift — with **770 landing in wiki-anchored topics** (v2: 641) and only **1 singleton** (v2: 3). Wiki coverage also rises (44.7% → 68.4%): the smooth multi-hop affinity raises *both* corpora's mass-holding so more of each survives the dendrogram cut, which is the structural fix v2's hard 1-hop could only partly deliver.
+
+**The pedagogy survives the spot-check and is enriched.** The foundations→frontier ordering stays clean (ranks 1–5 wiki-foundation-heavy: probability/math/logic, publishing, linguistics, CS; the NLP frontier at ranks 6–12; `in−out` flow positive at foundations, negative at frontier). The **v2 wins persist:** the parsing topic (rank 7: `parser, grammar, parsing, compiler, context_free`, 50% OA) is anchored by *Parsing / Compiler / Formal grammar*, and machine translation (rank 6, 94% OA, anchored by corpus/statistics) plus a dedicated **language-modeling topic** (rank 9, 94% OA) anchored by *Katz's back-off model / Word n-gram language model / ACL / RAG / BLOOM* — OA-only LM papers (e.g. *A Neural Probabilistic Language Model*, *Improved backing-off for M-gram language models*) graft directly onto their right prerequisites. No recency or toolkit-keyword takeover.
+
+**Honest residual.** The denser diffusion pulls a little bibliographic noise into a couple of topics' "wiki foundations" (ICanHazPDF, DBLP, Neo-Assyrian Text Corpus Project) — cosmetic, the topical members are correct. Coverage is still short of wiki parity in the OA-only deep tail, and the result is sensitive to `top_m` (the sweet spot is a band, not a single value). But the headline holds: **smooth GDC at a principled, criterion-chosen scale beats the crude hard 1-hop expansion on every metric — OA coverage, wiki-anchored count, singleton count — while preserving the foundations→frontier pedagogy**, and the four T-selection criteria substantively agree (three of four at `t ∈ [4,16]`, primary and modularity exactly at `t=8`) with all four exhibiting the required interior-optimum / no-over-smoothing behavior. The default is `--oa-densify diffuse --diffusion-kernel heat --select-t heldout-link --diffusion-top-m 32` (though `--oa-densify` itself still defaults to `expand` so the committed v2 pipeline is unchanged for other consumers).
+

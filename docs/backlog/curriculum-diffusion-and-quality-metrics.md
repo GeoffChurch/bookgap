@@ -10,7 +10,17 @@ expansion + (#3) per-corpus-select. Ablation: synergistic, both needed (247→37
 into the curriculum). #1 is a crude **truncated (k=1, unweighted) diffusion** — the smooth
 generalization should do better *and* let us choose the scale instead of fixing it at one hop.
 
-## A. Smooth diffusion densification of the OA backbone (replaces hard #1)
+## A. Smooth diffusion densification of the OA backbone (replaces hard #1) — ✅ DONE (validated)
+
+**Status: validated and implemented** (`artifacts_scripts/wiki/joint_graph_curriculum.py`
+`--oa-densify diffuse`; results in `docs/wikipedia-openalex-joint-curriculum.md` §v3). Smooth
+GDC (heat kernel) at the held-out-link-chosen `t=8` with `--diffusion-top-m 32` **beats** the
+hard 1-hop expansion: OA into the curriculum 644→874 (19.8%→27.0%), 770 wiki-anchored (v2 641),
+pedagogy preserved (parsing + MT + language-modeling wins survive). All four T-criteria computed
+and reported; three of four agree at `t ∈ [4,16]` (held-out-link and modularity exactly at t=8),
+all with interior optima (over-smoothing guard fires). Key finding: `top_m` is the binding knob —
+matching it to wiki's mean degree (~131) OVER-densifies and collapses coverage to 6.6%; the sweet
+spot is `top_m ≈ 32`. The original design rationale is retained below for reference.
 
 Replace the 1-hop expansion with **Graph Diffusion Convolution** (Gasteiger/Klicpera et al.,
 *"Diffusion Improves Graph Learning"*): `S = Σ_k θ_k T^k` over the OA citation graph, with the
@@ -70,12 +80,24 @@ metric-validity preference).
   scale (noisy; tiebreaker + eyeball-at-scale).
 
 ## Plan / status
-- [ ] **B-intrinsic** *(starting)* — build the reusable intrinsic quality basket; validate it
-  discriminates the existing curricula (wiki-native, joint v1/v2, an OA-citation curriculum). This
-  is the "quality dashboard" that replaces eyeballing.
-- [ ] **A-diffusion** *(starting)* — add `--oa-densify {expand,diffuse}` (GDC heat/PPR) + the four
-  T-criteria (primary: held-out-link); does smooth diffusion beat the hard 1-hop expansion, and do
-  the criteria agree on a scale?
-- [ ] **Synthesis** — score the diffusion-densified curriculum on the §B basket vs v2 (hard
-  expansion).
+- [x] **B-intrinsic** *(done — `docs/curriculum-quality-metrics.md`)* — built the reusable intrinsic
+  quality basket `artifacts_scripts/curriculum/curriculum_quality.py` (pure `score_curriculum`,
+  reusing `compare_clusterings` + `pagerank.compute_frontier_adjacency`) and validated it on
+  wiki-native, joint v1/v2, and the OA-citation curriculum. **Discriminates well:** singletons /
+  size-Gini / size-entropy, modularity Q, sim→target ascent (caught wiki-native's frontier-first
+  ordering), keyword crowding. **Weak proxies (flagged):** NPMI-over-titles (too sparse, negative
+  for good curricula), embedding keyword-coherence (catches garbage singletons but NOT the v1
+  toolkit grab-bag — that's a pedagogical judgment no intrinsic metric here sees), Jaccard
+  distinctness (uniformly high). **Surprise:** v2's win over v1 is *coverage* (644 vs 247 OA into
+  the curriculum), NOT cluster-size balance (v1 is marginally more balanced). The toolkit-topic miss
+  is the prime motivation for the extrinsic phase.
+- [x] **A-diffusion** *(done — `docs/wikipedia-openalex-joint-curriculum.md` §v3)* — added
+  `--oa-densify {expand,diffuse}` (GDC heat/PPR) + the four T-criteria (primary: held-out-link).
+  **Yes, smooth diffusion beats the hard 1-hop** (OA 644→874, 19.8%→27.0%) at the held-out-link
+  `t=8`, `--diffusion-top-m 32`; the criteria agree well (3/4 at `t ∈ [4,16]`, held-out-link +
+  modularity exactly t=8), all with interior optima. Binding knob is `top_m` (wiki-degree ~131
+  over-densifies → 6.6% collapse; sweet spot ~32).
+- [ ] **Synthesis** — score the diffusion-densified curriculum on the §B basket
+  (`artifacts_scripts/curriculum/curriculum_quality.py`) vs v2 (hard expansion). *(NOT yet run —
+  separate task; the A-diffusion run delivered coverage + frontier spot-check only.)*
 - [ ] **B-extrinsic (last)** — syllabus / LectureBank / LLM-judge validation.
