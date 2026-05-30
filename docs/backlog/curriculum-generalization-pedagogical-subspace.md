@@ -176,22 +176,33 @@ topic-distribution — the rest is corpus/register.
 - **Per-slice mean-matching caveat:** the pipeline removes the *global* per-corpus offset, but
   a non-representative slice (NLP-only) keeps a residual mean (norm 0.39) — any wiki→OA map
   must mean-match per slice (or jointly) before covariance alignment can help.
-- **mycooc angle — assessed; verdict: don't port (2026-05-30).** `~/src/mycooc` is a
-  *co-occurrence* word-translation system (VecMap/coocmap lineage) over V×V cooc matrices —
-  **no dense-embedding input path**, so it can't consume GIST vectors without rewriting its
-  data model. Its novel part is the sorted-signature *init* that defeats the unknown-basis
-  problem — exactly what a shared encoder makes unnecessary; what's left after skipping it is a
-  generic VecMap self-learning loop (~40 lines) whose **orthogonal** map provably can't fix a
-  *covariance/nonlinear* residual (a rotation can't change covariance spectra or repair disjoint
-  local support) — the same wall LPP/Procrustes hit. The one reusable primitive (CSLS) is
-  **already ported** (`_gep_csls`; `keyword-extraction/soft-hubness-correction-csls.md`).
-- **The covariance-capable path it points to (the actual next move):** (1) per-slice
-  mean-match → (2) one round of **CSLS mutual-NN to *induce* pseudo-anchor wiki↔OA pairs** in
-  the shared space (a *matching* product, already prototyped in the CSLS-NN experiment — the
-  only borrowed idea, and it's just CSLS) → (3) fit **CCA or CORAL** on those anchors to attack
-  the covariance residual the orthogonal map can't. Optionally wrap in a self-learning loop
-  (re-induce anchors after each map update), but the inner map must be covariance-capable.
-- **Back-flow to mycooc:** if mycooc ever aligns corpora that already share an encoder, it
-  should skip the sorted-signature init and self-learn from the identity NN dictionary — a clean
-  dual of this finding, worth a note on the mycooc side *if* they add a dense-embedding input
-  path (none today).
+- **mycooc/coocmap angle — first verdict RETRACTED (2026-05-30); re-evaluating.** An initial
+  assessment mischaracterized coocmap as VecMap/Procrustes (an orthogonal-map self-learning loop)
+  and dismissed it as "can't fix a nonlinear residual." **That was wrong.** coocmap/softcoocmap
+  does NOT learn an orthogonal map: it uses cross-domain NN to define **anchors**, re-represents
+  every point in every corpus by its similarity profile to those anchors (an "anchor space" of
+  dim = #anchors, summable across ≥2 corpora), recomputes NNs, and iterates — a **nonlinear,
+  non-parametric** re-representation. The "orthogonal map can't help" objection therefore does
+  **not** apply; coocmap's anchor-space view may handle exactly the nonlinear/covariance residual
+  the *linear* methods (CORAL/CCA/LPP-transfer/Procrustes) are bounded by — potentially the **most**
+  promising approach, not the least.
+- **Feeding it is feasible** (the prior "no dense input" objection is moot): mycooc consumes a
+  V×V association matrix; our analog is the **gram matrix (pairwise cosine), sparsified to kNN** —
+  build per-corpus kNN-gram (reuse `build_similarity_adjacency_from_cloud`), feed wiki + OA grams.
+  Shared encoder ⇒ start from the identity mutual-NN (skip the sorted-signature init). A
+  corrected-understanding subagent is re-assessing + may prototype. CSLS (the one already-harvested
+  primitive) stays ported (`_gep_csls`; `keyword-extraction/soft-hubness-correction-csls.md`).
+- **Back-flow to mycooc:** if mycooc ever aligns corpora that already share an encoder, it should
+  skip the sorted-signature init and start from the identity NN dictionary — a clean dual of this
+  finding, worth a note on the mycooc side *if* they add a dense-embedding input path (none today).
+
+**Alignment approaches to track (don't lose these).** Shared preprocessing: per-slice mean-match.
+1. **LPP on the wiki link graph** — wiki's *own* pedagogical subspace (anchor-free; well-posed now,
+   independent of the transfer problem). *Firing 2026-05-30 → `docs/wikipedia-pedagogical-lpp.md`.*
+2. **coocmap anchor-space** — fed via per-corpus kNN-gram; **nonlinear**, so possibly the only option
+   that can actually fix the measured residual. *Re-evaluating 2026-05-30 (corrected understanding).*
+3. **CSLS-mutual-NN pseudo-anchors → CORAL** — match second moments. Linear, cheap, no external anchors.
+4. **CSLS-mutual-NN pseudo-anchors → CCA** — align shared directions. Linear; needs the induced anchors.
+
+(1) is wiki-only; (2)–(4) target the wiki↔OA *transfer* the shift battery showed is a
+covariance/nonlinear problem — (3)/(4) are linearly bounded by it, (2) may not be.
