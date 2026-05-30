@@ -1,6 +1,6 @@
 # tests/test_corpus.py
 import numpy as np
-from bookgap.corpus import Corpus, embedder_fingerprint
+from bookgap.corpus import Corpus, UnionCorpus, embedder_fingerprint
 
 
 def test_subcloud_satisfies_corpus_protocol(tiny_subcloud):
@@ -17,3 +17,45 @@ def test_embedder_fingerprint_is_stable_and_config_sensitive(gist_embedder_cfg, 
     fp1 = embedder_fingerprint(gist_embedder_cfg)
     assert fp1 == embedder_fingerprint(gist_embedder_cfg)        # stable
     assert fp1 != embedder_fingerprint(gemma_embedder_cfg)       # config-sensitive
+
+
+def test_union_merge_index_matches_bruteforce(tiny_subcloud, _ai_cloud):
+    from bookgap.subcloud import SubCloud
+    from bookgap.util import Filter
+    a = tiny_subcloud
+    b = SubCloud(parent=_ai_cloud, post_filter=Filter(topic="T12761", work_types=("article",)))
+    union = UnionCorpus(children=(a, b))
+
+    # embeddings concatenate in child order
+    assert union.embeddings().shape[0] == a.embeddings().shape[0] + b.embeddings().shape[0]
+    assert union.work_ids()[: len(a.work_ids())][0].startswith("openalex:")  # namespaced
+
+    # merge index returns the SAME nearest neighbor as a brute-force concat index
+    concat = np.vstack([a.embeddings(), b.embeddings()]).astype(np.float32)
+    import faiss
+    flat = faiss.IndexFlatL2(concat.shape[1]); flat.add(concat)
+    q = concat[:20]
+    _, i_ref = flat.search(q, 5)
+    _, i_got = union.index().search(q, 5)
+    assert np.array_equal(i_ref, i_got)
+
+
+def test_union_rejects_mismatched_embedders(tiny_subcloud):
+    import pytest
+    # Construct a child whose embedder_fingerprint differs; expect ValueError.
+    with pytest.raises(ValueError):
+        UnionCorpus(children=(tiny_subcloud, _FakeCorpus(fp="different")))
+
+
+class _FakeCorpus:
+    def __init__(self, fp): self._fp = fp
+    def embeddings(self): import numpy as np; return np.zeros((1, 384), dtype="float32")
+    def index(self): import faiss; i = faiss.IndexFlatL2(384); i.add(self.embeddings()); return i
+    def work_ids(self): return ["x:1"]
+    def work_titles(self): return ["t"]
+    def work_abstracts(self): return ["a"]
+    def name(self): return "fake"
+    @property
+    def embedder_fingerprint(self): return self._fp
+    @property
+    def identity(self): return ("fake", self._fp)
