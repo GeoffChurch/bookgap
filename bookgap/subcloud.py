@@ -56,6 +56,18 @@ class SubCloud:
     def index(self):
         return build_index(self.parent.index_info, self.embeddings())
 
+    def name(self) -> str:
+        return f"openalex[{self.post_filter}]"
+
+    @property
+    def embedder_fingerprint(self) -> str:
+        from bookgap.corpus import embedder_fingerprint
+        return embedder_fingerprint(self.parent.embedder)
+
+    @property
+    def identity(self):
+        return self  # frozen dataclass: hashable identity = parent fingerprint + post_filter
+
 
 @lru_cache(maxsize=8)
 @MEMORY.cache

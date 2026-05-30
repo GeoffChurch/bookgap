@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 from bookgap.cloud_denoiser import ProjectiveDenoiserProjection, WorkDenoisers
+from bookgap.corpus import embedder_fingerprint
 from typing import Any, Dict, Iterable, List, Optional, TypeVar
 import faiss
 import numpy as np
@@ -62,9 +63,7 @@ def _log_rss(tag: str) -> None:
 
 def _embeddings_store_path(corpus_fingerprint: str, embedder_cfg: Any) -> Path:
     """Path for the embeddings Parquet file."""
-    embedder_fp = hashlib.sha256(
-        json.dumps(asdict(embedder_cfg), sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:16]
+    embedder_fp = embedder_fingerprint(embedder_cfg)
     return CACHE_DIR / "embeddings_parquet" / corpus_fingerprint / embedder_fp / "embeddings.parquet"
 
 
