@@ -199,10 +199,18 @@ topic-distribution — the rest is corpus/register.
 **Alignment approaches to track (don't lose these).** Shared preprocessing: per-slice mean-match.
 1. **LPP on the wiki link graph** — wiki's *own* pedagogical subspace (anchor-free; well-posed now,
    independent of the transfer problem). *Firing 2026-05-30 → `docs/wikipedia-pedagogical-lpp.md`.*
-2. **coocmap anchor-space** — fed via per-corpus kNN-gram; **nonlinear**, so possibly the only option
-   that can actually fix the measured residual. *Re-evaluating 2026-05-30 (corrected understanding).*
+2. **coocmap anchor-space** — **REFUTED 2026-05-30**
+   (`docs/dead_ends/shared-space-alignment/coocmap-anchor-space-wiki-oa.md`). Correctly nonlinear
+   (not VecMap) and feedable via kNN-gram, but the **shared-anchor upper bound** still can't mix
+   the corpora (purity 0.964 > 0.938 raw floor): near-disjoint local support makes anchor-relative
+   profiles corpus-predictive, re-encoding corpus identity instead of removing it.
 3. **CSLS-mutual-NN pseudo-anchors → CORAL** — match second moments. Linear, cheap, no external anchors.
 4. **CSLS-mutual-NN pseudo-anchors → CCA** — align shared directions. Linear; needs the induced anchors.
 
-(1) is wiki-only; (2)–(4) target the wiki↔OA *transfer* the shift battery showed is a
-covariance/nonlinear problem — (3)/(4) are linearly bounded by it, (2) may not be.
+(1) is wiki-only and the **live direction.** (2)–(4) target cross-corpus *transfer*/mixing — but
+coocmap's upper-bound control (even *perfect* anchors fail to mix) is strong evidence the whole
+**mixing program is bounded by near-disjoint local support**, so **(3) CORAL and (4) CCA are now
+higher-risk** (a global linear second-moment match can't mix locally-disjoint clouds any better
+than perfect anchors could). Kept tracked per request; worth testing only if a concrete transfer
+need re-motivates them. For cross-corpus *NN retrieval* (not mixing), per-corpus mean-centering
+already suffices.

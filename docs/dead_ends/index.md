@@ -19,3 +19,7 @@ Approaches to per-gap quality measurement that were tried and refuted.
 ## Gap detection methods
 
 - [exact-match-dedup-misses-near-duplicates](gap-detection-methods/exact-match-dedup-misses-near-duplicates.md) — confluence in path-dependent expansion is real but imperfect; basin-edge seeds produce ~95% identical but bit-different sets that exact-match misses but Jaccard catches
+
+## Shared-space alignment (wiki↔OpenAlex)
+
+- [coocmap-anchor-space-wiki-oa](shared-space-alignment/coocmap-anchor-space-wiki-oa.md) — mycooc's coocmap (nonlinear anchor-space re-representation, correctly understood — *not* VecMap) can't mix wiki↔OA: the residual is **near-disjoint local support**, so anchor-relative profiles re-encode corpus identity. Decisive control: even *literally shared* anchors give purity 0.964 > 0.938 raw baseline (ceiling below floor). Bounds the whole mixing program (CORAL/CCA too); per-corpus mean-centering is sufficient for cross-corpus NN. The pedagogical win is wiki-native (LPP), not cross-corpus.
