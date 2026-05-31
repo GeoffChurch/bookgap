@@ -723,9 +723,36 @@ def load_joint(cache_dir: Path, keyword_embed_fn=None) -> CurriculumInputs:
     # Modularity uses the clustered subgraph (rows/cols = top_idx), p2c-aligned.
     sub_adj = joint[top_idx][:, top_idx]
 
-    # No per-node embeddings or titles are persisted for the joint top_idx set,
-    # so embedding-space metrics (sim->target, step-smoothness) and NPMI docs
-    # are left as NaN. Graph + keyword metrics carry the joint comparison.
+    # Embedding-space metrics (sim->target ascent, step-smoothness) need per-node
+    # GIST embeddings for the clustered set. The joint script persists these as
+    # `clustered_emb.npy` (aligned with point_to_cluster) + `seed_centroid.npy`
+    # (the NLP-seed-node centroid) when run with BOOKGAP_JOINT_DUMP_EMB=1. When the
+    # dump is present we compute topic centroids and a sim->target axis; the TARGET
+    # is the shared OpenAlex NLP-article centroid (`/tmp/nlp_dir.npy`, the same axis
+    # wiki-native uses, so sim->target is comparable across all rows), falling back
+    # to the dumped NLP-seed centroid if nlp_dir is unavailable. Absent the dump
+    # (v1/v2 legacy caches) these stay NaN — graph + keyword metrics carry the row.
+    centroids = None
+    target = None
+    emb_path = cache_dir / "clustered_emb.npy"
+    if emb_path.exists():
+        emb = np.load(emb_path).astype(np.float64)
+        if emb.shape[0] == len(p2c):
+            centroids = np.zeros((n_topics, emb.shape[1]), dtype=np.float64)
+            for t in range(n_topics):
+                m = p2c == t
+                if m.any():
+                    centroids[t] = emb[m].mean(axis=0)
+            nlp_dir = Path("/tmp/nlp_dir.npy")
+            seed_c = cache_dir / "seed_centroid.npy"
+            if nlp_dir.exists():
+                target = np.load(nlp_dir).astype(np.float64)
+            elif seed_c.exists():
+                target = np.load(seed_c).astype(np.float64)
+        else:
+            _log(f"joint: clustered_emb rows {emb.shape[0]} != p2c {len(p2c)}; "
+                 "skipping embedding metrics")
+
     return CurriculumInputs(
         topic_order=order.tolist(),
         point_to_cluster=p2c,
@@ -734,6 +761,8 @@ def load_joint(cache_dir: Path, keyword_embed_fn=None) -> CurriculumInputs:
         topic_keywords=kws,
         graph=sub_adj,
         topic_adj=topic_adj,
+        topic_centroids=centroids,
+        target_centroid=target,
         keyword_embed_fn=keyword_embed_fn,
     )
 
@@ -898,17 +927,38 @@ def main() -> None:
                          "metric that catches grab-bag topics.")
     ap.add_argument("--json-out", type=Path, default=None,
                     help="optional path to dump the raw metric dicts as JSON.")
+    ap.add_argument("--synthesis", action="store_true",
+                    help="score the v2-vs-v3-diffusion head-to-head set "
+                         "(joint-v2 hard expansion vs v3 diffusion at top_m=8/16/32) "
+                         "plus the corrected wiki-native row, instead of the default "
+                         "v1/v2/OA dashboard. Reads the joint_v3_m{8,16,32} caches.")
     args = ap.parse_args()
 
     kw_embed = None if args.no_keyword_coherence else _gist_keyword_embedder()
 
-    loaders = [
-        ("wiki-native", lambda: load_wiki_native(keyword_embed_fn=kw_embed)),
-        ("joint-v1", lambda: load_joint(QC_CACHE / "joint_v1", keyword_embed_fn=kw_embed)),
-        ("joint-v2", lambda: load_joint(QC_CACHE / "joint_v2", keyword_embed_fn=kw_embed)),
-        ("OA-cite-T11273", lambda: load_oa(with_embeddings=args.with_embeddings,
-                                           keyword_embed_fn=kw_embed)),
-    ]
+    if args.synthesis:
+        # v2 reads the joint_v2_emb cache (a v2-expand re-run that also dumped the
+        # clustered embeddings) so its sim->target + step-smoothness rows are
+        # populated for a fair head-to-head; falls back to the legacy joint_v2
+        # cache (graph + keyword metrics only) if the emb cache is absent.
+        v2_cache = QC_CACHE / "joint_v2_emb"
+        if not (v2_cache / "clustered_emb.npy").exists():
+            v2_cache = QC_CACHE / "joint_v2"
+        loaders = [
+            ("wiki-native(frontier)", lambda: load_wiki_native(keyword_embed_fn=kw_embed)),
+            ("v2-expand", lambda c=v2_cache: load_joint(c, keyword_embed_fn=kw_embed)),
+            ("v3-diffuse-m8", lambda: load_joint(QC_CACHE / "joint_v3_m8", keyword_embed_fn=kw_embed)),
+            ("v3-diffuse-m16", lambda: load_joint(QC_CACHE / "joint_v3_m16", keyword_embed_fn=kw_embed)),
+            ("v3-diffuse-m32", lambda: load_joint(QC_CACHE / "joint_v3_m32", keyword_embed_fn=kw_embed)),
+        ]
+    else:
+        loaders = [
+            ("wiki-native", lambda: load_wiki_native(keyword_embed_fn=kw_embed)),
+            ("joint-v1", lambda: load_joint(QC_CACHE / "joint_v1", keyword_embed_fn=kw_embed)),
+            ("joint-v2", lambda: load_joint(QC_CACHE / "joint_v2", keyword_embed_fn=kw_embed)),
+            ("OA-cite-T11273", lambda: load_oa(with_embeddings=args.with_embeddings,
+                                               keyword_embed_fn=kw_embed)),
+        ]
 
     results: Dict[str, Dict[str, float]] = {}
     for name, loader in loaders:

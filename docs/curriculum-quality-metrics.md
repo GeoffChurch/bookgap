@@ -84,8 +84,16 @@ Numbers from the default run plus `--with-embeddings` for the OA NPMI cell.
 | Step smoothness (max) ↓ | 0.271 | n/a | n/a | n/a |
 
 The curricula scored:
-- **wiki-native** — `wiki_curriculum_demo.py --reuse-subgraph --bg-norm --order-by
-  frontier-bgnorm` (bg-norm selection + frontier-bgnorm ordering), 12 topics.
+- **wiki-native** — `wiki_curriculum_demo.py --reuse-subgraph --bg-norm` (bg-norm
+  selection), 12 topics. **NB (ordering label):** the cached curriculum was built
+  with `--order-by frontier-bgnorm`, but `--order-by` only changes the *ordering*,
+  not the persisted clustering/keywords/subgraph, and the wiki-native loader does
+  not read a persisted order — it **recomputes a plain `--order-by frontier`
+  linearization** (`compute_frontier_adjacency` + linearization) on the matched-title
+  subgraph. So every wiki-native number in this table (incl. the −0.706 Sim→Tgt
+  ascent) is already the **`frontier`** result, not `frontier-bgnorm`. The earlier
+  "frontier-bgnorm" label on this row was a misnomer; see the §v2-vs-v3 synthesis
+  below for the corrected-wiki-native finding (the sim→target sign does NOT flip).
 - **joint-v1** — `joint_graph_curriculum.py --no-oa-expand --no-per-corpus-select`
   (the OA-mass-starved baseline; 247/1941 OA reach a topic = 12.7%), 14 topics.
 - **joint-v2** — `joint_graph_curriculum.py` defaults (OA-expand +
@@ -184,3 +192,132 @@ proxy (NPMI over titles) is too sparse to be useful. Those gaps are the motivati
 for the deferred extrinsic anchor (syllabus / LectureBank / LLM-judge): use the
 intrinsic basket to gate structure, and the extrinsic phase to judge the semantics
 the intrinsic metrics provably cannot see.
+
+## v2 hard-expansion vs v3 diffusion — the synthesis (does the coverage win cost quality?)
+
+The §A diffusion result was a **coverage** win: smooth GDC densification at the
+held-out-link `t=8`, `--diffusion-top-m 32` lifts OA-into-the-curriculum from
+**19.8% (v2 hard expansion) → 27.0% (v3 diffuse)**. The open question (this is the
+backlog's *Synthesis* item): is that also a **quality** win, or is `top_m=32`
+coverage-Goodharted — buying admitted-OA mass at the expense of coherence,
+crowding, modularity, and balance? We scored the head-to-head on the intrinsic
+basket. To make the embedding-space ordering metric comparable across the joint
+configs (which persist no per-node embeddings), the joint runs were re-run with a
+local `BOOKGAP_JOINT_DUMP_EMB=1` dump of the clustered-node GIST embeddings, and
+the **target is the shared OpenAlex NLP-article centroid `/tmp/nlp_dir.npy`** — the
+same axis wiki-native uses, so Sim→Tgt is comparable across every row (the dumped
+NLP-seed-node centroid is the documented fallback). Reproduce:
+
+```bash
+# one-time per config (env-gated emb dump is OFF by default / uncommitted):
+BOOKGAP_JOINT_DUMP_EMB=1 conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
+    --tau 0.5 0.6 0.7 --bridge-scorer csls --lpp-k 64 --desired-n-topics 14 \
+    --oa-densify diffuse --diffusion-kernel heat --diffusion-top-m {8,16,32} --diffusion-t 8
+# then the head-to-head dashboard (reads cache/.curriculum_quality/joint_v3_m{8,16,32} + joint_v2_emb):
+conda run -p .conda python -m artifacts_scripts.curriculum.curriculum_quality --synthesis
+```
+
+### Head-to-head dashboard (discriminating metrics)
+
+NPMI / Jaccard / embed-mean are de-emphasized (flagged-weak in the §intrinsic
+validation: NPMI-over-titles is n/a for the joint set, Jaccard is uniformly ≥0.98,
+embed-mean barely moves 0.71→0.72). Coverage row added for context.
+
+| metric | dir | wiki-native(frontier) | **v2-expand** | v3-m8 | v3-m16 | **v3-m32** |
+| :-- | :-: | --: | --: | --: | --: | --: |
+| **OA→curriculum (coverage)** | ↑ | — | 19.8% | 12.2% | 24.3% | **27.0%** |
+| OA-block density (edges/node) | — | — | 6.4 | 9.9 | 15.2 | 27.5 |
+| Sim→Tgt ascent (Spearman) | ↑ | −0.706 | −0.116 | +0.033 | −0.086 | +0.011 |
+| Sim→Tgt ascent (Kendall) | ↑ | −0.515 | −0.121 | +0.033 | −0.121 | +0.011 |
+| DAG prereq-completeness | ↑ | 0.781 | 0.665 | 0.683 | 0.621 | 0.647 |
+| [flag] dir. τ vs in-degree | flag | −0.727 | −0.758 | −0.890 | −0.670 | −0.560 |
+| Keyword crowding (tpc/kw) | ↓ | 1.622 | 1.197 | 1.186 | **1.111** | 1.138 |
+| #kw in 3+ topics | ↓ | 9 | 4 | 2 | **1** | 2 |
+| #bibliographic-noise kw (top-8) | ↓ | — | — | 2 | 2 | **5** |
+| Modularity Q | ↑ | 0.244 | 0.080 | 0.063 | 0.131 | **0.202** |
+| Size entropy (norm) | ↑ | 0.704 | 0.831 | 0.807 | 0.858 | **0.916** |
+| Size Gini | ↓ | 0.588 | 0.487 | 0.512 | 0.451 | **0.337** |
+| #singleton topics | ↓ | 6 | 3 | 3 | 2 | **1** |
+| Step smoothness (mean) | ↓ | 0.155 | 0.115 | 0.115 | 0.104 | **0.100** |
+| Step smoothness (max) | ↓ | 0.271 | 0.206 | 0.205 | 0.205 | 0.227 |
+
+(Keyword-coherence embed mean/worst and Jaccard are near-flat across all five
+configs — 0.71–0.72 / 0.67–0.68 / 0.98–0.99 — and omitted; they neither separate
+the configs nor flag the m32 noise, consistent with the weak-proxy finding.)
+
+### Verdict 1 — does v3-diffusion's coverage win come *with* quality, or trade it away?
+
+**With.** Comparing the default v2 (hard expansion, 19.8%) vs v3-m32 (diffuse, 27.0%)
+on every *discriminating structural* metric, v3-m32 is **equal-or-better on all of
+them**: singletons 3→**1**, size-Gini 0.487→**0.337**, size-entropy 0.831→**0.916**,
+modularity-Q 0.080→**0.202**, step-smoothness(mean) 0.115→**0.100**, crowding
+1.197→1.138, and Sim→Tgt ascent −0.116→**+0.011** (from mildly descending to flat).
+So the +7.2pp coverage is **not** Goodharted on the structural axes — diffusion
+admits the extra OA tail into *better-balanced, more graph-coherent, smoother*
+topics than the hard expansion did. The headline diffusion win is a genuine
+quality-and-coverage win, not a coverage-for-quality trade.
+
+**The one place m32 pays:** keyword **noise**. Bibliographic/tool brand-name
+keywords (`icanhazpdf`, `polyanalyst`, `mistral`, OCR garbage `amp_schubert`,
+`witkam`) appearing in a topic's top-8 rise **2 (m8) → 2 (m16) → 5 (m32)** — at m32
+two of them land in *foundations* topics (topic 0 = probability/logic/math picks up
+`amp_schubert/witkam`; topic 2 = academic-publishing picks up
+`icanhazpdf/polyanalyst/mistral`). This is precisely the A-diffusion run's flag
+("a little bibliographic noise leaks into foundations at the denser setting"),
+now quantified. It is a *semantic-keyword* blemish the structural basket otherwise
+rates as the cleanest config — exactly the kind of judgment the intrinsic basket is
+known to under-weight (cf. the v1 toolkit-grab-bag miss).
+
+### Verdict 2 — the top_m trade: where is the sweet spot, is 32 right?
+
+Coverage and OA-block density both rise monotonically with `top_m`
+(12.2%/9.9·→24.3%/15.2·→27.0%/27.5·), but the **marginal coverage gain collapses**:
+m8→m16 buys **+12.1pp** for ~+5 edges/node, while m16→m32 buys only **+2.7pp** for
+**~+12 edges/node** — diminishing returns, and the doubling of density is what drags
+the bibliographic noise in (#noise-kw 2→5). On the structural metrics m32 is still
+the best (it monotonically improves balance/singletons/modularity with density), so
+there is a real **tension**:
+
+- **m32** — best coverage, best size-balance/singletons/modularity/smoothness, but
+  the **noisiest topics** (5 noise-kw, leaking into foundations).
+- **m16** — captures **90% of the coverage win** (24.3% vs 27.0%) at *half* the OA
+  density, with the **cleanest keyword profile of all** (crowding 1.111, #kw-in-3+
+  **1**, #noise-kw 2) and second-best balance (Gini 0.451, 2 singletons). Modularity
+  0.131 is below m32's 0.202 but still well above v2's 0.080.
+- **m8** — under-densified: coverage *below* the v2 hard-expansion baseline (12.2% <
+  19.8%) and worst balance of the three (Gini 0.512). Too sparse; not a contender.
+
+**Recommendation: the `top_m=32` default is defensible but `top_m=16` is the
+cleaner-topics sweet spot.** If the goal is *maximum* OA coverage + structural
+balance, keep 32. If the goal is the *cleanest topics* for ~1pp of coverage cost
+m16 is the better operating point — it trades 2.7pp of coverage for the lowest
+keyword-crowding and the elimination of the foundations-noise leak. We keep **32 as
+the committed default** (coverage is the headline diffusion win and the noise is a
+keyword-display blemish, not a structural one), but record **16 as the
+quality-first alternative** and the diminishing-returns knee.
+
+### Verdict 3 — corrected wiki-native: did Sim→Tgt flip positive under `--order-by frontier`?
+
+**No — and the reason is instructive (a metric-validity finding, not an ordering
+bug).** The prior dashboard *labeled* the wiki-native row `frontier-bgnorm`, but the
+scorer never used that order: it recomputes a **plain `--order-by frontier`**
+linearization. So the −0.706 was *already* the `frontier` result; re-running with
+`--order-by frontier` changes nothing on disk (clustering/keywords/subgraph are
+order-independent), and recomputing the order on the *full* 477k link graph (the
+real pipeline's order, not the sliced subgraph) gives **−0.664** — still strongly
+negative. **The flip the synthesis plan hypothesized does not occur.**
+
+Diagnosis: the Sim→Tgt **target** is the OpenAlex NLP-*article* centroid, which sits
+near the foundational/core-NLP topics (statistics 0.92, software 0.88), while
+wiki-native's genuine *frontier* (the GPT/deep-learning/word-embedding topics it
+correctly orders **last**) is *farther* from that centroid (0.79–0.87). So a
+correctly-ordered foundations→frontier curriculum **descends** in cosine-to-this-target
+and scores a negative ascent. The metric is only valid when the target *is* the
+curriculum's destination — which holds for the OA-cite curriculum (its target is the
+graph-embedding frontier, Sim→Tgt climbs 0.86→0.96, ascent **+0.73**) and for the
+joint configs (target ≈ corpus mean ⇒ near-flat ±0.1, as seen) but **not** for
+wiki-native against the article-centroid target. **Net:** the corrected-wiki-native
+row is `frontier` (−0.71→−0.66, essentially unchanged), and Sim→Tgt-ascent should be
+read as *valid only when the target coincides with the curriculum goal*; for
+wiki-native it reports target-geometry, not an ordering defect. The real
+wiki-native failures remain its **6 singletons** and crowding, not its ordering.

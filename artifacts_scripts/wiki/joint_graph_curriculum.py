@@ -1362,6 +1362,21 @@ def main() -> None:
     if t_criteria:
         with open(ART_DIR / "t_selection.json", "w") as f:
             json.dump(t_criteria, f, indent=2)
+    # OPTIONAL (env-gated) embedding dump for the quality-dashboard synthesis: the
+    # clustered-node GIST embeddings (aligned with point_to_cluster) + the
+    # NLP-seed-node centroid, so curriculum_quality's joint loader can compute the
+    # embedding-space metrics (sim->target ascent, step smoothness) it otherwise
+    # leaves NaN. Default OFF => standard runs are byte-identical; set
+    # BOOKGAP_JOINT_DUMP_EMB=1 to populate the dashboard's joint embedding cache
+    # (see docs/curriculum-quality-metrics.md §v2-vs-v3 for the recipe).
+    import os as _os
+    if _os.environ.get("BOOKGAP_JOINT_DUMP_EMB"):
+        np.save(ART_DIR / "clustered_emb.npy",
+                np.ascontiguousarray(joint_emb[top_idx], dtype=np.float32))
+        seed_centroid = joint_emb[np.asarray(seed_idx, dtype=np.int64)].mean(axis=0)
+        np.save(ART_DIR / "seed_centroid.npy",
+                np.ascontiguousarray(seed_centroid, dtype=np.float32))
+        log(f"  [dump] clustered_emb + seed_centroid written ({len(seed_idx)} seeds)")
     log(f"saved artifacts to {ART_DIR}/")
     log.close()
 

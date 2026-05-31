@@ -97,7 +97,22 @@ metric-validity preference).
   `t=8`, `--diffusion-top-m 32`; the criteria agree well (3/4 at `t ∈ [4,16]`, held-out-link +
   modularity exactly t=8), all with interior optima. Binding knob is `top_m` (wiki-degree ~131
   over-densifies → 6.6% collapse; sweet spot ~32).
-- [ ] **Synthesis** — score the diffusion-densified curriculum on the §B basket
-  (`artifacts_scripts/curriculum/curriculum_quality.py`) vs v2 (hard expansion). *(NOT yet run —
-  separate task; the A-diffusion run delivered coverage + frontier spot-check only.)*
+- [x] **Synthesis** *(done — `docs/curriculum-quality-metrics.md` §v2-vs-v3)* — scored
+  v2 hard-expansion vs v3 diffusion (top_m=8/16/32) on the §B basket. **The coverage
+  win is also a quality win, NOT Goodharted:** v3-m32 (27.0% OA) beats v2 (19.8%) on
+  *every* discriminating structural metric — singletons 3→1, size-Gini 0.487→0.337,
+  entropy 0.831→0.916, modularity-Q 0.080→0.202, step-smoothness 0.115→0.100,
+  Sim→Tgt −0.116→+0.011. The *only* cost is keyword noise: bibliographic/tool/OCR
+  keywords in a topic's top-8 rise 2(m8)→2(m16)→**5(m32)**, leaking into foundations
+  at the denser setting (quantifies the A-diffusion flag). **top_m sweet spot:**
+  coverage's marginal gain collapses (m8→m16 +12.1pp; m16→m32 only +2.7pp for 2×
+  density), so **m16 captures 90% of the coverage win with the cleanest topics**
+  (crowding 1.111, #kw-in-3+ 1, 2 noise-kw); keep **32 as the default** (coverage
+  headline + structural-best), record **16 as the quality-first alternative + the
+  diminishing-returns knee**. **Corrected wiki-native:** the −0.71 was *already* the
+  plain-`frontier` order (the scorer recomputes it; the prior `frontier-bgnorm` label
+  was a misnomer), so **Sim→Tgt does NOT flip positive** (full-graph frontier = −0.66);
+  the negative ascent is a target-geometry artifact (the OA-article-centroid target
+  sits near foundations, not at wiki's GPT/embedding frontier) — Sim→Tgt-ascent is
+  valid only when the target coincides with the curriculum destination.
 - [ ] **B-extrinsic (last)** — syllabus / LectureBank / LLM-judge validation.
