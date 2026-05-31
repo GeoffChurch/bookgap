@@ -92,6 +92,15 @@ So `CurriculumConfig.embeddings ∈ {provided, callable, spectral-from-graph, no
 Lean's default = spectral-from-graph (identity features). A semantic-embedding ablation (embed
 theorem statements) is a *later* comparison, not a prerequisite.
 
+**LPP's role in extractive mode (the Phase-4 question): repurposed for *selection geometry*, not
+clustering, and optional.** With no clustering step, the spectral embedding (= identity-feature
+link-LPP) instead informs *which* lemmas to select: seeded-PageRank says which are **load-bearing**;
+the spectral geometry says how they're **arranged**, so you can pick a subset that **spans** T's
+prerequisite manifold rather than a redundant pile from one sub-area. But the **minimal core is just
+seeded-PageRank-select + topological/frontier-order** — add the spectral-diversity term (or the
+equivalent community-detect-then-top-per-community) only if pure top-PageRank selection proves
+redundant. Empirical; start without it.
+
 ## Phase 2 — mathlib4 / Lean `GraphSource` (the first new domain; easiest + best fit)
 
 Why Lean first (over Rust): (1) the **proof-dependency graph is first-class and pre-extracted**
@@ -146,13 +155,25 @@ break up. The curriculum gives the **bottom-up reconstruction order**. The *gran
 down the cone you reconstruct before "just assume it" — is the curriculum's selection knob (the
 top-N / depth cut).
 
-**Arms (a ladder, to separate two effects):**
-- **Control** — agent proves T monolithically, no extra context. (base time / tokens / success)
-- **T1 — context only:** monolithic, but with the prerequisite **statements** in context. Isolates
-  *does merely seeing the lemmas help?*
-- **T2 — decomposition:** prove the prerequisite subproblems first (in curriculum order), then T;
-  compare **summed** time/tokens/success over all subproblems. Isolates *does proving them first
-  help, beyond seeing them?* Decomposition may be **recursive** (a subproblem re-decomposed).
+**No persistent curriculum object.** Selection+order is computed *transiently* to scaffold T, then
+discarded — nothing is stored or retrieved.
+
+**A true curriculum is a *selected subset*, not all subproblems.** Proving the whole prerequisite
+cone would likely cost *more* than monolithic; a curriculum picks a small set of **high-value,
+load-bearing lemmas that build up** to make T tractable. So the arms separate **three** effects —
+context, decomposition, and (the real prize) **selection**:
+- **Control** — prove T monolithically, no extra context. (base time / tokens / success)
+- **T1 — context only:** monolithic, with the selected prerequisite **statements** in context.
+  *Does merely seeing the lemmas help?*
+- **T2-all (naive decomposition):** prove the **whole** prerequisite cone first, then T — the
+  *expensive strawman*. Its job is to show decomposition *alone* isn't the win.
+- **T2-curriculum:** prove only the **curriculum-selected subset** of load-bearing lemmas (seeded-
+  PageRank importance, optionally spectral-diversity-spread — Phase 0-bis), then T, showing the
+  student its earlier proofs. **Hypothesis: T2-curriculum < both control and T2-all.** If
+  T2-all ≥ control, that proves **selection** — *which* lemmas to pre-prove — not mere decomposition,
+  is what the curriculum buys. Selection may be **recursive** (a selected lemma itself decomposed).
+
+Compare **summed** time/tokens/success over all proved subproblems + T.
 
 **Context ablation inside T2** (a scaffolding spectrum; (a) is the most "curriculum"-like — cumulative
 learning from its own worked solutions):
