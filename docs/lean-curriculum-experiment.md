@@ -354,6 +354,166 @@ PYTHONPATH=. conda run -p .conda python -m curriculum_lean.run_goedel_sweep \
 PYTHONPATH=. conda run -p .conda python -m curriculum_lean.compare_goedel_gemma4
 ```
 
+## Goedel-Prover-V2-8B thinking-ON (a channel artifact, not a reasoning lever)
+
+Goedel-Prover-V2 is built on Qwen3 and the model card runs it with the `<think>`
+layer ON (the proof plan *is* its reasoning). The thinkoff verdict above named
+thinking-ON as the next increment: does the `<think>` layer let the 8B close any
+of the 4 hard targets (or their sub-lemmas) and finally make the decomposition
+arms separate on success-rate? This re-run is held **identical to the thinkoff
+run** except the two variables that have to move with `<think>`:
+
+- **thinking-ON** = `GoedelProver(think=True)` (Qwen3 `<think>`, the model's
+  intended mode).
+- **bigger budget** = `num_predict=32768` (the card's `max_new_tokens`),
+  `num_ctx=32768` — large enough to fit `<think>` + plan + proof and avoid the
+  thinkoff repetition-loop truncation.
+- Everything else unchanged: same 8 targets, all 5 arms, `top_n=4`,
+  `t2_max_chain=5`, `temperature=0.2`, `max_retries=0`, graded scorer. Driver:
+  `run_goedel_sweep.py --think --num-predict 32768 --num-ctx 32768`.
+
+### Verdict: thinking-ON is a hard regression — the `<think>` trace never terminates
+
+**The `<think>` channel degenerates into a verbatim repetition loop that
+exhausts the entire token budget without ever emitting an answer.** This is not
+a hard-target effect — it happens on the *easiest* target in the set. Three
+independent smoke generations, all `done_reason='length'` (hit the cap, did not
+stop on its own), all `content` (the answer channel) **empty**:
+
+| target | budget | eval_tok | `done_reason` | thinking_chars | content_chars | proof |
+|---|---|---|---|---|---|---|
+| `Nat.add_zero` (easiest) | 40960 | 40960 | `length` | 162171 | **0** | none |
+| `Nat.zero_add` (easy) | 32768 | 32768 | `length` | 96809 | **0** | none |
+| `isBounded_nsmul` (hard) | 32768 | 32768 | `length` | 104858 | **0** | none |
+
+The tail of every think trace is the *same sentence repeated dozens of times*
+verbatim, e.g. for `Nat.add_zero`:
+
+```
+But looking more closely, the `HAdd.hAdd` is actually a typeclass that is used
+to define heterogeneous addition, but in this case, it is being used with `Nat`
+and `0 : Nat`, which is a bit confusing.
+But looking more closely, the `HAdd.hAdd` is actually a typeclass that is used
+to define heterogeneous addition, but in this case, it is being used with `Nat`
+and `0 : Nat`, which is a bit confusing.
+…  (×N until num_predict is exhausted)
+```
+
+…and the only fenced block anywhere in the trace is the **restated goal**
+(`theorem task_Nat_add_zero : … := by sorry`) — the prompt's own input echoed
+back, not a proof. Because `<think>` never closes, the answer channel is never
+reached, so `content_chars=0` on *every* call and no proof is ever produced.
+Raising the budget does not help: 40960 just buys more repetition.
+
+**Root cause — the GGUF Modelfile sets `repeat_penalty 1`** (no repetition
+penalty at all). `ollama show goedel-prover-v2:8b --modelfile` confirms it. With
+zero repetition penalty, Qwen3's long unconstrained reasoning has nothing to
+push it out of a repeat attractor, so the trace collapses into a literal loop.
+At thinkoff the answer is short, so the loop is a rare sampling-tail event (a
+re-draw escapes it — that is what the thinkoff section documents). At thinking-ON
+the trace is long and unbounded, so the loop is **systematic and first-draw** —
+even `Nat.add_zero`, which control closes at thinkoff, never emits an answer.
+
+This answers the three headline questions, all negatively, for *this GGUF*:
+
+1. **Does `<think>` lift success on hard targets / rescue a decomposition
+   sub-lemma?** No. No proof is emitted on any target (easy or hard), so every
+   arm is a uniform failure; there is no regime where decomposition separates.
+2. **Does it eliminate the repetition-loop `parse_error`?** No — it makes it
+   *worse*: thinkoff's occasional `parse_error` (prose with no fence) becomes
+   thinkON's universal empty-content failure (the loop is now in the `<think>`
+   channel and never terminates).
+3. **Does the `t1 ≥ control` curriculum-context win hold?** Moot — with zero
+   successes on any arm there is no success-rate signal to compare. The thinkoff
+   `t1 ≥ control` win is *not* reproduced at thinkON because there are no wins at
+   all.
+
+So thinking-ON on the mradermacher Q8_0 8B GGUF is a **dead end as configured**;
+the banked result remains the thinkoff `control 38% / t1 50%` and the thinkoff
+`t1 ≥ control` win.
+
+**On run cost.** The full 8×5 thinkON sweep was launched through the real driver
+to confirm the smoke finding end-to-end. The first single-goal rows reproduced
+it exactly — `control` on the *easiest* target (`Nat.add_zero`) burned the full
+`num_predict=32768` (`tokens=32919`, 466 s) and emitted an empty proof →
+`parse_error`. Since every generation degenerates identically, running the full
+sweep to completion would have been ~10+ h of GPU producing only 0%/`parse_error`
+rows (the decomposition arms alone are ~40 min *each* because every sub-goal hits
+the cap), so it was stopped after confirming the pattern. The dashboard below is
+a **bounded confirmation run**: `control` + `t1` over the 4 easy targets through
+the real driver (the single-goal arms that carry the headline questions), with
+the decomposition arms omitted — they are guaranteed 0% by the same mechanism
+and add no signal. thinkOFF/gemma4 columns are the full 8-target sweeps.
+
+### Bounded thinkON confirmation (superseded)
+
+A bounded thinkON confirmation run (`control`+`t1` on the 4 easy targets) was
+launched to ground the smoke finding in real driver output, but it ran on the
+broken `repeat_penalty=1` config (0% by construction) and was **stopped** once the
+root cause + fix were in hand — see Resolution below. It is not reported; the
+loop-fixed numbers that matter are the thinkOFF `repeat_penalty=1.1` run.
+
+### Extraction gotcha with `<think>` on (fixed)
+
+`experiment.extract_proof` has a 4th fallback rule: when `content` is empty it
+scrapes the `thinking` channel for a fenced block (correct for the weak
+gemma/qwen arms, which at a tight `num_predict` sometimes put the *answer* in the
+think block). For Goedel at thinking-ON that rule is **actively wrong**: the only
+fence in the runaway `thinking` is the restated `:= by sorry` goal, so the
+fallback would hand the scorer a bogus sorry-laden "proof" instead of a clean
+empty-string failure — silently inflating partial-progress on rows that in fact
+produced nothing. Fix: `goedel_prover.extract_goedel_proof` now calls
+`extract_proof(content, thinking=None)` unconditionally — for Goedel the proof is
+*always* the answer channel; an empty `content` correctly yields an empty proof.
+Regression test: `curriculum_lean/tests/test_goedel_extraction.py`.
+
+### Resolution: the loop is a `repeat_penalty=1` defect — fixing it proves thinkON is a *channel artifact*, and the payoff is thinkOFF
+
+The repetition loop is a serving-config defect, not an inherent Goedel limit, so
+`repeat_penalty=1.1` is now the `GoedelProver` default — wired into the
+`ollama.chat` **options** (the prior `extract_goedel_proof(thinking=None)` patch
+only suppressed the *symptom*; nothing had touched generation). Applying it
+settled two things:
+
+**1. The loop dies, but thinkON still emits no proof — it's a channel mismatch,
+not deeper reasoning.** With `repeat_penalty=1.1`, thinkON smoke flips
+`done_reason='length' → 'stop'` and `<think>` terminates at ~2000 chars instead of
+running to the cap. But `content_chars` is **still 0**: the model emits its entire
+response — proof plan **and** the complete fenced Lean proof — *inside* the
+`<think>` channel, leaving the answer channel empty. Goedel-Prover-V2 is a
+**whole-proof generator, not a hybrid reasoner**: its "proof plan" is already part
+of its normal answer-channel output, so `think=True` just makes ollama re-tag that
+one plan-then-proof stream as `<think>` and blank `content`. No deeper reasoning
+channel is unlocked — it is a **channel artifact**. A full thinkON sweep would only
+reproduce thinkOFF, channel-shifted, so thinkON is abandoned and `think=False` is
+now the class default (Goedel's native mode).
+
+**2. The real payoff of the fix is thinkOFF.** The same `repeat_penalty=1` loop
+also corrupted the *thinkOFF* run's hard targets — its occasional `parse_error`
+(prose, no fence) and especially its **0%-but-huge-token decomposition arms**
+(`t2_all` 295k tok, `t2_curriculum` 235k tok) are the loop hitting `num_predict` on
+individual sub-goals. So thinkOFF + `repeat_penalty=1.1` is the run that should
+actually move: cleaner hard targets and a fair shot at decomposition signal.
+
+Other levers (unchanged): **the 32B** (`goedel-prover-v2:32b`, Q4_K_M, downloaded)
+is the next prover lever once the 8B loop-fix is banked; **self-correction**
+(`max_retries>0`) is worth revisiting only once decomposition shows signal.
+
+### thinkOFF with the loop fix (`repeat_penalty=1.1`, v4.30.0 graph + verifier)
+
+Re-run held **identical to the original thinkOFF run except `repeat_penalty`** —
+same 8 targets, all 5 arms, same scorer, and the decl-graph pinned to the v4.30.0
+backup so curriculum + verifier stay coherent at v4.30.0 (the LeanDojo downgrade
+moved the *canonical* graph to v4.20.0; see `docs/lean_decl_graph.md`).
+
+<!-- RP11_DASHBOARD_PLACEHOLDER -->
+
+```bash
+PYTHONPATH=. conda run -p .conda python -m curriculum_lean.run_goedel_sweep \
+    --graph-dir cache/lean/decl_graph_v4.30.0 \
+    --out-dir artifacts/lean_curriculum_experiment/goedel8b_thinkoff_rp11
+```
+
 ## What a scaled run would need
 
 - **A stronger prover** is the single biggest lever. The harness is
