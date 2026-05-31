@@ -321,16 +321,79 @@ def _order_pair_user(earlier: TopicCard, later: TopicCard) -> str:
 # Ollama judge
 # ---------------------------------------------------------------------------
 
+def _extract_first_json_object(content: str) -> Optional[dict]:
+    """Best-effort recover the first balanced ``{...}`` object from ``content``.
+
+    Tolerates a leading preamble ("Here is the JSON:\\n{...}") and trailing junk
+    after the object, and parses a near-complete object as long as its braces
+    balance. Returns the parsed dict, or ``None`` if no balanced object parses.
+    Brace-matching is string-literal aware (ignores ``{``/``}`` inside JSON
+    strings, honoring ``\\`` escapes) so braces inside ``reason`` text don't
+    throw off the balance count.
+    """
+    start = content.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(content)):
+        ch = content[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = content[start:i + 1]
+                try:
+                    obj = json.loads(candidate)
+                except json.JSONDecodeError:
+                    return None
+                return obj if isinstance(obj, dict) else None
+    return None
+
+
 @dataclass
 class JudgeClient:
     model: str
     temperature: float = 0.0
     num_ctx: int = 4096
-    num_predict: int = 512
+    num_predict: int = 1536
     n_calls: int = 0
     n_parse_fail: int = 0
+    # context for the model-keyed raw-failure dump (set by the runner)
+    rawfail_path: Optional[Path] = None
+    _ctx: Dict[str, Any] = field(default_factory=dict)
 
-    def ask(self, system: str, user: str, schema: dict) -> Optional[dict]:
+    def set_context(self, **ctx: Any) -> None:
+        """Record the curriculum/topic/dimension context for raw-fail dumps."""
+        self._ctx = ctx
+
+    def _dump_rawfail(self, content: str, dimension: str) -> None:
+        if self.rawfail_path is None:
+            return
+        rec = {
+            "model": self.model,
+            "dimension": dimension,
+            "content": content,
+            **self._ctx,
+        }
+        self.rawfail_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.rawfail_path.open("a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+
+    def ask(self, system: str, user: str, schema: dict,
+            dimension: str = "") -> Optional[dict]:
         self.n_calls += 1
         try:
             r = ollama.chat(
@@ -349,15 +412,23 @@ class JudgeClient:
         except Exception as e:  # pragma: no cover - network/runtime
             _log(f"  ollama.chat failed: {e}")
             self.n_parse_fail += 1
+            self._dump_rawfail(f"<ollama.chat exception: {e}>", dimension)
             return None
         content = (r.message.content or "").strip()
         try:
-            obj = json.loads(content)
+            obj: Any = json.loads(content)
         except json.JSONDecodeError:
-            self.n_parse_fail += 1
-            return None
+            # Tolerant fallback: pull the first balanced {...} object out of a
+            # preamble / trailing-junk / near-truncated response before counting
+            # a true failure. Only failure if the tolerant extraction also fails.
+            obj = _extract_first_json_object(content)
+            if obj is None:
+                self.n_parse_fail += 1
+                self._dump_rawfail(content, dimension)
+                return None
         if not isinstance(obj, dict):
             self.n_parse_fail += 1
+            self._dump_rawfail(content, dimension)
             return None
         return obj
 
@@ -579,9 +650,11 @@ def judge_curriculum(
     topic_judgments: List[TopicJudgment] = []
     for tc in card.topics:
         tj = TopicJudgment(rank=tc.rank, keywords=tc.keywords, titles=tc.titles)
-        for _ in range(repeats):
+        for rep in range(repeats):
+            client.set_context(curriculum=card.name, topic_rank=tc.rank,
+                               keywords=tc.keywords[:10], repeat=rep)
             v = client.ask(_TOPIC_VALIDITY_SYSTEM, _topic_validity_user(tc),
-                           _TOPIC_VALIDITY_SCHEMA)
+                           _TOPIC_VALIDITY_SCHEMA, dimension="topic_validity")
             if v is not None:
                 try:
                     tj.validity_ratings.append(int(v["rating"]))
@@ -589,7 +662,8 @@ def judge_curriculum(
                     tj.validity_reasons.append(str(v.get("reason", "")))
                 except (KeyError, ValueError, TypeError):
                     client.n_parse_fail += 1
-            k = client.ask(_KEYWORD_SYSTEM, _keyword_user(tc), _KEYWORD_SCHEMA)
+            k = client.ask(_KEYWORD_SYSTEM, _keyword_user(tc), _KEYWORD_SCHEMA,
+                           dimension="keyword_meaningfulness")
             if k is not None:
                 raw = k.get("noise_keywords", [])
                 if isinstance(raw, list):
@@ -604,9 +678,12 @@ def judge_curriculum(
     pair_judgments: List[PairJudgment] = []
     for earlier, later in sample_ordered_pairs(card.topics, n_pairs, rng):
         pj = PairJudgment(earlier_rank=earlier.rank, later_rank=later.rank)
-        for _ in range(repeats):
+        for rep in range(repeats):
+            client.set_context(curriculum=card.name,
+                               earlier_rank=earlier.rank,
+                               later_rank=later.rank, repeat=rep)
             o = client.ask(_ORDER_SYSTEM, _order_pair_user(earlier, later),
-                           _ORDER_PAIR_SCHEMA)
+                           _ORDER_PAIR_SCHEMA, dimension="order_pair")
             if o is not None:
                 try:
                     pj.agree_votes.append(bool(o["agree"]))
@@ -694,6 +771,10 @@ def main() -> None:
                     help="restrict to one curriculum by display name "
                          "(e.g. joint-v1).")
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--num-predict", type=int, default=1536,
+                    help="max tokens the judge may generate per call (default "
+                         "1536). 512 truncated gemma4:31b's verbose structured "
+                         "output; 1536 leaves headroom for both judge models.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--json-out", type=Path, default=None,
                     help="dump the full per-item judgments as JSON.")
@@ -713,7 +794,14 @@ def main() -> None:
              f"{sorted(local)}. Run `ollama pull {args.model}`.")
         sys.exit(2)
 
-    client = JudgeClient(model=args.model, temperature=args.temperature)
+    model_slug = re.sub(r"[^A-Za-z0-9]+", "_", args.model).strip("_")
+    rawfail_path = QC_CACHE / f"llm_judge_{model_slug}_rawfails.jsonl"
+    # Fresh dump per run (raw failures are re-parseable from disk afterward).
+    if rawfail_path.exists():
+        rawfail_path.unlink()
+    client = JudgeClient(model=args.model, temperature=args.temperature,
+                         num_predict=args.num_predict,
+                         rawfail_path=rawfail_path)
 
     curricula = _CURRICULA
     if args.only:
@@ -744,9 +832,12 @@ def main() -> None:
         sys.exit(1)
 
     elapsed = time.time() - t0
+    fail_rate = client.n_parse_fail / max(1, client.n_calls)
     _log(f"done: {client.n_calls} ollama calls, "
-         f"{client.n_parse_fail} parse/transport failures, {elapsed:.0f}s "
-         f"({elapsed / max(1, client.n_calls):.1f}s/call)")
+         f"{client.n_parse_fail} parse/transport failures ({fail_rate:.1%}), "
+         f"{elapsed:.0f}s ({elapsed / max(1, client.n_calls):.1f}s/call)")
+    if client.n_parse_fail and rawfail_path.exists():
+        _log(f"raw failures dumped to {rawfail_path}")
 
     print_dashboard(results)
 
@@ -756,8 +847,10 @@ def main() -> None:
             "repeats": repeats,
             "pairs_per_curriculum": args.pairs,
             "seed": args.seed,
+            "num_predict": args.num_predict,
             "n_ollama_calls": client.n_calls,
             "n_parse_failures": client.n_parse_fail,
+            "parse_failure_rate": client.n_parse_fail / max(1, client.n_calls),
             "elapsed_seconds": elapsed,
             "results": [r.to_dict() for r in results],
         }

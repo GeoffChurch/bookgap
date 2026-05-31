@@ -584,3 +584,34 @@ the wiki-native validity edge are the judge-specific parts. Given gemma4's 21%
 parse-failure rate, **`gpt-oss:20b` remains the better default judge** (cheaper,
 3× cleaner transport); `gemma4:31b` is a useful stricter second opinion that
 happens to *sharpen* the same verdict.
+
+#### Robustness fix + corrected re-run (gemma4 parse failures: 21% → 2%)
+
+The gemma4 run above suffered a **21% (117/558) malformed-JSON rate**, diagnosed as **truncation**
+(`num_predict=512` too low for gemma4's verbose structured output). Harness fix in
+`curriculum_llm_judge.py`: **`num_predict` 512→1536**, a **tolerant balanced-`{...}` extraction**
+attempted before counting a failure, and **persist-raw-on-failure**
+(`cache/.curriculum_quality/llm_judge_<model>_rawfails.jsonl`, so residual failures are re-parseable
+from disk — closes the gap). The fix is model-agnostic (would also cut gpt-oss's 7%). Re-ran gemma4
+identically.
+
+- **Failure rate 21.0% → 2.0%** (11/558) — confirms truncation was the cause. The residual **11** are
+  persisted to `rawfails.jsonl` (salvageable, not silently dropped).
+- **7/8 previously vote-lost topics recovered** (lone holdout: wiki-native rank 8, still fails all 3,
+  now captured in the raw dump for inspection).
+- **The earlier "v1 grab-bag vote lost to transport noise" caveat resolves — into a genuine
+  cross-model *disagreement*.** With its votes recovered, gemma4 rates the v1 toolkit topic
+  **`is_grab_bag=false` (3/3, validity 3)** — it genuinely doesn't call it a grab-bag, whereas gpt-oss
+  does (`true`, 3/3). Both still flag its noise keywords `keras/kubeflow/lightgbm/tensorflow`
+  unanimously. **⇒ the noise-keyword axis is the robust cross-model litmus; the grab-bag *flag* is
+  judge-dependent.** (The m32 bibliographic leak stays caught decisively: gemma4 rates rank-6 MT
+  `1/1/1, is_grab_bag=true`, tokens `icanhazpdf/mistral/polyanalyst`.)
+- **Corrected dashboard (gemma4, 2% failures):** validity **m16 2.43** > m32 2.00 (> joint-v1 2.14 >
+  wiki 2.09 > joint-v2 2.07); order-sensibility m16/joint **0.70** > m32 0.60; #topics-with-noise
+  **m16 6 < m32 9**. *(Total noise-kw counts rose vs the buggy run — e.g. wiki 15→28 — only because
+  fewer parse failures means more keyword judgments now return; not a quality regression.)*
+- **Conclusions hold and strengthen.** **m16-cleaner-than-m32** survives the corrected numbers (higher
+  validity, noise in fewer topics, better ordering) → **32=default / 16=quality-first** stands. And on
+  *transport* gemma4 is now cleaner than gpt-oss (**2% vs 7%**), so the earlier "gpt-oss is the better
+  default" note is now purely a **speed** call (gpt-oss ~5× faster), not a reliability one — gemma4 is
+  no longer transport-disqualified, and is both stricter and (post-fix) cleaner.
