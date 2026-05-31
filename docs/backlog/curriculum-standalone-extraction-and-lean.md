@@ -288,9 +288,34 @@ proxy** than a proof DAG. Do it only after Lean proves the method.
     `ground_truth_provider`/`sorry_provider` double as the gate.
   - **Phase 4 hook:** an arm IS a candidate provider `Goal -> proof_string`; see
     `docs/lean-eval-harness.md` "Interface notes for Phase 4".
-- (next) Phase 4 (the control/T1/T2 experiment). Also still pending: migrate the `curriculum/`
-  lib + this doc to `~/src/curriculum/` and split `curriculum_lean/` (+ Phases 3–4) to
-  `~/src/curriculum_lean/`.
+- **Phase 4 DONE** (2026-05-31). Added `curriculum_lean/experiment.py` (the ollama prover +
+  the four arms + dashboard) + `tests/test_experiment_extraction.py` (9 tests). Results +
+  dashboard + verdict + cost notes: `docs/lean-curriculum-experiment.md`. mypy-clean, all
+  curriculum_lean default tests pass.
+  - **Arms** (each is a provider `Goal -> proof_string`, scored by Phase-3 `score_task`):
+    `control` (monolithic), `t1` (monolithic + curriculum-selected prereq *statements* in
+    context), `t2_all` (whole kind-filtered cone bottom-up = the strawman), `t2_curriculum_a/_b`
+    (curriculum-selected subset bottom-up; (a) sees its own earlier proofs spliced as preceding
+    decls, (b) sees earlier statements only). Models run one at a time (31B/35B don't co-reside);
+    rows flushed per-arm to `results.jsonl`.
+  - **Three load-bearing pipeline fixes** (each flipped the pipeline from ~0 successes):
+    (1) **`think=False` is mandatory** — both gemma4:31b/qwen3.5:35b run their `thinking` block
+    past any feasible `num_predict` (>1536 tok, ~25–50 s) and never emit an answer; off, it's
+    ~1–6 s/gen. Trade-off: thinking-off proofs are weaker (right lemma, wrong Lean-4 surface
+    syntax). (2) **`by`-wrapping** — models return bare tactics without the leading `by`;
+    `extract_proof` detects tactic-first-token bodies and wraps them (term-mode left alone).
+    (3) **small `num_predict`** (256) — lets natural EOS end a short clean proof instead of a
+    long malformed one.
+  - **Verdict (honest).** Harness + four-arm separation + graded partial-progress all work. The
+    decomposition-arm *ranking matches the hypothesis* (`t2_curriculum` ≥ `t2_all` on
+    fraction-closed and partial-progress at ~40% fewer tokens — the *selection* effect), but the
+    *headline success-rate win* (decomposition closes a hard target the monolith misses) does
+    NOT appear with a local 31B/35B prover: it can't close the sub-lemmas either. `t1`
+    (context-only) slightly *hurt* (distraction). Absolute success only on the easy targets via
+    `control`. A scaled run needs a **stronger/API/Lean-tuned prover** (the binding constraint),
+    not harness changes. See the doc for the dashboard + scaled-run requirements.
+- (next) Phase 5 (Rust). Also still pending: migrate the `curriculum/` lib + this doc to
+  `~/src/curriculum/` and split `curriculum_lean/` (+ Phases 2–4) to `~/src/curriculum_lean/`.
 
 ## Pointers
 - Engine history + validated graph-generic features: `docs/backlog/curriculum-generalization-pedagogical-subspace.md`.
