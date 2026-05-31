@@ -485,3 +485,102 @@ quality-first alternative**, now with an extrinsic second opinion behind both.
   grab-bag count is liberal and ~7% of raw calls need the repeat-vote to recover);
   treat the named flags + reasons as the deliverable, the aggregate counts as
   directional.
+
+### Cross-model check — a second judge (`gemma4:31b`)
+
+To test whether the conclusions above are an artifact of one judge model, the
+*identical* harness (same prompts, dimensions, curricula, `--repeats 3`,
+`--pairs 10`, `--seed 0`, `temperature 0`; only the model swapped) was re-run
+with **`gemma4:31b`**, written model-keyed to
+`cache/.curriculum_quality/llm_judge_gemma4_31b.json` (the `gpt-oss:20b` run
+stays at `…_gptoss20b.json`). Same 558 calls; **~102 min** vs gpt-oss's ~21 min.
+
+**Side-by-side dashboard** (g = `gpt-oss:20b`, G = `gemma4:31b`; the
+`tool/brand+OCR` sub-row here is recomputed with one explicit classifier applied
+identically to *both* models — tool/brand names + OCR garbage only, excluding
+person-name and generic-bibliographic noise — so it is internally apples-to-apples
+and differs slightly from the hand-curated gpt-oss row in the section above):
+
+| semantic metric | dir. | v1 (g/G) | v2 (g/G) | m16 (g/G) | m32 (g/G) | wiki (g/G) |
+| :-- | :-: | --: | --: | --: | --: | --: |
+| topics judged | | 14 / 14 | 14 / 14 | 14 / 14 | 14 / 14 | 12 / 12 |
+| Topic validity (mean 1–5) | ↑ | 2.43 / 1.91 | 2.36 / 1.92 | 2.31 / **2.38** | 2.36 / 2.00 | **3.00** / 2.00 |
+| Topic validity (worst) | ↑ | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 |
+| #grab-bag topics | ↓ | 7 / 7 | 7 / 8 | 7 / 7 | 7 / **9** | **4 / 6** |
+| #noise keywords (all) | ↓ | 29 / 19 | 22 / 13 | 19 / **16** | 18 / 20 | 28 / 15 |
+| — tool/brand+OCR | ↓ | 10 / 9 | 6 / **0** | 6 / **4** | 7 / **9** | 1 / 3 |
+| #topics with noise kw | ↓ | 7 / 5 | 7 / 2 | 6 / 4 | 6 / 6 | 6 / 4 |
+| Order-sensibility rate | ↑ | 0.60 / 0.60 | 0.60 / 0.60 | **0.80 / 0.70** | 0.70 / **0.50** | 0.50 / 0.60 |
+| [noise] grab-bag agreement | — | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 |
+| [noise] order agreement | — | 1.00 / 1.00 | 0.93 / 1.00 | 1.00 / 1.00 | 0.97 / 1.00 | 0.97 / 1.00 |
+
+**Litmus — did gemma4 catch the two failures?**
+
+- **(a) v1 toolkit grab-bag — CAUGHT on the keyword axis, lost on grab-bag.**
+  gemma4's keyword-meaningfulness pass returns the toolkit topic's noise
+  **unanimously** (3/3): `['keras', 'kubeflow', 'lightgbm', 'tensorflow']`, with
+  the verbatim reason *"These are specific software libraries and platforms
+  rather than general machine learning concepts."* That is the litmus signal,
+  and it is right. **Caveat:** all three of that topic's *validity/grab-bag*
+  calls hit malformed-JSON parse failures, so its `is_grab_bag` defaulted to
+  `false` for lack of any surviving vote — i.e. the grab-bag flag was dropped by
+  *transport noise*, not by a judgment disagreement. gpt-oss flagged the same
+  topic `is_grab_bag=true` (3/3) and the same tokens.
+- **(b) v3-m32 bibliographic leak — CAUGHT, more decisively than gpt-oss.**
+  gemma4 returns exactly `['icanhazpdf', 'mistral', 'polyanalyst']` as noise on
+  the rank-6 MT topic *and* rates that topic's validity **1/1/1 with
+  `is_grab_bag=true`** — where gpt-oss rated it 3/3/3, `is_grab_bag=false`
+  (calling the keyword leak a keyword-only defect on an otherwise-real concept).
+  gemma4 is harsher but lands on the same offending tokens. Both also flag the
+  OCR-garbage topic (rank 13) `amp_schubert / maxwell / witkam`.
+
+**Cross-model agreement on the rankings.**
+
+- **m16 cleaner than m32 (noise + ordering): robust, and *stronger* under
+  gemma4.** Every axis the `top_m` knob touches moves the same direction under
+  both judges, and gemma4 widens the gap: noise-kw m16<m32 (g: 19 vs 18, a tie;
+  **G: 16 vs 20**), tool/brand+OCR m16<m32 (g: 6 vs 7; **G: 4 vs 9**),
+  order-sensibility m16>m32 (g: 0.80 vs 0.70; G: 0.70 vs 0.50), grab-bag m16<m32
+  (g: tied 7/7; **G: 7 vs 9**), and validity m16>m32 (g: a tie 2.31 vs 2.36;
+  **G: 2.38 vs 2.00**). Where gpt-oss saw m16 and m32 as near-ties on validity
+  and total noise, gemma4 sees a clear m16 advantage on *both*. **m16 is the #1
+  order-sensibility config under both judges.**
+- **wiki-native cleanest: agrees on grab-bag, disagrees on validity.** Both
+  judges rank wiki-native lowest in #grab-bag topics (g: 4, fewest; G: 6,
+  fewest). But gemma4 does **not** rank it highest on mean validity — it puts
+  **m16** highest (2.38) with wiki-native tied for second (2.00), whereas gpt-oss
+  put wiki-native clearly first (3.00). So "wiki-native is semantically cleanest"
+  is **robust on the grab-bag axis but model-dependent on the validity axis**:
+  gemma4 grades the whole field a half-point lower and does not single wiki-native
+  out for coherence.
+
+**Reliability head-to-head.**
+
+- **Malformed-JSON rate: gemma4 is much noisier.** `gemma4:31b` failed schema
+  decoding on **117/558 calls (21.0%)** vs gpt-oss's **39/558 (7.0%)** — 3× the
+  transport noise. Consequently **8/68 topics lost *all three* grab-bag votes to
+  parse failures** under gemma4 (vs **1/68** under gpt-oss); litmus (a) is the
+  casualty (see above). The repeat-vote absorbs most of this, but with a 21%
+  failure rate a single-repeat (`--quick`) gemma4 run would be unreliable.
+- **Self-consistency on *surviving* votes: gemma4 is more decisive.** On the
+  votes that did parse, gemma4 is **unanimous (1.00) on every grab-bag *and*
+  order verdict** across all five curricula — slightly tighter than gpt-oss,
+  whose order agreement dipped to 0.93–0.97 on three configs. gemma4 is also a
+  touch *more* liberal with grab-bag (8–9/14 on v2/m32 vs gpt-oss's 7), and
+  grades validity ~0.4–1.0 points lower across the board (a stricter rubric,
+  not a different ranking).
+- **Cost:** ~5× slower (102 min vs 21 min) for the same call budget.
+
+**Bottom line — do the conclusions survive the model swap?** **Yes, the
+load-bearing ones do.** Both litmus targets are caught by both judges on the
+trustworthy named-token axis (gemma4 even harsher on the m32 leak); the
+**`top_m=32` default / `top_m=16` quality-first** call is not just preserved but
+*reinforced* — gemma4 makes m16's noise-and-ordering edge larger and adds a
+validity edge gpt-oss didn't see. The one model-dependent finding is the *degree*
+of wiki-native's superiority: both agree it has the fewest grab-bag topics, but
+only gpt-oss rates it the most coherent overall. Treat the **named flags +
+reasons** as the cross-model-stable deliverable; the absolute validity means and
+the wiki-native validity edge are the judge-specific parts. Given gemma4's 21%
+parse-failure rate, **`gpt-oss:20b` remains the better default judge** (cheaper,
+3× cleaner transport); `gemma4:31b` is a useful stricter second opinion that
+happens to *sharpen* the same verdict.
