@@ -269,61 +269,78 @@ builders, **same** scorer. The one-shot path is untouched (default).
 
 ```bash
 conda run -p .conda python -m curriculum_lean.experiment --mode pilot \
-    --interactive --mathlib-commit c5ea00351
+    --interactive --mathlib-commit c211948581
 ```
 
-### LeanDojo 4.20.0 ⨯ Lean v4.30.0: two compat patches (the real blocker)
+### The trace version: downgraded to Lean v4.20.0 (2026-05-31)
 
-LeanDojo 4.20.0's Python is fine on v4.30.0, but **its two bundled Lean
-metaprograms do not work against Lean v4.30.0** — both needed surgical patches
-(originals saved as `curriculum_lean/lean/{ExtractData,Lean4Repl}.orig.lean`).
-The single root cause is the v4.30.0 **String API overhaul**:
+**Resolution.** The interactive trace runs on **mathlib4 v4.20.0** (commit
+`c211948581bde9846a99e32d97a03f0d5307c31e`) — the exact version LeanDojo 4.20.0
+is itself pinned to (its repo `lean-toolchain` is `leanprover/lean4:v4.20.0`).
+On v4.20.0 LeanDojo 4.20.0 traces with its **pristine, unpatched** bundled
+metaprograms; no `ExtractData.lean` / `Lean4Repl.lean` patches are needed. The
+decl-graph (`docs/lean_decl_graph.md`) is re-extracted from this same commit so
+the curriculum graph and the Dojo prover are coherent on one version.
 
-- `String.Pos` became a *dependent* type `(s : String) → Type`; the byte
-  position is now `String.Pos.Raw` (with `.byteIdx : Nat`), and
-  `Syntax.getPos?` returns `Option String.Pos.Raw`.
-- `Substring` was renamed `Substring.Raw`.
-- `String.trim` / `String.drop` now return a `String.Slice` (not `String`).
+**Why not v4.30.0 (the original target).** LeanDojo 4.20.0's
+`is_supported_version` has *no upper bound*, so newer Lean passes the version
+gate and the trace builds mathlib from source — then dies. We hit three
+escalating breakages, all from the Lean **4.25–4.27 String/AST overhaul**:
 
-**`ExtractData.lean`** (the tracer — runs at `lake env lean --run
-ExtractData.lean`): without the patch, `abbrev TraceM := StateT Trace MetaM`
-fails to elaborate because `Trace`'s `pos : String.Pos` fields no longer name a
-type, which cascades into every `TraceM Unit` mis-leveling (`Type 1` vs `Type 2`
-errors) and the whole trace **fails at the extraction step**. Patch: emit
-`String.Pos.Raw.byteIdx` / `Substring.Raw.toString` (the JSON byte-offset
-contract that `LeanFile.convert_pos(int)` consumes is unchanged) and replace
-`.trim`/`.drop` with `.trimAscii.toString`/`.drop ….toString`.
+1. & 2. **String API** (the first two patches, now reverted): `String.Pos`
+   became a dependent type (`String.Pos.Raw` with `.byteIdx`), `Substring` →
+   `Substring.Raw`, and `String.trim`/`.drop` now return a `String.Slice`. This
+   broke `ExtractData.lean`'s `TraceM` mis-leveling and `Lean4Repl.lean`'s JSON
+   stdin read (`DojoCrashError: Unexpected EOF`).
+3. **AST structure** (the unpatchable wall): even with the String patches the
+   v4.30.0 trace built mathlib fully, then **failed at AST parse** —
+   `ast.py:1480 assert len(children) == 2` in `CommandSectionNode.from_data`.
+   The v4.30.0 `section` command's concrete-syntax-tree shape no longer matches
+   what LeanDojo's hardcoded AST parser expects. This is not a one-line patch:
+   LeanDojo's `ast.py` encodes Lean's CST node-by-node, so each diverged command
+   node is a separate fix with no upstream support to lean on.
 
-**`Lean4Repl.lean`** (the interactive REPL — built per-trace as a `lean_lib`):
-this compiled with only deprecation warnings (so the trace "succeeds"), but every
-`run_tac` crashed with `DojoCrashError: Unexpected EOF` even though `Dojo` init
-returned the initial state correctly. Two distinct v4.30.0 changes:
-- the three `.trim` calls → `.trimAscii.toString` (same `String.Slice` issue:
-  feeding a `String.Slice` to `Json.parse` fails with "unexpected end of input");
-- **the real fix — the stdin read.** Under `lake env lean <file>`, Lean
-  v4.30.0's elaboration frontend **buffers/consumes process stdin**, so a
-  tactic-level `IO.getStdin.getLine` (which is how the `repl` tactic reads each
-  request) returns the **empty string** — the REPL parses `""` as JSON, throws
-  `[fatal] failed to parse JSON offset 0`, and the subprocess dies (the EOF the
-  Python side sees). Reading the **raw `/dev/stdin` handle**
-  (`IO.FS.Handle.mk "/dev/stdin" .read`, opened once before the request loop)
-  bypasses the frontend buffer and reads the request correctly. This was isolated
-  with a one-line tactic probe: `IO.getStdin.getLine` → `len=0` inside a tactic,
-  `/dev/stdin` → the full line. (Linux-specific; fine for this host/cluster.)
+**Why downgrade rather than keep patching.** The latest released `lean-dojo`
+(PyPI 4.20.0) is already installed, and upstream `main` is unchanged on the
+`ast.py` `section` path — there is **no `lean-dojo` (same-API) release that
+supports the v4.30.0 AST**. `lean-dojo-v2` (PyPI 1.0.9) is a *different package*
+with an incompatible API (`DynamicDatabase`/`HFProver`, no `LeanGitRepo`/`trace`
+/`Dojo.run_tac`) and no enumerated tested-version list — adopting it would mean
+rewriting `interactive.py` with no guarantee of 4.30.0 support. So the coherent
+fix is to trace the LeanDojo-validated version. v4.20.0 is the most recent stable
+Lean that is (a) new enough for LeanDojo 4.20.0's metaprograms — they use
+`const2ModIdx.get?` (a `Std.HashMap`, Lean ≥ 4.12) and `getImports : TSyntax …`,
+which is why an *older* target like v4.10.0 *also* fails (`Lean.HashMap.get?`
+missing) — and (b) old enough to predate the 4.25–4.27 String/AST overhaul.
 
-These patches are to the **installed** `lean_dojo` package files (the only copy;
-LeanDojo hardcodes their paths and copies them into each traced repo at trace
-time). They are exactly the fix the in-progress mathlib v4.30.0 trace needs at
-*its* extraction step — i.e. without the `ExtractData.lean` patch the mathlib
-trace would also have failed. **On any `pip install`/reinstall of `lean-dojo`,
-re-apply both patches** (diff against the `.orig.lean` backups). The clean
-long-term fix is upstreaming v4.30.0 support to LeanDojo.
+**Verification before the multi-hour run.** A tiny v4.20.0 toy repo containing a
+bare `section … end` and a named `section MySection … end MySection` traced
+cleanly (pristine metaprograms compiled; `FileNode.from_data` parsed both
+`section` nodes — i.e. **past `ast.py:1480`** — and all 3 theorems were traced).
+That confirmed the AST fix before launching the full mathlib trace.
+
+**Patch backups, for the record.** The pristine LeanDojo originals are at
+`curriculum_lean/lean/{ExtractData,Lean4Repl}.orig.lean` (now restored into the
+installed package). The v4.30.0-patched copies are preserved at
+`curriculum_lean/lean/{ExtractData,Lean4Repl}.v4_30_0_patched.lean` in case the
+target is ever bumped back to v4.30.0 (which would *also* need an `ast.py`
+`section`-node fix). On any `pip install`/reinstall of `lean-dojo`, the installed
+metaprograms revert to LeanDojo's bundled versions — which are exactly the
+`.orig.lean` files, so for the v4.20.0 trace **no re-patching is needed**.
+
+**Version-split caveat (follow-up).** The Goedel whole-proof verifier still runs
+on v4.30.0 (`~/src/mathlib4` + the preserved `cache/lean/decl_graph_v4.30.0/`).
+So the decl-graph and the interactive Dojo arm are coherent on v4.20.0, but a
+fully-coherent whole-proof-vs-interactive comparison would require re-running the
+Goedel side on v4.20.0. Deferred — not done in this change.
 
 ### Toy-trace validation (no mathlib needed)
 
 `curriculum_lean/lean/toy_repo/` is a tiny Lean-4-**core** repo (no mathlib:
-`lean-toolchain` v4.30.0, `lakefile.toml`, `Toy/Basic.lean` with four trivial
-tactic-mode theorems). LeanDojo traces it in seconds (`build_deps=False`). The
+`lean-toolchain` v4.20.0 — matching the mathlib trace target so the pristine
+LeanDojo metaprograms compile — `lakefile.toml`, `Toy/Basic.lean` with four
+trivial tactic-mode theorems). LeanDojo traces it in seconds
+(`build_deps=False`). The
 integration suite copies it into a temp git repo, traces it into an isolated
 `CACHE_DIR` (never touching `~/.cache/lean_dojo`'s mathlib trace), opens real
 `Dojo`s, and exercises the full loop:
@@ -348,13 +365,15 @@ conda run -p .conda python -m pytest \
 
 ### What remains to run on mathlib
 
-Only the **completed** trace (`leandojo_trace_1780237584`, building 2026-05-31)
-plus opening `Dojo`s on the sampled targets — no code change. `open_dojo_for_goal`
-maps `goal.module` (`Mathlib.Data.Nat.Basic`) → `Mathlib/Data/Nat/Basic.lean`
-and `goal.name` → the fully-qualified theorem; `prove_goal_interactive` returns
-a `dojo_error` result (not a raise) if a target is not locatable, so one bad
-target never sinks a sweep. Run with `--interactive --mathlib-commit c5ea00351`
-once the trace cache is present.
+Only the mathlib **v4.20.0** trace (relaunched 2026-05-31 as job
+`leandojo_trace_v420_*` after the v4.30.0 trace failed at the `ast.py:1480`
+`section`-AST assertion; see the version-downgrade section above) plus opening
+`Dojo`s on the sampled targets — no code change. `open_dojo_for_goal` maps
+`goal.module` (`Mathlib.Data.Nat.Basic`) → `Mathlib/Data/Nat/Basic.lean` and
+`goal.name` → the fully-qualified theorem; `prove_goal_interactive` returns a
+`dojo_error` result (not a raise) if a target is not locatable, so one bad
+target never sinks a sweep. Run with `--interactive --mathlib-commit
+c211948581` once the trace cache is present.
 
 ## Files
 
@@ -366,9 +385,10 @@ once the trace cache is present.
   (`make_interactive_provider` / `prove_goal_interactive`).
 - `curriculum_lean/lean/toy_repo/` — tiny traceable Lean-4-core repo for
   validating the loop end-to-end without mathlib.
-- `curriculum_lean/lean/{ExtractData,Lean4Repl}.orig.lean` — pristine backups of
-  the patched LeanDojo metaprograms (re-apply the v4.30.0 patches after any
-  `lean-dojo` reinstall).
+- `curriculum_lean/lean/{ExtractData,Lean4Repl}.orig.lean` — pristine LeanDojo
+  metaprograms (the v4.20.0 trace uses these as-is; they are now restored into
+  the installed package). `*.v4_30_0_patched.lean` are the obsolete v4.30.0
+  String-API-patched copies, kept only for a possible future v4.30.0 retarget.
 - `curriculum_lean/lean/ExtractSignatures.lean` — `#sig` metaprogram (the
   round-trippable signature extractor).
 - `curriculum_lean/tasks.py` — `extract_signatures`, the three breakage modes,

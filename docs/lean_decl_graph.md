@@ -7,24 +7,38 @@ This is the static, pre-extracted input that the Lean `GraphSource` (Phase 2 of
 Lean curriculum runs in pure-graph mode (identity → spectral-from-graph), so the
 graph alone carries all meaning.
 
-## Size (v4.30.0)
+> **Version note (2026-05-31).** The graph was re-extracted from mathlib4
+> **v4.20.0** (`c211948581bde9846a99e32d97a03f0d5307c31e`) — down from v4.30.0 —
+> so it stays coherent with the LeanDojo interactive trace, which only works on
+> v4.20.0 (LeanDojo 4.20.0's bundled metaprograms break on the Lean 4.25–4.27
+> String/AST overhaul; see `docs/lean-eval-harness.md`). The Size section below
+> is the re-extracted v4.20.0 graph; the v4.30.0
+> graph is preserved at `cache/lean/decl_graph_v4.30.0/` because it pairs with
+> the v4.30.0 Goedel whole-proof verifier (the version split is the one
+> follow-up caveat — a fully-coherent whole-proof-vs-interactive comparison
+> would re-run Goedel on v4.20.0).
 
-- **766,256** constants in the loaded environment; **466,633** kept as nodes,
-  **299,623** dropped as compiler-internal.
-- **12,619,118** directed edges (mean ~27 deps/decl, max out-degree 658; 0
-  self-loops, 195 sinks = axioms + primitive leaves).
-- Node kinds: 311,592 `theorem`, 130,227 `def`, 9,237 `ctor`, 6,802 `recursor`,
-  6,671 `inductive`, 2,085 `opaque`, **15 `axiom`** (the Lean/mathlib kernel
-  axioms), 4 `quot`. Every node has a non-empty pretty-printed statement;
-  22% carry a docstring.
-- Gzipped on disk: `nodes.tsv.gz` ~20.8 MB, `edges.tsv.gz` ~39.5 MB.
-- Extraction wall-clock: ~12 min (single-threaded; the cost is `ppExpr` per type).
-  `lake exe cache get` for the oleans: ~42 s.
+## Size (v4.20.0, re-extracted 2026-05-31)
+
+- **1,199,831** constants in the loaded environment; **357,486** kept as nodes,
+  **842,345** dropped as compiler-internal.
+- **9,643,363** directed edges (mean ~27 deps/decl). Self-loops dropped.
+- Node kinds: 239,240 `theorem`, 98,084 `def`, 7,287 `ctor`, 5,352 `recursor`,
+  5,250 `inductive`, 2,256 `opaque`, **13 `axiom`** (the Lean/mathlib kernel
+  axioms — two fewer than v4.30.0's 15, reflecting the older kernel), 4 `quot`.
+  24% of nodes carry a docstring.
+- Gzipped on disk: `nodes.tsv.gz` ~15.3 MB, `edges.tsv.gz` ~30.1 MB.
+- Extraction wall-clock: ~33 min (single-threaded; the cost is `ppExpr` per type).
+  `lake exe cache get` for the oleans: ~55 s (6772 files).
+
+The graph is smaller than the prior v4.30.0 extraction (466,633 nodes /
+12,619,118 edges) simply because v4.20.0 mathlib has fewer declarations than
+v4.30.0; this is expected, not a regression.
 
 Sanity-check of the depends-on direction: the highest in-degree (most-referenced)
-nodes are exactly the foundational primitives — `Eq` (274k refs), `congrArg`,
-`OfNat.ofNat`, `Nat`, `id`, `Eq.refl`, `Eq.trans` — which is where forward
-PageRank mass should accumulate.
+nodes are exactly the foundational primitives — `Eq` (205,776 refs),
+`OfNat.ofNat` (97,396), `congrArg` (94,508), `Nat` (86,100), `id` (71,174) —
+which is where forward PageRank mass should accumulate.
 
 ## What's on disk (not in git)
 
@@ -34,23 +48,36 @@ control; only the extraction script (`artifacts_scripts/lean/ExtractDeclGraph.le
 and this note are committed.
 
 ```
-~/src/mathlib4/                         # mathlib4 checkout @ v4.30.0 (prebuilt cache)
-cache/lean/decl_graph/nodes.tsv.gz      # node table
-cache/lean/decl_graph/edges.tsv.gz      # edge list
-cache/lean/setup.log                    # elan + cache-get sidecar
-cache/lean/extract.log                  # extraction sidecar
-cache/lean/run_cache_get.sh             # lake exe cache get wrapper (tracked job)
-cache/lean/run_extract.sh               # extraction wrapper (tracked job)
+~/src/mathlib4_v4.20.0/                  # mathlib4 checkout @ v4.20.0 (decl-graph + Dojo trace)
+~/src/mathlib4/                          # mathlib4 checkout @ v4.30.0 (Goedel whole-proof verifier)
+cache/lean/decl_graph/nodes.tsv.gz       # node table (v4.20.0)
+cache/lean/decl_graph/edges.tsv.gz       # edge list (v4.20.0)
+cache/lean/decl_graph_v4.30.0/           # preserved v4.30.0 graph (pairs with Goedel side)
+cache/lean/setup_v4.20.0.log             # elan + cache-get sidecar (v4.20.0)
+cache/lean/extract_v4.20.0.log           # extraction sidecar (v4.20.0)
+cache/lean/run_cache_get_v4.20.0.sh      # lake exe cache get wrapper (tracked job)
+cache/lean/run_extract_v4.20.0.sh        # extraction wrapper (tracked job)
 ```
 
 ## Toolchain / provenance
 
-- **elan** 4.2.2; **Lean** 4.30.0; **Lake** 5.0.0-src (`~/.elan/bin` on PATH).
-- **mathlib4** checked out at the stable tag **`v4.30.0`** (commit `c5ea00351`),
-  pinned toolchain `leanprover/lean4:v4.30.0`. A stable tag (not master, which
-  was on `v4.31.0-rc1`) is used so the prebuilt `.olean` cache is fully covered.
-- The oleans came from `lake exe cache get` (8459 files, ~42 s) — **no source
-  compile**. `import Mathlib` elaborates in ~3 s against the cache.
+- **elan** 4.2.2; **Lake** 5.x (`~/.elan/bin` on PATH); the toolchain is pinned
+  per-checkout by each repo's `lean-toolchain`.
+- **mathlib4** checked out at the stable tag **`v4.20.0`** (commit
+  `c211948581bde9846a99e32d97a03f0d5307c31e`), pinned toolchain
+  `leanprover/lean4:v4.20.0` — the version LeanDojo 4.20.0 itself pins (its repo
+  `lean-toolchain`), chosen so the decl-graph and the LeanDojo interactive
+  `Dojo` trace stay on one mathlib version. (Was v4.30.0 / `c5ea00351`; downgraded
+  2026-05-31 because LeanDojo 4.20.0 cannot trace v4.30.0 — its bundled
+  metaprograms break on the Lean 4.25–4.27 String/AST overhaul; full diagnosis
+  in `docs/lean-eval-harness.md`.)
+- The oleans came from `lake exe cache get` — **no source compile**.
+  `import Mathlib` elaborates in ~3 s against the cache.
+- **Version split caveat.** The Goedel whole-proof verifier still uses the
+  v4.30.0 checkout (`~/src/mathlib4`) and the preserved v4.30.0 graph. So the
+  decl-graph + interactive Dojo arm are coherent on v4.20.0, but a
+  fully-coherent whole-proof-vs-interactive comparison would require re-running
+  the Goedel side on v4.20.0 (follow-up, not done here).
 
 ## Schema
 
