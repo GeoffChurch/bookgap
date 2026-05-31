@@ -212,10 +212,163 @@ batch = cross_task_variance([score_task(t, arm) for t in tasks])
   are the low-level entry points if an arm wants to verify intermediate attempts
   itself (e.g. a repair loop) before submitting.
 
+## Interactive prover (Phase 4.5): tactic-by-tactic via LeanDojo `Dojo`
+
+The one-shot providers above hand a whole proof to `lake env lean` once: the
+model emits a complete `by …` block (or a term) and it either type-checks or it
+does not, with **no feedback**. That is the Phase-4 binding constraint — a weak
+local model routinely picks the *right lemma* but the *wrong Lean-4 surface
+syntax* and dies one-shot.
+
+`curriculum_lean/interactive.py` replaces that with a **tactic-by-tactic loop**
+over LeanDojo's traced `Dojo` environment. Per step:
+
+1. build a `TacticPrompt` from the current `state.pp` + the accepted-so-far
+   tactic script + the arm's context;
+2. ask the pluggable `TacticBackend` for the **next single tactic**;
+3. `dojo.run_tac(state, tactic)` →
+   - `ProofFinished` → QED (success);
+   - new `TacticState` → accept the tactic, advance, reset the per-step repair
+     counter;
+   - `LeanError` → feed `result.error` back into the prompt and let the model
+     fix *that one tactic*, up to `max_retries_per_step` times, then give up.
+
+**Per-step error feedback is the repair loop** — built into the protocol, not
+bolted on. The loop is bounded by `max_steps` (proof depth),
+`max_retries_per_step` (repair), and `wall_timeout` (total), and records
+attempts / tokens / wall-clock just like the one-shot path. The result's
+`stop_reason` (`qed` | `max_steps` | `wall_timeout` | `step_exhausted` |
+`given_up` | `empty_tactic` | `dojo_error`) classifies every exit.
+
+The loop is written against **duck-typed** result objects (classified by
+`_classify_result`: `.error`→error, class-name `Finished`→QED, `GivenUp`→given-up,
+else a state) so it unit-tests with a `FakeDojo` and runs against the real
+`lean_dojo` types interchangeably — importing `interactive.py` never requires a
+trace, and `lean_dojo` / `ollama` are imported lazily only when actually proving.
+
+**LLM backend is pluggable.** `TacticBackend.propose_tactic(prompt) -> TacticGen`
+is the seam. `OllamaTacticBackend` wraps the current local models (gemma4 /
+qwen3.5); the Goedel prover (or any API model) later only implements that one
+method.
+
+### How it slots into the four-arm ladder
+
+The arms (`control` / `t1` / `t2_all` / `t2_curriculum`) decide *which goals* and
+*what context*; interactive vs one-shot is just *how each goal is proved*. So the
+interactive backend is a **drop-in candidate provider** `Goal -> proof_string`
+(the same Phase-3/-4 contract): it opens a `Dojo` on the goal's theorem, drives
+the tactic loop, and returns the assembled `by\n  <tac1>\n  <tac2>…` string,
+which the **unchanged** graded scorer verifies exactly as a one-shot proof.
+
+`experiment.py` exposes this via `run_experiment(..., interactive=True,
+interactive_repo=<LeanGitRepo>)` (CLI: `--interactive`). It swaps
+`OllamaProver.make_provider` for `_interactive_single_goal_provider` (control,
+t1) and routes each `_score_decomposition` subgoal through
+`prove_goal_interactive` (t2_all, t2_curriculum a/b) — **same** arm context
+builders, **same** scorer. The one-shot path is untouched (default).
+
+```bash
+conda run -p .conda python -m curriculum_lean.experiment --mode pilot \
+    --interactive --mathlib-commit c5ea00351
+```
+
+### LeanDojo 4.20.0 ⨯ Lean v4.30.0: two compat patches (the real blocker)
+
+LeanDojo 4.20.0's Python is fine on v4.30.0, but **its two bundled Lean
+metaprograms do not work against Lean v4.30.0** — both needed surgical patches
+(originals saved as `curriculum_lean/lean/{ExtractData,Lean4Repl}.orig.lean`).
+The single root cause is the v4.30.0 **String API overhaul**:
+
+- `String.Pos` became a *dependent* type `(s : String) → Type`; the byte
+  position is now `String.Pos.Raw` (with `.byteIdx : Nat`), and
+  `Syntax.getPos?` returns `Option String.Pos.Raw`.
+- `Substring` was renamed `Substring.Raw`.
+- `String.trim` / `String.drop` now return a `String.Slice` (not `String`).
+
+**`ExtractData.lean`** (the tracer — runs at `lake env lean --run
+ExtractData.lean`): without the patch, `abbrev TraceM := StateT Trace MetaM`
+fails to elaborate because `Trace`'s `pos : String.Pos` fields no longer name a
+type, which cascades into every `TraceM Unit` mis-leveling (`Type 1` vs `Type 2`
+errors) and the whole trace **fails at the extraction step**. Patch: emit
+`String.Pos.Raw.byteIdx` / `Substring.Raw.toString` (the JSON byte-offset
+contract that `LeanFile.convert_pos(int)` consumes is unchanged) and replace
+`.trim`/`.drop` with `.trimAscii.toString`/`.drop ….toString`.
+
+**`Lean4Repl.lean`** (the interactive REPL — built per-trace as a `lean_lib`):
+this compiled with only deprecation warnings (so the trace "succeeds"), but every
+`run_tac` crashed with `DojoCrashError: Unexpected EOF` even though `Dojo` init
+returned the initial state correctly. Two distinct v4.30.0 changes:
+- the three `.trim` calls → `.trimAscii.toString` (same `String.Slice` issue:
+  feeding a `String.Slice` to `Json.parse` fails with "unexpected end of input");
+- **the real fix — the stdin read.** Under `lake env lean <file>`, Lean
+  v4.30.0's elaboration frontend **buffers/consumes process stdin**, so a
+  tactic-level `IO.getStdin.getLine` (which is how the `repl` tactic reads each
+  request) returns the **empty string** — the REPL parses `""` as JSON, throws
+  `[fatal] failed to parse JSON offset 0`, and the subprocess dies (the EOF the
+  Python side sees). Reading the **raw `/dev/stdin` handle**
+  (`IO.FS.Handle.mk "/dev/stdin" .read`, opened once before the request loop)
+  bypasses the frontend buffer and reads the request correctly. This was isolated
+  with a one-line tactic probe: `IO.getStdin.getLine` → `len=0` inside a tactic,
+  `/dev/stdin` → the full line. (Linux-specific; fine for this host/cluster.)
+
+These patches are to the **installed** `lean_dojo` package files (the only copy;
+LeanDojo hardcodes their paths and copies them into each traced repo at trace
+time). They are exactly the fix the in-progress mathlib v4.30.0 trace needs at
+*its* extraction step — i.e. without the `ExtractData.lean` patch the mathlib
+trace would also have failed. **On any `pip install`/reinstall of `lean-dojo`,
+re-apply both patches** (diff against the `.orig.lean` backups). The clean
+long-term fix is upstreaming v4.30.0 support to LeanDojo.
+
+### Toy-trace validation (no mathlib needed)
+
+`curriculum_lean/lean/toy_repo/` is a tiny Lean-4-**core** repo (no mathlib:
+`lean-toolchain` v4.30.0, `lakefile.toml`, `Toy/Basic.lean` with four trivial
+tactic-mode theorems). LeanDojo traces it in seconds (`build_deps=False`). The
+integration suite copies it into a temp git repo, traces it into an isolated
+`CACHE_DIR` (never touching `~/.cache/lean_dojo`'s mathlib trace), opens real
+`Dojo`s, and exercises the full loop:
+
+- a GOOD tactic advances the state / reaches `ProofFinished` (QED detected);
+- `constructor` splits one goal into two (multi-goal state handling);
+- a BAD tactic surfaces a real `LeanError` whose text is fed back, and the
+  loop's repair path recovers when the next proposal is the fix;
+- `prove_interactive` closes a toy goal end-to-end with a scripted backend.
+
+Loop logic (state advance, QED, per-step error-feedback/repair, the
+step/retry/wall-clock budgets, empty-tactic & given-up paths, accounting) is also
+unit-tested against a `FakeDojo` with **no toolchain** (default suite).
+
+```bash
+# loop logic (fast, no Lean):
+conda run -p .conda python -m pytest curriculum_lean/tests/test_interactive_loop.py -q
+# end-to-end on the toy trace (needs ~/.elan; traces in ~1-2 min):
+conda run -p .conda python -m pytest \
+    curriculum_lean/tests/test_interactive_toy_trace.py -m integration -v -s
+```
+
+### What remains to run on mathlib
+
+Only the **completed** trace (`leandojo_trace_1780237584`, building 2026-05-31)
+plus opening `Dojo`s on the sampled targets — no code change. `open_dojo_for_goal`
+maps `goal.module` (`Mathlib.Data.Nat.Basic`) → `Mathlib/Data/Nat/Basic.lean`
+and `goal.name` → the fully-qualified theorem; `prove_goal_interactive` returns
+a `dojo_error` result (not a raise) if a target is not locatable, so one bad
+target never sinks a sweep. Run with `--interactive --mathlib-commit c5ea00351`
+once the trace cache is present.
+
 ## Files
 
 - `curriculum_lean/verify.py` — scratch-file splice + `lake env lean` + graded
   `VerificationResult` (`verify_candidate`, `verify_theorem`, `VerifyStatus`).
+- `curriculum_lean/interactive.py` — the interactive `Dojo` loop
+  (`prove_interactive`, `InteractiveResult`), the pluggable `TacticBackend` /
+  `OllamaTacticBackend`, `open_dojo_for_goal`, and the drop-in candidate provider
+  (`make_interactive_provider` / `prove_goal_interactive`).
+- `curriculum_lean/lean/toy_repo/` — tiny traceable Lean-4-core repo for
+  validating the loop end-to-end without mathlib.
+- `curriculum_lean/lean/{ExtractData,Lean4Repl}.orig.lean` — pristine backups of
+  the patched LeanDojo metaprograms (re-apply the v4.30.0 patches after any
+  `lean-dojo` reinstall).
 - `curriculum_lean/lean/ExtractSignatures.lean` — `#sig` metaprogram (the
   round-trippable signature extractor).
 - `curriculum_lean/tasks.py` — `extract_signatures`, the three breakage modes,
@@ -223,8 +376,9 @@ batch = cross_task_variance([score_task(t, arm) for t in tasks])
 - `curriculum_lean/score.py` — `score_task`, `TaskScore`/`GoalScore`/`BatchScore`,
   `cross_task_variance`, the ground-truth / sorry baselines.
 - `curriculum_lean/tests/` — `test_verify_parsing.py` + `test_tasks_structure.py`
-  (pure-Python, default suite) and `test_lean_harness.py` (Lean-invoking, marked
-  `integration`, incl. the validation gate).
+  + `test_interactive_loop.py` (pure-Python, default suite) and
+  `test_lean_harness.py` + `test_interactive_toy_trace.py` (Lean-invoking, marked
+  `integration`, incl. the validation gate + the toy-trace interactive loop).
 
 Run the gate:
 
