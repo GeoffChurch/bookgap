@@ -3,8 +3,11 @@
 A reusable, **intrinsic** (no external data) basket of metrics that scores a
 built curriculum so we stop eyeballing topic orderings and clusterings. This is
 the §B-intrinsic deliverable of
-`docs/backlog/curriculum-diffusion-and-quality-metrics.md`. Extrinsic proxies
-(reference syllabus / LectureBank / LLM-as-judge) are deferred.
+`docs/backlog/curriculum-diffusion-and-quality-metrics.md`. The **extrinsic
+LLM-as-judge** layer (§B-extrinsic) — which catches the *semantic* failures this
+structural basket provably misses — is now built too; see
+[Extrinsic: LLM-as-judge](#extrinsic-llm-as-judge) at the bottom. The remaining
+extrinsic proxies (reference syllabus / LectureBank) are still deferred.
 
 - **Scorer:** `artifacts_scripts/curriculum/curriculum_quality.py`. The core is a
   *pure* function `score_curriculum(CurriculumInputs) -> dict[str, float]` (arrays
@@ -321,3 +324,164 @@ row is `frontier` (−0.71→−0.66, essentially unchanged), and Sim→Tgt-asce
 read as *valid only when the target coincides with the curriculum goal*; for
 wiki-native it reports target-geometry, not an ordering defect. The real
 wiki-native failures remain its **6 singletons** and crowding, not its ordering.
+
+## Extrinsic: LLM-as-judge
+
+The structural basket above catches *structural* failures (singletons, balance,
+modularity, ordering geometry) but **provably misses two semantic ones** — both
+documented above as the prime motivation for an extrinsic phase:
+
+- (a) v1's **pytorch/keras toolkit grab-bag** topic (rank 12: `learning,
+  machine_learning, net, kubeflow, tensorflow, lightgbm, keras`) — embed-coherent
+  (keyword-coherence rates it fine) and lexically distinct (high Jaccard), but
+  pedagogically a *tool list*, not a teachable concept;
+- (b) v3-m32's **bibliographic / tool / OCR keyword leak** (`icanhazpdf`,
+  `polyanalyst`, `mistral` in the machine-translation topic; OCR garbage
+  `amp_schubert`, `witkam`) — which the structural metrics rate as the *cleanest*
+  config (best balance/modularity/singletons).
+
+The extrinsic layer is an **LLM-as-judge** over the project's **local ollama**
+adapter (the standing rule: LLM eval goes through local ollama, never the OpenAI
+Batch API). Scorer: `artifacts_scripts/curriculum/curriculum_llm_judge.py`. It
+reuses the *same* cached curricula as the intrinsic scorer
+(`cache/.curriculum_quality/`), parsing each cache's committed `report*.md`
+"Topic Overview" table for per-topic keywords + representative titles — that
+table is already emitted in curriculum (prerequisite → frontier) order, so the
+judge reuses the pipelines' own ordering rather than re-deriving it.
+
+```bash
+# default run (model gpt-oss:20b, 3 repeats/item for an agreement read):
+conda run -p .conda python -m artifacts_scripts.curriculum.curriculum_llm_judge \
+    --json-out cache/.curriculum_quality/llm_judge_gptoss20b.json
+# quick single-repeat look at one curriculum:
+conda run -p .conda python -m artifacts_scripts.curriculum.curriculum_llm_judge \
+    --quick --only joint-v1
+```
+
+**Design (semantic dimensions the structural basket can't see):** all outputs
+are **structured** (ollama `format=<json schema>` — never free text) and the
+prompts are **neutral** (1–5 scale with both poles described; the judge is never
+told which answer we want). Three judged dimensions:
+
+1. **Topic pedagogical validity** (per topic, from its keywords + representative
+   titles): a 1–5 `rating` (5 = coherent teachable concept, 1 = grab-bag /
+   tool-list / infrastructure / bibliographic-noise cluster), a boolean
+   `is_grab_bag`, and a one-line reason. The litmus for (a).
+2. **Prerequisite-ordering correctness** (per sampled ordered pair i<j, with i
+   taught earlier): `agree`/disagree that A-before-B is sensible + reason,
+   aggregated to an **order-sensibility rate**. (All adjacent steps + random
+   non-adjacent pairs, capped at `--pairs 10`.)
+3. **Keyword meaningfulness** (per topic): which top keywords are
+   bibliographic / tool-brand / OCR-noise tokens rather than genuine concepts.
+   Flags are kept only if they (i) appear in the topic's actual keyword list and
+   (ii) are flagged by a **majority** of repeats. The litmus for (b).
+
+Bounded by design: ~12–15 topics × 2 calls (validity + keyword) + ~10 ordered
+pairs, each ×`--repeats` (default 3, majority-voted with a per-item agreement
+read). The default run = **558 ollama calls, ~21 min** on the local box.
+
+### Semantic dashboard (model `gpt-oss:20b`, 3 repeats)
+
+| semantic metric | dir. | joint-v1 | joint-v2 | v3-m16 | v3-m32 | wiki-native |
+| :-- | :-: | --: | --: | --: | --: | --: |
+| topics judged | | 14 | 14 | 14 | 14 | 12 |
+| Topic validity (mean 1–5) | ↑ | 2.43 | 2.36 | 2.31 | 2.36 | **3.00** |
+| Topic validity (worst topic) | ↑ | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| #grab-bag topics flagged | ↓ | 7 | 7 | 7 | 7 | **4** |
+| #noise keywords flagged (all kinds) | ↓ | 29 | 22 | 19 | 18 | 28 |
+| — of which bibliographic/tool/OCR | ↓ | 7 | 9 | **5** | 7 | **0** |
+| #topics with noise kw | ↓ | 7 | 7 | 6 | 6 | 6 |
+| Order-sensibility rate | ↑ | 0.60 | 0.60 | **0.80** | 0.70 | 0.50 |
+| [noise] grab-bag vote agreement | — | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| [noise] order vote agreement | — | 1.00 | 0.93 | 1.00 | 0.97 | 0.97 |
+
+Higher = better: topic validity, order-sensibility rate. Lower = better:
+#grab-bag, #noise keywords, #topics-with-noise. `[noise]` rows are the judge's
+**self-consistency across repeats** (1.0 = unanimous) — a reliability read, not a
+quality axis. The "bibliographic/tool/OCR" sub-row isolates the specific
+keyword-meaningfulness defect the intrinsic `#bibliographic-noise kw` row tracks
+(tool/brand names + OCR garbage), separated post-hoc from person-name and generic
+noise the judge also flags.
+
+### Litmus — did the judge catch what the structural basket missed?
+
+**Both litmus targets: caught, unanimously.**
+
+- **(a) v1 toolkit grab-bag — CAUGHT.** v1's rank-12 topic is flagged
+  `is_grab_bag=true` (3/3 repeats, agreement 1.00), and its keyword-meaningfulness
+  pass returns exactly **`['keras', 'kubeflow', 'lightgbm', 'net', 'tensorflow']`**
+  as tool noise. The reason text: *"blends core machine-learning concepts with a
+  collection of libraries and frameworks … a loose, tool-heavy theme rather than a
+  single coherent concept."* This is the topic *no intrinsic metric here saw*
+  (keyword-coherence-embed and Jaccard both rate it clean).
+- **(b) v3-m32 bibliographic leak — CAUGHT.** m32's machine-translation topic
+  (rank 6) returns exactly **`['icanhazpdf', 'mistral', 'polyanalyst']`** as noise,
+  with the reason *"these refer to a website, a software tool, and a product name
+  rather than core NLP/ML concepts,"* and the OCR-garbage topic (rank 13) returns
+  `['amp', 'amp_schubert', 'maxwell', 'witkam']`. Note the judge rates that rank-6
+  topic's *overall validity* at 3 with `is_grab_bag=false` — its core (MT/word
+  embeddings) is a real concept; the defect is **keyword-level**, which is why
+  keyword-meaningfulness is a *separate* dimension from grab-bag detection and is
+  the right axis for (b).
+
+So the extrinsic layer **earns its keep**: it surfaces, in plain language with
+the exact offending tokens, the two semantic failures that were previously only
+catchable by eyeballing.
+
+### m32-vs-m16 semantic verdict (informing the `top_m` default)
+
+**Nuanced, and it confirms the intrinsic finding rather than overturning it.** On
+the *specific* bibliographic/tool/OCR keyword axis — the one the intrinsic
+`#bibliographic-noise kw (top-8)` row tracks (2 vs 5 there) — the judge agrees in
+**direction**: **m16 = 5, m32 = 7** flagged bibliographic/tool/OCR tokens, so
+**m32 is semantically worse on keyword-meaningfulness**, exactly as the intrinsic
+metric said. (The two counts differ in magnitude because the judge parses the
+report's **top-7** keyword column, not the manual top-8 count, and tallies every
+flagged token rather than a curated list — but the m16 < m32 ordering holds.)
+The *total* noise count is near-tied (m16 = 19, m32 = 18) only because m16 carries
+a whole **person-name** topic (rank 2: `john, turing, martin, …`, 7 name tokens
+the judge also flags) that m32 lacks — name noise, a different blemish from the
+tool/bibliographic leak the `top_m` knob actually controls.
+
+Topic *validity* is statistically indistinguishable between the two (m16 2.31 vs
+m32 2.36; identical grab-bag count 7; both worst-topic 1.00) — the judge does not
+see a pedagogical-coherence difference. Where m16 is *better* is **order
+sensibility (0.80 vs 0.70)**, the cleaner prerequisite ordering.
+
+**Net for the default:** the extrinsic layer **reinforces** the intrinsic
+synthesis verdict — `top_m=32` buys coverage + structural balance at the cost of a
+**measurably noisier keyword profile** (more tool/bibliographic tokens), while
+`top_m=16` is the **cleaner-topics, better-ordered** operating point. Neither the
+intrinsic nor the extrinsic layer finds a *pedagogical-validity* gap; the trade is
+purely coverage-and-structure (favoring 32) vs keyword-cleanliness-and-ordering
+(favoring 16). We keep **32 as the committed default** and **16 as the
+quality-first alternative**, now with an extrinsic second opinion behind both.
+
+### Judge reliability — an honest read
+
+- **Self-consistency is high.** Across all five curricula the grab-bag vote
+  agreement is **1.00** (every topic's grab-bag verdict is unanimous over 3
+  repeats at temperature 0) and the order-pair agreement is **0.93–1.00**. The
+  two litmus flags are unanimous. So the *flags we report are stable*, not
+  coin-flips.
+- **Transport noise is real but absorbed.** `gpt-oss:20b` emitted malformed /
+  truncated JSON on **39/558 calls (7.0%)** despite schema-constrained decoding;
+  with 3 repeats + majority voting these drop out without changing a verdict. A
+  single-repeat (`--quick`) run is therefore *less* trustworthy — keep ≥3 repeats
+  for any reported number.
+- **The judge is liberal with `is_grab_bag`.** It flags **7/14** topics for the
+  joint configs, including defensible-but-debatable calls (person-name clusters,
+  the academic-publishing topic). This makes the *absolute* grab-bag count a
+  blunt instrument; the **specific, named flags** (the toolkit topic, the
+  `icanhazpdf` tokens) are where the signal is, and those are exactly right. Read
+  the count as "how many topics look non-teachable to a careful reviewer" (so
+  wiki-native's 4-vs-the-joints'-7 and its higher mean validity 3.00 is a genuine
+  separation), and read the per-topic keyword/reason output for the actionable
+  detail.
+- **Bottom line:** the layer is **reliable enough to separate the configs on the
+  axes it was built for** — it catches both semantic failures the structural
+  basket misses, with unanimous agreement, and corroborates the m32-noisier /
+  m16-cleaner read. It is *not* a precise pedagogical-quality oracle (the
+  grab-bag count is liberal and ~7% of raw calls need the repeat-vote to recover);
+  treat the named flags + reasons as the deliverable, the aggregate counts as
+  directional.

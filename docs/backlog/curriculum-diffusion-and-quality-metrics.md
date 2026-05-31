@@ -115,4 +115,23 @@ metric-validity preference).
   the negative ascent is a target-geometry artifact (the OA-article-centroid target
   sits near foundations, not at wiki's GPT/embedding frontier) — Sim→Tgt-ascent is
   valid only when the target coincides with the curriculum destination.
-- [ ] **B-extrinsic (last)** — syllabus / LectureBank / LLM-judge validation.
+- [x] **B-extrinsic — LLM-judge** *(done — `docs/curriculum-quality-metrics.md`
+  §"Extrinsic: LLM-as-judge")* — built the local-ollama LLM-as-judge
+  `artifacts_scripts/curriculum/curriculum_llm_judge.py` targeting the two
+  *semantic* failures the structural basket provably misses. Structured outputs
+  (ollama `format=`), neutral prompts, 3 dimensions (topic pedagogical validity +
+  `is_grab_bag`; prerequisite-ordering correctness → order-sensibility rate;
+  keyword meaningfulness → bibliographic/tool/OCR noise flags). Reuses the cached
+  curricula + parses each cache's committed report table for keywords + titles in
+  curriculum order. Model pinned `gpt-oss:20b`, ~558 calls / ~21 min for the
+  5-curriculum dashboard. **Litmus PASSED, unanimously:** caught (a) v1's toolkit
+  grab-bag (rank-12, flagged grab-bag, noise kw exactly
+  `keras/kubeflow/lightgbm/net/tensorflow`) and (b) v3-m32's bibliographic leak
+  (rank-6 noise kw exactly `icanhazpdf/mistral/polyanalyst`). **m32-vs-m16:** the
+  judge confirms the intrinsic verdict — m32 is worse on the bibliographic/tool/OCR
+  keyword axis (m16 5 vs m32 7), no pedagogical-validity gap; reinforces 32=default
+  / 16=quality-first. **Reliability:** grab-bag agreement 1.00, order agreement
+  0.93–1.00 over 3 repeats; but `gpt-oss:20b` returns malformed JSON on ~7% of
+  calls (absorbed by the repeat-vote) and is *liberal* with `is_grab_bag` (7/14) —
+  trust the named flags + reasons, read the counts as directional. Remaining
+  extrinsic proxies (reference syllabus / LectureBank) still open.
