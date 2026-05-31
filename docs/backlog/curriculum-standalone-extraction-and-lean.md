@@ -210,8 +210,36 @@ proxy** than a proof DAG. Do it only after Lean proves the method.
   curriculum (context-length). Designing that selection is part of Phase 4.
 
 ## Status / working notes
-- (not started) — Phase 1 extraction is the entry point. First concrete step: define `GraphSource` +
-  `CurriculumConfig`, lift the modules listed in Phase 0, parity-gate against a bookgap curriculum.
+- **Phase 1 + Phase 0-bis DONE** (2026-05-31). Extracted to a standalone `curriculum/` package
+  (top-level, parallel to `bookgap/`). Fully decoupled: `grep -rn "import bookgap\|from bookgap"
+  curriculum/core/` is empty, and there are zero real bookgap import statements anywhere in the
+  package (core imports only stdlib + numpy/scipy/scikit-learn; `ollama` is lazy-imported inside the
+  judge layer). mypy-clean (`python -m mypy curriculum/ --ignore-missing-imports`), 49 tests pass.
+  - **Layout.** `graph_source.py` (`GraphSource` Protocol + `InMemoryGraphSource`), `config.py`
+    (`CurriculumConfig` with rank/select/cluster/order + embeddings_mode + layer toggles +
+    diffusion), `build.py` (`build_curriculum`). `core/` = minimal core (pagerank, dendrogram, rank,
+    order, circuitrank). `layers/` = optional (lpp incl. pure-graph spectral, clustering=community
+    detect, keywords, diffusion=GDC, quality basket, judge=ollama). `tests/` = unit + parity gate.
+  - **Parity gate PASSED.** `curriculum/tests/test_parity_wiki.py` loads the cached subgraph
+    `cache/wiki/store/enwiki_full/curriculum_subgraph_n40000.npz` as a plain `InMemoryGraphSource`
+    (no bookgap) and reproduces the committed `docs/wikipedia-curriculum.md` byte-for-byte: 12
+    topics, every per-rank cluster size, every top-5 representative page, every headline keyword.
+    The committed doc was made with the demo's DEFAULTS (raw-PR-mass selection + MASS order, NOT
+    bg-norm/frontier/LPP — those are the configurable knobs, validated separately in the doc's
+    sibling experiments); the gate matches what is actually committed.
+  - **Pure-graph path (Phase 0-bis) is first-class.** `embeddings_mode=spectral_from_graph` derives
+    geometry from the adjacency alone via `scipy.sparse.linalg.eigsh` on the hub-suppressed
+    normalized Laplacian (identity-feature link-LPP; no dense `X L Xᵀ`); `community_detect` clusters
+    the graph directly. Both tested with `node_embeddings() is None`.
+  - **For the Lean adapter (Phases 2–4):** implement the `GraphSource` Protocol over the proof-dep
+    graph (`adjacency` directed `i->j` = "decl i depends on premise j"; `seed_nodes` = the target
+    decls; `node_text` = decl names/statements; `node_embeddings` returns `None`). Set
+    `embeddings_mode=SPECTRAL_FROM_GRAPH` (or `COMMUNITY_DETECT`), `ordering=FRONTIER_ADJACENCY`. For
+    the extractive "selected subset, ordered" use, set `clustering.enabled=False` to get the bare
+    rank->select->order core (each selected node is its own "topic"); `Curriculum.topic_order` then
+    gives the prerequisite->frontier reconstruction order over the selected decls.
+- (next) Migrate this doc + the package to `~/src/curriculum/`, then split Phases 2–4 to
+  `~/src/curriculum_lean/`.
 
 ## Pointers
 - Engine history + validated graph-generic features: `docs/backlog/curriculum-generalization-pedagogical-subspace.md`.

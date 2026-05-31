@@ -53,7 +53,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["bookgap", "artifacts_scripts"]
+packages = ["bookgap", "artifacts_scripts", "curriculum"]
 py-modules = ["scope_manager"]
 
 [tool.pytest.ini_options]
