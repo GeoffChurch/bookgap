@@ -258,7 +258,37 @@ proxy** than a proof DAG. Do it only after Lean proves the method.
     subgraph to restrict the frontier-adjacency order to (induce `adj[cone][:,cone]` -> sub-second vs
     the ~45 s full-graph order — the recommended optimization); `decompose_target(...).ordered_names()`
     is the bottom-up reconstruction sequence, `top_n` the granularity/depth knob.
-- (next) Phase 3 (task generation + graded scorer). Also still pending: migrate the `curriculum/`
+- **Phase 3 DONE** (2026-05-31). Added `curriculum_lean/{verify,tasks,score}.py` + a Lean
+  metaprogram `curriculum_lean/lean/ExtractSignatures.lean`. Results + Phase-4 interface:
+  `docs/lean-eval-harness.md`. mypy-clean (12 files), 22 default tests pass, 10 `integration`
+  tests pass (~110 s).
+  - **Verification approach (`verify.py`).** Scratch file = `import Mathlib` + preamble +
+    spliced candidate; `lake env lean <scratch>` from `~/src/mathlib4` against the olean cache
+    (~3.2 s, ~6.6 GB/check). Output parsed into a graded `VerificationResult`
+    (`type_checks`/`sorry_free`/`n_open_goals`/`status` ∈ SUCCESS/SORRY/UNSOLVED_GOALS/
+    TYPE_ERROR/PARSE_ERROR/TIMEOUT/OTHER_ERROR). Per-call timeout with `start_new_session` so
+    the tree is reaped (never hangs). Classifier unit-tested on captured real lean output.
+  - **The crux that made the gate pass.** The decl-graph pp `statement` is *not* reliably
+    re-parseable. Re-derive the goal type from the loaded env via a `#sig` metaprogram with
+    `pp.coercions.types`/`pp.numericTypes`/`pp.universes` true (without these, coercion targets,
+    numeric-literal types, and universe levels are elided and `@<fqn>` fails to type-check). With
+    them, `theorem t : <type> := @<fqn>` verifies sorry-free for every sampled target. Ground
+    truth = `@<fqn>` (robust; the human source proof is a fragile non-requirement).
+  - **VALIDATION GATE PASSED.** sorry-mode, all four Phase-2 sanity targets: (a) ground-truth
+    `@<fqn>` → success (~3.2 s), (b) bare `sorry` → not-success (status SORRY). delete-cone
+    (Wilson, 5-goal chain): ground-truth reconstructs 100%, sorry 0%. derail: `over_apply` breaks
+    (parse_error), ground-truth fix verifies.
+  - **Task modes (`tasks.py`):** `make_sorry_task`, `make_delete_cone_task` (kind-filtered
+    cone via `prerequisite_cone` + `decompose_target` bottom-up order, target appended),
+    `make_derail_task` (`verify_broken=True` keeps the first genuinely-failing perturbation);
+    `sample_theorem_targets`, `extract_signatures` (batch `#sig` driver).
+  - **Scorer (`score.py`):** `score_task(task, provider)` where a provider is `Goal->proof_str`;
+    `TaskScore` (fraction_closed, sorries_remaining, mean_partial_progress, edit_distance,
+    placeholders attempts/tokens/wall_clock); `cross_task_variance` -> `BatchScore` (reliability).
+    `ground_truth_provider`/`sorry_provider` double as the gate.
+  - **Phase 4 hook:** an arm IS a candidate provider `Goal -> proof_string`; see
+    `docs/lean-eval-harness.md` "Interface notes for Phase 4".
+- (next) Phase 4 (the control/T1/T2 experiment). Also still pending: migrate the `curriculum/`
   lib + this doc to `~/src/curriculum/` and split `curriculum_lean/` (+ Phases 3–4) to
   `~/src/curriculum_lean/`.
 
