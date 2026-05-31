@@ -67,6 +67,12 @@ graph+embedding core.
    behavior-preserving. (Same discipline as the SP1 gap-parity gate.)
 4. On completion: **move this doc + the lib to `~/src/curriculum/`**.
 
+**Minimal-core first.** The Lean-extractive use (Phase 4) needs only **rank (PageRank) + order
+(topological / frontier-adjacency) + select (top-N)** — *no* clustering, keywords, embeddings, or LPP.
+So extract that minimal core first (it's tiny and unblocks the whole Lean experiment), and add
+clustering / keyword extraction / link-LPP / GDC diffusion / the quality basket as **optional layers**
+needed only by embedding-rich domains. Don't gate the Lean work on lifting the full engine.
+
 ### Phase 0-bis — pure-graph mode (no semantic embedder): meaning from dependency alone
 The embedder is **optional**. For domains where the graph *is* the data (Lean — see below), use
 **trivial/identity/one-hot node features** and let the dependency structure carry all meaning
@@ -125,16 +131,42 @@ check aggregates to a continuous score):
 This graded scorer is the key deliverable — it lets us see *degrees* of help from the curriculum,
 not just a pass-rate cliff.
 
-## Phase 4 — the experiment (curriculum vs baseline vs no-context)
+## Phase 4 — the experiment: in-context curriculum as a *proof decomposition*
 
-Framing: **graph-structured curriculum-RAG vs flat vector RAG vs no RAG.**
-- **Curriculum arm:** curriculum-*guided* context — given a broken declaration, surface its
-  prerequisite lemmas/concepts **in dependency order** (the relevant curriculum slice, not the whole
-  thing).
-- **Baseline arm:** flat top-k similarity premise retrieval (ReProver-style — already exists).
-- **Control arm:** no retrieval / no extra context.
-- Plug into an existing prover/agent loop (LeanDojo/ReProver) or a thin agent harness; score with the
-  Phase-3 graded metric + efficiency + reliability.
+**Reframe (away from RAG):** the curriculum here is not a retrieval index, it's a **proof plan /
+decomposition**, delivered **fully in context** (no external KB). RAG is only the eventual *scaling*
+axis — **in-context → (high-level index in context + retrieve details) → full KB** — and we **start
+in-context**. In Lean-extractive mode "the curriculum" is just the dependency cone of the target T,
+**ranked (PageRank) and topologically/frontier-ordered, top-N selected** — i.e. *which* and *how
+many* prerequisite theorems to surface, in *what order*.
+
+**Setup (matches the delete-a-set breakage mode):** delete T **together with a connected chunk of
+its prerequisite sub-DAG**, so the prerequisites aren't available to just cite — there's something to
+break up. The curriculum gives the **bottom-up reconstruction order**. The *granularity* — how far
+down the cone you reconstruct before "just assume it" — is the curriculum's selection knob (the
+top-N / depth cut).
+
+**Arms (a ladder, to separate two effects):**
+- **Control** — agent proves T monolithically, no extra context. (base time / tokens / success)
+- **T1 — context only:** monolithic, but with the prerequisite **statements** in context. Isolates
+  *does merely seeing the lemmas help?*
+- **T2 — decomposition:** prove the prerequisite subproblems first (in curriculum order), then T;
+  compare **summed** time/tokens/success over all subproblems. Isolates *does proving them first
+  help, beyond seeing them?* Decomposition may be **recursive** (a subproblem re-decomposed).
+
+**Context ablation inside T2** (a scaffolding spectrum; (a) is the most "curriculum"-like — cumulative
+learning from its own worked solutions):
+- (a) each subproblem-proof sees its **own proofs** of earlier subproblems;
+- (b) sees only the **statements** of earlier subproblems (citable lemmas, not their proofs);
+- (c) sees only the **immediate prerequisites as assumptions** (given hypotheses).
+
+**Metric (Phase-3 graded scorer):** headline axis is likely **success on hard theorems** — the win
+case is "monolith fails outright, decomposition succeeds." Time/tokens are *efficiency given success*,
+and must **count the decomposition overhead** (subproblems are extra proving). The claim holds if
+either (i) decomposition succeeds where monolith fails, or (ii) the summed cost is lower because each
+subproblem is much easier. Report reliability (variance across tasks/seeds).
+
+Plug into an existing prover/agent loop (LeanDojo/ReProver) or a thin agent harness.
 
 On completion, the Lean work (Phases 2–4) **splits to `~/src/curriculum_lean/`**; the library stays
 in `~/src/curriculum`.
