@@ -314,6 +314,43 @@ proxy** than a proof DAG. Do it only after Lean proves the method.
     (context-only) slightly *hurt* (distraction). Absolute success only on the easy targets via
     `control`. A scaled run needs a **stronger/API/Lean-tuned prover** (the binding constraint),
     not harness changes. See the doc for the dashboard + scaled-run requirements.
+- **Phase 4.5 — interactive prover via LeanDojo (IN PROGRESS, trace running 2026-05-31).**
+  Decided to adopt **LeanDojo** before any manual repair loop — it's the standard, paper-grade
+  choice. LeanDojo's traced mathlib gives a tactic-level `Dojo` environment
+  (`dojo.run_tac(state, tactic) -> state' | LeanError`), so the *interactive* arm replaces the
+  one-shot `provider(goal) -> proof` with a tactic-by-tactic loop where each step's
+  type-error/goal-state is fed back to the model — i.e. per-step repair is built in, not bolted
+  on. This directly targets the Phase-4 binding constraint (the local prover emits the right
+  lemma but wrong Lean-4 surface syntax and dies one-shot).
+  - **Compat (resolved up front — the biggest risk).** `pip install lean-dojo` →
+    **lean-dojo 4.20.0**. Its version gate
+    (`lean_dojo.data_extraction.lean.is_supported_version`) accepts any Lean `>= v4.3.0-rc2`
+    with **no upper bound**, so our **Lean v4.30.0 passes cleanly**. We therefore trace the
+    **same** mathlib4 commit the decl-graph was extracted from — stable tag **v4.30.0**,
+    `c5ea00351` (LeanDojo resolves this to full hash
+    `c5ea00351c28e24afc9f0f84379aa41082b1188f`, `lean_version=v4.30.0`). **No version mismatch
+    with `cache/lean/decl_graph/`** — curriculum graph and Dojo prover stay on one mathlib
+    version; nothing to reconcile. (Side effect of the install: pydantic bumped 2.11.7→2.13.4 /
+    pydantic-core 2.33.2→2.46.4; bookgap still imports clean.)
+  - **Native tracing, no Docker.** lean-dojo 4.x removed the Docker path entirely (the old
+    `DISABLE_DOCKER` knob is gone; `docker info` fails on this host anyway). `trace(repo)` clones
+    mathlib from GitHub by commit into LeanDojo's **own** cache (`~/.cache/lean_dojo`, *outside*
+    this git repo) and builds + instruments it there — it does **not** reuse `~/src/mathlib4`.
+    Disk: ~198 GB free at launch (a full-mathlib trace is many GB but well within headroom).
+    No `GITHUB_ACCESS_TOKEN` set (optional; unauthenticated GitHub API was sufficient to resolve
+    the commit/toolchain — only a rate-limit risk, not a blocker).
+  - **Trace job (the long pole).** `artifacts_scripts/lean/trace_mathlib.py` (thin driver, commit
+    pinned) launched via `artifacts_scripts/lean/run_trace.sh` under **`bookgap.jobs`** (systemd
+    cgroup, tear-down-able as a tree). Flushed sidecar at `cache/lean/trace.log` (mirrors the
+    bookgap.jobs `cache/.jobs/<job_id>.log`). First run job id **`leandojo_trace_1780237584`**.
+    Confirmed actively building from source (lake module-by-module, `[N/8481] Built ...`); no
+    remote-cache hit for this commit so it's a full from-source build + trace pass — expect
+    **several hours**. Both traced data and the mathlib build stay out of git (`~/.cache` +
+    `/cache` is `.gitignore`d).
+  - **Follow-up phase (NOT wired yet):** stand up the Dojo↔experiment plumbing — add an
+    interactive prover backend to `curriculum_lean/` that opens a `Dojo` on a traced theorem and
+    drives the tactic loop with per-step error feedback, then add it as a fifth experiment arm
+    alongside the existing one-shot providers in `experiment.py`.
 - (next) Phase 5 (Rust). Also still pending: migrate the `curriculum/` lib + this doc to
   `~/src/curriculum/` and split `curriculum_lean/` (+ Phases 2–4) to `~/src/curriculum_lean/`.
 
