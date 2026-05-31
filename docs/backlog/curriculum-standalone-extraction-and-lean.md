@@ -238,7 +238,28 @@ proxy** than a proof DAG. Do it only after Lean proves the method.
     the extractive "selected subset, ordered" use, set `clustering.enabled=False` to get the bare
     rank->select->order core (each selected node is its own "topic"); `Curriculum.topic_order` then
     gives the prerequisite->frontier reconstruction order over the selected decls.
-- (next) Migrate this doc + the package to `~/src/curriculum/`, then split Phases 2–4 to
+- **Phase 2 DONE** (2026-05-31). Built `curriculum_lean/` (top-level, parallel to `curriculum/` and
+  `bookgap/`): `lean_graph_source.py` (`load_lean_graph` -> `LeanGraph` over the
+  `cache/lean/decl_graph/` TSVs, ~9.5 s / ~100 MB, CSR, name<->idx), `decompose.py`
+  (`decompose_target` = the extractive bg-norm-select + frontier-order core; `prerequisite_cone`
+  forward BFS), `sanity_check.py` (driver). mypy-clean, 5 unit tests pass (tiny synthetic graph).
+  Results: `docs/lean-curriculum-sanity.md`.
+  - **Pure-graph sanity check PASSED.** Four recognizable targets (Lagrange, quadratic reciprocity,
+    Wilson, IVT). Orientation is **correct** (foundations early, the target's immediate premises last
+    — e.g. IVT ends on `IsPreconnected`/`ContinuousOn`/`Set.Icc`; Wilson surfaces
+    `FiniteField.prod_univ_units_id_eq_neg_one` + `Finset.prod_Ico_id_eq_factorial`). Selected sets
+    read as real proof sketches. **bg-norm is essential** (and the default): raw single-seed forward
+    PR is dominated by universal hubs (`Eq`/`Nat`/`outParam`); bg-norm demotes them and surfaces the
+    target-specific lemmas. Cycle handling = frontier-adjacency `in-out` degree (no topo sort, no
+    condensation) worked. One caveat for Phase 3: mathlib's proof-term graph is heavy on typeclass
+    scaffolding (`.mk`/`.to…` projections) — add a `kind` filter for the displayed curriculum.
+  - **For Phase 3:** `LeanGraph.with_seeds`/`index_of`/`.names|.kinds|.modules|.statements` map
+    decls<->nodes; `prerequisite_cone(graph, target)` gives the delete-and-reconstruct cone AND the
+    subgraph to restrict the frontier-adjacency order to (induce `adj[cone][:,cone]` -> sub-second vs
+    the ~45 s full-graph order — the recommended optimization); `decompose_target(...).ordered_names()`
+    is the bottom-up reconstruction sequence, `top_n` the granularity/depth knob.
+- (next) Phase 3 (task generation + graded scorer). Also still pending: migrate the `curriculum/`
+  lib + this doc to `~/src/curriculum/` and split `curriculum_lean/` (+ Phases 3–4) to
   `~/src/curriculum_lean/`.
 
 ## Pointers
