@@ -36,7 +36,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 from artifacts_scripts.curriculum.config import CurriculumConfig
 from bookgap.subcloud import SubCloud
-from bookgap.util import Filter, LOGGER
+from bookgap.util import Filter, LOGGER, setup_logging
 
 
 def _l2(x: np.ndarray) -> np.ndarray:
@@ -52,6 +52,11 @@ def main() -> None:
                     help="domain-adaptation step 2: subtract per-genre means before cosine")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
+
+    # Attach a per-record-flushing FileHandler (+ console) so LOGGER.info isn't
+    # dropped by the handler-less "bookgap" logger (see book_own_gap).
+    setup_logging(log_name="book_toc_reconstruction", log_level="INFO",
+                  include_time=False, log_path=args.out.with_suffix(".log"))
 
     gap = json.loads(args.gap_json.read_text())
     bk = gap.get("book", gap)

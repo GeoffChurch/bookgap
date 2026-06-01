@@ -32,7 +32,7 @@ from omegaconf import OmegaConf
 from artifacts_scripts.curriculum.config import CurriculumConfig
 from bookgap.cloud_index import get_kball_coverage
 from bookgap.subcloud import SubCloud
-from bookgap.util import Filter, LOGGER
+from bookgap.util import Filter, LOGGER, setup_logging
 
 RADIUS_FRACTION_DEFAULT = 0.75  # bookgap/configs/gap/gap_config.py default
 
@@ -44,16 +44,26 @@ def main() -> None:
                     help="if >0, also dump the top-N books by own-gap size (the niche, "
                          "real-gap textbooks that make good reconstruction targets)")
     ap.add_argument("--subfield", default=None,
-                    help="scope to this OpenAlex subfield id (e.g. 1702 = AI); "
-                         "default = whole domain=3 Physical Sciences")
+                    help="scope to this OpenAlex subfield id (e.g. 1702 = AI)")
+    ap.add_argument("--field", default=None,
+                    help="scope to this OpenAlex field id (e.g. 17 = Computer Science); "
+                         "broader than --subfield. Default (neither) = whole domain=3.")
     ap.add_argument("--radius-fraction", type=float, default=RADIUS_FRACTION_DEFAULT)
     ap.add_argument("--sample", type=int, default=25, help="n nearest gap-article titles to log")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
 
+    # Without a handler the global "bookgap" LOGGER drops INFO records (they fall
+    # through to root's lastResort handler = stderr, WARNING+ only). setup_logging
+    # attaches a per-record-flushing FileHandler (live + persisted) + console.
+    setup_logging(log_name="book_own_gap", log_level="INFO", include_time=False,
+                  log_path=args.out.with_suffix(".log"))
+
     cfg = OmegaConf.structured(CurriculumConfig())
     if args.subfield:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(args.subfield)
+    if args.field:
+        cfg.experiment.cloud.filter_pair.pre.field = str(args.field)
     cloud = instantiate(cfg.experiment.cloud)
     LOGGER.info("Cloud: %s", cloud.name())
 
@@ -82,7 +92,8 @@ def main() -> None:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     payload: dict = {
-        "scope_subfield": args.subfield, "radius_fraction": args.radius_fraction,
+        "scope_subfield": args.subfield, "scope_field": args.field,
+        "radius_fraction": args.radius_fraction,
         "n_books_in_scope": len(book_ids), "n_articles_in_scope": len(article_ids),
         "gap_size_max": int(gap_sizes.max()),
         "gap_size_distribution": {p: float(np.percentile(gap_sizes, p)) for p in (50, 90, 95, 99)},
