@@ -48,6 +48,7 @@ from .dendrogram_ops import (
     map_leaves_to_frontier_clusters,
 )
 from .pagerank import (
+    boundary_background,
     compute_frontier_adjacency,
     compute_pagerank,
     two_direction_pagerank,
@@ -582,6 +583,84 @@ def _compute_linearization_order_from_potentials(
     return sorted_indices.astype(np.int64)
 
 
+def compute_selection_masses(
+    cfg: CurriculumConfig,
+    adj_for_solver: "sp.csr_matrix",
+    full_point_masses: NDArray[np.floating],
+) -> NDArray[np.floating]:
+    """Score used to rank the top-k SELECTION in the rank-first pipeline.
+
+    Three mutually-exclusive modes (PageRank methods only; otherwise the raw
+    ``full_point_masses`` pass straight through):
+
+    - Default: raw PR mass.
+    - ``background_normalize``: ``p^a * log((p+eps)/(g+eps))`` where ``g`` is a
+      *global* uniform-teleport PR at ``background_alpha`` — demotes popularity-
+      explained mass.
+    - ``boundary_selection``: the same shape but with ``g_local`` (field-local
+      background from :func:`boundary_background`) instead of the global ``g`` —
+      demotes hubs whose mass is explained by their own off-topic citers.
+
+    Cluster weights downstream stay raw PR mass; only the selection ranking
+    is affected. ``background_normalize`` and ``boundary_selection`` are
+    mutually exclusive. See docs/backlog/curriculum-ranking-input-levers.md.
+    """
+    is_pagerank = cfg.method in (
+        RankMethod.PAGE_RANK, RankMethod.BIDIRECTIONAL_PAGE_RANK
+    )
+    if not is_pagerank:
+        return full_point_masses
+
+    a_exp = float(cfg.background_exponent)
+    eps = float(cfg.background_eps)
+    p_fg = np.maximum(full_point_masses, 0.0)
+
+    if cfg.boundary_selection:
+        alpha = float(cfg.pagerank.alpha)
+        LOGGER.info(
+            "Boundary-background selection: a=%.3f, alpha=%.3f, eps=%.1e",
+            a_exp, alpha, eps,
+        )
+        g_local = boundary_background(
+            adj_for_solver, full_point_masses, alpha=alpha,
+            tol=cfg.pagerank.tol, max_iter=cfg.pagerank.max_iter,
+        )
+        selection_masses = np.power(p_fg, a_exp) * np.log((p_fg + eps) / (g_local + eps))
+        LOGGER.info(
+            "Boundary selection score: min=%.3e max=%.3e",
+            float(selection_masses.min()), float(selection_masses.max()),
+        )
+        return selection_masses
+
+    if cfg.background_normalize:
+        # p^a * log((p+eps)/(g+eps)) where p = foreground PR and g = global
+        # (uniform-teleport) PR at alpha_bg, to demote popularity-explained mass.
+        # Canonical defaults: a=0.5 (variance-normalized), alpha_bg=alpha_fg.
+        alpha_bg = (
+            float(cfg.background_alpha)
+            if cfg.background_alpha is not None
+            else float(cfg.pagerank.alpha)
+        )
+        LOGGER.info(
+            "Background normalization: a=%.3f, alpha_bg=%.3f, eps=%.1e",
+            a_exp, alpha_bg, eps,
+        )
+        n_total = adj_for_solver.shape[0]
+        uniform_seeds = np.full(n_total, 1.0 / n_total, dtype=np.float64)
+        g_bg = compute_pagerank(
+            adj_for_solver, uniform_seeds, alpha=alpha_bg,
+            tol=cfg.pagerank.tol, max_iter=cfg.pagerank.max_iter, normalize=True,
+        )
+        selection_masses = np.power(p_fg, a_exp) * np.log((p_fg + eps) / (g_bg + eps))
+        LOGGER.info(
+            "Normalized selection score: min=%.3e max=%.3e",
+            float(selection_masses.min()), float(selection_masses.max()),
+        )
+        return selection_masses
+
+    return full_point_masses
+
+
 def run_curriculum_building(
     cfg: CurriculumConfig,
     output_dir: Optional[Path] = None,
@@ -1076,38 +1155,13 @@ def run_curriculum_building(
         top_k = min(cfg.ranking_top_k, n_total)
         LOGGER.info(f"Selecting top {top_k} works by PPR mass...")
         
-        # Optional background normalization of the SELECTION score: rank on
-        # p^a * log((p+eps)/(g+eps)) where p = foreground PR and g = global
-        # (uniform-teleport) PR at alpha_bg, to demote popularity-explained mass.
-        # Cluster weights below stay raw PR mass (nonneg). Canonical defaults:
-        # a=0.5 (variance-normalized), alpha_bg=alpha_fg (matched kernel).
-        # See docs/backlog/curriculum-ranking-input-levers.md.
-        selection_masses = full_point_masses
-        if cfg.background_normalize and cfg.method in (
-            RankMethod.PAGE_RANK, RankMethod.BIDIRECTIONAL_PAGE_RANK
-        ):
-            a_exp = float(cfg.background_exponent)
-            alpha_bg = (
-                float(cfg.background_alpha)
-                if cfg.background_alpha is not None
-                else float(cfg.pagerank.alpha)
-            )
-            eps = float(cfg.background_eps)
-            LOGGER.info(
-                "Background normalization: a=%.3f, alpha_bg=%.3f, eps=%.1e",
-                a_exp, alpha_bg, eps,
-            )
-            uniform_seeds = np.full(n_total, 1.0 / n_total, dtype=np.float64)
-            g_bg = compute_pagerank(
-                adj_for_solver, uniform_seeds, alpha=alpha_bg,
-                tol=cfg.pagerank.tol, max_iter=cfg.pagerank.max_iter, normalize=True,
-            )
-            p_fg = np.maximum(full_point_masses, 0.0)
-            selection_masses = np.power(p_fg, a_exp) * np.log((p_fg + eps) / (g_bg + eps))
-            LOGGER.info(
-                "Normalized selection score: min=%.3e max=%.3e",
-                float(selection_masses.min()), float(selection_masses.max()),
-            )
+        # Optional normalization of the SELECTION score (background_normalize:
+        # global uniform-teleport baseline; boundary_selection: field-local
+        # background). Cluster weights below stay raw PR mass (nonneg).
+        # See compute_selection_masses and docs/backlog/curriculum-ranking-input-levers.md.
+        selection_masses = compute_selection_masses(
+            cfg, adj_for_solver, full_point_masses
+        )
 
         # Get indices of top-k works by (possibly normalized) selection score
         top_k_indices = np.argsort(selection_masses)[-top_k:][::-1]  # Descending order
