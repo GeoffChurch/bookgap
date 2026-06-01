@@ -711,6 +711,17 @@ class CurriculumConfig:
     background_eps: float = 1e-12
     """Laplace floor in ``log((p+eps)/(g+eps))``; guards p=0 nodes (matters for a=0)."""
 
+    boundary_selection: bool = False
+    """If True, rank the top-k SELECTION by a *boundary-background*-normalized
+    score ``p^a * log((p+eps)/(g_local+eps))``, where ``p`` is the foreground
+    (gap-seeded) forward PR and ``g_local`` is the *field-local* background from
+    two extra PageRank passes (backward-from-p, then forward-from-that) rather
+    than the global uniform-teleport baseline. Demotes popularity hubs whose mass
+    is explained by their own off-topic citers, while keeping field foundations.
+    Uses ``background_exponent`` (a), ``background_eps`` (eps), and
+    ``pagerank.alpha``. Mutually exclusive with ``background_normalize``.
+    PageRank methods only. See artifacts_scripts/curriculum/pagerank.boundary_background."""
+
     topic_work_ids_mass_threshold: float = 0.99
     """Fraction of topic mass to retain when saving topic_work_ids.json."""
     
