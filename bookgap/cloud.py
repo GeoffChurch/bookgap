@@ -952,6 +952,21 @@ def get_cloud_embeddings(cloud: Cloud):
     return denoise(cloud, retained_embeddings)
 
 
+def cloud_embeddings_parquet_positions(cloud: Cloud) -> tuple[Path, NDArray[np.uint64]]:
+    """Return ``(emb_path, retained_positions)`` for *cloud*.
+
+    *retained_positions* are ascending row positions into the embeddings
+    Parquet file at *emb_path* (post-dedup, post-filter). Row ``i`` of
+    ``cloud.embeddings()`` corresponds to parquet row
+    ``retained_positions[i]`` (the parent's denoising is applied row-wise
+    afterwards). Exposed so a :class:`~bookgap.subcloud.SubCloud` can read
+    only its own rows without ever materialising the full parent array.
+    """
+    corpus_fp, _sorted_idxs, retained_positions = ensure_cloud_data(cloud)
+    emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
+    return emb_path, retained_positions
+
+
 @lru_cache(maxsize=1)
 @TIMER.time()
 @MEMORY.cache
