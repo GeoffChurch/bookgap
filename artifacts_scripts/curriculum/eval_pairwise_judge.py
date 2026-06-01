@@ -169,9 +169,13 @@ def _parse_pairwise(obj: Optional[dict]) -> Optional[Dict[str, Tuple[str, str]]]
     """
     if not isinstance(obj, dict):
         return None
+    # gemma4 capitalizes the dimension names ("Interestingness") even though the
+    # schema declares them lowercase (ollama format= is a soft guide, not strict),
+    # so match the dim keys case-insensitively rather than reject a valid response.
+    lower_map = {k.lower(): v for k, v in obj.items() if isinstance(k, str)}
     out: Dict[str, Tuple[str, str]] = {}
     for dim in _DIM_KEYS:
-        cell = obj.get(dim)
+        cell = lower_map.get(dim.lower())
         if not isinstance(cell, dict) or "verdict" not in cell:
             return None
         verdict = str(cell["verdict"]).strip()
@@ -408,6 +412,10 @@ def main() -> None:
     ap.add_argument("--num-predict", type=int, default=1536,
                     help="max tokens per judge call (default 1536; 512 truncates "
                          "gemma4:31b's verbose structured output).")
+    ap.add_argument("--num-ctx", type=int, default=16384,
+                    help="context window (default 16384). The pairwise prompt is "
+                         "~3.7k tokens (two full outlines); the JudgeClient 4096 "
+                         "default left no room for the answer -> empty content.")
     ap.add_argument("--out", type=Path, default=None,
                     help="output JSON path (default "
                          "artifacts/curriculum_eval_pairwise/<topic>.json).")
@@ -450,7 +458,8 @@ def main() -> None:
         rawfail_path.unlink()
 
     client = JudgeClient(model=args.model, temperature=args.temperature,
-                         num_predict=args.num_predict, rawfail_path=rawfail_path)
+                         num_predict=args.num_predict, num_ctx=args.num_ctx,
+                         rawfail_path=rawfail_path)
 
     t0 = time.time()
     result = evaluate_pair(

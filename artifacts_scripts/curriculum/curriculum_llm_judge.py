@@ -408,6 +408,10 @@ class JudgeClient:
                     "num_ctx": self.num_ctx,
                     "num_predict": self.num_predict,
                 },
+                think=False,  # gemma4:31b's thinking can exhaust num_predict before
+                              # emitting the JSON -> empty content (esp. the harder
+                              # pairwise prompt). Verified: think=True -> done=length,
+                              # content=0; think=False -> done=stop, real answer.
             )
         except Exception as e:  # pragma: no cover - network/runtime
             _log(f"  ollama.chat failed: {e}")
