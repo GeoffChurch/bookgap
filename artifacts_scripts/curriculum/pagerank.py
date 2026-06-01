@@ -182,6 +182,60 @@ def compute_pagerank(
     return v
 
 
+def boundary_background(
+    adj: sp.csr_matrix,
+    p_forward: NDArray[np.floating],
+    *,
+    alpha: float = 0.85,
+    tol: float = 1e-9,
+    max_iter: int = 100,
+) -> NDArray[np.floating]:
+    """Field-local background ``g_local`` for boundary-background selection.
+
+    Two extra PageRank passes over the forward seeded mass ``p_forward`` (= p):
+
+    1. ``q`` = **backward** PR seeded by ``p``:
+       ``compute_pagerank(adj.T, seeds=normalize(p))``. ``compute_pagerank``
+       iterates ``alpha * Pᵀ v + (1-alpha) * seeds``, so feeding ``adj.T``
+       makes mass flow cited→citer (along the reverse of citation direction).
+       This propagates to the citers/users of the relevant set, expanding to
+       the topic's neighborhood — INCLUDING off-topic works that cite the
+       topic's prerequisites (e.g. a popular hub's off-topic citers).
+    2. ``g_local`` = **forward** PR seeded by ``q``:
+       ``compute_pagerank(adj, seeds=normalize(q))``. Mass flows citer→cited
+       again, so the field-local background is what the expanded neighborhood
+       reaches. A popularity hub that drew mass from off-topic citers in pass 1
+       sees that mass routed back onto it here, inflating its ``g_local`` and
+       demoting it under the selection score ``p^a * log((p+eps)/(g_local+eps))``.
+
+    Args:
+        adj: Sparse citation adjacency (``A[i, j] = 1`` means ``i`` cites ``j``).
+        p_forward: Forward seeded PageRank mass (length N, nonneg).
+        alpha: Damping factor (matched to the foreground pass).
+        tol, max_iter: Power-iteration convergence parameters.
+
+    Returns:
+        ``g_local``, the field-local background distribution (length N).
+    """
+    p = np.maximum(np.asarray(p_forward, dtype=np.float64).reshape(-1), 0.0)
+    p_sum = p.sum()
+    p_seed = p / p_sum if p_sum > 0 else p
+
+    # Pass 2: backward PR seeded by p -> expand to citers/users (off-topic hubs).
+    q = compute_pagerank(
+        adj.T, p_seed, alpha=alpha, tol=tol, max_iter=max_iter, normalize=True,
+    )
+    q = np.asarray(q, dtype=np.float64).reshape(-1)
+    q_sum = q.sum()
+    q_seed = q / q_sum if q_sum > 0 else q
+
+    # Pass 3: forward PR seeded by q -> field-local background g_local.
+    g_local = compute_pagerank(
+        adj, q_seed, alpha=alpha, tol=tol, max_iter=max_iter, normalize=True,
+    )
+    return np.asarray(g_local, dtype=np.float64).reshape(-1)
+
+
 class BidirectionalPageRankResult(NamedTuple):
     """Container for bidirectional PageRank results."""
     relevance: NDArray[np.floating]
