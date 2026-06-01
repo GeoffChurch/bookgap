@@ -77,6 +77,7 @@ def build_curriculum_for_gap(
     background_normalize: bool = False,
     background_exponent: float = 0.5,
     background_alpha: Optional[float] = None,
+    boundary: bool = False,
     similarity: bool = False,
     similarity_mix_weight: Optional[float] = None,
     similarity_knn_k: Optional[int] = None,
@@ -88,6 +89,11 @@ def build_curriculum_for_gap(
     corridor between established foundations and the gap frontier (experiment:
     does this suppress off-topic intrusions?).
     """
+    if background_normalize and boundary:
+        raise ValueError(
+            "--background-normalize and --boundary are mutually exclusive "
+            "(global vs field-local background)."
+        )
     ids, topic_name = load_gap_article_ids(run_dir, topic_id, gap_idx, top_k)
     if not ids:
         raise ValueError(f"No in-gap articles found for {topic_id} gap {gap_idx}")
@@ -113,6 +119,9 @@ def build_curriculum_for_gap(
         cfg.background_exponent = background_exponent
         if background_alpha is not None:
             cfg.background_alpha = background_alpha
+    if boundary:
+        cfg.boundary_selection = True
+        cfg.background_exponent = background_exponent
     if similarity:
         cfg.similarity.enabled = True
         if similarity_mix_weight is not None:
@@ -179,6 +188,11 @@ def main() -> None:
         help="Background-PR damping; default None = match foreground pagerank.alpha.",
     )
     ap.add_argument(
+        "--boundary", action="store_true",
+        help="Rank top-k selection by the field-local boundary-background score "
+             "p^a*log(p/g_local). Mutually exclusive with --background-normalize.",
+    )
+    ap.add_argument(
         "--similarity", action="store_true",
         help="Blend an embedding-kNN graph into the citation graph (semantic backbone).",
     )
@@ -199,6 +213,7 @@ def main() -> None:
         background_normalize=args.background_normalize,
         background_exponent=args.background_exponent,
         background_alpha=args.background_alpha,
+        boundary=args.boundary,
         similarity=args.similarity,
         similarity_mix_weight=args.similarity_mix_weight,
         similarity_knn_k=args.similarity_knn_k,
