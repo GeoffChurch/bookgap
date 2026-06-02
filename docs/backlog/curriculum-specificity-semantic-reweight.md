@@ -150,10 +150,28 @@ hapaxes. Color Image's debris is the same mechanism with boilerplate front-matte
 multilingual hapaxes. So neither a df-floor (A1) nor more smoothing (A2 — already present) is the
 natural fix.
 
-**Debris fix options (for discussion, not yet chosen):**
-- **Dynamic top-k (most natural):** render keywords ∝ the chapter's effective sample size
-  (mass / #contributing works), so a thin chapter shows ~6 honest keywords, not 30 padded ones.
-  Principled (report only as many features as the evidence supports); no threshold tuning.
+**Dynamic top-k IMPLEMENTED + tested (2026-06-02).** `cfg.keywords.dynamic_topk_floor` (keep
+keywords scoring ≥ floor × topic-top-score, min `dynamic_topk_min`, cap `top_k`); exposed on
+`book_curriculum --dynamic-topk-floor` and `reextract_keywords_topk --dynamic-floor`. Verified the
+score curves: a degenerate chapter cliffs (`1.0, .97, .96, .95, .91, .88, .86, .34, .07, 0, 0, …`)
+while a healthy one decays smoothly (`1.0 … .08`). At floor=0.05, Neuromorphic ch3 → 9 keywords
+(all junk dropped), healthy chapters keep 30. **Re-judged: Neuromorphic specificity book_toc → TIE.**
+
+**Two distinct debris mechanisms (the key finding).** Dynamic-k fixed Neuromorphic but NOT Color
+Image, which split the problem cleanly:
+- **Padding debris** (Neuromorphic): a degenerate ~1-work chapter; junk tokens score ~0 and only
+  pad the fixed top-k tail. Dynamic-k removes it. ✓
+- **Boilerplate-cluster debris** (Color Image ch0: `series, departments, grad, oppenheim, alan, …`
+  = Oppenheim's Prentice-Hall DSP-series front-matter): a *real coherent cluster* of non-content
+  works (series pages, course catalogs, editorial boards) scoring 0.4–1.0× top. Dynamic-k correctly
+  keeps it (it IS the chapter's content); the semantic KDE didn't demote it either (DSP front-matter
+  is *semantically near* image processing). Needs **ingest-level non-content filtering**, not a
+  display fix → [[curriculum-filter-frontmatter-noncontent-works]].
+
+**Specificity across the panel (baseline → semantic-rerank → +dynamic-k): 0/3 → 2/3 ties** (MCS via
+rerank alone; Neuromorphic via rerank + dynamic-k; Color Image still loses on boilerplate pollution).
+
+**Remaining debris-fix options (for the boilerplate case):**
 - **B1 — no degenerate clusters:** `min_cluster_size`/`min_cluster_weight` so a "chapter" isn't
   ~1 work; merge/float. Fixes the root, but changes chapter count → tangles with the matched-N
   comparison vs Track B.
