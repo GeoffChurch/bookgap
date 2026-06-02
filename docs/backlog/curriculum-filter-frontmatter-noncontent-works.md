@@ -1,30 +1,40 @@
-# Filter non-content works (front-matter / editorial / course boilerplate) at ingest
+# Catalog-blurb abstracts (the "front-matter" debris — re-diagnosed)
 
-**Problem.** Color Image's curriculum has a chapter (ch0) that's a coherent cluster of **publisher
-front-matter**: `series, departments, grad, oppenheim, alan, multidimensional, covers, courses,
-digital_signal_processing, text, principles` — i.e. Oppenheim's Prentice-Hall *Signal Processing
-Series* front-matter, course catalogs, editorial-board / "contents" pages. These are real corpus
-records (book-chapter / front-matter entries) with no research content. They:
-- survive the semantic KDE re-rank (DSP front-matter is *semantically near* image processing), and
-- survive dynamic top-k (they form a real high-score cluster, not ~0-score padding),
+**Correction (2026-06-02): this is NOT front-matter / non-content / paratext pollution.** Empirical
+check of Color Image's debris chapter: the dominant work is `W1627054999` =
+**"Two-Dimensional Signal and Image Processing"** (Jae Lim) — a *legitimate, on-topic* image-processing
+textbook, `type=book`, `is_paratext=False`. We want it. Its stored OpenAlex "abstract" is a
+**publisher catalog blurb**:
 
-so they cost specificity (gemma: "departments, grad … nonsensical/unrelated"). This is the
-**boilerplate-cluster** debris mechanism, distinct from the padding debris dynamic-k fixes (see
-[[curriculum-specificity-semantic-reweight]]). It's a **data-quality** issue, fixed upstream, not a
-selection/display fix.
+> "New to P-H Signal Processing Series (Alan Oppenheim, Series Ed) this text covers the principles
+> and applications of multidimensional and digital signal processing. For Sr/grad level courses in
+> image processing in EE departments."
 
-**Ideas:**
-- **Title/type heuristics at ingest:** drop records whose title matches front-matter patterns
-  (`front matter`, `editorial board`, `contents`, `series page`, `author index`, `subject index`,
-  `call for papers`, `table of contents`) and/or OpenAlex `type` in {editorial, paratext, …} with
-  empty/near-empty abstracts. Cheap, high-precision for the obvious cases.
-- **Abstract-quality gate:** require a minimum real-abstract length / dictionary-word ratio; many
-  front-matter records have null or boilerplate abstracts. Composes with the multilingual-noise
-  observation from the Neuromorphic padding case.
-- **OpenAlex signals:** `is_paratext` flag if present, or `type`/`type_crossref` filtering at
-  `openalex_ingest`. Check whether the snapshot carries `is_paratext` — if so this is nearly free.
+Every junk keyword (`series, oppenheim, alan, departments, grad, courses, covers, text`) comes from
+that one blurb. So `is_paratext`/type filtering would do nothing (the flag is correctly False), and
+dropping the work would lose a relevant textbook.
 
-**Scope note:** decide whether to filter at ingest (cleans every downstream use, but re-snapshots
-the scope) vs at selection time (cheaper, scoped to a run). Ingest is cleaner long-term. Eval via
-the ToC-reconstruction panel — re-run Color Image and watch its specificity (currently the only
-panel book still losing it after semantic-rerank + dynamic-k).
+**Real diagnosis — a composite of two known issues:**
+1. **Degenerate cluster again.** This chapter is *one dominant work* (Lim). The blurb tokens score
+   high only because Lim sits alone — in a normal 30-work image-processing chapter those tokens
+   appear in 1/30 abstracts, score ~0, and never surface. dynamic-k can't help because in an
+   isolated chapter the blurb *is* the high-mass content.
+2. **Blurb abstract instead of a content abstract** — and this pollutes the **embedding** (Lim is
+   placed in the space partly by marketing copy), not just the keywords. That hurts gap detection /
+   selection / the seed KDE, which no downstream keyword fix recovers.
+
+**Fix, in order:**
+1. **Structural (real fix): [[curriculum-fuzzy-soft-topic-membership]].** Don't let a single work be
+   a chapter; once Lim merges with the other image-processing works the blurb tokens dilute to ~0
+   and vanish. Fixes BOTH Neuromorphic's and Color Image's structural debris at the root, no
+   per-book heuristics. Highest leverage.
+2. **Abstract hygiene (upstream, complementary, matters more than keywords):** detect catalog-blurb
+   abstracts by telltale phrasing (`New to … Series`, `Series Ed`, `For … courses in … departments`,
+   `this text covers`) and strip the boilerplate sentence or flag the abstract low-quality. Worth it
+   because the blurb corrupts the embedding, upstream of everything.
+3. **Keyword boilerplate stoplist (band-aid):** add publisher-metadata terms (`series`, editor names,
+   `departments`, `grad`, `courses`) to the stopword filter. Whack-a-mole; doesn't touch embeddings.
+
+**Salvaged from the old (wrong) framing:** a true paratext/`is_paratext` filter is still mild hygiene
+worth having generally, but it is NOT what fixes this case. Eval via the ToC-reconstruction panel —
+Color Image specificity is the metric to watch (the only panel book still losing it).

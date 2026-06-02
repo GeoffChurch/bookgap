@@ -161,12 +161,15 @@ while a healthy one decays smoothly (`1.0 … .08`). At floor=0.05, Neuromorphic
 Image, which split the problem cleanly:
 - **Padding debris** (Neuromorphic): a degenerate ~1-work chapter; junk tokens score ~0 and only
   pad the fixed top-k tail. Dynamic-k removes it. ✓
-- **Boilerplate-cluster debris** (Color Image ch0: `series, departments, grad, oppenheim, alan, …`
-  = Oppenheim's Prentice-Hall DSP-series front-matter): a *real coherent cluster* of non-content
-  works (series pages, course catalogs, editorial boards) scoring 0.4–1.0× top. Dynamic-k correctly
-  keeps it (it IS the chapter's content); the semantic KDE didn't demote it either (DSP front-matter
-  is *semantically near* image processing). Needs **ingest-level non-content filtering**, not a
-  display fix → [[curriculum-filter-frontmatter-noncontent-works]].
+- **Blurb-abstract debris** (Color Image ch0: `series, departments, grad, oppenheim, alan, …`):
+  re-diagnosed (don't trust the "boilerplate-cluster" label) — it's a *legitimate* image-processing
+  textbook (Jae Lim, `is_paratext=False`) whose stored OpenAlex abstract is a publisher **catalog
+  blurb** ("New to P-H Signal Processing Series (Alan Oppenheim, Series Ed) … For Sr/grad courses in
+  … EE departments"). Scores 0.4–1.0× top so dynamic-k keeps it; but it's high only because the work
+  sits *alone* in a degenerate chapter. So this is the **same degenerate-cluster pathology** with a
+  blurb-abstract twist — fixed structurally by [[curriculum-fuzzy-soft-topic-membership]] (dilutes
+  the blurb among real works), plus abstract hygiene since the blurb also pollutes the *embedding*.
+  See [[curriculum-filter-frontmatter-noncontent-works]] (re-diagnosed).
 
 **Specificity across the panel (baseline → semantic-rerank → +dynamic-k): 0/3 → 2/3 ties** (MCS via
 rerank alone; Neuromorphic via rerank + dynamic-k; Color Image still loses on boilerplate pollution).
