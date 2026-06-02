@@ -2,117 +2,117 @@
 
 *13 chapters, in learning order.*
 
-## Chapter 1: optical, laser, semiconductor ring lasers
+## Chapter 1: learning, neural networks, neural
 
-**Key topics:** optical, laser, semiconductor ring lasers, phase, srls, ccw mode, mode, memristor, excitable, coupled, response, lasers, characteristics, coupling, semiconductor laser, cavity, spikes, space, theoretically, optical pulses, excitatory, neural network, neurons, modes, asymmetric, phys rev, counterpropagating, excitability, systems, two
-
-**Representative works:**
-- Semiconductor ring lasers as optical neurons
-- Excitability in optically injected microdisk lasers with phase controlled excitatory and inhibitory response
-- The Memristor Laser
-
-## Chapter 2: neural networks, learning, training
-
-**Key topics:** neural networks, learning, training, network, algorithm, deep learning, performance, art, machine learning, problem, state, use, algorithms, large, networks, neural network, many, two, weights, problems, architectures, system, access, processing, available, content, information, trained, one, architecture
+**Key topics:** learning, neural networks, neural, systems, neurons, real time, training, computing, network, use, neural network, state, applications, circuits, improved, input, networks, deep learning, machine learning, esns, predicting chaotic, computational, techniques, accuracy, information, nonlinear, problems, circuit, stable, computation
 
 **Representative works:**
-- Oger: modular learning architectures for large-scale sequential processing
-- Delving Deep into Rectifiers: Surpassing Human-Level Performance on ImageNet Classification
-- ImageNet classification with deep convolutional neural networks
-
-## Chapter 3: learning, theory, statistical
-
-**Key topics:** learning, theory, statistical, systems, generalization, neural, problems, neurons, function, robotics, real time, problem, functions, comprehensive, basis, network, much, fields, small, variety, process, highly, book offers, author, necessary, applying, empirical, look, computer science, covers
-
-**Representative works:**
-- Statistical Learning Theory
 - Real-Time Computing Without Stable States: A New Framework for Neural Computation Based on Perturbations
 - Harnessing Nonlinearity: Predicting Chaotic Systems and Saving Energy in Wireless Communication
+- Artificial neural networks for computing
 
-## Chapter 4: systems, computing, conversion
+## Chapter 2: optical, processing, neuron
 
-**Key topics:** systems, computing, conversion, lambda, calculi, memory, book, computer, system, applications, description, two, design, forthcoming, algorithm, matrix, computation, theory, one, given, implementation, information, sequential, number, use, machines, first, physics, logic, described
-
-**Representative works:**
-- Physical versus Logical Coupling in Memory Systems
-- The calculi of lambda-conversion
-- Conservative logic
-
-## Chapter 5: polarized optical, processing elements, much faster
-
-**Key topics:** polarized optical, processing elements, much faster, fan out, induced, optically, attributes, excellent, timescale, reproduce, exhibited, behaviors, configuration, catacomb, plano, fuelin, caussinus, rigorous, per pixel, knowledge distillation, strawman, replicas, collude, vergata, ccs, guardian, criterion, memecah, appropriateness, charnes
-
-**Representative works:**
-- Investigation of vertical cavity surface emitting laser dynamics for neuromorphic photonic systems
-
-## Chapter 6: laser, ultrafast, vertical cavity
-
-**Key topics:** laser, ultrafast, vertical cavity, emitting, surface, vcsel, computing, optical, spiking, neurons, behavior, fire, integrate, algorithms, leaky, rate equations, cognitive, governing, vcsels, photonic, fast, saturable absorber, operating, learning, large scale, compact, lasers, future, embedded, domain
-
-**Representative works:**
-- A Leaky Integrate-and-Fire Laser Neuron for Ultrafast Cognitive Computing
-- Toward Neuromorphic Photonic Networks of Ultrafast Spiking Laser Neurons
-- Controlled inhibition of spiking dynamics in VCSELs for neuromorphic photonics: theory and experiments
-
-## Chapter 7: hybrid silicon, lasers, photodetector
-
-**Key topics:** hybrid silicon, lasers, photodetector, laser neuron, ultrafast, platform, neuron, evanescent, bonding, physiological, electro, time scales, easily, real, emulate, iii, behavior, wafer, scale, system, silicon, laser, networks, x201c, unconventional, x201d, studying, potentially, link, photonic spike processing
-
-**Representative works:**
-- An evanescent hybrid silicon laser neuron
-- Recent progress in semiconductor excitable lasers for photonic spike processing
-- An integrated analog O/E/O link for multi-channel laser neurons
-
-## Chapter 8: processing, broadcast, weight
-
-**Key topics:** processing, broadcast, weight, optical, scalable, photonic spike processing, localization, networking, systems, feasibility, network, physics, chip, opportunity, computational, high performance, prior, neuromorphic signal processing, lightwave, bandwidth, wavelength, represents promising, organizational, design considerations, advantageous, protocol, reuse, commercial, recent developments, relation
+**Key topics:** optical, processing, neuron, photonic, devices, neuromorphic, scalable, network, networking, localization, systems, analog, computational, feasibility, circuits, weight, photonic spike processing, broadcast, digital, hybrid, chip, properties, medium, high, neurons, electronic, modulator, bandwidth, spike processing, element
 
 **Representative works:**
 - Broadcast and Weight: An Integrated Network For Scalable Photonic Spike Processing
 - Lightwave neuromorphic signal processing
-- Broadcast-and-weight interconnects for integrated distributed processing systems
+- Silicon Photonic Modulator Neuron
 
-## Chapter 9: photonic, optical, architecture
+## Chapter 3: optical, photonic, neural network
 
-**Key topics:** photonic, optical, architecture, speed, hardware, art, neural networks, deep learning, state, inference, electronics, neural network, photonic neural networks, computing, energy, training, chip, photonics, energy efficiency, tasks, electronic, systems, applications, discuss, silicon photonics, digital electronics, compared, artificial neural networks, performance, machine learning
+**Key topics:** optical, photonic, neural network, neural networks, computing, system, architecture, integrated, nonlinear, hardware, neurons, chip, two, demonstrate, performance, electronic, optics, architectures, implementation
 
 **Representative works:**
-- On-Chip Optical Convolutional Neural Networks
-- Digital Electronics and Analog Photonics for Convolutional Neural Networks (DEAP-CNNs)
-- Photonic Multiply-Accumulate Operations for Neural Networks
+- Reservoir computing: a photonic neural network for information processing
+- Multiple-Quantum-Well-Based Spatial Light Modulators For Electro-Optical Implementation Of Neural Metworks
+- First Demonstration of a Two-Layer All-Optical Neural Network by Using Photonic Integrated Chips and SOAs
 
-## Chapter 10: neuromorphic photonics, integrated, key
+## Chapter 4: processing elements, reproduce, polarized
 
-**Key topics:** neuromorphic photonics, integrated, key, intending, comprehensive overview, advent, bridges, explores, graduate students, experts, thorough, candidate, discussion, accessible, international, fiber optic, reference, providing, includes, evolution, written, along, today, interconnection, out, emerging field, device physics, focus, sets, build
+**Key topics:** processing elements, reproduce, polarized, exhibited, computational paradigms, excellent, potentials, polarization, fan out
+
+**Representative works:**
+- Investigation of vertical cavity surface emitting laser dynamics for neuromorphic photonic systems
+
+## Chapter 5: optical, neurons, class
+
+**Key topics:** optical, neurons, class, mode, coupled, pulses, laser, semiconductor ring lasers, observed, photonic, photonic spiking neuron, spikes, excitable, memristor, neuron, srls, network, ccw mode, experiments, experimentally, response, lasers, spiking, demonstrated, characteristics, systems, demonstrate, theoretically, depending, synchronization
+
+**Representative works:**
+- Semiconductor ring lasers as optical neurons
+- Photonic spiking neuron with coupled degenerate optical parametric oscillators
+- Data for: "Towards Neuromorphic Photonic Networks of Ultrafast Spiking Laser Neurons""
+
+## Chapter 6: laser, ultrafast, neuron
+
+**Key topics:** laser, ultrafast, neuron, computing, photonic, integrate, fire, processing, spiking, vcsel, behavior, optical, leaky, rate equations, cognitive, neurons, governing, design, signal processing, excitability, biological, scalable, dynamics, technology, computational primitive, fast, circuits, excitable lasers, operating, lasers
+
+**Representative works:**
+- A Leaky Integrate-and-Fire Laser Neuron for Ultrafast Cognitive Computing
+- Recent progress in semiconductor excitable lasers for photonic spike processing
+- Progress on the analysis of laser-based photonic neurons
+
+## Chapter 7: photonic, neural networks, optical
+
+**Key topics:** photonic, neural networks, optical, scalable, neural network, integration, architecture, computing, communication, compact, train, decomposed, real time, synaptic interconnections, tensor, scale, system, applications, neural
+
+**Representative works:**
+- Tensor-Train Decomposed Synaptic Interconnections for Compact and Scalable Photonic Neural Networks
+- Multiplanar Dielectric Waveguides for Neural Communication
+- Optical neural networks: The 3D connection
+
+## Chapter 8: optical, pulses, asynchronous
+
+**Key topics:** optical, pulses, asynchronous, absorption, modulation, excitable, high speed, response, input, cross, neuron, optoelectronic, demonstrate, excitability, nonlinear, spiking, quantum, spiking neuron, circuit, applications, pulse, electrical, photonics, photonic spiking neuron, signals, photonic, rtd, neuromorphic, promising, single
+
+**Representative works:**
+- Excitability and optical pulse generation in semiconductor lasers driven by resonant tunneling diode photo-detectors
+- Asynchronous Spiking Neuron Based on Four-Wave Mixing and Cross Absorption Modulation
+- High speed photonic spiking neuron based on QD spin VCSELs for neuromorphic computing
+
+## Chapter 9: optical, photonic, neuromorphic computing
+
+**Key topics:** optical, photonic, neuromorphic computing, computing, neuromorphic, chip, neuromorphic photonics, devices, switching, integrated, ferroelectric, memory, tmac sec, employed, large scale, processing, multi level, complex, integrated photonic, integrated photonic circuits
+
+**Representative works:**
+- Multi-Level Optical Weights in Integrated Circuits
+- Large-Scale Photonic Integrated Cross-Connects for Optical Communication and Computation
+- 3D Polymer Interconnects for Neuromorphic Photonics Technologies
+
+## Chapter 10: photonic, training, neural networks
+
+**Key topics:** photonic, training, neural networks, deep learning, optical, neuromorphic, hardware, architecture, neural network, network, architectures, analog
+
+**Representative works:**
+- Achieving superior accuracy in photonic neural networks with physical multi-synapses
+- Robust architecture-agnostic and noise resilient training of photonic deep learning model
+- MEMTONIC: A Neuromorphic Accelerator for Energy Efficient Deep Learning
+
+## Chapter 11: photonic, optical, neural networks
+
+**Key topics:** photonic, optical, neural networks, integrated, training, neuromorphic, systems, integrated photonic, computing, analog, performance, signal processing, non volatile memory, integration, discuss, technology, integrated photonics, neural network, network, chip, silicon photonics, deep neural networks, reservoir computing, synapse
+
+**Representative works:**
+- A review of photonic integrated neural networks
+- Optical Signal Processing for Neural Networks
+- Integrated Photonic Synaptic Interconnect Processor for Acceleration of Deep Neural Network Training
+
+## Chapter 12: photonic, neuromorphic, optical
+
+**Key topics:** photonic, neuromorphic, optical, reservoir computing, neuromorphic computing, architecture, systems, computing, neuron, integrated, information processing, applications, transmission, architectures, magneto optic, telecom, silicon photonics, imaging, brain inspired, recurrent, readout, high, neural network, like, photonic spiking neural network, discuss, system, pattern recognition, classification, efficient
+
+**Representative works:**
+- Optical Neural Network by Disordered Tumor Spheroids
+- Neuromorphic computing by means of recurrent spectrum slicing for next generation high baud rate transmission systems
+- Photonic reservoir computing: a brain-inspired approach for information processing (invited paper)
+
+## Chapter 13: neuromorphic photonics, integrated, photonic
+
+**Key topics:** neuromorphic photonics, integrated, photonic, neurons, architectures, neuromorphic, neural networks, emerging field, networks, key, art, state, device physics, field, devices, build, current, advent, along, sets, out, providing, today, includes, explores, book, comprehensive, serve, evolution, written
 
 **Representative works:**
 - Neuromorphic Photonics
 - Integrated Neuromorphic Photonics: Synapses, Neurons, and Neural Networks
-- Hardware Architecture and Algorithm Co-design for Multi-Layer Photonic Neuromorphic Network with Excitable VCSELs-SA
-
-## Chapter 11: microring weight banks, communication, integration
-
-**Key topics:** microring weight banks, communication, integration, photonic, silicon photonic, networks, chip, neural network, dense, light, approaches, silicon photonics, reconfigurable, recent, photonic information processing, latest, experienced, neuromorphic silicon photonics, resurgence, enable, neuromorphic, discuss, information, signal, achieve, towards, cmos, neural, photonic neural networks, scalable
-
-**Representative works:**
-- Multiplanar Dielectric Waveguides for Neural Communication
-- Optical neural networks: The 3D connection
-- Nonlinear Activation Function Generation Based on Silicon Microring Resonators for Integrated Photonic Neural Networks
-
-## Chapter 12: optical, photonic, neuromorphic computing
-
-**Key topics:** optical, photonic, neuromorphic computing, ferroelectric, memory, integrated, devices, synaptic, switching, multi level optical, computing, pulses, systems, neuromorphic, weights, non volatile, phase change materials, element, voltage, transmission, circuits, demonstrate, platform, neural, way, silicon, spiking neural networks, recent, weighting, large scale
-
-**Representative works:**
-- Multi-Level Optical Weights in Integrated Circuits
-- Photonic In-Memory Computing Primitive for Spiking Neural Networks Using Phase-Change Materials
-- Superconducting Optoelectronic Circuits for Neuromorphic Computing
-
-## Chapter 13: applications, optical, neuromorphic computing
-
-**Key topics:** applications, optical, neuromorphic computing, neuromorphic photonics, modulators, artificial intelligence, neuromorphic, photonic, neural networks, devices, energy, computing, processors, telecom, photonic neuromorphic computing, photonics, imaging, integrated, photonic neural networks, performance, reservoir computing, integrated photonics, signal processing, nonlinear, systems, analog, efficient, pattern recognition, speed, training
-
-**Representative works:**
-- Attojoule Modulators for Photonic Neuromorphic Computing
-- Introduction to JSTQE Issue on Photonics for Deep Learning and Neural Computing
-- Neuromorphic Integrated Photonics as Hardware Accelerators for Ultra-high Speed Telecom and Imaging Applications
+- Advances in neuromorphic photonics (Conference Presentation)

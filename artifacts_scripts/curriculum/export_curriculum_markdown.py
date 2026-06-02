@@ -71,13 +71,21 @@ def _render_book_md(toc_json: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--track-a", required=True, help="our curriculum run-dir (Track A)")
-    ap.add_argument("--track-b", required=True, help="ToC-derived curriculum run-dir (Track B)")
-    ap.add_argument("--toc-json", required=True, help="the book's ToC json (title + chapters + book_id)")
+    ap.add_argument("--track-b", help="ToC-derived curriculum run-dir (Track B); not needed with --only-ours")
+    ap.add_argument("--toc-json", help="the book's ToC json (title + chapters + book_id); not needed with --only-ours")
     ap.add_argument("--out-dir", required=True, type=Path)
+    ap.add_argument("--only-ours", action="store_true",
+                    help="regenerate only ours_curriculum.md (Track A); leave the book + Track B "
+                         "files untouched. Use after improving the Track A curriculum.")
     args = ap.parse_args()
+    if not args.only_ours and (not args.track_b or not args.toc_json):
+        ap.error("--track-b and --toc-json are required unless --only-ours is set")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "ours_curriculum.md").write_text(
         _render_curriculum_md(args.track_a, "our generated curriculum (from the book's gap)"))
+    if args.only_ours:
+        print(f"wrote ours_curriculum.md -> {args.out_dir}")
+        return
     (args.out_dir / "toc_derived_curriculum.md").write_text(
         _render_curriculum_md(args.track_b, "curriculum derived from the book's real ToC"))
     (args.out_dir / "original_book.md").write_text(_render_book_md(args.toc_json))
