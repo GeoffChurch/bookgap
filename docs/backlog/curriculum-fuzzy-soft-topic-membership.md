@@ -161,6 +161,18 @@ works, assign each work to its nearest anchor; mirrors the leiden flat-structure
 - **Color Image unchanged**, and **9 of 24 chapters still contain histogram/equalization** — DPP did
   NOT de-duplicate the *final* chapters.
 
+**Correction (2026-06-02): only DPP+SOFT was harmful; DPP+HARD is NEUTRAL.** Tested DPP anchors
+with HARD nearest-anchor assignment + dynamic-k (no soft): Neuromorphic specificity recovered to
+**tie** (= dendrogram+dynamic-k), Color Image unchanged — both match the dendrogram baseline. So the
+soft *smearing* caused the DPP+soft loss, not the diverse anchors. **And DPP did NOT de-duplicate the
+final chapters:** Color still has **10/24 histogram/equalization chapters, identical to the
+dendrogram** — because histogram-enhancement works are the *corpus majority*, so they fill ~10
+nearest-anchor cells regardless of anchor diversity. **The redundant-chapter "defect" is in the DATA
+(the color-image gap is histogram-dominated), not the clustering** — no anchor method fixes a
+redundant corpus, and the judge doesn't reward de-duplication anyway (redundant-but-coherent chapters
+aren't penalized). Net: FL/DPP anchors are **neutral** (hard) / **harmful** (soft); keep the
+dendrogram. (Earlier "refuted as a quality improvement" → refined to "neutral at best.")
+
 **Diagnosis — diverse ANCHORS ≠ distinctive CHAPTERS.** Once works are assigned to nearest-anchor and
 soft keyword extraction runs, the corpus's prevailing vocabulary dominates, so embedding-diverse
 anchors still yield overlapping/generic chapters (Neuromorphic) or still-redundant ones (Color's
