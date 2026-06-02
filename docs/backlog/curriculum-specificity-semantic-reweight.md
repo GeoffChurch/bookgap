@@ -17,12 +17,28 @@ prerequisites (progressive); gemma penalizes any. So the goal isn't "remove all 
 **semantic-similarity-to-the-gap** distinguishes (topic-proximal = close; generic = far).
 
 **Ideas, cheapest first:**
-1. **Semantic re-weight of selection (recommended first).** After ranking, blend the relevance
-   score with cosine similarity to the gap centroid: `score = relevance^a · sim(work, gap_centroid)^b`
-   (or a hard post-filter at a sim threshold). Directly demotes citation-central-but-semantically-
-   distant foundations while keeping topic-proximal ones. Cheap (we already have embeddings + the
-   gap centroid); a knob `b` controls how aggressively. Risk: a single centroid is crude for a
-   multi-cluster gap — use max-sim over the gap's seed articles (or per-cluster centroids) instead.
+1. **Product-of-experts selection (recommended; the "what a statistician does" version).** Citation
+   importance and semantic proximity are two *independent* relevance signals, so combine them by a
+   product (rank by their product = additive in log space) — no graph surgery, no tuned `β`:
+
+       log score(v) = log π(v) − log π_null(v) + log f̂_seeds(v)
+                      └── excess citation centrality ──┘  └ semantic density ┘
+
+   - **Semantic term = a kernel density estimate, not an ad-hoc cosine kernel.** The gap seeds are a
+     sample; `f̂(v)` is their Parzen-window density at `v`. On unit embeddings the Gaussian kernel is
+     `exp((cos(v,s)−1)/h²)`, so `log f̂(v) = logsumexp_s[(cos−1)/h²] − log n`. Bandwidth `h²` = median
+     pairwise squared distance among seeds (**median heuristic** — data-driven, no knob). This
+     naturally generalizes "max-sim to seeds" into a proper density. Demotes foundations (low seed
+     density) while keeping topic-proximal prereqs (high density).
+   - **Citation term = excess over a popularity null.** PageRank ≈ degree, so use `log(π/π_null)`
+     (observed-over-expected, à la PMI/IDF) to keep only centrality beyond what popularity explains.
+     Reuse the existing field-local `g_local` (`boundary_background`) as `π_null` — a better,
+     topic-aware null than global uniform.
+   - Keeps PageRank intact (a well-understood estimator) and multiplies by an independently-estimated
+     semantic likelihood; the three log-terms are interpretable and auditable. **Don't** chase a
+     `cos^b` exponent or a per-edge `exp(β(cos−1))` kernel — those are the parts a colleague would
+     call ad hoc. Implemented as `cfg.semantic_rerank` / `book_curriculum --semantic-rerank` (see
+     working notes for the result).
 2. **Similarity-graph mixing (principled).** Mix an embedding-kNN graph into the citation graph
    *before* PageRank (the existing `--similarity` option) so the walk prefers semantically-similar
    neighbors. The right fix. It OOM'd only at **domain scope** (full-corpus self-kNN over 40.9M
@@ -86,6 +102,29 @@ semantic kNN edges but doesn't *subtract* the foundations' citation centrality (
 they stay in the top-5000 ranking → still form chapters. A single global scalar is the wrong
 instrument — confirming the move to **approach 5 (per-edge / per-node data-driven weighting)**,
 which attenuates the bad citation edges rather than diluting all of them uniformly.
+
+**Product-of-experts re-rank (approach 1) tested — fixes the target defect.** Implemented
+`cfg.semantic_rerank` / `book_curriculum --semantic-rerank`: `log(p/g_local) + log f̂(seed KDE)`,
+bandwidth = median heuristic (h²=0.25 here), KDE over 6.8M works in ~63 s, no HNSW needed.
+Neuromorphic, CS-field, 13 chapters, gemma4:31b pairwise vs Track B:
+
+- **Foundation-wandering is gone.** Both off-topic foundation chapters (statistical-learning,
+  general-computing/lambda-calculi) were evicted — all 13 chapters are now photonic/neuromorphic,
+  and gemma's specificity complaint shifted *entirely off* foundations. This worked even though the
+  citation term out-scales the semantic term ~13:1 (cite span ~25 nats, sem span ~1.9 nats) — a
+  ~1.9-nat penalty was enough at the top-5000 margin.
+- **Verdict didn't flip** (book_toc still wins 4/4) because a *separate* defect now dominates
+  specificity: a **debris chapter** (ch3 = a real "polarized optical processing / computational
+  paradigms" cluster that absorbed a few noise works → phrase-mining surfaced junk tokens `tesla`,
+  `santa`, `crayfish`, `rechenfehlern`, `proposte`). gemma robustly flags it in both orders. This
+  cluster appears in the baseline and similarity runs too — foundations were just louder before.
+- comprehensiveness/interestingness comments now often *favor* ours ("specific hardware … VCSELs
+  and microring weight banks … more compelling for a specialist reader"), losing narrowly, dragged
+  by the same debris chapter.
+
+**Net:** approach 1 solves foundation-wandering cleanly; the residual loss is the orthogonal
+**debris** problem (phrase-mining/cluster noise), which is the next thing to attack — plus
+re-running the other panel books to confirm the foundation fix generalizes.
 
 **Compute note (relevant to running the panel with `--similarity`):** `get_cloud_index` is already
 `@MEMORY.cache`'d over the `faiss.Index`. The cold build over the 6.8M CS-field cloud took **634 s**

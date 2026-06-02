@@ -44,6 +44,8 @@ def build_curriculum_from_book_gap(
     field: Optional[str] = None,
     desired_n_topics: int = 15,
     boundary: bool = False,
+    semantic_rerank: bool = False,
+    semantic_bandwidth: Optional[float] = None,
     similarity: bool = False,
     similarity_mix_weight: Optional[float] = None,
     similarity_knn_k: Optional[int] = None,
@@ -74,6 +76,13 @@ def build_curriculum_from_book_gap(
     if boundary:
         cfg.boundary_selection = True
         cfg.background_exponent = 0.5
+    if semantic_rerank:
+        # Product-of-experts selection: log(p/g_local) + log f_hat(seed KDE).
+        # Takes priority over boundary_selection; demotes citation-central but
+        # semantically-distant foundations (the universal specificity defect).
+        cfg.semantic_rerank = True
+        if semantic_bandwidth is not None:
+            cfg.semantic_bandwidth = semantic_bandwidth
     if similarity:
         # Mix an embedding-kNN graph into the citation graph before PageRank so the
         # random walk prefers semantically-similar neighbours (demotes citation-central
@@ -115,6 +124,11 @@ def main() -> None:
     ap.add_argument("--field", default=None, help="override scope field (default: from gap JSON)")
     ap.add_argument("--desired-n-topics", type=int, default=15)
     ap.add_argument("--boundary", action="store_true", help="use the boundary-background selector")
+    ap.add_argument("--semantic-rerank", action="store_true",
+                    help="product-of-experts selection: log(p/g_local) + log f_hat(seed KDE); "
+                         "demotes citation-central but semantically-distant foundations")
+    ap.add_argument("--semantic-bandwidth", type=float, default=None,
+                    help="KDE bandwidth h^2 (squared-dist units); default = median heuristic over seeds")
     ap.add_argument("--similarity", action="store_true",
                     help="mix an embedding-kNN similarity graph into the citation graph before "
                          "PageRank (scope-proportional; fine at field/subfield, OOMs at domain)")
@@ -128,6 +142,7 @@ def main() -> None:
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
         desired_n_topics=args.desired_n_topics, boundary=args.boundary,
+        semantic_rerank=args.semantic_rerank, semantic_bandwidth=args.semantic_bandwidth,
         similarity=args.similarity, similarity_mix_weight=args.similarity_mix_weight,
         similarity_knn_k=args.similarity_knn_k, keywords_top_k=args.keywords_top_k,
     )

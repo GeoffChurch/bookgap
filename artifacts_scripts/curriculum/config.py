@@ -722,6 +722,20 @@ class CurriculumConfig:
     ``pagerank.alpha``. Mutually exclusive with ``background_normalize``.
     PageRank methods only. See artifacts_scripts/curriculum/pagerank.boundary_background."""
 
+    semantic_rerank: bool = False
+    """Product-of-experts SELECTION: rank the top-k by
+    ``log((p+eps)/(g_local+eps)) + log f_hat(v)`` — the field-local excess
+    centrality (same ``g_local`` as boundary_selection) times a Gaussian KDE of
+    the gap seeds evaluated at each work. Combines two independent relevance
+    signals (citation importance and semantic proximity to the gap) as a product;
+    demotes citation-central but semantically-distant foundations. Takes priority
+    over boundary_selection/background_normalize. PageRank methods only."""
+
+    semantic_bandwidth: Optional[float] = None
+    """KDE bandwidth h^2 in squared-distance units (||v-s||^2 = 2(1-cos) on
+    unit-normalized embeddings). None => median pairwise squared distance among
+    the seeds (the median heuristic; data-driven, no tuned knob)."""
+
     topic_work_ids_mass_threshold: float = 0.99
     """Fraction of topic mass to retain when saving topic_work_ids.json."""
     

@@ -28,6 +28,7 @@ from hydra.utils import instantiate
 from numpy.typing import NDArray
 import scipy.sparse as sp
 from scipy.cluster.hierarchy import linkage
+from scipy.special import logsumexp
 
 from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
 from bookgap.cloud import Cloud, DendrogramResult
@@ -583,10 +584,59 @@ def _compute_linearization_order_from_potentials(
     return sorted_indices.astype(np.int64)
 
 
+def seed_kde_log_density(
+    embeddings: NDArray[np.floating],
+    seed_embeddings: NDArray[np.floating],
+    *,
+    bandwidth_sq: Optional[float] = None,
+    chunk: int = 200_000,
+) -> NDArray[np.floating]:
+    """Log Gaussian-KDE of the gap seeds, evaluated at every work.
+
+    The seeds are a sample in embedding space; this is just their Parzen-window
+    density. On unit-normalized embeddings ``||v - s||^2 = 2(1 - cos(v, s))``, so
+    the Gaussian kernel ``exp(-||v-s||^2 / (2 h^2)) = exp((cos(v, s) - 1) / h^2)``
+    and
+
+        log f_hat(v) = logsumexp_s[(cos(v, s) - 1) / h^2] - log(n_seeds).
+
+    ``bandwidth_sq`` (= h^2) defaults to the median pairwise squared distance
+    among the seeds (the median heuristic) — data-driven, no tuned knob. This is
+    the semantic-relevance factor of the product-of-experts selection score.
+    """
+    def _unit(x: NDArray) -> NDArray:
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        return x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+
+    S = _unit(seed_embeddings)
+    n_seeds = S.shape[0]
+    if bandwidth_sq is None:
+        gram = S @ S.T
+        sq = 2.0 * (1.0 - gram)
+        iu = np.triu_indices(n_seeds, k=1)
+        h2 = float(np.median(sq[iu])) if n_seeds > 1 else 1.0
+    else:
+        h2 = float(bandwidth_sq)
+    h2 = max(h2, 1e-6)
+    LOGGER.info(
+        "Seed KDE: n_seeds=%d, bandwidth h^2=%.4f (%s)",
+        n_seeds, h2, "median heuristic" if bandwidth_sq is None else "explicit",
+    )
+    n = embeddings.shape[0]
+    logf = np.empty(n, dtype=np.float64)
+    log_n = float(np.log(n_seeds))
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        cos = _unit(embeddings[start:end]) @ S.T  # (chunk, n_seeds)
+        logf[start:end] = logsumexp((cos - 1.0) / h2, axis=1) - log_n
+    return logf
+
+
 def compute_selection_masses(
     cfg: CurriculumConfig,
     adj_for_solver: "sp.csr_matrix",
     full_point_masses: NDArray[np.floating],
+    seed_log_density: Optional[NDArray[np.floating]] = None,
 ) -> NDArray[np.floating]:
     """Score used to rank the top-k SELECTION in the rank-first pipeline.
 
@@ -614,6 +664,28 @@ def compute_selection_masses(
     a_exp = float(cfg.background_exponent)
     eps = float(cfg.background_eps)
     p_fg = np.maximum(full_point_masses, 0.0)
+
+    if cfg.semantic_rerank:
+        # Product-of-experts: rank by the product of two independent relevance
+        # signals -> additive in log space. Citation term = log density ratio
+        # (excess centrality over the field-local null g_local, killing the
+        # popularity confound); semantic term = log f_hat (seed KDE), demoting
+        # citation-central but semantically-distant foundations.
+        if seed_log_density is None:
+            raise ValueError("semantic_rerank requires seed_log_density")
+        alpha = float(cfg.pagerank.alpha)
+        g_local = boundary_background(
+            adj_for_solver, full_point_masses, alpha=alpha,
+            tol=cfg.pagerank.tol, max_iter=cfg.pagerank.max_iter,
+        )
+        cite_term = np.log((p_fg + eps) / (g_local + eps))
+        selection_masses = cite_term + seed_log_density
+        LOGGER.info(
+            "Semantic-product selection: cite[min=%.2f max=%.2f] sem[min=%.2f max=%.2f]",
+            float(cite_term.min()), float(cite_term.max()),
+            float(seed_log_density.min()), float(seed_log_density.max()),
+        )
+        return selection_masses
 
     if cfg.boundary_selection:
         alpha = float(cfg.pagerank.alpha)
@@ -1159,8 +1231,28 @@ def run_curriculum_building(
         # global uniform-teleport baseline; boundary_selection: field-local
         # background). Cluster weights below stay raw PR mass (nonneg).
         # See compute_selection_masses and docs/backlog/curriculum-ranking-input-levers.md.
+        seed_log_density = None
+        if cfg.semantic_rerank:
+            seed_ids = set(cfg.target_work_ids)
+            seed_idx = [i for i, w in enumerate(work_ids) if w in seed_ids]
+            if not seed_idx:
+                raise ValueError(
+                    "semantic_rerank: none of target_work_ids found among works"
+                )
+            LOGGER.info(
+                "Semantic re-rank: %d/%d gap seeds located; computing seed KDE over %d works",
+                len(seed_idx), len(seed_ids), n_total,
+            )
+            bw = (
+                cfg.semantic_bandwidth
+                if cfg.semantic_bandwidth and cfg.semantic_bandwidth > 0
+                else None
+            )
+            seed_log_density = seed_kde_log_density(
+                embeddings, embeddings[seed_idx], bandwidth_sq=bw
+            )
         selection_masses = compute_selection_masses(
-            cfg, adj_for_solver, full_point_masses
+            cfg, adj_for_solver, full_point_masses, seed_log_density=seed_log_density
         )
 
         # Get indices of top-k works by (possibly normalized) selection score
