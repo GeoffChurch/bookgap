@@ -238,6 +238,13 @@ def main() -> None:
         g_texts = [f"{titles[r]}\n{abstracts[r] or ''}" for (_, r) in gap_rows]
         _materialize_track_b(args.materialize_dir, chapters, g_titles, g_texts,
                              sims, b_label, toc.get("title", "Book"))
+        # Also dump Track B's chapter->work_ids (hard nearest-chapter assignment) so
+        # downstream chapter-correspondence analysis has the same handle as Track A's
+        # topic_work_ids.json (gap_chapter_correspondence.py).
+        twi_b: dict = {}
+        for i, a in enumerate(g_ids):
+            twi_b.setdefault(str(int(b_label[i])), []).append(a)
+        (Path(args.materialize_dir) / "topic_work_ids.json").write_text(json.dumps(twi_b))
         LOGGER.info("materialized Track B run-dir -> %s", args.materialize_dir)
 
     # --- Track A: our curriculum clusters + frontier ordering
