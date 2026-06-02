@@ -206,6 +206,47 @@ the off-domain debris) — whole-domain ranking is debris-dominated and a poor c
 (3) the real lever for the debris is a data-quality filter (non-English / ToC-recoverability /
 binomial-p), not scope. Rankings: `artifacts/book_gaps/{ai_subfield,csfield,domain}_ranked.json`.
 
+## Eval = serving underserved gaps (the motivation, stated plainly)
+The largest **genuine-book** own-gaps are the most underserved real regions that a human
+nonetheless wrote a book to fill. So "does our curriculum reconstruct that book's ToC?" is a
+direct proxy for **"does our system serve the highest-value underserved gaps as well as a
+domain expert did?"** -- which is the product goal. The ToC reconstruction is the eval for the
+thing we actually care about, not a side-quest, and it argues for selecting targets by
+**largest genuine-book gap**.
+
+## Candidate selection (principled, reproducible)
+`book_own_gap.py --rank-top` computes EVERY book's own-gap; it now also dumps `all_book_gaps`
+(all books, id+gap) so curation can go to any depth from one run -- no re-ranking. The raw top
+of that ranking is DEBRIS (misclassified non-English textbooks, theses, off-domain works are
+extreme outliers with huge gaps). `curate_book_candidates.py` filters to genuine, English,
+coherent-gap, non-thesis/paper books and re-ranks by gap size; survivors are then ToC-checked
+via **Google Books** (publisher pages 403 automated fetches; search alone is incomplete). The
+panel's books are the top survivors (Color Image 417/457, MCS 363, Neuromorphic 282/288,
+Cyberbullying 361). Coarse filter still lets some non-textbooks through (a "Book Review",
+"Bilingual Education in China") -- the ToC-check is the real genuine-book gate.
+
+## Canonical vs niche (a hard limitation of own-gap targeting)
+Canonical/comprehensive textbooks have EMPTY own-gaps and are structurally excluded: Jurafsky
+(0), Koehn SMT (0, nearest book at sqdist 0.064 = a near-twin), Machine Learning for Data
+Streams (0), Deep Learning on Graphs (14); AIMA/Norvig is ~certainly 0 too. They sit in
+book-dense regions (many competing textbooks → tiny radius → empty ball) -- which is logically
+necessary, since a "gap" is *under-served-by-other-books* and a canonical textbook's subject is
+well-served. **The two desirable properties are anticorrelated: niche ⇒ real gap but usually a
+thesis/monograph; canonical ⇒ clean textbook+ToC but no gap.** Fresh-embedding an external book
+(`--query-text`) to dodge this is UNRELIABLE -- MCS via fresh-embed = gap 0 vs its corpus record
+= 363; the gap is hyper-sensitive to the exact embedding (left uncommitted). To use canonical
+books one would have to change the seed (book's topic gap or cited-article set), abandoning the
+own-gap definition.
+
+## Compute note (why HNSW persistence isn't the lever)
+Per-book reconstruction (gap → curriculum → Track B → eval) is **brute-force, builds no HNSW**;
+its cost is personalized PageRank (~4min CS-field / ~30min domain, not cacheable). Citation
+graph + embeddings are already `@MEMORY.cache`'d (graph: 93s cold → 0.1s warm, shared per
+scope). The ONLY HNSW is the all-books `--rank-top` ranking (once per scope); persisting a
+~58 GB faiss index is non-trivial and would save only the build, not the all-books query, so
+saving `all_book_gaps` once is the right fix instead. Throughput for a panel comes from
+parallelism (run_toc_panel.sh: ~15GB/book CS-field → ~8 concurrent), not caching.
+
 ## Cross-refs
 - [[curriculum-generalization-pedagogical-subspace]] — alignment machinery for Track B.
 - [[curriculum-diffusion-and-quality-metrics]] — LectureBank source + intrinsic metrics.
