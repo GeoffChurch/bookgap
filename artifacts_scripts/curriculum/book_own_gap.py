@@ -43,6 +43,10 @@ def main() -> None:
     ap.add_argument("--rank-top", type=int, default=0,
                     help="if >0, also dump the top-N books by own-gap size (the niche, "
                          "real-gap textbooks that make good reconstruction targets)")
+    ap.add_argument("--brute-force", action="store_true",
+                    help="exact single-book gap (requires --book-id): nearest non-self book "
+                         "+ article ball via dot-products. No all-books query, no HNSW build "
+                         "-- the lean book-first path; minutes even at whole-domain scope.")
     ap.add_argument("--subfield", default=None,
                     help="scope to this OpenAlex subfield id (e.g. 1702 = AI)")
     ap.add_argument("--field", default=None,
@@ -76,6 +80,45 @@ def main() -> None:
     if not args.book_id and not args.rank_top:
         LOGGER.error("pass --book-id and/or --rank-top")
         sys.exit(2)
+
+    # Lean book-first path: compute ONLY this book's own gap, exactly, via
+    # dot-products -- nearest non-self book sets the radius, then the article ball.
+    # No all-books query, no HNSW build/discard. Matches get_kball_coverage(k=1)
+    # semantics (exact L2 sqdist; is_intra_cloud self-drop = excluding self book).
+    if args.brute_force:
+        if not args.book_id or args.book_id not in book_ids:
+            LOGGER.error("--brute-force requires a --book-id present in scope")
+            sys.exit(2)
+        bi = book_ids.index(args.book_id)
+        b_emb = np.asarray(books.embeddings(), dtype=np.float32)      # Lever A: only book rows
+        book_vec = b_emb[bi]
+        b_norm2 = float(book_vec @ book_vec)
+        d2_books = b_norm2 + np.einsum("ij,ij->i", b_emb, b_emb) - 2.0 * (b_emb @ book_vec)
+        d2_books[bi] = np.inf                                         # drop self
+        d_nn2 = float(d2_books.min())
+        radius = args.radius_fraction * d_nn2
+        LOGGER.info("nearest non-self book sqdist=%.4f -> ball radius(sqdist)=%.4f", d_nn2, radius)
+        a_emb = np.asarray(articles.embeddings(), dtype=np.float32)   # Lever A: only article rows
+        d2_art = b_norm2 + np.einsum("ij,ij->i", a_emb, a_emb) - 2.0 * (a_emb @ book_vec)
+        in_gap = np.where(d2_art <= radius)[0]
+        in_gap = in_gap[np.argsort(d2_art[in_gap])]                  # nearest first
+        a_titles = articles.work_titles()
+        gap_article_ids = [article_ids[int(j)] for j in in_gap]
+        sample_titles = [a_titles[int(j)] for j in in_gap[:args.sample]]
+        LOGGER.info("Book %s own gap (brute-force): %d articles", args.book_id, len(gap_article_ids))
+        for t in sample_titles:
+            LOGGER.info("  - %s", t)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        json.dump({
+            "scope_subfield": args.subfield, "scope_field": args.field,
+            "radius_fraction": args.radius_fraction, "method": "brute_force",
+            "n_books_in_scope": len(book_ids), "n_articles_in_scope": len(article_ids),
+            "book": {"book": books.work_titles()[bi], "book_id": args.book_id,
+                     "gap_size": len(gap_article_ids), "d_nn_sqdist": d_nn2,
+                     "sample_titles": sample_titles, "gap_article_ids": gap_article_ids},
+        }, open(args.out, "w"), indent=1)
+        LOGGER.info("wrote %s", args.out)
+        return
 
     # Every book's own gap in one pass; is_intra_cloud=True drops the self-book so
     # the radius is set by the nearest OTHER book.

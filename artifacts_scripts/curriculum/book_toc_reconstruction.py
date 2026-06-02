@@ -62,6 +62,7 @@ def main() -> None:
     bk = gap.get("book", gap)
     gap_ids = bk["gap_article_ids"]
     subfield = gap.get("scope_subfield")
+    field = gap.get("scope_field")
     toc = json.loads(args.toc_json.read_text())
     chapters = toc["chapters"]
 
@@ -69,6 +70,8 @@ def main() -> None:
     cfg = OmegaConf.structured(CurriculumConfig())
     if subfield:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(subfield)
+    if field:
+        cfg.experiment.cloud.filter_pair.pre.field = str(field)
     cloud = instantiate(cfg.experiment.cloud)
     articles = SubCloud(parent=cloud, post_filter=Filter(work_types=("article",)))
     art_ids = articles.work_ids()

@@ -117,8 +117,43 @@ in one pass). Validated at **AI-subfield (1702)** scope, radius_fraction=0.75:
   clusters. **Next: a broad textbook** (e.g. *Deep Learning on Graphs* would need a
   larger-own-gap niche book; *Quantum Information Theory* T10020 92% is a candidate) where
   ToC chapters reflect field structure. Eval machinery is ready; always apply mean-center.
-- Code (uncommitted, exploratory): `book_own_gap.py`, `book_curriculum.py`,
-  `book_toc_reconstruction.py`. ToC: `artifacts/book_gaps/W2898513995_toc.json`.
+- Code: `book_own_gap.py`, `book_curriculum.py`, `book_toc_reconstruction.py` (committed
+  b867bdb). ToC inputs under `artifacts/book_gaps/*_toc.json` (gitignored).
+
+**Second reconstruction — broad textbook >> monograph (validates the eval).** Mobile
+Crowdsensing (W4235013513, Borcea/Talasila/Curtmola; real 10-chapter field-structure ToC),
+own-gap 363 articles at CS-field scope. Reconstruction (mean-center): ARI=0.346, NMI=0.457,
+purity=0.504 — vs the cyberbullying monograph's 0.112/0.221/0.361. ~3× better on ARI, and the
+book's real subtopics map to distinct clusters (Incentives→cl8 37/65, Security/Privacy→cl12
+36/66, Systems→cl14 19/28), chapter sizes balanced (no generic-attractor). So the metric is
+discriminative and book-type-sensitive; our pipeline recovers ~half a real textbook's
+structure. Caveat: ordering-τ is noisy at ~10 chapters (flips with assignment); ARI/NMI/purity
+are the robust signals and mean-centering lifts all three. The right target is a focused-field
+**textbook** (field-structure ToC), not a narrow research monograph.
+
+**Lean book-first path (the intended workflow).** `book_own_gap.py --brute-force` computes ONLY
+the chosen book's gap exactly — nearest non-self book + article ball via dot-products, no
+all-books query, no HNSW build/discard. Exact (the HNSW path under-finds: 349 vs 341 on
+cyberbullying, 363 vs 345 on MCS) and fast (~80s compute; ~2-3 min incl. cloud load at CS
+scope, vs ~28 min for the all-books `--rank-top`). Use `--rank-top` only for candidate
+DISCOVERY; for a known OA book, `--brute-force`. Whole-domain single-book gaps are now feasible
+in minutes (Lever A `SubCloud.embeddings()` + brute-force; the HNSW path's 35M index is never
+persisted anyway — `build_index` is in-memory only).
+
+**Scope findings (AI subfield vs CS field vs whole domain).** Ran the own-gap ranking at
+all three (whole-domain needed the `perf(cloud)` row-selective `SubCloud.embeddings()` fix,
+commit bab2cc8 — before it, domain scope OOM'd materializing the full 58.5 GiB parent array;
+after, it peaked ~122 GB and completed in 2h22m). Key result: **broadening scope makes the
+debris problem WORSE, not better** (contra the earlier hypothesis). Whole-domain top own-gaps
+are ~37/40 non-English misclassified textbooks (Russian/Ukrainian "учебное пособие", Korean
+policy reports, Chinese teaching books) that are extreme embedding outliers (gaps 1000–3000).
+Meanwhile a genuine focused-field book's own-gap is **scope-robust** — Federated ML
+W6931779801 = 465 (AI) / 485 (CS) / 496 (domain), always its true federated-learning cluster.
+**Consequences:** (1) compute a genuine target's gap at the CHEAPEST scope (AI subfield) — it's
+~the same; (2) candidate selection should stay at subfield/field scope (the scope itself filters
+the off-domain debris) — whole-domain ranking is debris-dominated and a poor candidate source;
+(3) the real lever for the debris is a data-quality filter (non-English / ToC-recoverability /
+binomial-p), not scope. Rankings: `artifacts/book_gaps/{ai_subfield,csfield,domain}_ranked.json`.
 
 ## Cross-refs
 - [[curriculum-generalization-pedagogical-subspace]] — alignment machinery for Track B.

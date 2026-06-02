@@ -41,6 +41,7 @@ def build_curriculum_from_book_gap(
     *,
     output_dir: Optional[str] = None,
     subfield: Optional[str] = None,
+    field: Optional[str] = None,
     desired_n_topics: int = 15,
     boundary: bool = False,
 ) -> Path:
@@ -50,6 +51,7 @@ def build_curriculum_from_book_gap(
     if not ids:
         raise ValueError(f"empty gap_article_ids in {gap_json}")
     sf = subfield or rec.get("scope_subfield")
+    fld = field or rec.get("scope_field")
     book_id = bk.get("book_id", "unknown")
     name = output_dir or f"book_curriculum_{book_id.rsplit('/', 1)[-1]}"
 
@@ -61,6 +63,8 @@ def build_curriculum_from_book_gap(
     cfg.ranking_top_k = 5000
     if sf:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(sf)
+    if fld:
+        cfg.experiment.cloud.filter_pair.pre.field = str(fld)
     if boundary:
         cfg.boundary_selection = True
         cfg.background_exponent = 0.5
@@ -89,11 +93,12 @@ def main() -> None:
                     help="book_own_gap.py output JSON (single-book mode, has gap_article_ids)")
     ap.add_argument("--output-dir", default=None)
     ap.add_argument("--subfield", default=None, help="override scope subfield (default: from gap JSON)")
+    ap.add_argument("--field", default=None, help="override scope field (default: from gap JSON)")
     ap.add_argument("--desired-n-topics", type=int, default=15)
     ap.add_argument("--boundary", action="store_true", help="use the boundary-background selector")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
-        args.gap_json, output_dir=args.output_dir, subfield=args.subfield,
+        args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
         desired_n_topics=args.desired_n_topics, boundary=args.boundary,
     )
     print(f"DONE -> {out}")
