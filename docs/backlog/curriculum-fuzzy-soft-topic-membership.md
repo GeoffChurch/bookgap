@@ -92,6 +92,51 @@ un-topical mass leaks to background), and the **exemplar threshold** (presentati
   principled alternative; very interpretable soft memberships, but embedding-only and a heavier
   optimization. Loses to the absorbing walk on graph-coherence grounds.
 
+## Prior art — this is largely a TRANSFER, not new research
+
+The gap-detection side already built, tested, and **shipped** the multi-cluster soft-membership idea
+([[multicluster-softmax-membership]], `artifacts_scripts/gap_softmax_enrich.py`, Phases 2–3). It's
+mathematically the same model: per-point **softmax membership over nearest basin centroids,
+per-member-normalized for size-fairness, one-shot**, optional ∅ background, weighted keyword
+extraction (`DocWeighting.RELEVANCE` — what the curriculum keyword pipeline already uses). Curriculum
+topics map onto "basins"; the N chapters compete in the softmax; ∅ = "belongs to no chapter"; drop
+the book-anchored-competitor machinery (no books inside a single gap). **Adapt this rather than
+build from scratch.**
+
+Two design choices are now **empirically settled**, not assumptions:
+- **One-shot, never iterate.** Every iterated multi-cluster config diverged (`final_delta 0.75–0.99`,
+  the diffusion-to-uniform fixed point); they shipped one-shot only.
+- **Anti-diffusion regularizer is mandatory.** The naive `K_G/K_total` iteration is power iteration
+  on `D⁻¹K` → uniform; no init saves it ([[full-data-soft-mixture-degenerate-bootstrap]]). The fix
+  is per-member normalization (softmax framing) or the absorbing/fixed-anchor + background sink
+  (this doc's framing). These are the SAME anti-diffusion trick.
+
+So the **absorbing-walk variant here is the citation-aware cousin to A/B against the validated
+embedding-softmax**, not the default. Theirs is embedding-kernel-only with a perplexity-temperature
+knob; ours uses the citation+similarity graph (matters for curriculum, where the whole
+product-of-experts leans on citation structure) and drops the temperature. Plan: **start from the
+shipped one-shot softmax membership; treat the absorbing walk as the graph-aware comparison arm.**
+
+## Topic-anchor selection: facility-location / DPP (kills redundant chapters)
+
+Both the softmax model and the absorbing walk need **N anchors**. Today that's embedding
+k-means/dendrogram cores. The deflation program left a **validated, no-knob facility-location** impl
+(`fl_bookdemand_resid`, ported to `bookgap/llm/gap_algorithms/deflation_strategies.py`) and an
+**untested DPP** (`_dpp` in `artifacts_scripts/gap_deflation_bakeoff.py`) — both coverage/diversity
+selectors. This attacks a defect nothing else here addresses: **Color Image's ~8 near-duplicate
+histogram-equalization chapters** (redundant topics). FL (maximize coverage of the gap's works) or
+DPP (high-quality + mutually-dissimilar anchors) directly de-duplicate the anchor set. FL is
+battle-tested + intrinsic; **DPP is genuinely open (no recorded result)** and is the textbook
+anti-redundancy tool. Worth trying FL/DPP as the anchor selector under the fuzzy model.
+
+## What from the n_eff / gap-sizing program is NOT worth porting
+
+Gap-*sizing* (n_eff ranking, k-ball cohesion / hill-climb / moving-centroid radius reopt,
+dual-landmark) is gap-detection-side and already characterized ("raw KBALL ≥ n_eff except on
+article-dense topics"; dual-landmark validated only as a diagnostic). Their useful *concept* (ESS /
+participation ratio) is already in this design (soft count `Σ mass·r`, ESS chapter size) and could
+even replace dynamic-k's relative-floor. The metrics themselves don't transfer.
+
 ## Caveats / sequencing
 
 - Bigger change than dynamic-k — thread `r_{i,k}` through clustering → keywords → summary → exemplar
