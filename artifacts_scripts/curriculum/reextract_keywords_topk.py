@@ -34,6 +34,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run-dir", type=Path, required=True)
     ap.add_argument("--top-k", type=int, default=30)
+    ap.add_argument("--dynamic-floor", type=float, default=0.0,
+                    help="Dynamic top-k: keep keywords scoring >= this fraction of "
+                         "the topic's top score (0=off; ~0.05 trims ~0-score padding).")
     ap.add_argument("--field", type=str, default="17",
                     help="OpenAlex field id for the cloud scope (CS = 17).")
     args = ap.parse_args()
@@ -46,6 +49,7 @@ def main() -> None:
     cfg = OmegaConf.structured(CurriculumConfig())
     cfg.experiment.cloud.filter_pair.pre.field = str(args.field)
     cfg.keywords.top_k = int(args.top_k)
+    cfg.keywords.dynamic_topk_floor = float(args.dynamic_floor)
     cloud = instantiate(cfg.experiment.cloud)
 
     # Reconstruct filtered_indices: map each filtered work id -> cloud index.

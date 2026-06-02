@@ -50,6 +50,7 @@ def build_curriculum_from_book_gap(
     similarity_mix_weight: Optional[float] = None,
     similarity_knn_k: Optional[int] = None,
     keywords_top_k: int = 30,
+    dynamic_topk_floor: float = 0.0,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
     bk = rec.get("book", rec)  # single-book mode nests under "book"; fall back to flat
@@ -69,6 +70,7 @@ def build_curriculum_from_book_gap(
     cfg.rank_before_clustering = True
     cfg.ranking_top_k = 5000
     cfg.keywords.top_k = keywords_top_k
+    cfg.keywords.dynamic_topk_floor = dynamic_topk_floor
     if sf:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(sf)
     if fld:
@@ -138,6 +140,9 @@ def main() -> None:
                     help="kNN neighbors per node for the similarity graph (default cfg 5)")
     ap.add_argument("--keywords-top-k", type=int, default=30,
                     help="keywords per chapter (default 30, to match the pairwise eval)")
+    ap.add_argument("--dynamic-topk-floor", type=float, default=0.0,
+                    help="dynamic top-k: keep keywords scoring >= this fraction of the "
+                         "topic's top score (0=off; ~0.05 trims ~0-score padding on thin chapters)")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
@@ -145,6 +150,7 @@ def main() -> None:
         semantic_rerank=args.semantic_rerank, semantic_bandwidth=args.semantic_bandwidth,
         similarity=args.similarity, similarity_mix_weight=args.similarity_mix_weight,
         similarity_knn_k=args.similarity_knn_k, keywords_top_k=args.keywords_top_k,
+        dynamic_topk_floor=args.dynamic_topk_floor,
     )
     print(f"DONE -> {out}")
 

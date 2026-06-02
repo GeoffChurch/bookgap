@@ -62,6 +62,42 @@ cs = ConfigStore.instance()
 cs.store(name="curriculum", node=CurriculumConfig())
 
 
+def _apply_dynamic_topk(
+    keywords: Dict[int, List[tuple[str, float]]],
+    *,
+    floor: float,
+    min_k: int,
+) -> Dict[int, List[tuple[str, float]]]:
+    """Trim each topic to keywords scoring >= ``floor`` * (topic's top score).
+
+    Keywords arrive sorted descending by score. A healthy chapter's scores decay
+    smoothly so all clear the relative floor; a thin/degenerate chapter's scores
+    cliff to ~0 after a few real terms, so only those survive (no ~0-score junk
+    padding the fixed top_k). Always keeps at least ``min_k``. Report only as many
+    keywords as the evidence supports.
+    """
+    trimmed: Dict[int, List[tuple[str, float]]] = {}
+    for tidx, kws in keywords.items():
+        if not kws:
+            trimmed[tidx] = kws
+            continue
+        top = max((s for _, s in kws), default=0.0)
+        if top <= 0:
+            trimmed[tidx] = kws[:min_k]
+            continue
+        cut = [(w, s) for w, s in kws if s >= floor * top]
+        trimmed[tidx] = cut if len(cut) >= min_k else kws[:min_k]
+    n_before = sum(len(v) for v in keywords.values())
+    n_after = sum(len(v) for v in trimmed.values())
+    LOGGER.info(
+        "Dynamic top-k (floor=%.3f, min=%d): %d -> %d keywords across %d topics "
+        "(sizes: %s)",
+        floor, min_k, n_before, n_after, len(trimmed),
+        ", ".join(str(len(trimmed[t])) for t in sorted(trimmed)),
+    )
+    return trimmed
+
+
 def run_keyword_extraction(
     cfg: KeywordConfig,
     curriculum_dir: Path,
@@ -130,7 +166,12 @@ def run_keyword_extraction(
         bigrams_count_floor=cfg.bigrams_count_floor,
         bigram_iterations=cfg.bigram_iterations,
     )
-    
+
+    if cfg.dynamic_topk_floor > 0:
+        keywords = _apply_dynamic_topk(
+            keywords, floor=cfg.dynamic_topk_floor, min_k=cfg.dynamic_topk_min
+        )
+
     # Save keywords
     keywords_path = curriculum_dir / "topic_keywords.json"
     keywords_json = {}

@@ -29,7 +29,17 @@ class KeywordConfig:
     """Keyword extraction method."""
 
     top_k: int = 20
-    """Number of top keywords per topic."""
+    """Number of top keywords per topic (upper cap)."""
+
+    dynamic_topk_floor: float = 0.0
+    """Dynamic top-k: keep only keywords scoring >= this fraction of the topic's
+    TOP keyword score (0.0 = off, fixed top_k). Self-calibrating per topic —
+    a thin/degenerate chapter whose keyword scores cliff to ~0 after a few real
+    terms shows just those, instead of padding top_k with ~0-score junk. A healthy
+    chapter (scores decay smoothly) keeps the full top_k. ~0.05 is a good default."""
+
+    dynamic_topk_min: int = 3
+    """Floor on the number of keywords shown per topic when dynamic_topk_floor>0."""
 
     samples_per_topic: int = 5000
     """Number of works to sample per topic for keyword extraction."""
