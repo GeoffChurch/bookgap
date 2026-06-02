@@ -222,9 +222,38 @@ tie-leaning-ours (soft).
 (~15 min vs ~3 min for this run); `soft_floor` bounds it. Predicted (not yet run): MCS neutral
 (no debris), Color Image unchanged (blurb embedding — fuzzy can't fix, see increment-1).
 
-**Still ahead:** ordering/exemplars under soft membership; the absorbing-walk (citation-aware)
-comparison arm; FL/DPP anchors (redundant-chapter defect); per-member-normalized kernel; and a
-default-vs-option decision before regenerating the committed examples to soft.
+## Absorbing-walk (citation-soft) arm — tested + REFUTED (2026-06-02)
+
+`cfg.keywords.soft_mode='citation'` (`reextract --soft-mode citation`): citation-aware soft
+membership by **label propagation** — diffuse the hard labels through the (symmetrized,
+row-normalized) citation graph, `R ← (1-α)·M0 + α·P·R`, teleport-to-own-hard-label as the
+anti-diffusion clamp (`citation_label_propagation` in `gap_fuzzy_topics.py`). Motivated by the
+FL/DPP finding that *citation*-coherence drives distinctive chapters. Tested on Neuromorphic:
+
+- **α=0.5:** dissolves the degenerate topic 3 (clean VCSEL keywords) BUT genericizes the other
+  chapters → judge: ours is *"repetitive strings of generic keywords like 'optical, photonic,
+  neural networks'"* → specificity **book_toc** (worse than embedding-soft's tie).
+- **α=0.25:** topic 3 reverts to the lone paper's 8 idiosyncratic terms (NOT dissolved) →
+  specificity **book_toc**.
+
+**Diagnosis:** a *global* citation-diffusion α can't be both — high α dissolves the degenerate
+chapter but over-smears the rest (dense citation graph → labels bleed across topics → common
+vocabulary dominates); low α keeps chapters distinct but doesn't pull a population into the
+degenerate one. **Embedding-soft's per-work perplexity-adaptivity threads this needle** (each work
+commits to ~1.5 topics by its own distinctiveness), which is why it alone reached a tie. Bonus:
+citation-soft is ~3× *faster* than embedding-soft (tighter pools), but it is not a quality win.
+**Refuted; embedding-soft over the dendrogram stays the best soft variant.** (Code kept as opt-in.)
+
+## Net state of the fuzzy/anchor exploration
+
+Validated stack: **semantic re-rank (product-of-experts) + dynamic-k**, with **embedding-soft over
+the dendrogram** a modest extra (Neuromorphic specificity loss→tie, judge reads ours as the focused
+one). REFUTED arms: **FL/DPP anchors** (diverse anchors ≠ distinctive chapters; hurt), **absorbing-
+walk / citation-soft** (no α balances dissolve-vs-genericize). Recurring lesson: in a tight corpus,
+soft membership helps the *degenerate* chapter but genericizes the rest unless it's per-work
+adaptive; embedding-softmax is the only variant that balances it. **Still open (lower priority):**
+per-member-normalized embedding kernel; soft ordering/exemplars; default-vs-option for soft +
+regenerating the committed examples. Candidate dead_ends migrations: FL/DPP anchors, citation-soft.
 
 ## Caveats / sequencing
 

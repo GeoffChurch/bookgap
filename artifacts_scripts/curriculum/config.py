@@ -57,6 +57,17 @@ class KeywordConfig:
     worth it — enable it deliberately, especially on debris-/degenerate-prone runs.
     `soft_floor` bounds the pool size."""
 
+    soft_mode: str = "embedding"
+    """How soft responsibilities are computed when soft_topics=True:
+    - 'embedding': one-shot softmax over EMBEDDING cosine to topic centroids.
+    - 'citation': citation-aware label propagation (the absorbing-walk arm) —
+      diffuse the hard labels through the citation graph. More citation-coherent
+      (the FL/DPP refutation showed citation-coherence drives distinctive chapters)."""
+
+    soft_alpha: float = 0.5
+    """For soft_mode='citation': citation-diffusion weight (1-alpha teleports back
+    to the work's own hard label — the anti-diffusion clamp)."""
+
     soft_perplexity: float = 1.5
     """Target mean topics-per-work for the softmax temperature (t-SNE-style)."""
 

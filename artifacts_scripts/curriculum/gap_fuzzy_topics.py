@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import scipy.sparse as sp
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from scipy.special import softmax
@@ -62,6 +63,33 @@ def soft_responsibilities(E_unit, C_unit, perplexity):
     sims = E_unit @ C_unit.T
     tau = _calibrate_tau(sims, perplexity)
     return softmax(sims / tau, axis=1), tau
+
+
+def citation_label_propagation(adj, labels, n_topics, alpha=0.5, iters=30):
+    """Citation-aware soft membership via label propagation (the absorbing-walk arm).
+
+    Diffuse the citation-coherent HARD topic labels through the citation graph:
+    ``R ← (1-alpha)·M0 + alpha·P·R`` where M0 is the one-hot hard assignment and P
+    is the row-normalized symmetrized citation adjacency. A work that cites / is
+    cited by a topic's works accrues responsibility to that topic — so membership
+    is citation-coherent (the FL/DPP refutation showed citation-coherence, not
+    embedding-diversity, drives distinctive chapters). Teleport-to-own-hard-label
+    (the `(1-alpha)·M0` term) is the anti-diffusion clamp that stops the walk from
+    diffusing to uniform; one solve, no iteration of the labels themselves.
+
+    adj: (n,n) citation adjacency over the SAME works as ``labels`` (filtered set).
+    Returns R (n, n_topics); rows sum ~1 for labeled works (slack = background)."""
+    n = adj.shape[0]
+    A = adj + adj.T                                   # symmetrize (undirected membership)
+    deg = np.asarray(A.sum(axis=1)).ravel()
+    P = sp.diags(np.where(deg > 0, 1.0 / deg, 0.0)) @ A
+    M0 = np.zeros((n, n_topics), dtype=np.float64)
+    valid = np.asarray(labels) >= 0
+    M0[np.arange(n)[valid], np.asarray(labels)[valid]] = 1.0
+    R = M0.copy()
+    for _ in range(iters):
+        R = (1.0 - alpha) * M0 + alpha * (P @ R)
+    return R
 
 
 def _calibrate_tau(sims: np.ndarray, target_perplexity: float) -> float:

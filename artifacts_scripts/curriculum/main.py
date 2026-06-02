@@ -148,18 +148,29 @@ def run_keyword_extraction(
         works_for_keywords = all_texts
 
     embeddings_for_keywords = None
+    citation_adj_for_keywords = None
     if cfg.soft_topics:
-        emb = np.asarray(cloud.embeddings())
-        embeddings_for_keywords = emb[filtered_indices] if filtered_indices is not None else emb
-        LOGGER.info(f"Soft topics enabled (perplexity={cfg.soft_perplexity}, floor={cfg.soft_floor})")
+        LOGGER.info(f"Soft topics enabled (mode={cfg.soft_mode}, floor={cfg.soft_floor})")
+        if cfg.soft_mode == "citation":
+            from bookgap.cloud import get_cloud_citation_graph
+            adj = get_cloud_citation_graph(cloud, normalize=False)
+            citation_adj_for_keywords = (
+                adj[filtered_indices][:, filtered_indices] if filtered_indices is not None else adj
+            )
+        else:
+            emb = np.asarray(cloud.embeddings())
+            embeddings_for_keywords = emb[filtered_indices] if filtered_indices is not None else emb
 
     keywords = summarize_topics(
         curriculum_dir=curriculum_dir,
         texts=works_for_keywords,
         embeddings=embeddings_for_keywords,
         soft_topics=cfg.soft_topics,
+        soft_mode=cfg.soft_mode,
         soft_perplexity=cfg.soft_perplexity,
+        soft_alpha=cfg.soft_alpha,
         soft_floor=cfg.soft_floor,
+        citation_adj=citation_adj_for_keywords,
         samples_per_topic=cfg.samples_per_topic,
         top_k_keywords=cfg.top_k,
         method=cfg.method,

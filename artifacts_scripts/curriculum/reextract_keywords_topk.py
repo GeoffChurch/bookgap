@@ -40,6 +40,11 @@ def main() -> None:
     ap.add_argument("--soft-topics", action="store_true",
                     help="Fuzzy keyword extraction: each work contributes to every topic with "
                          "soft responsibility >= floor (weighted mass*r), dissolving degenerate chapters.")
+    ap.add_argument("--soft-mode", choices=["embedding", "citation"], default="embedding",
+                    help="soft responsibility source: embedding softmax over centroids, or "
+                         "citation label-propagation (absorbing-walk arm; citation-coherent).")
+    ap.add_argument("--soft-alpha", type=float, default=0.5,
+                    help="For --soft-mode citation: citation-diffusion weight (1-alpha clamps to hard label).")
     ap.add_argument("--soft-perplexity", type=float, default=1.5,
                     help="Target mean topics-per-work for the soft-membership softmax temperature.")
     ap.add_argument("--soft-floor", type=float, default=0.05,
@@ -58,6 +63,8 @@ def main() -> None:
     cfg.keywords.top_k = int(args.top_k)
     cfg.keywords.dynamic_topk_floor = float(args.dynamic_floor)
     cfg.keywords.soft_topics = bool(args.soft_topics)
+    cfg.keywords.soft_mode = str(args.soft_mode)
+    cfg.keywords.soft_alpha = float(args.soft_alpha)
     cfg.keywords.soft_perplexity = float(args.soft_perplexity)
     cfg.keywords.soft_floor = float(args.soft_floor)
     cloud = instantiate(cfg.experiment.cloud)

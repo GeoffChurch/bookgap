@@ -159,8 +159,11 @@ def summarize_topics(
     bigram_iterations: int = 6,
     embeddings: Optional["np.ndarray"] = None,
     soft_topics: bool = False,
+    soft_mode: str = "embedding",
     soft_perplexity: float = 1.5,
+    soft_alpha: float = 0.5,
     soft_floor: float = 0.05,
+    citation_adj=None,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
 
@@ -233,25 +236,38 @@ def summarize_topics(
     # chapters); enable deliberately. See cfg.keywords.soft_topics docstring.
     soft_R = None
     if soft_topics:
-        if embeddings is None:
-            raise ValueError("soft_topics requires embeddings aligned with texts")
-        from artifacts_scripts.curriculum.gap_fuzzy_topics import soft_responsibilities, _unit
         labels = np.asarray(outputs.point_to_cluster)
-        masses = np.asarray(outputs.point_masses, dtype=np.float64)
-        E = _unit(np.asarray(embeddings, dtype=np.float32))
-        C = np.zeros((n_topics, E.shape[1]), dtype=np.float32)
-        for k in range(n_topics):
-            m = np.where(labels == k)[0]
-            if len(m) == 0:
-                continue
-            w = masses[m]
-            C[k] = np.average(E[m], axis=0, weights=w if w.sum() > 0 else None)
-        C = _unit(C)
-        soft_R, tau = soft_responsibilities(E, C, soft_perplexity)
-        LOGGER.info(
-            "Soft topics: tau=%.4f (target perplexity %.2f), floor=%.2f — works contribute "
-            "to all topics with r>=floor, weighted mass*r", tau, soft_perplexity, soft_floor,
-        )
+        if soft_mode == "citation":
+            # Absorbing-walk arm: diffuse the citation-coherent hard labels through
+            # the citation graph (label propagation). Citation-coherent membership.
+            if citation_adj is None:
+                raise ValueError("soft_topics soft_mode='citation' requires citation_adj")
+            from artifacts_scripts.curriculum.gap_fuzzy_topics import citation_label_propagation
+            soft_R = citation_label_propagation(citation_adj, labels, n_topics, alpha=soft_alpha)
+            LOGGER.info(
+                "Soft topics (citation label-propagation): alpha=%.2f, floor=%.2f — works "
+                "contribute to all topics with r>=floor, weighted mass*r", soft_alpha, soft_floor,
+            )
+        else:
+            if embeddings is None:
+                raise ValueError("soft_topics soft_mode='embedding' requires embeddings")
+            from artifacts_scripts.curriculum.gap_fuzzy_topics import soft_responsibilities, _unit
+            masses = np.asarray(outputs.point_masses, dtype=np.float64)
+            E = _unit(np.asarray(embeddings, dtype=np.float32))
+            C = np.zeros((n_topics, E.shape[1]), dtype=np.float32)
+            for k in range(n_topics):
+                m = np.where(labels == k)[0]
+                if len(m) == 0:
+                    continue
+                w = masses[m]
+                C[k] = np.average(E[m], axis=0, weights=w if w.sum() > 0 else None)
+            C = _unit(C)
+            soft_R, tau = soft_responsibilities(E, C, soft_perplexity)
+            LOGGER.info(
+                "Soft topics (embedding softmax): tau=%.4f (target perplexity %.2f), floor=%.2f "
+                "— works contribute to all topics with r>=floor, weighted mass*r",
+                tau, soft_perplexity, soft_floor,
+            )
     
     # Sample works and extract text for each topic
     LOGGER.info(f"Sampling up to {samples_per_topic} works per topic using PageRank relevance...")
