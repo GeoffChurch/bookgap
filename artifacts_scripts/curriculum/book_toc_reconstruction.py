@@ -43,6 +43,59 @@ def _l2(x: np.ndarray) -> np.ndarray:
     return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-12)
 
 
+_STOP = set((
+    "the of for and or to in on with using based via from into over under a an is are be "
+    "this that these those we our their it its as at by such new approach approaches method "
+    "methods system systems model models use survey review study analysis toward towards "
+    "via case study via data driven").split())
+
+
+def _materialize_track_b(out_dir: Path, chapters: list, g_titles: list,
+                         sims: np.ndarray, b_label: np.ndarray, book_title: str,
+                         n_works: int = 5, n_kw: int = 10) -> None:
+    """Write Track B (the book's ToC, populated with the assigned gap articles) as a
+    renderable curriculum run-dir (summary.md + pipeline.log), in the SAME format
+    eval_book_judge.load_book_outline parses -- so the pairwise judge renders it
+    blind/symmetric vs our Track A curriculum (labels come from keywords, not the
+    book's real chapter titles).
+    """
+    import math
+    import re
+    from collections import Counter
+
+    def toks(s: str) -> list:
+        ws = [w for w in re.findall(r"[a-z][a-z\-]{2,}", s.lower()) if w not in _STOP]
+        return ws + [f"{ws[i]} {ws[i + 1]}" for i in range(len(ws) - 1)]  # unigrams + bigrams
+
+    n_chap = len(chapters)
+    chap_tf = [Counter() for _ in range(n_chap)]
+    for j, t in enumerate(g_titles):
+        chap_tf[int(b_label[j])].update(toks(t))
+    df: Counter = Counter()
+    for ci in range(n_chap):
+        for w in chap_tf[ci]:
+            df[w] += 1
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lines = [f"# Curriculum Summary: {book_title}", ""]
+    for ci in range(n_chap):
+        assigned = sorted((j for j in range(len(g_titles)) if int(b_label[j]) == ci),
+                          key=lambda j: -float(sims[j, ci]))               # nearest first
+        idf = {w: math.log((n_chap + 1) / (df[w] + 1)) + 1.0 for w in chap_tf[ci]}
+        kws = sorted(chap_tf[ci], key=lambda w: -chap_tf[ci][w] * idf[w])[:n_kw]
+        lines += [f"## Topic {ci + 1}", "", "### Top Keywords", "",
+                  "| Keyword | Score |", "|---------|-------|"]
+        for w in kws:
+            lines.append(f"| {w} | {chap_tf[ci][w]} |")
+        lines += ["", "### Top Works", ""]
+        for k, j in enumerate(assigned[:n_works], 1):
+            lines.append(f"#### {k}. {g_titles[j]}")
+        lines.append("")
+    (out_dir / "summary.md").write_text("\n".join(lines))
+    (out_dir / "pipeline.log").write_text(
+        f"Topic T0000 ({book_title}) gap 0: materialized ToC curriculum (Track B)\n")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gap-json", required=True, type=Path)
@@ -50,6 +103,9 @@ def main() -> None:
     ap.add_argument("--curriculum-dir", required=True, type=Path)
     ap.add_argument("--mean-center", action="store_true",
                     help="domain-adaptation step 2: subtract per-genre means before cosine")
+    ap.add_argument("--materialize-dir", type=Path, default=None,
+                    help="also write Track B as a renderable curriculum run-dir (summary.md) "
+                         "for the pairwise LLM eval (eval_pairwise_judge).")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
 
@@ -99,6 +155,12 @@ def main() -> None:
     b_sizes = np.bincount(b_label, minlength=len(chapters))
     LOGGER.info("Track B chapter assignment sizes: %s",
                 {chap_titles[i][:28]: int(b_sizes[i]) for i in range(len(chapters))})
+
+    if args.materialize_dir:
+        g_titles = [titles[r] for (_, r) in gap_rows]
+        _materialize_track_b(args.materialize_dir, chapters, g_titles, sims, b_label,
+                             toc.get("title", "Book"))
+        LOGGER.info("materialized Track B run-dir -> %s", args.materialize_dir)
 
     # --- Track A: our curriculum clusters + frontier ordering
     twi = json.loads((args.curriculum_dir / "topic_work_ids.json").read_text())

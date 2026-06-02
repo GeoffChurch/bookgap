@@ -53,6 +53,7 @@ def build_curriculum_from_book_gap(
     sf = subfield or rec.get("scope_subfield")
     fld = field or rec.get("scope_field")
     book_id = bk.get("book_id", "unknown")
+    book_title = bk.get("book", book_id)
     name = output_dir or f"book_curriculum_{book_id.rsplit('/', 1)[-1]}"
 
     cfg = OmegaConf.structured(CurriculumConfig())
@@ -75,8 +76,11 @@ def build_curriculum_from_book_gap(
     LOGGER.info("=" * 60)
     LOGGER.info("BOOK-GAP CURRICULUM (Track A)")
     LOGGER.info("=" * 60)
-    LOGGER.info("Book %s: seeding %d in-gap articles; subfield=%s; boundary=%s",
-                book_id, len(ids), sf, boundary)
+    # A parseable blind title (eval_book_judge._parse_topic_name reads "Topic Tx (name)")
+    # so the pairwise judge shows the same neutral book title for Track A and Track B.
+    LOGGER.info("Topic T0000 (%s) gap 0: book-gap curriculum (Track A)", book_title)
+    LOGGER.info("Book %s: seeding %d in-gap articles; subfield=%s; field=%s; boundary=%s",
+                book_id, len(ids), sf, fld, boundary)
 
     cloud, embeddings_for_clustering, filtered_indices = run_curriculum_building(cfg, output_dir=out)
     topic_keywords = run_keyword_extraction(cfg.keywords, out, cloud, filtered_indices)

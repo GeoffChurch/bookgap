@@ -131,6 +131,31 @@ structure. Caveat: ordering-τ is noisy at ~10 chapters (flips with assignment);
 are the robust signals and mean-centering lifts all three. The right target is a focused-field
 **textbook** (field-structure ToC), not a narrow research monograph.
 
+**Paired LLM eval — our curriculum vs the book's ToC (the actual goal).** Materialized
+Track B as a renderable curriculum run-dir (`book_toc_reconstruction.py --materialize-dir`:
+the ToC chapters in order, each populated with its assigned gap-articles + tf-idf keywords,
+written as `summary.md` in the curriculum format) so `eval_pairwise_judge` renders it
+blind/symmetric vs Track A (labels come from keywords, not the book's real chapter titles;
+both show the same neutral blind title). Ran gemma4:31b pairwise (A/B/tie, both orders ×3,
+0 parse failures) + a blind opus subagent (both orders) on Mobile Crowdsensing
+(ours = Track A base selector, vs book ToC):
+- **Both judges: the book's ToC beats our curriculum.** gemma 4-0; opus 3-0 + tie on
+  progressive; 3/4 identical winners; **both position-robust (0 flips)**.
+- Consistent diagnosis from BOTH (incl. the frontier judge): our gap-seeded curriculum
+  **wanders into tangential foundations** — "spends a third of its chapters on tangential
+  foundations… general databases, image processing, distributed-systems theory, public-key
+  cryptography… a disjointed literature dump" (opus); "wanders significantly into general
+  database, cryptography, and algorithm textbooks" (gemma). The PageRank expansion's
+  foundations are read as off-topic, costing specificity AND (gemma) progressive; opus
+  calls progressive a tie (neither has a clean easy-to-hard arc).
+- **This is the headline result the experiment was for**: our *generated* curriculum, head to
+  head against a real textbook's structure, loses — primarily on over-broad foundations.
+- **Next experiment**: re-run Track A with `--boundary` (the off-topic-hub-demoting selector
+  from the boundary-vs-base work — `docs/curriculum-reciprocal-selection-results.md`), which
+  is designed to suppress exactly this foundation-wandering, and re-judge vs the book ToC.
+  Results: gemma `artifacts/curriculum_eval_pairwise/mcs_ours_vs_toc.json`, opus
+  `.../opus_probe/mcs_opus.json`.
+
 **Lean book-first path (the intended workflow).** `book_own_gap.py --brute-force` computes ONLY
 the chosen book's gap exactly — nearest non-self book + article ball via dot-products, no
 all-books query, no HNSW build/discard. Exact (the HNSW path under-finds: 349 vs 341 on
