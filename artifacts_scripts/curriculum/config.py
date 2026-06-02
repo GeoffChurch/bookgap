@@ -46,7 +46,16 @@ class KeywordConfig:
     topic, give it a soft responsibility r_{i,k} (one-shot softmax over topic
     centroids) and let it contribute to every topic with r >= soft_floor, weighted
     by mass*r. Dissolves degenerate ~1-work chapters whose keywords would otherwise
-    be one work's idiosyncratic tail. See docs/backlog/curriculum-fuzzy-soft-topic-membership.md."""
+    be one work's idiosyncratic tail (validated on Neuromorphic: a lone-VCSEL-paper
+    chapter became a clean 30-keyword VCSEL chapter, and the judge re-read ours as
+    the more focused curriculum). See docs/backlog/curriculum-fuzzy-soft-topic-membership.md.
+
+    OPT-IN (default off) because it is **~5x slower**: soft pools are larger (each
+    work enters multiple topics' phrase-mining pools), so keyword extraction went
+    from ~3 min to ~15 min on a 13-topic / 5000-work run. It is *probably* a quality
+    improvement (cleaner, more specific chapters), but the speed cost isn't always
+    worth it — enable it deliberately, especially on debris-/degenerate-prone runs.
+    `soft_floor` bounds the pool size."""
 
     soft_perplexity: float = 1.5
     """Target mean topics-per-work for the softmax temperature (t-SNE-style)."""

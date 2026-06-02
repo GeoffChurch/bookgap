@@ -227,6 +227,10 @@ def summarize_topics(
 
     # Optional fuzzy/soft topic membership: a work contributes to every topic
     # with responsibility >= soft_floor (weighted mass*r), not just its hard topic.
+    # NOTE: opt-in / ~5x slower than hard assignment — the soft pools are larger
+    # (a work enters multiple topics' phrase-mining pools below), so the iterative
+    # phrase mining does much more work. Probably a quality win (dissolves degenerate
+    # chapters); enable deliberately. See cfg.keywords.soft_topics docstring.
     soft_R = None
     if soft_topics:
         if embeddings is None:
