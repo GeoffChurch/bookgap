@@ -18,7 +18,8 @@ A: 13 chapters · B: 13 chapters · align-probe: `centroid_cos`
 - A11 ↔ B12  (centroid_cos=0.98, ruzicka=0.04, containment_A=0.07)
 - A12 ↔ B0  (centroid_cos=1.00, ruzicka=0.33, containment_A=0.71)
 
-**UOT** (unbalanced): transported mass 1.22 of 1.0; book-side unmatched (comprehensiveness gap) **0.00**, ours-side unmatched 0.00.
+**Alignment cost** (mean 1−centroid_cos over Hungarian pairs): 0.032 (lower = better-aligned).
+**Work-overlap coverage** (size-weighted best-match ruzicka): book recovered by ours **0.19**, ours recovered by book 0.15  (1 − book = work-level comprehensiveness gap). Centroid coverage 0.99 (saturates in a tight corpus).
 **Internal redundancy** of A (max off-diagonal centroid cosine): 0.99.
 
 ## centroid_cos

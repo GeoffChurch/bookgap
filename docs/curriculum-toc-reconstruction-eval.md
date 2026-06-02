@@ -111,3 +111,25 @@ A secondary, book-specific issue is **debris chapters** (book-metadata boilerpla
 e.g. Color Image's "series, departments, covers"). Ours wins only sporadically: *progressive*
 when its prerequisites are coherent, *comprehensiveness* when its breadth exceeds the book's
 narrow gap-coverage. See the backlog for the full table and the specificity-improvement ideas.
+
+## Quantitative chapter correspondence (matrix eval) — complements the LLM judge
+
+The pairwise LLM judge gives a blunt per-axis winner; `gap_chapter_correspondence.py` adds a
+**quantitative, knob-light, content-based** view. It builds the chapter×chapter probe **matrix**
+between two curricula (each chapter = a weighted set of works), under probes spanning two axes:
+**kernel** (work-identity → embedding-geometry: `ruzicka` weighted-Jaccard, `centroid_cos`,
+`cover_A` mean-max-cosine) and **direction** (symmetric vs `containment_A` directed). The matrix is
+the primary object (row/col maxima = greedy alignment; off-diagonal = splits/merges; the **A-vs-A**
+matrix = internal redundancy, the FL/DPP diagnostic). On top: **Hungarian 1-1 alignment**,
+**work-overlap coverage** (best-match ruzicka, size-weighted), and internal redundancy. (Per-book
+detail in each `<book>/chapter_correspondence.md`. A soft/partial UOT reduction is deferred — the
+matrix + Hungarian + greedy coverage are the reliable core; the kernel axis is a resolution knob:
+`centroid_cos` saturates in single-topic corpora, `ruzicka`/`containment` discriminate.)
+
+**Panel finding (the reframe):** across all three books our curriculum is **topically a near-complete
+cover of the book** (Hungarian alignment `centroid_cos` ≈ 0.97) but shares only **9–22% of the same
+papers** (best-match ruzicka: MCS 0.22, Neuromorphic 0.19, Color Image 0.09 — lowest where the book
+is a comprehensive 357-reference textbook). So the LLM "book wins all axes" is consistently about
+**framing and specific-work choice, not topical coverage** — a more precise and favorable read than
+the verdict alone. (All three also have internal redundancy ≈ 0.99: chapters are mutually similar
+because each gap is a tight single topic.)

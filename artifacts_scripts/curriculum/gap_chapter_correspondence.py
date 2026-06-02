@@ -122,12 +122,22 @@ def main() -> None:
     ri, ci = linear_sum_assignment(cost)
     pairs = [(int(r), int(c)) for r, c in zip(ri, ci) if r < nA and c < nB]
 
-    # UOT (unbalanced) on the same cost -> transported / unmatched mass (comprehensiveness gap).
-    a = np.ones(nA) / nA; b = np.ones(nB) / nB
-    P = _uot_sinkhorn(1.0 - S, a, b)
-    transported = float(P.sum())
-    b_unmatched = float(np.clip(b - P.sum(0), 0, None).sum())   # book mass with no match
-    a_unmatched = float(np.clip(a - P.sum(1), 0, None).sum())
+    # Knob-free reductions (more reliable than UOT, per the matrix-first principle):
+    #  - Hungarian alignment cost = mean (1 - align_probe) over matched pairs (alignment quality).
+    #  - Greedy max-match coverage on WORK-OVERLAP (ruzicka): per book chapter, its best A-overlap,
+    #    size-weighted -> "how much of the book's works our curriculum recovers" (1 - this = the
+    #    work-level comprehensiveness gap). Centroid coverage saturates in tight corpora, so ruzicka
+    #    is the informative coverage probe here.
+    align_cost = float((1.0 - S)[[r for r, _ in pairs], [c for _, c in pairs]].mean()) if pairs else 1.0
+
+    def _coverage(M, axis, sets):
+        best = M.max(axis=axis)                       # per col (axis=0) or row (axis=1)
+        w = np.array([len(s) for s in sets], float)
+        w = w / w.sum() if w.sum() else w
+        return float((best * w).sum())
+    cov_book_ruz = _coverage(mats["ruzicka"], 0, B)   # book chapters recovered by best A overlap
+    cov_ours_ruz = _coverage(mats["ruzicka"], 1, A)
+    cov_book_cen = _coverage(mats["centroid_cos"], 0, B)
 
     # Internal redundancy (A-vs-A centroid cosine off-diagonal) — the FL/DPP diagnostic.
     Ac = np.stack([_unit(np.mean([emb_of[w] for w in c if w in emb_of] or [np.zeros(384)], 0)[None])[0] for c in A])
@@ -141,8 +151,12 @@ def main() -> None:
         lines.append(f"- A{r} ↔ B{c}  ({args.align_probe}={S[r, c]:.2f}, ruzicka={mats['ruzicka'][r, c]:.2f}, "
                      f"containment_A={mats['containment_A'][r, c]:.2f})")
     lines += ["",
-              f"**UOT** (unbalanced): transported mass {transported:.2f} of 1.0; "
-              f"book-side unmatched (comprehensiveness gap) **{b_unmatched:.2f}**, ours-side unmatched {a_unmatched:.2f}.",
+              f"**Alignment cost** (mean 1−{args.align_probe} over Hungarian pairs): {align_cost:.3f} "
+              f"(lower = better-aligned).",
+              f"**Work-overlap coverage** (size-weighted best-match ruzicka): book recovered by ours "
+              f"**{cov_book_ruz:.2f}**, ours recovered by book {cov_ours_ruz:.2f}  "
+              f"(1 − book = work-level comprehensiveness gap). Centroid coverage {cov_book_cen:.2f} "
+              f"(saturates in a tight corpus).",
               f"**Internal redundancy** of A (max off-diagonal centroid cosine): {redundancy:.2f}.", ""]
     for name in ("centroid_cos", "ruzicka", "containment_A", "cover_A"):
         lines += [f"## {name}", "", _fmt(mats[name], rlab, clab), ""]
