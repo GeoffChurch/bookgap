@@ -150,9 +150,21 @@ both show the same neutral blind title). Ran gemma4:31b pairwise (A/B/tie, both 
   calls progressive a tie (neither has a clean easy-to-hard arc).
 - **This is the headline result the experiment was for**: our *generated* curriculum, head to
   head against a real textbook's structure, loses — primarily on over-broad foundations.
-- **Next experiment**: re-run Track A with `--boundary` (the off-topic-hub-demoting selector
-  from the boundary-vs-base work — `docs/curriculum-reciprocal-selection-results.md`), which
-  is designed to suppress exactly this foundation-wandering, and re-judge vs the book ToC.
+- **Boundary experiment (DONE)**: re-ran Track A with `--boundary` (off-topic-hub demotion)
+  and re-judged vs the same book ToC (both phrase-mined, 30 phrases, keywords-only). **The
+  judges disagree, and boundary HELPED the frontier judge**: gemma still scores book ToC
+  **4-0** (it penalizes any prerequisite as off-topic), but **opus FLIPS** from base (book
+  3-0+tie) to boundary (**ours 3-1**, book wins only specificity). Why: boundary *relocates*
+  the gap curriculum's foundations from scattered/off-topic (base: database, crypto, image
+  processing) to **coherent MCS prerequisites** (networking → sensor networks → MCS), forming
+  a real foundations→advanced arc that opus rewards on interestingness/comprehensiveness/
+  progressive ("builds explicitly from networking/security/sensor foundations up to MCS
+  incentives… a clearer easy-to-hard arc"). Both judges still give **specificity** to the book
+  — a gap-seeded curriculum includes prerequisites by construction. **Reading**: gemma is a
+  strict "stay exactly on the named topic" judge; opus is a "is this a good *curriculum*"
+  judge that credits a coherent prerequisite ramp — arguably the more appropriate frame for a
+  curriculum. So boundary's value is making the prerequisites *coherent*, not removing them.
+  Boundary results: gemma `mcs_boundary_vs_toc.json`, opus `.../opus_probe/mcs_boundary_opus.json`.
   Results: gemma `artifacts/curriculum_eval_pairwise/mcs_ours_vs_toc.json`, opus
   `.../opus_probe/mcs_opus.json`.
 - **Render refinements (robustness checks).** (a) **Keywords-only** (drop the noisy sample
