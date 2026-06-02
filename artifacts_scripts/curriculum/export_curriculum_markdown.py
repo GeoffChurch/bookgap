@@ -30,7 +30,9 @@ def _render_curriculum_md(run_dir: str, heading: str, n_keywords: int = 30, n_wo
            f"*{len(bo.chapters)} chapters, in learning order.*", ""]
     for ch in bo.chapters:
         out += [f"## Chapter {ch.idx}: {ch.label}", ""]
-        kw = ", ".join(k.replace("_", " ") for k in ch.keywords[:n_keywords]) or "(none)"
+        # Keep underscores so multi-word phrase-mined terms (e.g. neural_networks)
+        # read as single units rather than blending into the comma list as unigrams.
+        kw = ", ".join(ch.keywords[:n_keywords]) or "(none)"
         out += [f"**Key topics:** {kw}", ""]
         if ch.titles:
             out.append("**Representative works:**")
@@ -64,7 +66,12 @@ def _render_book_md(toc_json: str) -> str:
            f"**OpenAlex id:** {wid}", "",
            "## Abstract", "", abstract, "",
            "## Table of Contents (the real book)", ""]
-    out += [f"{c['n']}. {c['title']}" for c in toc["chapters"]]
+    for c in toc["chapters"]:
+        line = f"{c['n']}. **{c['title']}**"
+        desc = c.get("description")
+        if desc:
+            line += f" — {desc}"
+        out.append(line)
     return "\n".join(out) + "\n"
 
 
