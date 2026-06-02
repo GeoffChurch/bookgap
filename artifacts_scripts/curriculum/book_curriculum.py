@@ -44,6 +44,7 @@ def build_curriculum_from_book_gap(
     field: Optional[str] = None,
     desired_n_topics: int = 15,
     boundary: bool = False,
+    keywords_top_k: int = 30,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
     bk = rec.get("book", rec)  # single-book mode nests under "book"; fall back to flat
@@ -62,6 +63,7 @@ def build_curriculum_from_book_gap(
     cfg.desired_n_topics = desired_n_topics
     cfg.rank_before_clustering = True
     cfg.ranking_top_k = 5000
+    cfg.keywords.top_k = keywords_top_k
     if sf:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(sf)
     if fld:
@@ -100,10 +102,13 @@ def main() -> None:
     ap.add_argument("--field", default=None, help="override scope field (default: from gap JSON)")
     ap.add_argument("--desired-n-topics", type=int, default=15)
     ap.add_argument("--boundary", action="store_true", help="use the boundary-background selector")
+    ap.add_argument("--keywords-top-k", type=int, default=30,
+                    help="keywords per chapter (default 30, to match the pairwise eval)")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
         desired_n_topics=args.desired_n_topics, boundary=args.boundary,
+        keywords_top_k=args.keywords_top_k,
     )
     print(f"DONE -> {out}")
 
