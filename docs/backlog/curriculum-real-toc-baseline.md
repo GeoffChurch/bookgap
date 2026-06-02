@@ -206,6 +206,30 @@ the off-domain debris) — whole-domain ranking is debris-dominated and a poor c
 (3) the real lever for the debris is a data-quality filter (non-English / ToC-recoverability /
 binomial-p), not scope. Rankings: `artifacts/book_gaps/{ai_subfield,csfield,domain}_ranked.json`.
 
+## Panel result (3 books, matched chapters) — book ToC > ours GENERALIZES
+Ran `run_toc_panel.sh` on 3 diverse niche books (Mobile Crowdsensing/IoT, Neuromorphic
+Photonics/photonics, Color Image Processing/CV), CS-field, boundary selector, **our N matched
+to each ToC**, keywords-only 30 phrase-mined keywords, gemma + blind opus.
+- **gemma: BOOK 12/12.** **opus: BOOK 9/12, ours 2, tie 1** (ours wins MCS progressive +
+  Color-Image comprehensiveness). So the book's real ToC beats our generated curriculum across
+  all 3 topics for BOTH judges. (`panel_summary.json`.)
+- **Chapter-matching was decisive (corrects an earlier artifact).** Unmatched (ours 15 vs book
+  10) opus had MCS at *ours 3-1*; matched 10-vs-10 it flips to *book 3-1*. The earlier
+  "boundary beats the book per opus" was largely ours having MORE chapters (read as more
+  comprehensive/varied). Always match `--desired-n-topics` to the ToC chapter count
+  (run_toc_panel.sh auto-derives it).
+- **Two defects both judges penalize:** (1) off-topic **foundation-wandering** (persistent);
+  (2) **debris/noise chapters** — opus flagged incoherent keyword clusters in our Neuromorphic
+  ("Ch.5 incoherent noise tokens") and Color-Image ("skulls, putrescibility,
+  corresponding_eigenface…") curricula. The project's data-quality/debris problem surfaces
+  directly in our generated curricula. Fixing debris pre-filtering would likely be the single
+  biggest curriculum-quality win.
+- Ours' only wins are sporadic: **progressive** when its prerequisites are coherent (MCS, not
+  Neuromorphic where they were generic-ML + noise), **comprehensiveness** when its breadth
+  genuinely exceeds the book's narrow gap-coverage (Color Image, whose gap is histogram-
+  equalization-heavy). Driver: `run_toc_panel.sh` (warmup → memory-capped fan-out → serial
+  gemma; opus dispatched separately).
+
 ## Eval = serving underserved gaps (the motivation, stated plainly)
 The largest **genuine-book** own-gaps are the most underserved real regions that a human
 nonetheless wrote a book to fill. So "does our curriculum reconstruct that book's ToC?" is a
