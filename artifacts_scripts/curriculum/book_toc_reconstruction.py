@@ -34,7 +34,15 @@ from omegaconf import OmegaConf
 from scipy.stats import kendalltau
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
-from artifacts_scripts.curriculum.config import CurriculumConfig
+from artifacts_scripts.curriculum.config import CurriculumConfig, KeywordConfig
+from artifacts_scripts.curriculum.keyword_extraction import (
+    DocWeighting,
+    extract_topic_keywords,
+    filter_stopwords,
+    mine_phrases_lattice,
+    parse_with_phrases,
+    tokenize,
+)
 from bookgap.subcloud import SubCloud
 from bookgap.util import Filter, LOGGER, setup_logging
 
@@ -43,53 +51,121 @@ def _l2(x: np.ndarray) -> np.ndarray:
     return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-12)
 
 
-_STOP = set((
-    "the of for and or to in on with using based via from into over under a an is are be "
-    "this that these those we our their it its as at by such new approach approaches method "
-    "methods system systems model models use survey review study analysis toward towards "
-    "via case study via data driven").split())
+def _phrase_mine_chapter_keywords(
+    chapter_docs: list, top_k: int, kcfg: KeywordConfig,
+) -> list:
+    """Run the SAME phrase-mining chain as summarize_topics over a set of
+    "topics" (here the ToC chapters), each a list of raw text docs.
+
+    For each chapter: ``tokenize`` each doc -> iterative ``mine_phrases_lattice``
+    over the *flat* corpus (semtok-style exclusive-entropy re-parse loop) ->
+    ``parse_with_phrases`` -> ``filter_stopwords`` ->
+    ``extract_topic_keywords``. Mirrors the mining params/defaults of
+    ``KeywordConfig`` exactly. Returns topics -> [(phrase, score), ...].
+    """
+    # Pass 1: tokenize each doc (no stopword filter yet — bigram mining needs
+    # raw token sequences to avoid merging across removed stopwords).
+    topic_raw_tokens: list = []
+    for docs in chapter_docs:
+        raw_per_doc = []
+        for text in docs:
+            tokens = tokenize(text)
+            if tokens:
+                raw_per_doc.append(tokens)
+        topic_raw_tokens.append(raw_per_doc)
+
+    # Iterative lattice phrase mining (semtok-style exclusive entropy via
+    # re-parse), identical to summarize_topics.summarize_topics.
+    if kcfg.bigrams_enabled and kcfg.bigram_iterations >= 1:
+        flat_raw = [doc for topic_docs in topic_raw_tokens for doc in topic_docs]
+        phrase_vocab: set = set()
+        parsed = flat_raw  # iter 0 parse = raw
+        for it in range(kcfg.bigram_iterations):
+            new_phrases = mine_phrases_lattice(
+                parsed,
+                npmi_threshold=kcfg.bigrams_npmi_threshold,
+                min_boundary_be=kcfg.bigrams_min_boundary_be,
+                be_quantile=kcfg.bigrams_be_quantile,
+                normalize_be=kcfg.bigrams_normalize_be,
+                count_floor=kcfg.bigrams_count_floor,
+                max_phrases=kcfg.bigrams_max,
+            )
+            new_phrases -= phrase_vocab
+            if not new_phrases:
+                break
+            phrase_vocab |= new_phrases
+            parsed = [parse_with_phrases(doc, phrase_vocab) for doc in flat_raw]
+        # Distribute final parse back into per-chapter structure.
+        merged_per_topic: list = []
+        offset = 0
+        for topic_docs in topic_raw_tokens:
+            n = len(topic_docs)
+            merged_per_topic.append(parsed[offset : offset + n])
+            offset += n
+        topic_raw_tokens = merged_per_topic
+
+    # Final pass: filter stopwords (merged phrases use ``_`` and survive).
+    topic_doc_tokens: list = []
+    for topic_docs in topic_raw_tokens:
+        doc_tokens = []
+        for tokens in topic_docs:
+            tokens = filter_stopwords(tokens)
+            if tokens:
+                doc_tokens.append(tokens)
+        topic_doc_tokens.append(doc_tokens)
+
+    # Track B chapters have no PageRank relevance weights, so use EQUAL doc
+    # weighting (RELEVANCE — the KeywordConfig default — requires per-doc
+    # masses we don't have here). All other mining/scoring params mirror
+    # KeywordConfig.
+    return extract_topic_keywords(
+        topic_doc_tokens,
+        method=kcfg.method,
+        top_k=top_k,
+        doc_weighting=DocWeighting.EQUAL,
+        topic_weighting=kcfg.topic_weighting,
+        background_mode=kcfg.background_mode,
+        weight_by_freq=kcfg.weight_by_freq,
+    )
 
 
 def _materialize_track_b(out_dir: Path, chapters: list, g_titles: list,
-                         sims: np.ndarray, b_label: np.ndarray, book_title: str,
-                         n_works: int = 5, n_kw: int = 10) -> None:
+                         g_texts: list, sims: np.ndarray, b_label: np.ndarray,
+                         book_title: str, n_works: int = 5, n_kw: int = 30) -> None:
     """Write Track B (the book's ToC, populated with the assigned gap articles) as a
     renderable curriculum run-dir (summary.md + pipeline.log), in the SAME format
     eval_book_judge.load_book_outline parses -- so the pairwise judge renders it
     blind/symmetric vs our Track A curriculum (labels come from keywords, not the
     book's real chapter titles).
+
+    Keywords use the SAME phrase-mining chain as summarize_topics (Track A):
+    per-chapter docs are the assigned gap articles' title+abstract (``g_texts``),
+    mined for phrases and scored by Fightin'-Words log-odds, top_k=``n_kw``.
     """
-    import math
-    import re
-    from collections import Counter
-
-    def toks(s: str) -> list:
-        ws = [w for w in re.findall(r"[a-z][a-z\-]{2,}", s.lower()) if w not in _STOP]
-        return ws + [f"{ws[i]} {ws[i + 1]}" for i in range(len(ws) - 1)]  # unigrams + bigrams
-
     n_chap = len(chapters)
-    chap_tf = [Counter() for _ in range(n_chap)]
-    for j, t in enumerate(g_titles):
-        chap_tf[int(b_label[j])].update(toks(t))
-    df: Counter = Counter()
-    for ci in range(n_chap):
-        for w in chap_tf[ci]:
-            df[w] += 1
+
+    # Group each chapter's assigned gap-article texts (title + abstract).
+    chapter_docs: list = [[] for _ in range(n_chap)]
+    for j, text in enumerate(g_texts):
+        chapter_docs[int(b_label[j])].append(text)
+
+    kcfg = KeywordConfig()
+    topic_keywords = _phrase_mine_chapter_keywords(chapter_docs, n_kw, kcfg)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    lines = [f"# Curriculum Summary: {book_title}", ""]
+    # Byte-compatible with generate_curriculum_summary's section format so
+    # eval_book_judge's _parse_chapters_from_summary parses it identically.
+    lines = ["# Curriculum Summary", ""]
     for ci in range(n_chap):
         assigned = sorted((j for j in range(len(g_titles)) if int(b_label[j]) == ci),
                           key=lambda j: -float(sims[j, ci]))               # nearest first
-        idf = {w: math.log((n_chap + 1) / (df[w] + 1)) + 1.0 for w in chap_tf[ci]}
-        kws = sorted(chap_tf[ci], key=lambda w: -chap_tf[ci][w] * idf[w])[:n_kw]
         lines += [f"## Topic {ci + 1}", "", "### Top Keywords", "",
-                  "| Keyword | Score |", "|---------|-------|"]
-        for w in kws:
-            lines.append(f"| {w} | {chap_tf[ci][w]} |")
+                  "| Keyword | Score |", "| :--- | :--- |"]
+        for kw, score in topic_keywords[ci][:n_kw]:
+            lines.append(f"| {kw} | {score:.4f} |")
         lines += ["", "### Top Works", ""]
         for k, j in enumerate(assigned[:n_works], 1):
-            lines.append(f"#### {k}. {g_titles[j]}")
+            lines += [f"#### {k}. {g_titles[j]}", ""]
         lines.append("")
     (out_dir / "summary.md").write_text("\n".join(lines))
     (out_dir / "pipeline.log").write_text(
@@ -158,8 +234,10 @@ def main() -> None:
 
     if args.materialize_dir:
         g_titles = [titles[r] for (_, r) in gap_rows]
-        _materialize_track_b(args.materialize_dir, chapters, g_titles, sims, b_label,
-                             toc.get("title", "Book"))
+        abstracts = articles.work_abstracts()
+        g_texts = [f"{titles[r]}\n{abstracts[r] or ''}" for (_, r) in gap_rows]
+        _materialize_track_b(args.materialize_dir, chapters, g_titles, g_texts,
+                             sims, b_label, toc.get("title", "Book"))
         LOGGER.info("materialized Track B run-dir -> %s", args.materialize_dir)
 
     # --- Track A: our curriculum clusters + frontier ordering

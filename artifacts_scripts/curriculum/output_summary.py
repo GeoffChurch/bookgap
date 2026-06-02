@@ -9,7 +9,7 @@ from bookgap.util import LOGGER
 from .summarize_topics import load_curriculum_outputs
 
 # Constants for summary generation
-NUM_KEYWORDS_IN_SUMMARY = 10
+NUM_KEYWORDS_IN_SUMMARY = 30
 NUM_WORKS_IN_SUMMARY = 3
 TOP_K_SHARES_PER_TOPIC = [1, 10, 100]
 TOP_K_CENTER_FOR_SIM = 1000

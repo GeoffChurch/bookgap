@@ -249,7 +249,7 @@ def load_book_outline(run_dir: Path) -> BookOutline:
 # Single-blind outline rendering
 # ---------------------------------------------------------------------------
 
-def render_outline(run_dir: Path, n_titles: int = 5) -> str:
+def render_outline(run_dir: Path, n_titles: int = 5, n_keywords: int = 30) -> str:
     """Render a curriculum dir as a SINGLE-BLIND book outline string.
 
     Title + each chapter in order (index, sub-topic label, top keywords, and 3-5
@@ -259,7 +259,7 @@ def render_outline(run_dir: Path, n_titles: int = 5) -> str:
     out: List[str] = [f"Book title: {book.topic}", ""]
     out.append("Proposed chapters (in order):")
     for ch in book.chapters:
-        kw = ", ".join(ch.keywords[:10]) or "(none)"
+        kw = ", ".join(ch.keywords[:n_keywords]) or "(none)"
         titles = ch.titles[:n_titles]
         out.append("")
         out.append(f"Chapter {ch.idx}: {ch.label}")
@@ -318,8 +318,9 @@ def _book_user(outline: str) -> str:
     )
 
 
-def _chapter_user(book_title: str, ch: Chapter, n_titles: int = 5) -> str:
-    kw = ", ".join(ch.keywords[:10]) or "(none)"
+def _chapter_user(book_title: str, ch: Chapter, n_titles: int = 5,
+                  n_keywords: int = 30) -> str:
+    kw = ", ".join(ch.keywords[:n_keywords]) or "(none)"
     titles = "; ".join(ch.titles[:n_titles]) or "(none)"
     return (
         f"This is one chapter of a textbook titled \"{book_title}\".\n\n"
@@ -395,22 +396,23 @@ def _judge_item(client: JudgeClient, system: str, user: str, repeats: int,
 
 
 def evaluate_book(run_dir: Path, client: JudgeClient, *, repeats: int,
-                  n_titles: int = 5) -> Dict[str, Any]:
+                  n_titles: int = 5, n_keywords: int = 30) -> Dict[str, Any]:
     book = load_book_outline(run_dir)
-    outline = render_outline(run_dir, n_titles=n_titles)
+    outline = render_outline(run_dir, n_titles=n_titles, n_keywords=n_keywords)
     _log(f"judging book '{book.topic}': {len(book.chapters)} chapters + 1 book "
          f"overall, x{repeats} each ({client.model})")
 
     chapter_results: List[Dict[str, Any]] = []
     for ch in book.chapters:
         item = _judge_item(
-            client, _BOOK_SYSTEM, _chapter_user(book.topic, ch, n_titles),
+            client, _BOOK_SYSTEM,
+            _chapter_user(book.topic, ch, n_titles, n_keywords),
             repeats, {"kind": "chapter", "chapter_idx": ch.idx, "topic": book.topic},
         )
         chapter_results.append({
             "idx": ch.idx,
             "label": ch.label,
-            "keywords": ch.keywords[:10],
+            "keywords": ch.keywords[:n_keywords],
             "titles": ch.titles[:n_titles],
             "dims": item.to_dims_dict(),
         })
@@ -478,6 +480,8 @@ def main() -> None:
     ap.add_argument("--n-titles", type=int, default=5,
                     help="representative work titles to show per chapter (3-5; "
                          "default 5).")
+    ap.add_argument("--n-keywords", type=int, default=30,
+                    help="keywords to show per chapter (default 30).")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--num-predict", type=int, default=1536,
                     help="max tokens per judge call (default 1536; 512 truncates "
@@ -496,7 +500,8 @@ def main() -> None:
         sys.exit(2)
 
     if args.print_outline:
-        print(render_outline(run_dir, n_titles=args.n_titles))
+        print(render_outline(run_dir, n_titles=args.n_titles,
+                             n_keywords=args.n_keywords))
         return
 
     repeats = max(1, args.repeats)
@@ -523,7 +528,7 @@ def main() -> None:
 
     t0 = time.time()
     result = evaluate_book(run_dir, client, repeats=repeats,
-                           n_titles=args.n_titles)
+                           n_titles=args.n_titles, n_keywords=args.n_keywords)
     elapsed = time.time() - t0
     fail_rate = client.n_parse_fail / max(1, client.n_calls)
     _log(f"done: {client.n_calls} ollama calls, {client.n_parse_fail} "

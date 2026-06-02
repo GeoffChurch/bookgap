@@ -155,6 +155,20 @@ both show the same neutral blind title). Ran gemma4:31b pairwise (A/B/tie, both 
   is designed to suppress exactly this foundation-wandering, and re-judge vs the book ToC.
   Results: gemma `artifacts/curriculum_eval_pairwise/mcs_ours_vs_toc.json`, opus
   `.../opus_probe/mcs_opus.json`.
+- **Render refinements (robustness checks).** (a) **Keywords-only** (drop the noisy sample
+  articles): verdict UNCHANGED for both judges (gemma 4-0, opus 3-0+tie) — the keyword
+  labels already carry the foundation-wandering signal, so we adopt keywords-only
+  (`--n-titles 0`). (b) **Both phrase-mined + 30 phrases/chapter** (fair: Track B was
+  routed through the curriculum's `extract_topic_keywords` phrase miner instead of tf-idf;
+  Track A re-extracted at top_k=30; `render_outline` shows 30; `NUM_KEYWORDS_IN_SUMMARY`
+  10→30): final CLEAN verdict gemma **4-0**, opus **3-0 + comprehensiveness tie** — the book
+  ToC still wins. A transient "ours wins comprehensiveness" appeared only when Track B was
+  materialized with the RAW (non-mean-center) assignment, which left its Incentive-Mechanisms
+  chapter EMPTY; with mean-center (all 10 chapters populated) it reverts to book-ToC. opus on
+  the clean run: "ALPHA's extra chapters are mostly off-topic padding rather than added MCS
+  coverage" — our 15-vs-10 breadth is padding, not comprehensiveness. **Conclusion is robust
+  to judge, article inclusion, keyword method, and keyword count.** Always materialize Track B
+  with `--mean-center`. Final: gemma `mcs_final.json`, opus `.../opus_probe/mcs_opus_final.json`.
 
 **Lean book-first path (the intended workflow).** `book_own_gap.py --brute-force` computes ONLY
 the chosen book's gap exactly — nearest non-self book + article ball via dot-products, no
