@@ -63,7 +63,23 @@ def _matrices(A: list, B: list, emb_of: dict):
     Ae = [_unit(np.array([emb_of[w] for w in c if w in emb_of] or [np.zeros(384)])) for c in A]
     Be = [_unit(np.array([emb_of[w] for w in c if w in emb_of] or [np.zeros(384)])) for c in B]
     nA, nB = len(A), len(B)
-    ruz = np.zeros((nA, nB)); con = np.zeros((nA, nB)); cen = np.zeros((nA, nB)); cov = np.zeros((nA, nB))
+    # Data-driven (median-heuristic) kernel bandwidth over the chapter works = the
+    # corpus scale. This makes the MMD probe HOMOGENEOUS: it auto-adapts to corpus
+    # tightness (no "use centroid for broad / ruzicka for tight" regime branch).
+    # MMD is one family on a bandwidth continuum: h->0 recovers work-identity
+    # (retrieval = ruzicka), h=median gives topical (organization).
+    allw = np.vstack([v for v in Ae + Be if len(v)])
+    rng = np.random.default_rng(0)
+    samp = allw if len(allw) <= 800 else allw[rng.choice(len(allw), 800, replace=False)]
+    sq = 2.0 * (1.0 - samp @ samp.T)
+    h2 = max(float(np.median(sq[np.triu_indices(len(samp), 1)])), 1e-6)
+
+    def _kmean(X, Y):
+        return float(np.exp((X @ Y.T - 1.0) / h2).mean()) if len(X) and len(Y) else 0.0
+    wA = [_kmean(Ae[i], Ae[i]) for i in range(nA)]
+    wB = [_kmean(Be[j], Be[j]) for j in range(nB)]
+
+    ruz = np.zeros((nA, nB)); con = np.zeros((nA, nB)); cen = np.zeros((nA, nB)); cov = np.zeros((nA, nB)); mmd = np.zeros((nA, nB))
     for i in range(nA):
         for j in range(nB):
             inter = len(As[i] & Bs[j]); union = len(As[i] | Bs[j])
@@ -71,7 +87,8 @@ def _matrices(A: list, B: list, emb_of: dict):
             con[i, j] = inter / len(As[i]) if As[i] else 0.0
             cen[i, j] = float(Ac[i] @ Bc[j])
             cov[i, j] = float((Ae[i] @ Be[j].T).max(1).mean()) if len(Ae[i]) and len(Be[j]) else 0.0
-    return {"ruzicka": ruz, "containment_A": con, "centroid_cos": cen, "cover_A": cov}
+            mmd[i, j] = float(np.exp(-max(wA[i] + wB[j] - 2 * _kmean(Ae[i], Be[j]), 0.0)))  # exp(-MMD^2)
+    return {"mmd": mmd, "ruzicka": ruz, "containment_A": con, "centroid_cos": cen, "cover_A": cov}
 
 
 def _uot_sinkhorn(C, a, b, eps=0.05, rho=0.5, iters=300):
@@ -97,7 +114,9 @@ def main() -> None:
     ap.add_argument("--run-a", required=True, type=Path)
     ap.add_argument("--run-b", required=True, type=Path)
     ap.add_argument("--field", default="17")
-    ap.add_argument("--align-probe", default="centroid_cos")
+    ap.add_argument("--align-probe", default="mmd",
+                    help="probe for Hungarian alignment (default mmd: homogeneous, data-driven "
+                         "bandwidth, no regime branch)")
     ap.add_argument("--out", default=None, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="chapter_corr", log_level="INFO", include_time=False)
@@ -137,7 +156,7 @@ def main() -> None:
         return float((best * w).sum())
     cov_book_ruz = _coverage(mats["ruzicka"], 0, B)   # book chapters recovered by best A overlap
     cov_ours_ruz = _coverage(mats["ruzicka"], 1, A)
-    cov_book_cen = _coverage(mats["centroid_cos"], 0, B)
+    cov_book_mmd = _coverage(mats["mmd"], 0, B)       # homogeneous topical coverage (median-MMD)
 
     # Internal redundancy (A-vs-A centroid cosine off-diagonal) — the FL/DPP diagnostic.
     Ac = np.stack([_unit(np.mean([emb_of[w] for w in c if w in emb_of] or [np.zeros(384)], 0)[None])[0] for c in A])
@@ -155,10 +174,10 @@ def main() -> None:
               f"(lower = better-aligned).",
               f"**Work-overlap coverage** (size-weighted best-match ruzicka): book recovered by ours "
               f"**{cov_book_ruz:.2f}**, ours recovered by book {cov_ours_ruz:.2f}  "
-              f"(1 − book = work-level comprehensiveness gap). Centroid coverage {cov_book_cen:.2f} "
-              f"(saturates in a tight corpus).",
+              f"(1 − book = work-level comprehensiveness gap). Topical coverage (median-MMD, "
+              f"homogeneous) {cov_book_mmd:.2f}.",
               f"**Internal redundancy** of A (max off-diagonal centroid cosine): {redundancy:.2f}.", ""]
-    for name in ("centroid_cos", "ruzicka", "containment_A", "cover_A"):
+    for name in ("mmd", "ruzicka", "containment_A", "centroid_cos", "cover_A"):
         lines += [f"## {name}", "", _fmt(mats[name], rlab, clab), ""]
 
     report = "\n".join(lines)
