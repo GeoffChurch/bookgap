@@ -44,6 +44,9 @@ def build_curriculum_from_book_gap(
     field: Optional[str] = None,
     desired_n_topics: int = 15,
     boundary: bool = False,
+    similarity: bool = False,
+    similarity_mix_weight: Optional[float] = None,
+    similarity_knn_k: Optional[int] = None,
     keywords_top_k: int = 30,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
@@ -71,6 +74,16 @@ def build_curriculum_from_book_gap(
     if boundary:
         cfg.boundary_selection = True
         cfg.background_exponent = 0.5
+    if similarity:
+        # Mix an embedding-kNN graph into the citation graph before PageRank so the
+        # random walk prefers semantically-similar neighbours (demotes citation-central
+        # but semantically-distant foundations -> targets the specificity defect).
+        # Scope-proportional self-kNN: fine at field/subfield, OOMs only at domain.
+        cfg.similarity.enabled = True
+        if similarity_mix_weight is not None:
+            cfg.similarity.mix_weight = similarity_mix_weight
+        if similarity_knn_k is not None:
+            cfg.similarity.knn_k = similarity_knn_k
 
     out = get_curriculum_output_dir(name, auto_derived=False)
     setup_logging(log_name="pipeline", log_level="DEBUG", include_time=False,
@@ -81,8 +94,8 @@ def build_curriculum_from_book_gap(
     # A parseable blind title (eval_book_judge._parse_topic_name reads "Topic Tx (name)")
     # so the pairwise judge shows the same neutral book title for Track A and Track B.
     LOGGER.info("Topic T0000 (%s) gap 0: book-gap curriculum (Track A)", book_title)
-    LOGGER.info("Book %s: seeding %d in-gap articles; subfield=%s; field=%s; boundary=%s",
-                book_id, len(ids), sf, fld, boundary)
+    LOGGER.info("Book %s: seeding %d in-gap articles; subfield=%s; field=%s; boundary=%s; similarity=%s",
+                book_id, len(ids), sf, fld, boundary, similarity)
 
     cloud, embeddings_for_clustering, filtered_indices = run_curriculum_building(cfg, output_dir=out)
     topic_keywords = run_keyword_extraction(cfg.keywords, out, cloud, filtered_indices)
@@ -102,13 +115,21 @@ def main() -> None:
     ap.add_argument("--field", default=None, help="override scope field (default: from gap JSON)")
     ap.add_argument("--desired-n-topics", type=int, default=15)
     ap.add_argument("--boundary", action="store_true", help="use the boundary-background selector")
+    ap.add_argument("--similarity", action="store_true",
+                    help="mix an embedding-kNN similarity graph into the citation graph before "
+                         "PageRank (scope-proportional; fine at field/subfield, OOMs at domain)")
+    ap.add_argument("--similarity-mix-weight", type=float, default=None,
+                    help="convex blend weight for the similarity graph (default cfg 0.1)")
+    ap.add_argument("--similarity-knn-k", type=int, default=None,
+                    help="kNN neighbors per node for the similarity graph (default cfg 5)")
     ap.add_argument("--keywords-top-k", type=int, default=30,
                     help="keywords per chapter (default 30, to match the pairwise eval)")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
         desired_n_topics=args.desired_n_topics, boundary=args.boundary,
-        keywords_top_k=args.keywords_top_k,
+        similarity=args.similarity, similarity_mix_weight=args.similarity_mix_weight,
+        similarity_knn_k=args.similarity_knn_k, keywords_top_k=args.keywords_top_k,
     )
     print(f"DONE -> {out}")
 
