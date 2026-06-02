@@ -114,19 +114,22 @@ def _render_eval_md(eval_json: str) -> str:
         f"&nbsp;|&nbsp; **A:** {a} (ours) &nbsp;|&nbsp; **B:** {b} (book ToC)", "",
         f"**Parse/transport failures:** {r['n_parse_failures']}/{r['n_ollama_calls']} "
         f"({r['parse_failure_rate']:.0%})", "",
-        "Per-order verdicts (un-aggregated, mapped back to the config preferred in that "
-        "presentation order) alongside the de-randomized winner:", "",
-        "| Dimension | ours shown first | book shown first | Winner (de-randomized) |",
+        "Un-aggregated per-repeat verdicts, mapped back to the config preferred (ours/book/tie) "
+        "in each presentation order, alongside the de-randomized winner:", "",
+        "| Dimension | ours shown first (per repeat) | book shown first (per repeat) | Winner |",
         "| :--- | :--- | :--- | :--- |",
     ]
     for dim, v in r["dims"].items():
-        o1 = _order_to_config(v["order1_verdict"], 1, a, b)
-        o2 = _order_to_config(v["order2_verdict"], 2, a, b)
-        out.append(f"| {dim} | {o1} | {o2} | {v['winner']} |")
+        r1 = v.get("order1_repeat_verdicts", [v["order1_verdict"]])
+        r2 = v.get("order2_repeat_verdicts", [v["order2_verdict"]])
+        c1 = " · ".join(_order_to_config(x, 1, a, b) for x in r1) or "—"
+        c2 = " · ".join(_order_to_config(x, 2, a, b) for x in r2) or "—"
+        out.append(f"| {dim} | {c1} | {c2} | {v['winner']} |")
     out += [
-        "", "*Each per-order cell is the majority of the repeats in that presentation order "
-        "(per-repeat votes are not persisted). The **Winner** is a config name only when the same "
-        "config is preferred in BOTH orders; an order-flip or any tie → \"tie\".*", "",
+        "", "*Each cell lists the individual per-repeat verdicts in that presentation order "
+        "(mapped from presentation A/B back to ours/book). A per-order verdict is the strict "
+        "majority of its repeats; the **Winner** is a config name only when the same config is "
+        "preferred in BOTH orders, else \"tie\" (position-bias guard).*", "",
         "## Judge comments", "",
     ]
     for dim, v in r["dims"].items():

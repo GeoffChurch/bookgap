@@ -225,6 +225,7 @@ class OrderResult:
     """
     verdicts: Dict[str, str]            # dim -> "A"/"B"/"tie" (majority over repeats)
     comments: Dict[str, List[str]]      # dim -> per-repeat comments
+    repeat_verdicts: Dict[str, List[str]]  # dim -> per-repeat "A"/"B"/"tie" (un-aggregated)
 
 
 def judge_order(
@@ -260,7 +261,9 @@ def judge_order(
             per_dim_votes[dim].append(verdict)
             per_dim_comments[dim].append(comment)
     verdicts = {d: _majority_verdict(per_dim_votes[d]) for d in _DIM_KEYS}
-    return OrderResult(verdicts=verdicts, comments=per_dim_comments)
+    return OrderResult(
+        verdicts=verdicts, comments=per_dim_comments, repeat_verdicts=per_dim_votes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +348,8 @@ def evaluate_pair(
             "winner": winner,
             "order1_verdict": o1,
             "order2_verdict": o2,
+            "order1_repeat_verdicts": order1.repeat_verdicts[dim],
+            "order2_repeat_verdicts": order2.repeat_verdicts[dim],
             "comments": order1.comments[dim] + order2.comments[dim],
         }
 

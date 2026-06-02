@@ -4,16 +4,16 @@
 
 **Parse/transport failures:** 0/6 (0%)
 
-Per-order verdicts (un-aggregated, mapped back to the config preferred in that presentation order) alongside the de-randomized winner:
+Un-aggregated per-repeat verdicts, mapped back to the config preferred (ours/book/tie) in each presentation order, alongside the de-randomized winner:
 
-| Dimension | ours shown first | book shown first | Winner (de-randomized) |
+| Dimension | ours shown first (per repeat) | book shown first (per repeat) | Winner |
 | :--- | :--- | :--- | :--- |
-| interestingness | book_toc | book_toc | book_toc |
-| comprehensiveness | book_toc | book_toc | book_toc |
-| specificity | book_toc | book_toc | book_toc |
-| progressive | book_toc | tie | tie |
+| interestingness | book_toc · book_toc · book_toc | book_toc · book_toc · book_toc | book_toc |
+| comprehensiveness | book_toc · book_toc · book_toc | book_toc · book_toc · book_toc | book_toc |
+| specificity | book_toc · book_toc · book_toc | book_toc · book_toc · book_toc | book_toc |
+| progressive | book_toc · book_toc · book_toc | tie · tie · tie | tie |
 
-*Each per-order cell is the majority of the repeats in that presentation order (per-repeat votes are not persisted). The **Winner** is a config name only when the same config is preferred in BOTH orders; an order-flip or any tie → "tie".*
+*Each cell lists the individual per-repeat verdicts in that presentation order (mapped from presentation A/B back to ours/book). A per-order verdict is the strict majority of its repeats; the **Winner** is a config name only when the same config is preferred in BOTH orders, else "tie" (position-bias guard).*
 
 ## Judge comments
 

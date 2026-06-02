@@ -4,38 +4,38 @@
 
 **Parse/transport failures:** 0/6 (0%)
 
-Per-order verdicts (un-aggregated, mapped back to the config preferred in that presentation order) alongside the de-randomized winner:
+Un-aggregated per-repeat verdicts, mapped back to the config preferred (ours/book/tie) in each presentation order, alongside the de-randomized winner:
 
-| Dimension | ours shown first | book shown first | Winner (de-randomized) |
+| Dimension | ours shown first (per repeat) | book shown first (per repeat) | Winner |
 | :--- | :--- | :--- | :--- |
-| interestingness | book_toc | book_toc | book_toc |
-| comprehensiveness | book_toc | book_toc | book_toc |
-| specificity | tie | book_toc | tie |
-| progressive | book_toc | book_toc | book_toc |
+| interestingness | book_toc · book_toc · book_toc | book_toc · book_toc · book_toc | book_toc |
+| comprehensiveness | book_toc · book_toc · book_toc | book_toc · book_toc · book_toc | book_toc |
+| specificity | tie · tie · tie | book_toc · book_toc · book_toc | tie |
+| progressive | book_toc · book_toc · book_toc | book_toc · book_toc · book_toc | book_toc |
 
-*Each per-order cell is the majority of the repeats in that presentation order (per-repeat votes are not persisted). The **Winner** is a config name only when the same config is preferred in BOTH orders; an order-flip or any tie → "tie".*
+*Each cell lists the individual per-repeat verdicts in that presentation order (mapped from presentation A/B back to ours/book). A per-order verdict is the strict majority of its repeats; the **Winner** is a config name only when the same config is preferred in BOTH orders, else "tie" (position-bias guard).*
 
 ## Judge comments
 
 ### interestingness — book_toc
 
 - Curriculum B includes more specific and modern technical components like microring weight banks and nonlinear activation functions, making it more compelling for a technical reader.
-- Curriculum A provides a more detailed and varied exploration of specific photonic components like VCSELs, ITO modulators, and microring weight banks, making it more compelling.
+- Curriculum A includes more specific and modern hardware components like VCSELs, microring weight banks, and ITO modulators, making it more appealing to a technical reader.
 
 ### comprehensiveness — book_toc
 
 - Curriculum B provides a more detailed breakdown of hardware components (modulators, weight banks, activation functions) compared to the more generic chapter titles in A.
-- Curriculum A covers a wider array of technical implementations, including specific activation functions and scalable weight banks, whereas B is more generic.
+- Curriculum A provides a more detailed breakdown of specific photonic components (synapses, neurons, activation functions) and their integration compared to the more generic chapters in B.
 
 ### specificity — tie
 
 - Both curricula stay tightly focused on the intersection of photonics and neuromorphic computing throughout all chapters.
-- Curriculum A stays tightly focused on the intersection of photonics and neuromorphic computing, while Curriculum B's first chapter is overly general regarding neural networks.
+- Curriculum A stays tightly focused on the intersection of photonics and neuromorphic computing, whereas Curriculum B starts with very general neural network theory.
 
 ### progressive — book_toc
 
-- Curriculum B follows a more logical flow from basic components (neurons, modulators) to complex systems (neural networks, reservoir computing) and finally to energy efficiency and future outlook.
-- Curriculum A follows a logical path from basic concepts and individual components to complex systems and training, while B's structure feels more fragmented.
+- Curriculum B follows a more logical flow from introductory concepts and individual components (neurons/synapses) to integrated systems and specialized architectures like reservoir computing.
+- Curriculum A follows a logical flow from basic concepts to specific device components, then to system integration and training, while B's structure feels more fragmented.
 
 
 ---
