@@ -65,7 +65,8 @@ def soft_responsibilities(E_unit, C_unit, perplexity):
     return softmax(sims / tau, axis=1), tau
 
 
-def citation_label_propagation(adj, labels, n_topics, alpha=0.5, iters=30):
+def citation_label_propagation(adj, labels, n_topics, alpha=0.5, iters=30,
+                               alpha_mode="global", class_balance=False):
     """Citation-aware soft membership via label propagation (the absorbing-walk arm).
 
     Diffuse the citation-coherent HARD topic labels through the citation graph:
@@ -83,12 +84,30 @@ def citation_label_propagation(adj, labels, n_topics, alpha=0.5, iters=30):
     A = adj + adj.T                                   # symmetrize (undirected membership)
     deg = np.asarray(A.sum(axis=1)).ravel()
     P = sp.diags(np.where(deg > 0, 1.0 / deg, 0.0)) @ A
+    labels = np.asarray(labels)
+    valid = labels >= 0
     M0 = np.zeros((n, n_topics), dtype=np.float64)
-    valid = np.asarray(labels) >= 0
-    M0[np.arange(n)[valid], np.asarray(labels)[valid]] = 1.0
+    M0[np.arange(n)[valid], labels[valid]] = 1.0
+    if alpha_mode == "adaptive":
+        # Data-driven per-node alpha = 1 - (fraction of citation neighbors sharing
+        # the node's own hard label). Coherent nodes (neighbors agree) keep their
+        # label (low alpha -> no bleed); boundary/sparse nodes diffuse (high alpha).
+        # No global temperature.
+        Abin = (A > 0).astype(np.float64)
+        nlc = Abin @ M0                               # (n, n_topics) neighbor label counts
+        own = np.where(valid, nlc[np.arange(n), np.where(valid, labels, 0)], 0.0)
+        homog = np.where(deg > 0, own / np.maximum(deg, 1.0), 1.0)
+        alpha = np.clip(1.0 - homog, 0.05, 0.95)[:, None]
     R = M0.copy()
+    a = alpha if np.ndim(alpha) else float(alpha)
     for _ in range(iters):
-        R = (1.0 - alpha) * M0 + alpha * (P @ R)
+        R = (1.0 - a) * M0 + a * (P @ R)
+    if class_balance:
+        # Class-mass normalization (Zhu et al. 2003): upweight small/degenerate
+        # topics so they win recruits, then renormalize per work.
+        col = R.sum(axis=0)
+        R = R * np.where(col > 0, 1.0 / col, 0.0)[None, :]
+        R = R / np.maximum(R.sum(axis=1, keepdims=True), 1e-12)
     return R
 
 

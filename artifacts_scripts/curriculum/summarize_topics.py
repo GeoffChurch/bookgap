@@ -162,6 +162,8 @@ def summarize_topics(
     soft_mode: str = "embedding",
     soft_perplexity: float = 1.5,
     soft_alpha: float = 0.5,
+    soft_alpha_mode: str = "global",
+    soft_class_balance: bool = False,
     soft_floor: float = 0.05,
     citation_adj=None,
 ) -> Dict[int, List[tuple[str, float]]]:
@@ -243,10 +245,13 @@ def summarize_topics(
             if citation_adj is None:
                 raise ValueError("soft_topics soft_mode='citation' requires citation_adj")
             from artifacts_scripts.curriculum.gap_fuzzy_topics import citation_label_propagation
-            soft_R = citation_label_propagation(citation_adj, labels, n_topics, alpha=soft_alpha)
+            soft_R = citation_label_propagation(
+                citation_adj, labels, n_topics, alpha=soft_alpha,
+                alpha_mode=soft_alpha_mode, class_balance=soft_class_balance,
+            )
             LOGGER.info(
-                "Soft topics (citation label-propagation): alpha=%.2f, floor=%.2f — works "
-                "contribute to all topics with r>=floor, weighted mass*r", soft_alpha, soft_floor,
+                "Soft topics (citation label-propagation): alpha_mode=%s (alpha=%.2f), "
+                "class_balance=%s, floor=%.2f", soft_alpha_mode, soft_alpha, soft_class_balance, soft_floor,
             )
         else:
             if embeddings is None:

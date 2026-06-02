@@ -256,6 +256,29 @@ commits to ~1.5 topics by its own distinctiveness), which is why it alone reache
 citation-soft is ~3× *faster* than embedding-soft (tighter pools), but it is not a quality win.
 **Refuted; embedding-soft over the dendrogram stays the best soft variant.** (Code kept as opt-in.)
 
+## Per-node adaptive-α + class-mass salvage (citation-soft) — also REFUTED (2026-06-02)
+
+`soft_alpha_mode='adaptive'` (per-node α = 1 − neighbor-label-homogeneity; coherent nodes keep their
+label, boundary nodes diffuse) + `soft_class_balance` (Zhu-et-al class-mass normalization, upweight
+small topics). Neuromorphic: topic 3 *did* dissolve (clean VCSEL), but the verdict stayed **book_toc
+on all 4 axes** — the other chapters still genericize. So the fine-grained data-driven α (the
+principled salvage) still doesn't beat embedding-soft's per-work perplexity-adaptivity. **Citation-
+soft is closed even in its best form.**
+
+## Book-seeded generation (Idea A) — tested, noisier, REFUTED (2026-06-02)
+
+Seed PR from the BOOK node (not its gap) on the citation+similarity union graph (books+articles in
+the cloud) + product-of-experts. Reference completeness is variable/directional:
+neuromorphic 0 refs / **184 citers**, color_image **357 refs** / 2 citers, mcs sparse both ways — so
+the book's citation signal is forward (frontier/citers) for neuromorphic, backward (bibliography) for
+color. Neuromorphic book-seed (`neuromorphic_trackA_seedbook`, --similarity --semantic-rerank
+--dynamic-topk-floor 0.05): judged **book_toc on all 4 axes**, and qualitatively *noisier* than the
+gap approach — ch0 = the book's own blurb (`comprehensive, thorough, bridges, experts`), ch7 = author
+names (`xuhan, guo, neumann, von`), ch12 = OCR garbage, several vague review-y chapters. The 184
+citers are review-/survey-heavy and self-referential, so book-seeded PR imports that noise. Not a win
+as-is (could be refined: drop the book node from output, filter reviews/paratext, use refs where
+available — but the gap+experts+dynamic-k stack remains best).
+
 ## Net state of the fuzzy/anchor exploration
 
 Validated stack: **semantic re-rank (product-of-experts) + dynamic-k**, with **embedding-soft over

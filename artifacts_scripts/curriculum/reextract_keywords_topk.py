@@ -45,6 +45,10 @@ def main() -> None:
                          "citation label-propagation (absorbing-walk arm; citation-coherent).")
     ap.add_argument("--soft-alpha", type=float, default=0.5,
                     help="For --soft-mode citation: citation-diffusion weight (1-alpha clamps to hard label).")
+    ap.add_argument("--soft-alpha-mode", choices=["global", "adaptive"], default="global",
+                    help="citation alpha: global, or per-node adaptive (1 - neighbor-label-homogeneity).")
+    ap.add_argument("--soft-class-balance", action="store_true",
+                    help="citation: class-mass normalization (upweight small/degenerate topics).")
     ap.add_argument("--soft-perplexity", type=float, default=1.5,
                     help="Target mean topics-per-work for the soft-membership softmax temperature.")
     ap.add_argument("--soft-floor", type=float, default=0.05,
@@ -65,6 +69,8 @@ def main() -> None:
     cfg.keywords.soft_topics = bool(args.soft_topics)
     cfg.keywords.soft_mode = str(args.soft_mode)
     cfg.keywords.soft_alpha = float(args.soft_alpha)
+    cfg.keywords.soft_alpha_mode = str(args.soft_alpha_mode)
+    cfg.keywords.soft_class_balance = bool(args.soft_class_balance)
     cfg.keywords.soft_perplexity = float(args.soft_perplexity)
     cfg.keywords.soft_floor = float(args.soft_floor)
     cloud = instantiate(cfg.experiment.cloud)

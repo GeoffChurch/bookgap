@@ -68,6 +68,15 @@ class KeywordConfig:
     """For soft_mode='citation': citation-diffusion weight (1-alpha teleports back
     to the work's own hard label — the anti-diffusion clamp)."""
 
+    soft_alpha_mode: str = "global"
+    """For soft_mode='citation': 'global' uses soft_alpha everywhere; 'adaptive'
+    sets per-node alpha = 1 - (fraction of citation neighbors sharing the node's
+    hard label) so coherent nodes keep their label and boundary nodes diffuse."""
+
+    soft_class_balance: bool = False
+    """For soft_mode='citation': class-mass normalization (upweight small/degenerate
+    topics so they win recruits)."""
+
     soft_perplexity: float = 1.5
     """Target mean topics-per-work for the softmax temperature (t-SNE-style)."""
 

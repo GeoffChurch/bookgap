@@ -169,6 +169,8 @@ def run_keyword_extraction(
         soft_mode=cfg.soft_mode,
         soft_perplexity=cfg.soft_perplexity,
         soft_alpha=cfg.soft_alpha,
+        soft_alpha_mode=cfg.soft_alpha_mode,
+        soft_class_balance=cfg.soft_class_balance,
         soft_floor=cfg.soft_floor,
         citation_adj=citation_adj_for_keywords,
         samples_per_topic=cfg.samples_per_topic,
