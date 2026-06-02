@@ -126,6 +126,42 @@ Neuromorphic, CS-field, 13 chapters, gemma4:31b pairwise vs Track B:
 **debris** problem (phrase-mining/cluster noise), which is the next thing to attack — plus
 re-running the other panel books to confirm the foundation fix generalizes.
 
+**Generalization (all 3 panel books, --semantic-rerank, gemma4:31b pairwise vs Track B):**
+
+| book | specificity (baseline → sem) | other | debris? |
+|---|---|---|---|
+| Neuromorphic | book_toc → book_toc | foundations gone, now debris-gated | yes (degenerate 1-work chapter) |
+| MCS | book_toc → **tie** | clean | none |
+| Color Image | book_toc → book_toc | progressive → tie | yes (series/Oppenheim front-matter boilerplate) |
+
+Foundation-wandering is fixed on all three. Where there's **no debris (MCS), specificity improves
+to a tie** — the fix lands cleanly. Where debris is present it becomes the new gating defect.
+So debris now stands between "foundations fixed" and "specificity tie/win" on 2/3 books.
+
+**Refined debris diagnosis (don't treat as a scorer bug — the scorer is already principled).**
+The active unigram scorer (`compute_log_odds_ratio_docs`) is *already* mass-weighted (RELEVANCE
+doc-weighting scales term freqs by PageRank mass), variance-normalized (Monroe "Fightin' Words"
+z = δ/√var, penalizes rare words), AND `weight_by_freq` (`z *= y_in`, "crushes low-count words").
+Verified against Neuromorphic ch3: keywords 1–11 are the clean dominant VCSEL paper; the junk
+(`tesla, rechenfehlern, santa, crayfish, …`) only fills positions **12–30**. So the scorer ranks
+real tokens correctly; the junk is **display padding** — a **degenerate ~1-work chapter** doesn't
+have 30 meaningful tokens, and a **fixed top-k=30** render pads the tail with rare topic-unique
+hapaxes. Color Image's debris is the same mechanism with boilerplate front-matter works instead of
+multilingual hapaxes. So neither a df-floor (A1) nor more smoothing (A2 — already present) is the
+natural fix.
+
+**Debris fix options (for discussion, not yet chosen):**
+- **Dynamic top-k (most natural):** render keywords ∝ the chapter's effective sample size
+  (mass / #contributing works), so a thin chapter shows ~6 honest keywords, not 30 padded ones.
+  Principled (report only as many features as the evidence supports); no threshold tuning.
+- **B1 — no degenerate clusters:** `min_cluster_size`/`min_cluster_weight` so a "chapter" isn't
+  ~1 work; merge/float. Fixes the root, but changes chapter count → tangles with the matched-N
+  comparison vs Track B.
+- A1 (unigram df-floor) — IR-standard robustness heuristic, but a step-function patch.
+- A2 (raise `prior_weight`) — continuous/Bayesian version of A1, but redundant with the variance
+  term already present; just reshuffles which hapaxes pad the tail.
+- [[curriculum-eval-show-representative-title]] (D1) — eval-side only; backlogged separately.
+
 **Compute note (relevant to running the panel with `--similarity`):** `get_cloud_index` is already
 `@MEMORY.cache`'d over the `faiss.Index`. The cold build over the 6.8M CS-field cloud took **634 s**
 (efc=384) and persisted an 11.5 GB pickle; the second run *loaded* it and
