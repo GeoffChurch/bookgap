@@ -137,6 +137,33 @@ article-dense topics"; dual-landmark validated only as a diagnostic). Their usef
 participation ratio) is already in this design (soft count `Σ mass·r`, ESS chapter size) and could
 even replace dynamic-k's relative-floor. The metrics themselves don't transfer.
 
+## Increment 1 (prototype) — mechanism validated (2026-06-02)
+
+`artifacts_scripts/curriculum/gap_fuzzy_topics.py` (non-invasive): reads a built run-dir, computes
+one-shot softmax responsibilities over the topic centroids (τ by target perplexity 1.5), reports
+hard vs soft (mass-weighted) sizes + ESS, and the most-degenerate hard topic's top soft members.
+Probes saved as `fuzzy_topics_probe.md` in the example folders.
+
+- **Neuromorphic** (degenerate ch with hard size **1** = the lone VCSEL paper): soft **ESS 3.2**, top
+  soft members are all real VCSEL/spiking-neuron papers (`Spin-Polarized Quantum-Dot VCSEL`,
+  `Controlled Propagation of Spiking Dynamics in VCSELs`, …). **Fuzzy dissolves the degeneracy** —
+  the soft assignment re-attracts the semantically-nearest works the hard *citation* clustering had
+  isolated. Keyword extraction over that pool would yield clean VCSEL keywords, not the boilerplate
+  tail. ✓
+- **Color Image** (hard size 1 = Jae Lim's book): soft ESS 4.1 but top members are still Lim +
+  *more boilerplate* (`Copyright Page - Volume 1`). Its centroid is the **blurb embedding**, which
+  sits in a boilerplate neighborhood, so soft re-attraction pulls in boilerplate, not content.
+  **Confirms the two-mechanism split:** fuzzy fixes the degenerate-cluster mechanism but NOT the
+  bad-embedding one — that needs abstract hygiene ([[curriculum-filter-frontmatter-noncontent-works]]),
+  which is upstream and orthogonal. ✗ (correctly).
+
+**Increment-2 (next):** thread `mass × r` into keyword extraction (let a work contribute to every
+topic above a responsibility floor; reuse `count_topic_tokens`'s weight support) and re-judge the
+panel — does Neuromorphic's specificity move from tie toward a win once the debris chapter carries
+clean VCSEL keywords? Then ordering/exemplars, then the absorbing-walk (citation-aware) comparison
+arm, then FL/DPP anchors. Prototype currently uses centroid-kernel softmax (simplification of the
+per-member-normalized form) and bootstraps centroids from the hard `topic_work_ids`.
+
 ## Caveats / sequencing
 
 - Bigger change than dynamic-k — thread `r_{i,k}` through clustering → keywords → summary → exemplar
