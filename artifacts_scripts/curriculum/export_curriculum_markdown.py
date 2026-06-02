@@ -92,22 +92,41 @@ def _render_book_md(toc_json: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _order_to_config(verdict: str, order: int, label_a: str, label_b: str) -> str:
+    """Map a presentation-space verdict (A/B/tie) back to a config label.
+
+    Order 1 presents A=label_a (ours), B=label_b (book). Order 2 swaps them, so
+    A=label_b (book), B=label_a (ours). Reproduces the judge's de-randomization."""
+    if verdict == "tie":
+        return "tie"
+    if order == 1:
+        return label_a if verdict == "A" else label_b
+    return label_b if verdict == "A" else label_a
+
+
 def _render_eval_md(eval_json: str) -> str:
     """Render an eval_pairwise_judge result JSON as readable markdown."""
     r = json.loads(Path(eval_json).read_text())
+    a, b = r["label_a"], r["label_b"]
     out = [
         f"# {r['topic']} — pairwise eval (ours vs book ToC)", "",
-        f"**Judge:** {r['model']} &nbsp;|&nbsp; **repeats:** {r['repeats']} "
-        f"&nbsp;|&nbsp; **A:** {r['label_a']} (ours) &nbsp;|&nbsp; **B:** {r['label_b']} (book ToC)", "",
+        f"**Judge:** {r['model']} &nbsp;|&nbsp; **repeats:** {r['repeats']}/order "
+        f"&nbsp;|&nbsp; **A:** {a} (ours) &nbsp;|&nbsp; **B:** {b} (book ToC)", "",
         f"**Parse/transport failures:** {r['n_parse_failures']}/{r['n_ollama_calls']} "
         f"({r['parse_failure_rate']:.0%})", "",
-        "| Dimension | Winner |", "| :--- | :--- |",
+        "Per-order verdicts (un-aggregated, mapped back to the config preferred in that "
+        "presentation order) alongside the de-randomized winner:", "",
+        "| Dimension | ours shown first | book shown first | Winner (de-randomized) |",
+        "| :--- | :--- | :--- | :--- |",
     ]
     for dim, v in r["dims"].items():
-        out.append(f"| {dim} | {v['winner']} |")
+        o1 = _order_to_config(v["order1_verdict"], 1, a, b)
+        o2 = _order_to_config(v["order2_verdict"], 2, a, b)
+        out.append(f"| {dim} | {o1} | {o2} | {v['winner']} |")
     out += [
-        "", "*Winner is a config name only when it is preferred in BOTH presentation "
-        "orders after de-randomization; any order-flip or tie → \"tie\".*", "",
+        "", "*Each per-order cell is the majority of the repeats in that presentation order "
+        "(per-repeat votes are not persisted). The **Winner** is a config name only when the same "
+        "config is preferred in BOTH orders; an order-flip or any tie → \"tie\".*", "",
         "## Judge comments", "",
     ]
     for dim, v in r["dims"].items():
