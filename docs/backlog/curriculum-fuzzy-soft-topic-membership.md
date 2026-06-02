@@ -157,12 +157,31 @@ Probes saved as `fuzzy_topics_probe.md` in the example folders.
   bad-embedding one — that needs abstract hygiene ([[curriculum-filter-frontmatter-noncontent-works]]),
   which is upstream and orthogonal. ✗ (correctly).
 
-**Increment-2 (next):** thread `mass × r` into keyword extraction (let a work contribute to every
-topic above a responsibility floor; reuse `count_topic_tokens`'s weight support) and re-judge the
-panel — does Neuromorphic's specificity move from tie toward a win once the debris chapter carries
-clean VCSEL keywords? Then ordering/exemplars, then the absorbing-walk (citation-aware) comparison
-arm, then FL/DPP anchors. Prototype currently uses centroid-kernel softmax (simplification of the
-per-member-normalized form) and bootstraps centroids from the hard `topic_work_ids`.
+## Increment 2 — soft keyword extraction, IMPLEMENTED + tested (2026-06-02)
+
+`cfg.keywords.soft_topics` (+ `soft_perplexity`, `soft_floor`): in `summarize_topics`, each work now
+contributes to every topic with responsibility `r ≥ soft_floor`, weighted `mass·r` (one-shot softmax
+over topic centroids built from the hard `point_to_cluster`; reuses `count_topic_tokens`'s RELEVANCE
+weights). Wired through `run_keyword_extraction` (passes filtered embeddings) and exposed on
+`reextract_keywords_topk --soft-topics`. Centroid-kernel softmax (simplification of per-member-norm).
+
+**Neuromorphic** (soft re-extract of the degenerate run): topic 3 went from the lone VCSEL paper's
+9 generic keywords (`processing_elements, reproduce, polarized, …`) to a **full 30-keyword, specific
+VCSEL chapter** (`vertical_cavity, surface, emitting, vcsels, vcsel, lasers, neuromorphic, photonic,
+biological_neurons, dynamics, scaling, …`), no debris. Judge (vs Track B): specificity stays **tie**
+by de-randomization, but the comments **flip to favor ours** — *"Curriculum A stays tightly focused
+… whereas Curriculum B's first chapter is overly generic regarding neural networks."* So the debris
+is fully dissolved and ours is now read as the more focused curriculum; the winner doesn't flip
+(book still preferred book-shown-first). Specificity trajectory: loss → loss → tie (dynamic-k) →
+tie-leaning-ours (soft).
+
+**Cost:** soft pools are larger (works span topics), so keyword extraction was ~5× slower
+(~15 min vs ~3 min for this run); `soft_floor` bounds it. Predicted (not yet run): MCS neutral
+(no debris), Color Image unchanged (blurb embedding — fuzzy can't fix, see increment-1).
+
+**Still ahead:** ordering/exemplars under soft membership; the absorbing-walk (citation-aware)
+comparison arm; FL/DPP anchors (redundant-chapter defect); per-member-normalized kernel; and a
+default-vs-option decision before regenerating the committed examples to soft.
 
 ## Caveats / sequencing
 

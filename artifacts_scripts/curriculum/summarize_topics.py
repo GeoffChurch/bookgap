@@ -157,6 +157,10 @@ def summarize_topics(
     bigrams_normalize_be: bool = False,
     bigrams_count_floor: int = 3,
     bigram_iterations: int = 6,
+    embeddings: Optional["np.ndarray"] = None,
+    soft_topics: bool = False,
+    soft_perplexity: float = 1.5,
+    soft_floor: float = 0.05,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
 
@@ -218,8 +222,32 @@ def summarize_topics(
     
     n_topics = len(outputs.frontier_nodes)
     n_works = len(texts)
-    
+
     LOGGER.info(f"Found {n_topics} frontier topics, {n_works} works")
+
+    # Optional fuzzy/soft topic membership: a work contributes to every topic
+    # with responsibility >= soft_floor (weighted mass*r), not just its hard topic.
+    soft_R = None
+    if soft_topics:
+        if embeddings is None:
+            raise ValueError("soft_topics requires embeddings aligned with texts")
+        from artifacts_scripts.curriculum.gap_fuzzy_topics import soft_responsibilities, _unit
+        labels = np.asarray(outputs.point_to_cluster)
+        masses = np.asarray(outputs.point_masses, dtype=np.float64)
+        E = _unit(np.asarray(embeddings, dtype=np.float32))
+        C = np.zeros((n_topics, E.shape[1]), dtype=np.float32)
+        for k in range(n_topics):
+            m = np.where(labels == k)[0]
+            if len(m) == 0:
+                continue
+            w = masses[m]
+            C[k] = np.average(E[m], axis=0, weights=w if w.sum() > 0 else None)
+        C = _unit(C)
+        soft_R, tau = soft_responsibilities(E, C, soft_perplexity)
+        LOGGER.info(
+            "Soft topics: tau=%.4f (target perplexity %.2f), floor=%.2f — works contribute "
+            "to all topics with r>=floor, weighted mass*r", tau, soft_perplexity, soft_floor,
+        )
     
     # Sample works and extract text for each topic
     LOGGER.info(f"Sampling up to {samples_per_topic} works per topic using PageRank relevance...")
@@ -237,11 +265,16 @@ def summarize_topics(
     topic_raw_tokens: List[List[List[str]]] = []
     topic_doc_relevances: List[List[float]] = []
     for topic_idx in tqdm(range(n_topics), desc="Sampling topics"):
-        topic_mask = outputs.point_to_cluster == topic_idx
-        topic_work_indices = np.where(topic_mask)[0]
+        if soft_R is not None:
+            resp = soft_R[:, topic_idx]
+            topic_work_indices = np.where(resp >= soft_floor)[0]
+            sampling_weights = np.asarray(outputs.point_masses, dtype=np.float64) * resp
+        else:
+            topic_work_indices = np.where(outputs.point_to_cluster == topic_idx)[0]
+            sampling_weights = outputs.point_masses
         sampled_indices = sample_by_relevance(
             topic_work_indices,
-            outputs.point_masses,
+            sampling_weights,
             samples_per_topic,
         )
 
@@ -252,7 +285,10 @@ def summarize_topics(
                 tokens = tokenize(texts[work_idx])
                 if tokens:
                     raw_tokens_per_doc.append(tokens)
-                    relevances_per_doc.append(float(outputs.point_masses[work_idx]))
+                    w = float(outputs.point_masses[work_idx])
+                    if soft_R is not None:
+                        w *= float(soft_R[work_idx, topic_idx])
+                    relevances_per_doc.append(w)
         topic_raw_tokens.append(raw_tokens_per_doc)
         topic_doc_relevances.append(relevances_per_doc)
 

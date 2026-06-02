@@ -51,6 +51,19 @@ def _unit(x: np.ndarray) -> np.ndarray:
     return x / np.maximum(np.linalg.norm(x, axis=-1, keepdims=True), 1e-12)
 
 
+def soft_responsibilities(E_unit, C_unit, perplexity):
+    """One-shot soft responsibilities R (n_works x n_topics) of each work to each
+    topic: softmax over cosine-to-centroid, temperature set by target perplexity.
+
+    E_unit / C_unit must be unit-normalized (works, centroids). Returns (R, tau).
+    Anti-diffusion is structural: fixed centroids + the softmax simplex constraint
+    (Σ_k R_ik = 1), one-shot (no iteration — iteration diffuses to uniform, see
+    docs/dead_ends/.../full-data-soft-mixture-degenerate-bootstrap.md)."""
+    sims = E_unit @ C_unit.T
+    tau = _calibrate_tau(sims, perplexity)
+    return softmax(sims / tau, axis=1), tau
+
+
 def _calibrate_tau(sims: np.ndarray, target_perplexity: float) -> float:
     """Bisect the softmax temperature so the mean per-work perplexity ≈ target.
 
@@ -113,9 +126,7 @@ def main() -> None:
         C[ki] = np.average(E[midx], axis=0, weights=w if w.sum() > 0 else None)
     C = _unit(C)
 
-    sims = E @ C.T                                            # (n, K) cosine
-    tau = _calibrate_tau(sims, args.perplexity)
-    R = softmax(sims / tau, axis=1)                           # (n, K) responsibilities
+    R, tau = soft_responsibilities(E, C, args.perplexity)    # (n, K) responsibilities
     LOGGER.info("tau=%.4f for target perplexity=%.2f (mean topics/work)", tau, args.perplexity)
 
     mr = masses[:, None] * R                                  # (n, K) mass x responsibility

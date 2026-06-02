@@ -37,6 +37,13 @@ def main() -> None:
     ap.add_argument("--dynamic-floor", type=float, default=0.0,
                     help="Dynamic top-k: keep keywords scoring >= this fraction of "
                          "the topic's top score (0=off; ~0.05 trims ~0-score padding).")
+    ap.add_argument("--soft-topics", action="store_true",
+                    help="Fuzzy keyword extraction: each work contributes to every topic with "
+                         "soft responsibility >= floor (weighted mass*r), dissolving degenerate chapters.")
+    ap.add_argument("--soft-perplexity", type=float, default=1.5,
+                    help="Target mean topics-per-work for the soft-membership softmax temperature.")
+    ap.add_argument("--soft-floor", type=float, default=0.05,
+                    help="Min responsibility for a work to enter a topic's soft keyword pool.")
     ap.add_argument("--field", type=str, default="17",
                     help="OpenAlex field id for the cloud scope (CS = 17).")
     args = ap.parse_args()
@@ -50,6 +57,9 @@ def main() -> None:
     cfg.experiment.cloud.filter_pair.pre.field = str(args.field)
     cfg.keywords.top_k = int(args.top_k)
     cfg.keywords.dynamic_topk_floor = float(args.dynamic_floor)
+    cfg.keywords.soft_topics = bool(args.soft_topics)
+    cfg.keywords.soft_perplexity = float(args.soft_perplexity)
+    cfg.keywords.soft_floor = float(args.soft_floor)
     cloud = instantiate(cfg.experiment.cloud)
 
     # Reconstruct filtered_indices: map each filtered work id -> cloud index.

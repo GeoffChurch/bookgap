@@ -146,10 +146,20 @@ def run_keyword_extraction(
         works_for_keywords = [all_texts[i] for i in filtered_indices]
     else:
         works_for_keywords = all_texts
-    
+
+    embeddings_for_keywords = None
+    if cfg.soft_topics:
+        emb = np.asarray(cloud.embeddings())
+        embeddings_for_keywords = emb[filtered_indices] if filtered_indices is not None else emb
+        LOGGER.info(f"Soft topics enabled (perplexity={cfg.soft_perplexity}, floor={cfg.soft_floor})")
+
     keywords = summarize_topics(
         curriculum_dir=curriculum_dir,
         texts=works_for_keywords,
+        embeddings=embeddings_for_keywords,
+        soft_topics=cfg.soft_topics,
+        soft_perplexity=cfg.soft_perplexity,
+        soft_floor=cfg.soft_floor,
         samples_per_topic=cfg.samples_per_topic,
         top_k_keywords=cfg.top_k,
         method=cfg.method,

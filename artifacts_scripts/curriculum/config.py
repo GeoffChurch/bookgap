@@ -41,6 +41,20 @@ class KeywordConfig:
     dynamic_topk_min: int = 3
     """Floor on the number of keywords shown per topic when dynamic_topk_floor>0."""
 
+    soft_topics: bool = False
+    """Fuzzy keyword extraction: instead of assigning each work to its single hard
+    topic, give it a soft responsibility r_{i,k} (one-shot softmax over topic
+    centroids) and let it contribute to every topic with r >= soft_floor, weighted
+    by mass*r. Dissolves degenerate ~1-work chapters whose keywords would otherwise
+    be one work's idiosyncratic tail. See docs/backlog/curriculum-fuzzy-soft-topic-membership.md."""
+
+    soft_perplexity: float = 1.5
+    """Target mean topics-per-work for the softmax temperature (t-SNE-style)."""
+
+    soft_floor: float = 0.05
+    """A work contributes to a topic's keyword pool only if its responsibility to
+    that topic is >= this (keeps pools focused; the soft weight is mass*r)."""
+
     samples_per_topic: int = 5000
     """Number of works to sample per topic for keyword extraction."""
 
