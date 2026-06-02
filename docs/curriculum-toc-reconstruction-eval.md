@@ -83,17 +83,24 @@ Opus is dispatched separately. Edit the `PANEL` array, then:
 MAX_PARALLEL=8 SEL=--boundary bash artifacts_scripts/curriculum/run_toc_panel.sh
 ```
 
-## Export the readable markdown (the three sides of a case)
+## Export the readable markdown (the case + its verdict)
 
 ```
 python -m artifacts_scripts.curriculum.export_curriculum_markdown \
-    --track-a artifacts/curriculum/mcs_trackA --track-b artifacts/curriculum/mcs_trackB \
+    --track-a artifacts/curriculum/mcs_trackA_sem --track-b artifacts/curriculum/mcs_trackB \
     --toc-json artifacts/book_gaps/W4235013513_toc.json \
+    --eval-json artifacts/curriculum_eval_pairwise/mcs_sem_dk_pairwise.json \
     --out-dir docs/curriculum_eval_examples/mobile_crowdsensing
 ```
-Writes `ours_curriculum.md`, `original_book.md` (title + OpenAlex abstract + real ToC), and
-`toc_derived_curriculum.md`. Tracks A/B are read from their run-dirs via the same
-`load_book_outline` the judge uses, so the markdown is exactly what was evaluated.
+Writes `ours_curriculum.md` (Track A), `original_book.md` (title + OpenAlex abstract + ToC *with
+chapter descriptions*), `toc_derived_curriculum.md` (Track B), and — with `--eval-json` — the
+pairwise verdict as `eval_results.md`. Tracks A/B are read from their run-dirs via the same
+`load_book_outline` the judge uses, so the markdown is exactly what was evaluated; keyword phrases
+are backticked so phrase-mined terms (`neural_networks`) read as units. Every file ends with a
+provenance footer recording the exact command that produced it. `--only-ours` regenerates just the
+Track A file (e.g. after improving the curriculum) without touching the book/Track B files. Worked
+examples (current best config: semantic re-rank + dynamic-k) live under
+[`curriculum_eval_examples/`](curriculum_eval_examples/).
 
 ## What we've found
 

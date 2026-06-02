@@ -193,3 +193,7 @@ When an idea in `docs/backlog/` is executed:
 Don't dump every refuted variant into `docs/dead_ends/` — only the *core ideas that sounded promising*. Saturation tweaks of a winning variant get a paragraph in the parent dead_ends entry, not their own files.
 
 Cross-pollination from `~/src/mycooc/docs/backlog/` is welcome: ideas borrowed from the mycooc project should reference the original mycooc backlog file in their bookgap-side description.
+
+## Generated artifacts: provenance
+
+Any file produced by a script (markdown reports, exported tables, summaries, derived JSON/CSV, plots) should **point back to the script that generated it, including the exact arguments used**, so a reader can rediscover and re-run the producer. Prefer a visible footer (or header) embedding the full command — e.g. `python -m <module> <args>` reconstructed from `sys.argv` — with a "regenerate rather than edit by hand" note. New generators should bake this in; `artifacts_scripts/curriculum/export_curriculum_markdown.py` (`_provenance()`) is the reference pattern.
