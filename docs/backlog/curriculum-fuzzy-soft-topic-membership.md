@@ -129,6 +129,29 @@ DPP (high-quality + mutually-dissimilar anchors) directly de-duplicate the ancho
 battle-tested + intrinsic; **DPP is genuinely open (no recorded result)** and is the textbook
 anti-redundancy tool. Worth trying FL/DPP as the anchor selector under the fuzzy model.
 
+**Prototype validated (2026-06-02):** `artifacts_scripts/curriculum/gap_anchor_selection.py`
+(non-invasive) compares the dendrogram topic centroids vs greedy facility-location (mass-weighted
+max-coverage) vs greedy MAP-DPP on redundancy (pairwise cosine among the N anchors) and coverage.
+The redundant-chapter defect is now *quantified*: the **dendrogram cut makes ALL anchor pairs
+redundant** (cos > 0.7) on both panel books, and the worst pair on Color Image is literally
+`Histogram Equalization` ≈ `Automatic Contrast Enhancement` (cos 0.978).
+
+| book | method | max pair cos | # redundant pairs | coverage |
+|---|---|---|---|---|
+| Color Image (24 anchors) | dendrogram | 0.978 | 276/276 | 0.872 |
+| | facility | 0.910 | 193 | **0.907** |
+| | dpp | **0.879** | **183** | 0.899 |
+| Neuromorphic (13 anchors) | dendrogram | 0.961 | 78/78 | 0.854 |
+| | facility | 0.894 | **30** | **0.867** |
+| | dpp | **0.878** | 43 | 0.858 |
+
+Both FL and DPP beat the dendrogram on redundancy *and* coverage; **FL gives the biggest redundancy
+drop + best coverage, DPP the lowest max-pair-cosine**. (Absolute redundancy stays high on Color
+Image because the topic is genuinely tight, but the relative improvement is clear.) Validates
+FL/DPP as the anchor selector. Next: feed FL/DPP-selected anchors into the soft-membership step
+(replace dendrogram centroids) and re-judge — does de-duplicating chapters move comprehensiveness/
+interestingness (where ours loses 0/3)?
+
 ## What from the n_eff / gap-sizing program is NOT worth porting
 
 Gap-*sizing* (n_eff ranking, k-ball cohesion / hill-climb / moving-centroid radius reopt,
