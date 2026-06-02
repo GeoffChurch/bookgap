@@ -592,8 +592,20 @@ class CurriculumConfig:
       ``λ=0`` recovers per-view independent spectral. Reference:
       Kumar-Rai-Daumé (2011), Conneau et al. (2017). Requires
       ``rank_before_clustering=True``.
+    - 'facility' / 'dpp': pick ``desired_n_topics`` DIVERSE anchor works
+      (greedy facility-location max-coverage / greedy MAP-DPP over the
+      top-``anchor_candidates`` works by mass), then assign each work to its
+      nearest anchor. Directly de-duplicates topics — the dendrogram cut makes
+      every topic pair redundant (cos>0.7) on tight corpora; FL/DPP anchors are
+      mutually dissimilar. Pairs naturally with ``keywords.soft_topics=True``.
+      Requires ``rank_before_clustering=True``. See
+      docs/backlog/curriculum-fuzzy-soft-topic-membership.md.
     """
-    
+
+    anchor_candidates: int = 400
+    """For linkage_method 'facility'/'dpp': number of top-mass works considered
+    as candidate anchors."""
+
     min_cluster_size: int = 1
     """For bisecting_kmeans: stop splitting clusters smaller than this.
 

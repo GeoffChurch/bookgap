@@ -1346,7 +1346,9 @@ def run_curriculum_building(
             linked, frontier_nodes, n_leaf_clusters,
         )
         point_to_cluster = leaf_to_frontier[leaf_cluster_assignments]
-    elif cfg.linkage_method in ("spectral", "graph_bisect", "multi_view_spectral"):
+    elif cfg.linkage_method in (
+        "spectral", "graph_bisect", "multi_view_spectral", "facility", "dpp",
+    ):
         if not cfg.rank_before_clustering:
             raise ValueError(
                 f"{cfg.linkage_method} requires rank_before_clustering=True so the "
@@ -1371,7 +1373,7 @@ def run_curriculum_building(
                 sub_adj, n_clusters=cfg.desired_n_topics,
             )
             method_label = "Graph-bisect"
-        else:  # multi_view_spectral
+        elif cfg.linkage_method == "multi_view_spectral":
             from artifacts_scripts.curriculum.multi_view_spectral import (
                 build_citation_similarity_view,
                 build_embedding_similarity_view,
@@ -1407,6 +1409,23 @@ def run_curriculum_building(
                 tol=cfg.multi_view_spectral_tol,
             )
             method_label = "Multi-view-spectral"
+        else:  # facility / dpp: diverse anchors + nearest-anchor assignment
+            from artifacts_scripts.curriculum.gap_anchor_selection import (
+                fl_anchors, dpp_anchors,
+            )
+            from artifacts_scripts.curriculum.gap_fuzzy_topics import _unit
+            Eu = _unit(np.asarray(embeddings_for_clustering, dtype=np.float32))
+            pm = np.asarray(point_masses, dtype=np.float64)
+            cand = np.argsort(pm)[::-1][:min(len(pm), cfg.anchor_candidates)]
+            n_anchors = min(cfg.desired_n_topics, len(cand))
+            pick = fl_anchors if cfg.linkage_method == "facility" else dpp_anchors
+            anchor_idx = pick(Eu, pm, n_anchors, cand)
+            membership = np.argmax(Eu @ Eu[anchor_idx].T, axis=1).astype(np.intp)
+            LOGGER.info(
+                f"{cfg.linkage_method}: selected {len(anchor_idx)} diverse anchors over "
+                f"top-{len(cand)} works by mass; assigned {n_samples} works to nearest anchor"
+            )
+            method_label = cfg.linkage_method.upper() + "-anchors"
         n_communities = int(membership.max()) + 1 if len(membership) > 0 else 0
         LOGGER.info(
             f"{method_label} produced {n_communities} communities. "

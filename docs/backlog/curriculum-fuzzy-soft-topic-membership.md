@@ -145,12 +145,32 @@ redundant** (cos > 0.7) on both panel books, and the worst pair on Color Image i
 | | facility | 0.894 | **30** | **0.867** |
 | | dpp | **0.878** | 43 | 0.858 |
 
-Both FL and DPP beat the dendrogram on redundancy *and* coverage; **FL gives the biggest redundancy
-drop + best coverage, DPP the lowest max-pair-cosine**. (Absolute redundancy stays high on Color
-Image because the topic is genuinely tight, but the relative improvement is clear.) Validates
-FL/DPP as the anchor selector. Next: feed FL/DPP-selected anchors into the soft-membership step
-(replace dendrogram centroids) and re-judge — does de-duplicating chapters move comprehensiveness/
-interestingness (where ours loses 0/3)?
+Both FL and DPP beat the dendrogram on redundancy *and* coverage (FL biggest redundancy drop + best
+coverage, DPP lowest max-pair-cosine) — at the level of the *anchor vectors*.
+
+**INTEGRATED + REFUTED as a quality improvement (2026-06-02).** Wired FL/DPP into `build_curriculum`
+as `linkage_method ∈ {facility, dpp}` (select N diverse anchors over the top-`anchor_candidates`
+works, assign each work to its nearest anchor; mirrors the leiden flat-structure path), exposed on
+`book_curriculum --anchor-mode`. Rebuilt Neuromorphic + Color Image with `--anchor-mode dpp
+--semantic-rerank --soft-topics --dynamic-topk-floor 0.05` and re-judged:
+
+- **Neuromorphic specificity got WORSE**: tie (dendrogram + dynamic-k) → **book_toc loss**. Judge:
+  ours has *"several chapters with overlapping and vague titles"* / *"generic neural network
+  theory."* The chapter labels confirm it — ch0/ch2/ch3/ch5 are all `photonic, optical, …
+  neuromorphic, computing`.
+- **Color Image unchanged**, and **9 of 24 chapters still contain histogram/equalization** — DPP did
+  NOT de-duplicate the *final* chapters.
+
+**Diagnosis — diverse ANCHORS ≠ distinctive CHAPTERS.** Once works are assigned to nearest-anchor and
+soft keyword extraction runs, the corpus's prevailing vocabulary dominates, so embedding-diverse
+anchors still yield overlapping/generic chapters (Neuromorphic) or still-redundant ones (Color's
+histogram chapters). Switching dendrogram→DPP (soft held constant) *hurt*, because the dendrogram's
+**citation-coherent** clusters produce more distinctive chapters than DPP's embedding-Voronoi cells.
+**The anchor-diversity prototype metric (pairwise cosine of anchor vectors) did not predict chapter
+distinctiveness — a metric-validity miss** (cf. the verify-the-metric preference). Corollary: the
+redundant-chapter "defect" is less harmful than assumed — redundant-but-coherent chapters aren't
+heavily penalized; *vague* chapters are. **Keep the dendrogram clustering; the FL/DPP option stays
+in the code (opt-in) but is not a quality win.** Could move to dead_ends if not revisited.
 
 ## What from the n_eff / gap-sizing program is NOT worth porting
 

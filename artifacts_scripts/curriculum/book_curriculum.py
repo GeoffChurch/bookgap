@@ -51,6 +51,8 @@ def build_curriculum_from_book_gap(
     similarity_knn_k: Optional[int] = None,
     keywords_top_k: int = 30,
     dynamic_topk_floor: float = 0.0,
+    anchor_mode: Optional[str] = None,
+    soft_topics: bool = False,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
     bk = rec.get("book", rec)  # single-book mode nests under "book"; fall back to flat
@@ -71,6 +73,12 @@ def build_curriculum_from_book_gap(
     cfg.ranking_top_k = 5000
     cfg.keywords.top_k = keywords_top_k
     cfg.keywords.dynamic_topk_floor = dynamic_topk_floor
+    if anchor_mode:
+        # FL/DPP diverse-anchor clustering (de-duplicates topics) instead of the
+        # dendrogram cut. Pairs with soft_topics for clean per-chapter keywords.
+        cfg.linkage_method = anchor_mode
+    if soft_topics:
+        cfg.keywords.soft_topics = True
     if sf:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(sf)
     if fld:
@@ -143,6 +151,11 @@ def main() -> None:
     ap.add_argument("--dynamic-topk-floor", type=float, default=0.0,
                     help="dynamic top-k: keep keywords scoring >= this fraction of the "
                          "topic's top score (0=off; ~0.05 trims ~0-score padding on thin chapters)")
+    ap.add_argument("--anchor-mode", choices=["facility", "dpp"], default=None,
+                    help="diverse-anchor clustering instead of the dendrogram cut (de-duplicates topics)")
+    ap.add_argument("--soft-topics", action="store_true",
+                    help="fuzzy keyword extraction (works contribute to all topics by mass*r); "
+                         "~5x slower but dissolves degenerate chapters")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
@@ -151,6 +164,7 @@ def main() -> None:
         similarity=args.similarity, similarity_mix_weight=args.similarity_mix_weight,
         similarity_knn_k=args.similarity_knn_k, keywords_top_k=args.keywords_top_k,
         dynamic_topk_floor=args.dynamic_topk_floor,
+        anchor_mode=args.anchor_mode, soft_topics=args.soft_topics,
     )
     print(f"DONE -> {out}")
 

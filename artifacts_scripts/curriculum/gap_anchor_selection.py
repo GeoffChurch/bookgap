@@ -50,35 +50,34 @@ def _provenance() -> str:
             "*Regenerate with the command above; do not edit by hand.*\n")
 
 
-def fl_anchors(E, masses, n, cand):
-    """Greedy facility location: pick anchors maximizing mass-weighted coverage
+def fl_anchors(E, masses, N, cand):
+    """Greedy facility location: pick N anchors maximizing mass-weighted coverage
     F(S) = Σ_i mass_i · max_{a∈S} sim(i, a). A new anchor helps only where it
-    covers under-covered works → naturally diverse."""
+    covers under-covered works → naturally diverse. Returns indices into E."""
     Sc = E[cand] @ E.T                       # (M, n) candidate→all-work cosine
+    n = E.shape[0]
     covered = np.full(n, -1.0)
     chosen, chosen_local = [], []
-    for _ in range(min(n, len(cand))):
+    for _ in range(min(N, len(cand))):
         gain = (masses[None, :] * np.maximum(0.0, Sc - covered[None, :])).sum(axis=1)
         gain[chosen_local] = -np.inf
         c = int(np.argmax(gain))
         chosen.append(int(cand[c])); chosen_local.append(c)
         covered = np.maximum(covered, Sc[c])
-        if len(chosen) >= ANCHOR_N:
-            break
     return chosen
 
 
-def dpp_anchors(E, masses, cand):
-    """Greedy MAP-DPP (Chen et al. 2018 fast Cholesky): high quality (log1p mass)
-    + mutually dissimilar (cosine kernel)."""
+def dpp_anchors(E, masses, N, cand):
+    """Greedy MAP-DPP (Chen et al. 2018 fast Cholesky): N high-quality (log1p mass)
+    + mutually dissimilar (cosine kernel) anchors. Returns indices into E."""
     q = np.log1p(masses[cand])
     K = np.clip(E[cand] @ E[cand].T, 0.0, None)
     L = (q[:, None] * q[None, :]) * K
     M = L.shape[0]
-    cis = np.zeros((ANCHOR_N, M))
+    cis = np.zeros((N, M))
     di2s = np.diag(L).astype(np.float64).copy()
     selected = [int(np.argmax(di2s))]
-    for i in range(1, ANCHOR_N):
+    for i in range(1, N):
         j = selected[-1]
         ci_opt = cis[:i, j]
         di_opt = math.sqrt(max(di2s[j], 1e-12))
@@ -108,7 +107,6 @@ def _metrics(A_unit, E, masses, redundant_thresh=0.7):
 
 
 def main() -> None:
-    global ANCHOR_N
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run-dir", required=True, type=Path)
     ap.add_argument("--field", default="17")
@@ -148,8 +146,8 @@ def main() -> None:
     C = _unit(C)
 
     cand = np.argsort(masses)[::-1][:args.candidates]
-    fl = fl_anchors(E, masses, n, cand)
-    dpp = dpp_anchors(E, masses, cand)
+    fl = fl_anchors(E, masses, ANCHOR_N, cand)
+    dpp = dpp_anchors(E, masses, ANCHOR_N, cand)
 
     sets = {
         "dendrogram": (C, None),
