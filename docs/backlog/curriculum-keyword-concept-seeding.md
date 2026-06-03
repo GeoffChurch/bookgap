@@ -301,6 +301,52 @@ LM) as the language-sharing view, with the semantic embedder as the content-shar
 (b) drop citations as a *denoising* view entirely and keep them only for **ordering** (already validated:
 `--decouple-selection`). The language-squashing job stays with the (text-derived) embedder via CCA.
 
+### CORRECTION (2026-06-03): the "citation⊥keyword" finding was a STARVED-SUBGRAPH artifact
+
+`citation_spectrum_probe.py` re-measured the overlap on the *full* reference list instead of the internal
+subgraph. The internal subgraph we'd been using (`G[rows][:,rows]`) has **9 581 edges over 9 886 works ≈
+1 internal edge/work** — of ~8 in-field references per work, ~7 leave the concept. The Ruzicka+CSLS
+feature on that is **near-identity** (erank 9327 ≈ N — a *pathological* high rank: structurelessness, not
+richness), which is the real reason `R²=0.04` / `ρ1=0.229`. **It was noise, not independence.**
+
+Effective rank (entropy erank; participation ratio (Σλ)²/Σλ²; stable rank Σλ/λmax) and keyword overlap,
+jurafsky concept, N=9886:
+
+| citation view | erank | partic | stable | kw R² | ρ1 | ρ̄(10) |
+|---|---|---|---|---|---|---|
+| CURRENT (Ruzicka, internal) | 9327 | 8973 | 3471 | 0.040 | 0.536 | 0.415 |
+| internal directed | 1451 | 182 | 36 | 0.077 | 0.758 | 0.639 |
+| internal symmetrized (G+Gᵀ) | 2365 | 272 | 43 | 0.076 | 0.785 | 0.659 |
+| **full coupling (out-cites)** | **5544** | **1272** | **103** | **0.154** | **0.775** | **0.686** |
+| full co-citation (in-cites) | 3798 | 121 | 20 | 0.033 | 0.540 | 0.426 |
+| full concat [out‖in] | 5886 | 442 | 41 | 0.131 | 0.758 | 0.675 |
+
+**What changes:**
+1. **Use the FULL out-citation profile (bibliographic coupling), not the internal subgraph.** It
+   **quadruples** keyword overlap (0.040→0.154) and has *real* structure (erank 5544, participation 1272 ≫
+   25 chapters). ρ1=0.775, ρ̄(10)=0.686 — there IS a real ~10–20-dim shared subspace, so the earlier
+   "shared subspace too small (k=6)" was also an artifact.
+2. **Out-only beats symmetrize and concat.** Adding in-citations *dilutes* (concat 0.131 < out 0.154)
+   because **co-citation is nearly signal-free here (R²=0.033) and recency-biased** (recent works aren't
+   cited yet). The recency-clean view (out-cites, age-neutral) is ALSO the highest-overlap one. So: **don't
+   symmetrize, don't concat — bibliographic coupling alone.** (This overturns the current `max(P,Pᵀ)`
+   feature on both counts: internal→full and symmetrize→out-only.)
+3. **The citation-fusion dead-end is REOPENED on the right feature.** The CCA/discard-clash 4/4 losses were
+   measured against a near-identity noise matrix. The genuine residual still holds (coupling explains only
+   ~15% of keyword variance — citations see method/community lineage, keywords see topic; partial, not
+   redundant), so don't expect a knockout — but a real test is now warranted: **(a) cluster on full-coupling
+   ALONE** (collaborative view, no embedder — the "use one or the other" elegance; rank is ample) and **(b)
+   re-run CCA(keyword, full-coupling)** retaining the now-real shared subspace; judge both vs embedding.
+4. **Whittling citations:** participation 1272 (out-coupling) means energy spreads over ~1k directions;
+   the top few are the megahubs (foundational works everyone cites) = the citation analog of
+   language/paratext. Whittling *the citation view on its own terms* (remove top-k hubs) is the principled
+   move — NOT using keywords to whittle citations (or vice versa), which fails for the partial-overlap
+   reason. Each view denoised by its own nuisance axis.
+
+Net: the earlier dead-end's *diagnosis was right for the feature it measured*, but the feature was wrong.
+The corrected reopening is the live follow-up; the validated default (embedding/CCA clustering on the
+concept) is unaffected meanwhile.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
