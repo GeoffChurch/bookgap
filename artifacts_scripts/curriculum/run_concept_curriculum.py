@@ -41,8 +41,10 @@ def main() -> None:
     ap.add_argument("--toc-json", required=True, type=Path)
     ap.add_argument("--field", default="17")
     ap.add_argument("--n", type=int, default=25, help="number of chapters (match the book's ToC)")
-    ap.add_argument("--cluster", choices=["cca", "embedding"], default="cca",
-                    help="cca = CCA-hybrid (de-incant default); embedding = decoupled-selection + dendrogram")
+    ap.add_argument("--cluster", choices=["cca", "embedding"], default="embedding",
+                    help="embedding = decoupled-selection + dendrogram (DEFAULT: validated longest, "
+                         "wins/ties the multi-book judge); cca = CCA-hybrid, the opt-in for "
+                         "multilingual/foreign-heavy topics (won jurafsky but not the English-niche books)")
     ap.add_argument("--iters", type=int, default=3)
     ap.add_argument("--out-dir", required=True, type=Path)
     args = ap.parse_args()
