@@ -74,6 +74,10 @@ def main() -> None:
     ap.add_argument("--min-df", type=int, default=20)
     ap.add_argument("--max-features", type=int, default=1_000_000)
     ap.add_argument("--snapshot-date", default="2025-11-06")
+    ap.add_argument("--view", choices=["embedding", "citation", "both"], default="embedding",
+                    help="the robust 2nd view paired with keyword-TFIDF in the CCA: embedding (GIST), "
+                         "citation (citation-similarity spectral features — embedder-free, but sparser → "
+                         "weaker language-collapse for under-cited/foreign works), or both (concatenated).")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="cca", log_level="INFO", include_time=False)
@@ -82,7 +86,6 @@ def main() -> None:
     cfg = OmegaConf.structured(CurriculumConfig()); cfg.experiment.cloud.filter_pair.pre.field = str(args.field)
     cloud = instantiate(cfg.experiment.cloud)
     wid = cloud.work_ids(); id2idx = {w: i for i, w in enumerate(wid)}
-    Emb = np.asarray(cloud.embeddings(), dtype=np.float32)
 
     ids = json.loads(args.concept_gap.read_text())["book"]["gap_article_ids"]
     rows = [id2idx[w] for w in ids if w in id2idx]; ids = [w for w in ids if w in id2idx]
@@ -92,11 +95,19 @@ def main() -> None:
     idf_c = np.log(N / (np.asarray((Xc > 0).sum(0)).ravel() + 1.0))
     Tw = normalize(Xc.multiply(idf_c).tocsr())
     T = TruncatedSVD(n_components=min(args.lsa_dim, N - 1, Tw.shape[1] - 1), random_state=0).fit_transform(Tw)
-    # E view
-    E = normalize(Emb[rows].astype(np.float64))
-    LOGGER.info("CCA views: E %s, T(LSA) %s; n=%d", E.shape, T.shape, N)
+    # Robust 2nd view R (embedding / citation-spectral / both)
+    dim = min(args.lsa_dim, N - 1)
+    parts = []
+    if args.view in ("embedding", "both"):
+        parts.append(normalize(np.asarray(cloud.embeddings(), dtype=np.float32)[rows].astype(np.float64)))
+    if args.view in ("citation", "both"):
+        from artifacts_scripts.curriculum.multi_view_spectral import build_citation_similarity_view
+        Csim = build_citation_similarity_view(cloud.citation_graph(False)[rows][:, rows], csls_k=10)
+        parts.append(normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Csim)))
+    R = parts[0] if len(parts) == 1 else normalize(np.concatenate(parts, axis=1))
+    LOGGER.info("CCA views: R(%s) %s, T(LSA) %s; n=%d", args.view, R.shape, T.shape, N)
 
-    rho, Ea, Tb = _rcca(E, T, args.cca_reg)
+    rho, Ea, Tb = _rcca(R, T, args.cca_reg)
     LOGGER.info("canonical correlations rho (top 30): %s", np.round(rho[:30], 3).tolist())
     if args.cca_k > 0:
         k = args.cca_k

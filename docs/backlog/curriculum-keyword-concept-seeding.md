@@ -243,6 +243,30 @@ productionize:
 - Carry the chapter **ordering** natively (currently citation-balance net-cited-first inside
   `cluster_concept_cca`; the embedding path uses the richer frontier-adjacency — unify).
 
+## Citation-view CCA (embedder-free attempt) + the discard-clash motivation (2026-06-03)
+
+`cluster_concept_cca --view {embedding,citation,both}` on jurafsky:
+- **citation–keyword are largely INDEPENDENT**: top canonical correlation **ρ=0.229** (vs embedding's
+  0.77), declining slowly → CCA kept only **k=6** dims. (The embedder is text-derived → redundant with
+  keywords → large shared subspace; citations are structural → tiny shared subspace.) Confirms
+  "independence ⇒ much smaller shared subspace," strongly.
+- **Consequence — resolution loss**: clustering 25 chapters on 6 dims → lumpy (sizes 1044→60); the LM
+  judge prefers **embedding on all 4 dims** (citation loses 4/4). `both` ≈ embedding (ρ 0.75 — citation
+  is redundant-given-embedding for the *agreement* signal, adds nothing).
+- **So pure-citation-CCA FAILS** (the transparent-pipeline-via-CCA hope), and it pinpoints WHY: CCA
+  *retains* the shared subspace, which is too small for an independent view. **The right tool for an
+  independent view is discard-the-clash, not retain-the-shared** (confirmed empirically).
+
+**Discard-clash route (the motivated next experiment, via `denoisers.py`):** don't retain the 6 shared
+dims — instead KEEP the keyword content and REMOVE only the few dominant directions where keywords vary
+but citations don't (= language/surface). That's the variance-ratio GEP `max wᵀΣ_keyword w / wᵀΣ_citation w`,
+top-k removed — i.e. Anti-LDA / contrastive-PCA, **not** CCA's other end (CCA's low-ρ is *uncorrelated*,
+which mixes language with citation-independent real content). Reuse `denoisers.py`: `_solve_eigh_robustly(A,B)`
+(regularized generalized eigensolver), the scatter matrices, and **RNOJD** (joint-diagonalize Σ_keyword
+& Σ_citation → rank directions by variance ratio = where the views clash). Also note: CCA *whitens*
+(amplifies noise on the sparse citation view) → for citation, **PLS (covariance, no whitening) is the
+safer pairing** if revisiting CCA. Eval: genericness + foreign-fragments + judge, same harness.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
