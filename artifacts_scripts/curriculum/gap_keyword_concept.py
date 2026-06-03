@@ -78,6 +78,12 @@ def main() -> None:
     ap.add_argument("--union-floor", type=float, default=0.15, help="[per-chapter] keep works whose best "
                     "per-chapter-normalized score >= this")
     ap.add_argument("--per-chapter", action="store_true", help="union of per-chapter concepts (preserves breadth)")
+    ap.add_argument("--distinctiveness", choices=["none", "emptysink", "peakedness", "maxresp"], default="none",
+                    help="[per-chapter] down-weight each work's selection weight by how distinctively it "
+                         "belongs to ONE basin vs being ambient/spread (drops paratext at the source). All "
+                         "forms derive from the SAME vMF-mixture-with-null responsibilities over the basin "
+                         "embedding centroids: emptysink=1-r_∅ (canonical mixture-with-background posterior), "
+                         "peakedness=1-H(r)/logK (negentropy), maxresp=max_k r_k.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="kw_concept", log_level="INFO", include_time=False)
@@ -206,7 +212,7 @@ def main() -> None:
 
     n_cand = len(cand)
     if args.per_chapter and args.toc_json:
-        agg = np.zeros(n_cand); per_ch = []; basins: set = set()
+        agg = np.zeros(n_cand); per_ch = []; basins: set = set(); basin_sets: list = []
         for c in chs:
             ctext = f"{c.get('title','')} {c.get('description','')}".strip()
             Sc, sc, _ = find_concept(ctext)
@@ -214,6 +220,7 @@ def main() -> None:
             if mx > 0:
                 agg = np.maximum(agg, sc / mx)
             basins |= Sc                                      # the per-chapter basin (top-m)
+            basin_sets.append(Sc)
             per_ch.append((c.get('title', '')[:42], [term_name(t) for t in list(w2k(Sc))[:6]]))
         score = agg
         # FOCUSED target = union of per-chapter basins (≤ n_chapters·top_m), not the broad
@@ -223,6 +230,34 @@ def main() -> None:
         LOGGER.info("per-chapter union (%d chapters) -> focused |concept|=%d (∪ basins)", len(chs), len(S))
         for t, k in per_ch:
             LOGGER.info("  ch '%s': %s", t, k)
+
+        # ---- #1: concept-distinctiveness down-weighting (drops ambient/paratext at the source) ----
+        if args.distinctiveness != "none":
+            from artifacts_scripts.curriculum.gap_fuzzy_topics import soft_responsibilities, _unit as _u
+            Eall = E if args.backend == "nearest" else np.asarray(cloud.embeddings(), dtype=np.float32)
+            cw = sorted(S)                                    # concept work positions
+            Cb = np.stack([_u(Eall[cand[list(b)]].mean(0)) for b in basin_sets])   # basin embed centroids
+            Ec = _u(Eall[cand[cw]].astype(np.float64))
+            w = np.array([score[d] for d in cw], dtype=np.float64)                 # concept-score = ambient mass
+            ambient = _u(np.average(Ec, axis=0, weights=w if w.sum() > 0 else None))
+            R, tau = soft_responsibilities(Ec, Cb, args.soft_perplexity if hasattr(args, "soft_perplexity") else 1.5,
+                                           ambient=ambient)   # (|cw| x n_chapters), rows sum to 1-r_∅
+            rsum = R.sum(1)                                   # = 1 - r_∅ (concept membership vs background)
+            rn = R / np.maximum(rsum[:, None], 1e-12)         # renormalized over basins (drop ∅)
+            if args.distinctiveness == "emptysink":
+                dist = rsum                                   # canonical: posterior of a real chapter vs ∅
+            elif args.distinctiveness == "maxresp":
+                dist = rn.max(1)
+            else:  # peakedness (negentropy)
+                H = -np.sum(np.where(rn > 0, rn * np.log(rn), 0.0), axis=1)
+                dist = 1.0 - H / np.log(R.shape[1])
+            d_full = np.zeros(n_cand); d_full[cw] = dist
+            score = score * d_full                            # down-weight ambient works
+            order_d = np.argsort(dist)
+            LOGGER.info("distinctiveness=%s: mean=%.3f; LOW (ambient/paratext): %s",
+                        args.distinctiveness, float(dist.mean()),
+                        [titles[cand[cw[i]]][:40] for i in order_d[:4]])
+            LOGGER.info("  HIGH (distinctive): %s", [titles[cand[cw[i]]][:40] for i in order_d[::-1][:4]])
     else:
         S, score, traj = find_concept(seed_text)
         kw_final = w2k(S)

@@ -69,6 +69,49 @@ flag every concept.
 4. (Later) the book-deficit-lift gap detector as a k-ball alternative — its own eval vs the validated
    gap-books.
 
+## Follow-ups (deferred)
+
+- **Basin-level paratext drop (the "corrected #1").** Per-work concept-distinctiveness was REFUTED for
+  paratext (2026-06-03): all three forms (∅-leak/peakedness/maxresp over the basins) measure
+  *concentration in one basin*, but paratext is a **coherent generic basin** (the "Introduction" basin:
+  `proceedings/annual_meeting/association`) → concentrated → reads distinctive → uncatchable at the work
+  level. Worse, they mis-weight: ∅-leak down-weights *surveys* (Goldberg's NN-for-NLP book);
+  peakedness/maxresp down-weight cross-cutting works (coref+entity) and UP-weight off-topic-but-
+  concentrated works (vision transformers sitting in the Transformers basin via shared `self-attention`).
+  The defect is at the **basin level**: drop a basin that is **keyword-coherent but content-scattered**.
+  - **Embedding-incoherence** (preferred): the paratext basin's works span all topics → low internal
+    embedding cohesion, despite venue-keyword coherence. Recency-neutral.
+  - **Citation-incoherence** (viable, but recency-confounded): a paratext basin's works barely cite each
+    other; but a *recent frontier* basin (RLHF/RAG) is *also* citation-sparse (works too new to be
+    cited) → false-flagged as paratext. So citation-incoherence alone penalizes the frontier we just
+    preserved. Clean combination: **embedding-incoherent = paratext** vs **embedding-coherent yet
+    citation-sparse = frontier**. Use embedding-incoherence as the single signal; citation-incoherence
+    only age-normalized or as the second axis.
+  - Defer until after seeing #2 (the coherence cut) alone — #2 already collapses the 3 paratext clusters
+    →~1 (splitting paratext yields keyword-redundant children → stop), so the residual paratext may be
+    small enough not to need the basin drop.
+
+## #2 — coherence-merge (JS) status (2026-06-03)
+
+Built `merge_redundant_topics.py`: keyword-JS between topics, **complete-linkage** agglomerative merge
+(single-linkage chains through the paratext hub; complete-linkage requires mutual redundancy), τ via
+`--tau` or `--permutation-null` (95th-pctile JS between two random halves of the same topic). JS as the
+canonical density-invariant effect size (a likelihood-ratio/G-test would re-introduce density bias).
+
+On Jurafsky decoupled (25 topics): JS cleanly separates redundant (paratext 0.02–0.15, speech 0.26–0.35)
+from distinct (median 0.887). **But #2 ALONE has no clean operating point:**
+- τ=0.3: 25→21, merges only genuine redundancy (paratext 3→1, ASR 2→1, TTS 2→1), no content lost — but
+  *under*-merges (speech dupes remain).
+- permutation-null τ=0.434 (same-concept-half JS mean 0.223, 95th 0.434): 25→18 but **over-merges —
+  LLMs (`fine_tuning,plms`) absorbed into the paratext blob**.
+- **Root cause:** the paratext basin is a generic *hub* — its `natural_language_processing/language` terms
+  give it JS≈0.4 with content topics (LLMs), which sits *below* the same-concept-half null (0.434). So
+  the hub's spurious cross-concept similarity is indistinguishable from real same-concept redundancy; no
+  τ separates "merge dupes" from "absorb content into the hub."
+- **Conclusion: the corrected #1 (drop the paratext basin) is a PREREQUISITE for #2, not a complement.**
+  With the hub removed, the permutation-null τ should be clean and can fully collapse the speech
+  redundancy without endangering content. → un-defer #1 (embedding-incoherent-basin drop) next.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
