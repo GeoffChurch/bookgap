@@ -407,6 +407,21 @@ emitting both words and citations (Relational Topic Model / Link-LDA; Chang & Bl
 linear-Gaussian spectral shadow. **Cheap direct test:** factor a single `[X ‖ G_out]` incidence matrix
 (terms ⊕ cited-works) — "a reference is just another word" — vs CCA-agreement vs the generative model.
 
+**RESULT (2026-06-03): reference-as-word works, but CCA's machinery IS load-bearing.** `--method
+concat_vocab --concat-alpha 0.5` (each block L2-normed per row, energy-balanced, single LSA) on jurafsky:
+**100% coverage** (terms place the uncited ⅓ — no zero rows), genericness 8.85. Judge ×5: **beats embedding
+2/4** (comprehensiveness, specificity), ties the other 2 — so the isomorphism is *practically* valid; a
+reference is usable as just another word, and a single SVD gives a competitive GPU-free curriculum. **BUT
+CCA-coupling beats concat_vocab 3/4** → the two-view whitening + agreement-selection is NOT redundant.
+The "why" is visible in the output: concat_vocab threw a **3198-work mega-cluster** (⅓ of works) + a few
+garbled clusters = **term-domination** — terms have ~1M columns vs refs' ~22k, so even at equal per-row
+energy the lexical block tilts the top SVD components and injects language noise (the foreign/garbled
+clusters survive). CCA fixes both *for free*: whitening auto-balances the views scale-/rank-invariantly
+(no α to tune), and agreement-selection collapses the view-specific language directions. **Net on the
+concat↔CCA↔generative spectrum: the simple concat is a real, working fusion, but CCA is the sweet spot —
+parameter-free and denoising.** (An α-sweep — lower α = more ref weight — might narrow the gap, but CCA
+wins without a knob, so it's not worth a default.) Code: `cluster_concept_cca --method concat_vocab`.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that

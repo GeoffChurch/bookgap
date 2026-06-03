@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import scipy.sparse as sp
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import normalize
@@ -78,7 +79,7 @@ def main() -> None:
                     help="the robust 2nd view paired with keyword-TFIDF in the CCA: embedding (GIST), "
                          "citation (citation-similarity spectral features — embedder-free, but sparser → "
                          "weaker language-collapse for under-cited/foreign works), or both (concatenated).")
-    ap.add_argument("--method", choices=["cca", "discardclash", "citation_only"], default="cca",
+    ap.add_argument("--method", choices=["cca", "discardclash", "citation_only", "concat_vocab"], default="cca",
                     help="cca = retain the shared subspace (CCA). discardclash = keep the full keyword "
                          "space but REMOVE its top-k directions that are UNexplained by citations (= the "
                          "dominant citation-uncorrelated keyword variance ≈ language); embedder-free, "
@@ -92,6 +93,9 @@ def main() -> None:
                          "the dead-end).")
     ap.add_argument("--discard-k", type=int, default=6,
                     help="[discardclash] number of dominant citation-unexplained keyword directions to remove")
+    ap.add_argument("--concat-alpha", type=float, default=0.5,
+                    help="[concat_vocab] energy split terms:refs = alpha:(1-alpha) (each block L2-normed per "
+                         "row first, so the ~120-terms vs ~8-refs count imbalance doesn't decide it). 0.5=equal.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="cca", log_level="INFO", include_time=False)
@@ -132,7 +136,23 @@ def main() -> None:
         Csim = build_citation_similarity_view(cloud.citation_graph(False)[rows][:, rows], csls_k=10)
         return normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Csim))
 
-    if args.method == "citation_only":
+    if args.method == "concat_vocab":
+        # "A reference is just another word": ONE incidence matrix over the combined vocabulary
+        # (terms ⊕ cited-works), single LSA — no two-view CCA machinery. Each block is L2-normalized per
+        # row then scaled by sqrt(alpha)/sqrt(1-alpha) so they share energy alpha:(1-alpha) regardless of
+        # the ~120-terms vs ~8-refs count imbalance. Terms cover every work → 100% coverage (the uncited ⅓
+        # keep their term block; no zero rows, unlike citation_only). Tests the unification directly: if a
+        # single SVD here matches CCA-coupling, the whitening/agreement-selection wasn't load-bearing.
+        Gc = cloud.citation_graph(False).tocsr().astype(np.float64); Gc.setdiag(0.0); Gc.eliminate_zeros()
+        Xout = Gc[rows]; cdf = np.asarray((Xout > 0).sum(0)).ravel(); keep = cdf > 0
+        Gg = normalize((Xout[:, keep]).multiply(np.log(N / (cdf[keep] + 1.0))).tocsr())
+        a = args.concat_alpha
+        M = sp.hstack([np.sqrt(a) * Tw, np.sqrt(1.0 - a) * Gg]).tocsr()
+        Z = normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(M))
+        tag = f"concat_vocab(a={a})"
+        LOGGER.info("concat-vocab: [terms %d | refs %d] alpha=%.2f -> M %s -> Z %s",
+                    Tw.shape[1], Gg.shape[1], a, M.shape, Z.shape)
+    elif args.method == "citation_only":
         # Cluster on the citation view ALONE — no keywords, no embedder. The "use one or the other"
         # collaborative view; viable now that full coupling has real structure (erank 5544, partic 1272).
         # Works with NO in-field out-citations have an all-zero coupling row (no collaborative signal) —
