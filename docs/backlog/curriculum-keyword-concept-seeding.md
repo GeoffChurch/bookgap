@@ -553,3 +553,26 @@ earns its keep. CCA-coupling = best GPU-free choice, not best overall. Settling 
 Jurafsky" (and CCA-coupling vs CCA-embedding for real) needs: deviation-inspection of where a method
 departs from the book, a **multi-syllabus consensus anchor** (not one book), and an **ORDERING metric**
 (currently unmeasured — AMI & redund are partition-only).
+
+### Deviation inspection — did CCA-coupling actually BEAT Jurafsky? No (2026-06-03)
+
+`deviation_report.py` matched CCA-coupling's 25 chapters to Jurafsky's (3rd-ed) ToC in GIST space.
+**CCA-coupling RECONSTRUCTS the book 1:1** — every chapter maps to a distinct Jurafsky chapter at cos
+0.80–0.94, **zero novel topics, zero dropped chapters**. (The 3rd-ed ToC already covers the frontier —
+Transformers, Masked LMs, Post-training/Alignment, LLMs, RAG — so there is no frontier gap to "improve" on.)
+
+**Its deviations are DEFECTS, not improvements:**
+- 2 **paratext** chapters — M9 (book front-matter: "interesting discussion, series edited, book isbn") and
+  M24 (ACL proceedings: "papers 2021, proceedings 59th") — spuriously forced onto Introduction / Lexicons.
+- M11 **conflates RLHF+RAG** that Jurafsky cleanly separates (Post-training vs IR-and-RAG).
+- M10 vague ("datasets relatively"); M17 spell-check split off Words-and-Tokens (over-split, lateral).
+- **ZERO deviations that read as an improvement.**
+
+**Verdict: we did NOT beat Jurafsky — we closely reconstructed it, and every departure is downward.** The
+3rd-ed ToC is near-optimal. This **overturns the "4 methods beat Jurafsky's redund" reading**: that
+distinctness was inflated by the **paratext chapters splitting off** (junk distinctness), which the
+human-readable inspection caught and the scalar didn't. Final methodology lesson for the arc: even the
+Jurafsky-INDEPENDENT metric (redund) was gameable by junk — the deviation inspection was the decisive
+instrument, and it sided with fidelity. **Actionable:** the paratext (M9, M24) is the one clear fix —
+removing it raises fidelity AND kills the spurious distinctness (the long-backlogged **paratext-hygiene**
+item is THE win; not "out-organize Jurafsky").
