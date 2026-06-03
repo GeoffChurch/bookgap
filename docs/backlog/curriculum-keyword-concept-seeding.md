@@ -109,3 +109,24 @@ flag every concept.
     reconstruction now reduces to **fixing recency at the selection stage** (recency-aware re-rank, or
     seed-weighted personalization that preserves the concept's recency). Also TODO: skip the 6.8M-field
     background plot for full-field-concept runs (it's the slow tail); fix the doubled output-dir path.
+- **2026-06-03 — RECENCY FIXED by decoupling selection from the citation walk.** Threaded the concept
+  soft weights into the PageRank personalization (`cfg.target_work_weights` → non-uniform teleport),
+  added `cfg.decouple_selection` (concept personalization IS the selection mass; citation PR only orders),
+  and `--pagerank-alpha` / `--no-plot` on `book_curriculum`. `concept_gap.json` now carries
+  `gap_article_weights`. Jurafsky, no-rerank, frac≥2020 of selected works:
+
+  | variant | mean year | frac≥2020 | frontier chapters? |
+  |---|---|---|---|
+  | concept (target) | 2017.8 | 55.6% | — |
+  | original (uniform + rerank) | 2015.8 | 36.0% | ✗ missing |
+  | weighted personalization (α=.85) | **2011.5** | 50.5% | partial (bimodal) |
+  | **decoupled (concept selects)** | **2018.9** | **63.6%** | ✓ Transformers, BERT, LLMs, RLHF |
+
+  **Decoupling recovers recency AND the frontier chapters** (T9=rlhf/dpo/alignment, T12=transformer/
+  self-attention, T2=bert, T15=plms/fine-tuning). **Weighted-α=.85 is bimodal** (50.5% ≥2020 but mean
+  *2011.5*) — concept teleport keeps recent works but α-diffusion still drags in old citation hubs,
+  proving the citation walk is the de-frontiering culprit (weighting alone insufficient; tame α or
+  bypass it). The α-sweep (`--pagerank-alpha`) is the diagnostic dial between the two. **Verdict: use
+  `--decouple-selection` for concept-seeded curricula** (citations order, concept selects).
+  - Residual (separate from recency): embedding clustering over-allocates to dense regions (6 speech /
+    3 paratext topics on Jurafsky) — a balance issue, not the frontier one.

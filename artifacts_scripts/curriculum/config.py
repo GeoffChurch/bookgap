@@ -531,10 +531,25 @@ class CurriculumConfig:
     
     target_work_ids: List[str] = field(default_factory=list)
     """List of OpenAlex work IDs defining the target topic (seed set for PageRank).
-    
+
     For CircuitRank: These nodes receive current injection (+I_target).
     """
-    
+
+    target_work_weights: Optional[List[float]] = None
+    """Optional per-target soft weights aligned with ``target_work_ids``. If set, the
+    PageRank personalization (teleport vector) is these weights (normalized) instead of
+    uniform-over-seeds — so a keyword-concept's recency-faithful soft weight vector
+    drives the walk rather than being flattened to a set. None => uniform (legacy)."""
+
+    decouple_selection: bool = False
+    """If True, use the (concept-weighted) personalization vector DIRECTLY as the per-work
+    relevance/mass for SELECTION (top-k) instead of the PageRank stationary relevance —
+    i.e. the concept selects works, and the citation PageRank is used ONLY for the
+    forward/reverse relevance that orders chapters (frontier adjacency). Recency-faithful
+    (the citation walk's age bias never enters selection). Equivalent to the α→0 limit for
+    selection while keeping normal α for ordering. See
+    docs/backlog/curriculum-keyword-concept-seeding.md."""
+
     source_work_ids: List[str] = field(default_factory=list)
     """List of OpenAlex work IDs that the user already knows (optional).
     

@@ -53,12 +53,16 @@ def build_curriculum_from_book_gap(
     dynamic_topk_floor: float = 0.0,
     anchor_mode: Optional[str] = None,
     soft_topics: bool = False,
+    pagerank_alpha: Optional[float] = None,
+    decouple_selection: bool = False,
+    plot_enabled: bool = True,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
     bk = rec.get("book", rec)  # single-book mode nests under "book"; fall back to flat
     ids = bk["gap_article_ids"]
     if not ids:
         raise ValueError(f"empty gap_article_ids in {gap_json}")
+    weights = bk.get("gap_article_weights")  # keyword-concept soft target weights (optional)
     sf = subfield or rec.get("scope_subfield")
     fld = field or rec.get("scope_field")
     book_id = bk.get("book_id", "unknown")
@@ -67,6 +71,13 @@ def build_curriculum_from_book_gap(
 
     cfg = OmegaConf.structured(CurriculumConfig())
     cfg.target_work_ids = ids
+    if weights:
+        cfg.target_work_weights = list(weights)      # concept-weighted personalization
+    if pagerank_alpha is not None:
+        cfg.pagerank.alpha = float(pagerank_alpha)   # α sweep (low α anchors to the concept)
+    if decouple_selection:
+        cfg.decouple_selection = True                # concept selects; citations only order
+    cfg.plot.enabled = plot_enabled                  # skip the slow field-background plot in sweeps
     cfg.output_dir = name
     cfg.desired_n_topics = desired_n_topics
     cfg.rank_before_clustering = True
@@ -156,6 +167,14 @@ def main() -> None:
     ap.add_argument("--soft-topics", action="store_true",
                     help="fuzzy keyword extraction (works contribute to all topics by mass*r); "
                          "~5x slower but dissolves degenerate chapters")
+    ap.add_argument("--pagerank-alpha", type=float, default=None,
+                    help="PageRank link-follow prob (default cfg 0.85). Lower = more teleport to the "
+                         "(concept-weighted) seeds = recency-anchored; sweep for the de-frontiering diagnostic.")
+    ap.add_argument("--decouple-selection", action="store_true",
+                    help="use the concept personalization DIRECTLY as the selection mass (citation PR "
+                         "only orders chapters) — recency-faithful; the α→0 limit for selection.")
+    ap.add_argument("--no-plot", action="store_true",
+                    help="skip the curriculum plot (the field-background projection is the ~20min tail).")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
@@ -165,6 +184,8 @@ def main() -> None:
         similarity_knn_k=args.similarity_knn_k, keywords_top_k=args.keywords_top_k,
         dynamic_topk_floor=args.dynamic_topk_floor,
         anchor_mode=args.anchor_mode, soft_topics=args.soft_topics,
+        pagerank_alpha=args.pagerank_alpha, decouple_selection=args.decouple_selection,
+        plot_enabled=not args.no_plot,
     )
     print(f"DONE -> {out}")
 

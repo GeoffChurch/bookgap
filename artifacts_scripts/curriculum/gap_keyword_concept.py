@@ -253,10 +253,11 @@ def main() -> None:
     # gap-json-compatible file so book_curriculum.py consumes the concept directly as its
     # target_work_ids personalization (this replaces the empty embedding-ball gap).
     gap_ids = [wid[cand[d]] for d in order]
+    gap_wts = [float(score[d]) for d in order]            # aligned soft concept weights
     (args.out / "concept_gap.json").write_text(json.dumps({
         "scope_field": str(args.field), "scope_subfield": None, "method": "keyword_concept",
         "book": {"book": seed_name, "book_id": seed_name, "gap_size": len(gap_ids),
-                 "gap_article_ids": gap_ids}}))
+                 "gap_article_ids": gap_ids, "gap_article_weights": gap_wts}}))
     cmd = f"python -m {_MODULE} " + " ".join(shlex.quote(a) for a in sys.argv[1:])
     lines = [f"# Keyword-concept — {seed_name}", "",
              f"backend={args.backend} · |concept|={len(S)} · top_k={args.top_k} · top_m={args.top_m} · "

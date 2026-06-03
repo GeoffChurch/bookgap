@@ -905,7 +905,19 @@ def run_curriculum_building(
         #   BIDIRECTIONAL_PAGE_RANK = both populated; missing source_work_ids
         #     no longer raises — it gracefully degrades to forward-only PR.
         target_seeds = np.zeros(n_total, dtype=np.float64)
-        target_seeds[seed_indices] = 1.0 / len(seed_indices)
+        if cfg.target_work_weights:
+            # Concept-weighted personalization: teleport ∝ the soft concept weights
+            # (recency-faithful) instead of uniform-over-seeds (which flattens the
+            # concept and lets citation-age bias dominate). See keyword-concept-seeding.
+            wid2w = dict(zip(cfg.target_work_ids, cfg.target_work_weights))
+            sw = np.array([max(wid2w.get(work_ids[i], 0.0), 0.0) for i in seed_indices],
+                          dtype=np.float64)
+            if sw.sum() <= 0:
+                sw = np.ones(len(seed_indices))
+            target_seeds[seed_indices] = sw / sw.sum()
+            LOGGER.info("Concept-weighted personalization over %d seeds (non-uniform)", len(seed_indices))
+        else:
+            target_seeds[seed_indices] = 1.0 / len(seed_indices)
 
         source_seeds = np.zeros(n_total, dtype=np.float64)
         if cfg.source_work_ids:
@@ -945,6 +957,15 @@ def run_curriculum_building(
         full_point_masses = result.relevance
         fwd_relevance = result.forward_mass
         rev_relevance = result.reverse_mass
+
+        if cfg.decouple_selection:
+            # Decoupled: the concept (personalization) selects + weights works; the citation
+            # PR's fwd/rev relevance still ORDER chapters (frontier adjacency). Replacing the
+            # selection masses with the concept-weighted teleport vector keeps the citation
+            # walk's age bias out of selection (the α→0 limit, for selection only).
+            LOGGER.info("decouple_selection: concept personalization is the selection mass "
+                        "(citation PR retained for ordering only)")
+            full_point_masses = target_seeds.copy()
 
 
     elif cfg.method == RankMethod.CIRCUIT_RANK:
