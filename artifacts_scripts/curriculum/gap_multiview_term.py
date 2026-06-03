@@ -2,16 +2,25 @@
 
 Increment 3 of docs/backlog/curriculum-keyword-coclustering.md. Keyword-only deflation
 (gap_keyword_curriculum.py) maxed keyword-distinctiveness but tanked embedding cohesion.
-The fix is to use keywords AS A VIEW alongside embedding + citation, not alone. This is
-the quick kernel-sum variant: build the three CSLS-corrected similarity views over the
-pool, spectral-cluster their SUM, then write a judge/intrinsic/correspondence-ready
-run-dir (keywords via log-lift, order by citation balance). A balanced point between the
-dendrogram (high silhouette, lower kw-distinct) and keyword-only (kw-distinct 1.0, silhouette ~0).
+The fix is to use keywords AS A VIEW alongside embedding + citation, not alone — building
+three CSLS-corrected similarity views over the pool and combining them.
+
+Two ``--method`` combiners:
+  * ``coreg`` (default) — the *co-regularized* 3-view spectral solver
+    (cluster_with_multi_view_spectral_views): each view keeps its own Laplacian and the
+    views are coupled via the mean-projector agreement term, so a view only bends the
+    others where they *agree*. This is the principled balance.
+  * ``kernelsum`` — REFUTED baseline: sum the three affinities and graph-bisect. Combining
+    by raw sum let the views conflict → negative silhouette (see backlog inc 3). Kept
+    runnable for the head-to-head record.
+
+Then writes a judge/intrinsic/correspondence-ready run-dir (keywords via log-lift, order
+by citation balance).
 
 Example:
   python -m artifacts_scripts.curriculum.gap_multiview_term \\
       --pool-run-dir artifacts/curriculum/neuromorphic_trackA_sem --field 17 --n 13 \\
-      --out-dir artifacts/curriculum/neuromorphic_trackA_mvt
+      --method coreg --out-dir artifacts/curriculum/neuromorphic_trackA_mvt
 """
 from __future__ import annotations
 
@@ -48,6 +57,9 @@ def main():
     ap.add_argument("--field", default="17")
     ap.add_argument("--n", type=int, default=13)
     ap.add_argument("--csls-k", type=int, default=10)
+    ap.add_argument("--method", choices=["coreg", "kernelsum"], default="coreg",
+                    help="coreg = co-regularized 3-view spectral (principled); "
+                         "kernelsum = refuted sum+graph-bisect baseline")
     ap.add_argument("--out-dir", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="mv_term", log_level="INFO", include_time=False)
@@ -74,18 +86,30 @@ def main():
             rows.append(d); cols.append(vocab.setdefault(t, len(vocab)))
     X = normalize(sp.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(P, len(vocab))))
     W_term = csls_correct((X @ X.T).toarray(), k=args.csls_k, clip=True)
-    W = W_emb + W_cite + W_term
-    # Sparsify (top-k per row, symmetrized) and use recursive-Fiedler bisection, which
-    # FORCES balanced cuts -- plain spectral clustering collapses to one giant cluster on
-    # this dense, tight affinity.
-    from artifacts_scripts.curriculum.build_curriculum import _cluster_with_graph_bisect
-    k = max(args.csls_k, 15)
-    keep = np.argsort(W, axis=1)[:, -k:]
-    Ws = np.zeros_like(W)
-    np.put_along_axis(Ws, keep, np.take_along_axis(W, keep, axis=1), axis=1)
-    Ws = np.maximum(Ws, Ws.T)
-    LOGGER.info("views built (P=%d, vocab=%d); graph-bisect into %d", P, len(vocab), args.n)
-    labels = _cluster_with_graph_bisect(sp.csr_matrix(Ws), n_clusters=args.n)
+    LOGGER.info("views built (P=%d, vocab=%d); method=%s into %d", P, len(vocab), args.method, args.n)
+
+    if args.method == "coreg":
+        # Principled: co-regularize the three views (each keeps its own Laplacian;
+        # coupled via mean-projector agreement, so views bend each other only where
+        # they agree). The auto-tuned λ transfers from the validated 2-view case.
+        from artifacts_scripts.curriculum.multi_view_spectral import (
+            cluster_with_multi_view_spectral_views,
+        )
+        labels = cluster_with_multi_view_spectral_views(
+            [W_emb, W_cite, W_term], n_clusters=args.n,
+        )
+    else:
+        # Refuted baseline: sum the affinities + recursive-Fiedler bisection (forces
+        # balanced cuts; plain spectral collapses to one giant cluster on this dense,
+        # tight affinity). Kept for the head-to-head record.
+        from artifacts_scripts.curriculum.build_curriculum import _cluster_with_graph_bisect
+        W = W_emb + W_cite + W_term
+        k = max(args.csls_k, 15)
+        keep = np.argsort(W, axis=1)[:, -k:]
+        Ws = np.zeros_like(W)
+        np.put_along_axis(Ws, keep, np.take_along_axis(W, keep, axis=1), axis=1)
+        Ws = np.maximum(Ws, Ws.T)
+        labels = _cluster_with_graph_bisect(sp.csr_matrix(Ws), n_clusters=args.n)
 
     # df/inverted index for log-lift keywords
     df = {}; inv = {}

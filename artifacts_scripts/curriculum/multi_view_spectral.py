@@ -141,6 +141,101 @@ def _bottom_k_eigvecs(M: NDArray[np.floating], k: int) -> NDArray[np.floating]:
     return eigvecs[:, :k]
 
 
+def cluster_with_multi_view_spectral_views(
+    views: list[NDArray[np.floating]],
+    *,
+    n_clusters: int,
+    co_reg_lambda: Optional[float] = None,
+    auto_lambda_scale: float = 1.5,
+    max_iters: int = 30,
+    tol: float = 1e-5,
+    seed: int = 42,
+) -> NDArray[np.intp]:
+    """Co-regularized multi-view spectral clustering for V≥2 views.
+
+    Generalises Kumar-Rai-Daumé (2011) to any number of views. Solves for
+    per-view embeddings ``U_1 … U_V`` of shape ``(n, K)`` that each
+    minimise their own view's normalised-Laplacian quadratic form while
+    maximising pairwise agreement::
+
+        min  Σ_v tr(U_vᵀ L_v U_v) - λ Σ_{v<w} tr(U_v U_vᵀ U_w U_wᵀ)
+        s.t. U_vᵀ U_v = I
+
+    Solved by Gauss-Seidel alternation: with the other views fixed, ``U_v``
+    is the bottom-K eigenvectors of ``L_v - λ · mean_{w≠v}(U_w U_wᵀ)``. The
+    coupling is the **mean** (not the sum) of the other views' projectors,
+    so that (a) a single λ scale transfers across V — the auto-tuned λ
+    validated at V=2 stays calibrated at V=3 instead of the coupling
+    growing ∝ (V−1) and collapsing the clustering; and (b) for V=2 this is
+    byte-identical to the two-view path (mean of one term = that term).
+
+    K-means on the row-normalised concatenation ``[U_1 | … | U_V]`` gives
+    the final clustering.
+
+    Parameters
+    ----------
+    views : list of V ``(n, n)`` symmetric similarity matrices.
+    n_clusters : Number of clusters K.
+    co_reg_lambda : Co-regularisation strength λ. If ``None``, auto-tune via
+        ``auto_lambda_scale * mean_v(op_norm(L_v)) / K`` (the V=2 formula
+        ``scale·(op1+op2)/(2K)`` written view-count-agnostically).
+    auto_lambda_scale : Multiplicative constant; default ``1.5`` validated
+        cross-corpus at V=2. Ignored if ``co_reg_lambda`` is set.
+    max_iters, tol, seed : as for the two-view entry point.
+    """
+    from sklearn.cluster import KMeans
+
+    V = len(views)
+    if V < 2:
+        raise ValueError(f"need ≥2 views, got {V}")
+    n = views[0].shape[0]
+    for i, W in enumerate(views):
+        if W.shape != (n, n):
+            raise ValueError(f"view {i} shape {W.shape} != ({n}, {n})")
+    if n_clusters >= n:
+        return np.arange(n, dtype=np.intp)
+
+    K = n_clusters
+    Ls = [_normalized_laplacian(W) for W in views]
+
+    # Full eigendecomposition per view once: initial U_v + op_norms for λ.
+    Us: list[NDArray[np.floating]] = []
+    op_norms: list[float] = []
+    for L in Ls:
+        L_sym = 0.5 * (L + L.T)
+        eigvals, eigvecs = np.linalg.eigh(L_sym)
+        Us.append(eigvecs[:, :K])
+        op_norms.append(float(eigvals[-1]))
+
+    if co_reg_lambda is None:
+        co_reg_lambda = auto_lambda_scale * (sum(op_norms) / V) / K
+
+    for _ in range(max_iters):
+        change = 0.0
+        new_Us = list(Us)
+        for v in range(V):
+            # mean of the OTHER views' projectors (latest available, Gauss-Seidel)
+            coupling = sum(
+                new_Us[w] @ new_Us[w].T for w in range(V) if w != v
+            ) / (V - 1)
+            U_v_new = _bottom_k_eigvecs(Ls[v] - co_reg_lambda * coupling, K)
+            change = max(change, _subspace_distance(U_v_new, Us[v]))
+            new_Us[v] = U_v_new
+        Us = new_Us
+        if change < tol:
+            break
+
+    U_joint = np.concatenate(Us, axis=1)
+    # Row-normalise (Ng-Jordan-Weiss spectral pre-processing).
+    norms = np.linalg.norm(U_joint, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-12)
+    U_joint = U_joint / norms
+
+    km = KMeans(n_clusters=K, random_state=seed, n_init=10)
+    labels = km.fit_predict(U_joint)
+    return labels.astype(np.intp)
+
+
 def cluster_with_multi_view_spectral(
     W1: NDArray[np.floating],
     W2: NDArray[np.floating],
@@ -152,28 +247,13 @@ def cluster_with_multi_view_spectral(
     tol: float = 1e-5,
     seed: int = 42,
 ) -> NDArray[np.intp]:
-    """Co-regularized multi-view spectral clustering (Kumar-Rai-Daumé 2011).
+    """Two-view co-regularized spectral clustering (Kumar-Rai-Daumé 2011).
 
-    Solves for embeddings ``U_1, U_2`` of shape ``(n, K)`` that each
-    minimise their own view's normalised-Laplacian quadratic form *and*
-    maximise mutual agreement::
-
-        min  tr(U_1ᵀ L_1 U_1) + tr(U_2ᵀ L_2 U_2)
-             - λ tr(U_1 U_1ᵀ U_2 U_2ᵀ)
-        s.t. U_vᵀ U_v = I
-
-    Solved by alternation: with ``U_w`` fixed, ``U_v`` is the bottom-K
-    eigenvectors of ``L_v - λ U_w U_wᵀ``. Iterates until subspace
-    convergence (``||U_v U_vᵀ - U_v_prev U_v_prevᵀ||_F < tol``).
-
-    K-means on the row-normalised concatenation ``[U_1 | U_2]`` produces
-    the final clustering.
-
-    ``λ=0`` recovers per-view independent spectral; large ``λ`` forces
-    full agreement (degenerate). Sweet spot in between.
-
-    Reference: Kumar, Rai, Daumé (2011), "Co-regularized Multi-view
-    Spectral Clustering", NeurIPS.
+    Convenience entry point over
+    :func:`cluster_with_multi_view_spectral_views` for the embedding +
+    citation case. See that function for the full objective and the λ
+    auto-tune. The two-view path is byte-identical to passing
+    ``[W1, W2]`` to the general solver.
 
     Parameters
     ----------
@@ -197,54 +277,12 @@ def cluster_with_multi_view_spectral(
     tol : Subspace-distance tolerance for convergence.
     seed : Random seed for K-means.
     """
-    from sklearn.cluster import KMeans
-
-    n = W1.shape[0]
-    if W2.shape != (n, n):
-        raise ValueError(
-            f"W1 ({W1.shape}) and W2 ({W2.shape}) must match (n, n)."
-        )
-    if n_clusters >= n:
-        return np.arange(n, dtype=np.intp)
-
-    K = n_clusters
-    L1 = _normalized_laplacian(W1)
-    L2 = _normalized_laplacian(W2)
-
-    # Full eigendecomposition once: provides both initial U_v and op_norms
-    # for auto-tuning. Replaces a separate _bottom_k_eigvecs init call —
-    # zero extra cost when co_reg_lambda is set, free op_norms otherwise.
-    L1_sym = 0.5 * (L1 + L1.T)
-    L2_sym = 0.5 * (L2 + L2.T)
-    eigvals_1, eigvecs_1 = np.linalg.eigh(L1_sym)
-    eigvals_2, eigvecs_2 = np.linalg.eigh(L2_sym)
-
-    if co_reg_lambda is None:
-        op_norm_1 = float(eigvals_1[-1])
-        op_norm_2 = float(eigvals_2[-1])
-        co_reg_lambda = auto_lambda_scale * (op_norm_1 + op_norm_2) / (2 * K)
-
-    # Initialise per-view spectral from the precomputed eigenvectors.
-    U1 = eigvecs_1[:, :K]
-    U2 = eigvecs_2[:, :K]
-
-    for _ in range(max_iters):
-        U1_new = _bottom_k_eigvecs(L1 - co_reg_lambda * (U2 @ U2.T), K)
-        U2_new = _bottom_k_eigvecs(L2 - co_reg_lambda * (U1_new @ U1_new.T), K)
-        change = max(
-            _subspace_distance(U1_new, U1),
-            _subspace_distance(U2_new, U2),
-        )
-        U1, U2 = U1_new, U2_new
-        if change < tol:
-            break
-
-    U_joint = np.concatenate([U1, U2], axis=1)
-    # Row-normalise (Ng-Jordan-Weiss spectral pre-processing).
-    norms = np.linalg.norm(U_joint, axis=1, keepdims=True)
-    norms = np.maximum(norms, 1e-12)
-    U_joint = U_joint / norms
-
-    km = KMeans(n_clusters=K, random_state=seed, n_init=10)
-    labels = km.fit_predict(U_joint)
-    return labels.astype(np.intp)
+    return cluster_with_multi_view_spectral_views(
+        [W1, W2],
+        n_clusters=n_clusters,
+        co_reg_lambda=co_reg_lambda,
+        auto_lambda_scale=auto_lambda_scale,
+        max_iters=max_iters,
+        tol=tol,
+        seed=seed,
+    )
