@@ -60,6 +60,27 @@ foundation-wander surfaced as off-topic-but-coherent basins (intrusion-detection
 gap-PMI down → gap-selection (product-of-experts) is still needed upstream. This directly motivates
 the term-view-in-multi_view_spectral as the *balanced* version.
 
+## Increment 3 — naive multi-view(+term) FAILS; views conflict (2026-06-02)
+
+`gap_multiview_term.py`: build the three CSLS-corrected views (embedding + citation + **term**) over
+the pool, combine by SUM, cluster. `SpectralClustering` collapsed to one giant cluster (4975 + 12
+tiny) — spectral-on-dense-affinity failure. Recursive-Fiedler `graph_bisect` gave *balanced* clusters
+(275–606) but **silhouette = −0.024** (worse than random!), kw_distinct 1.0, kw_gap_pmi 2.8. So a
+**naive sum of the three views wins NEITHER cohesion (negative silhouette) nor gap-fidelity** — only
+the trivial kw_distinct. **The views genuinely conflict** (keyword-coherence vs embedding-coherence vs
+citation-coherence pull apart); summing them and cutting the combined graph is incoherent.
+
+**Conclusion of the keyword-coclustering thread (3 increments):** the nonlinear iteration is a nice
+*primitive* (validated, seed-dependent coherent basins), but turning it into a full curriculum —
+keyword-deflation (inc 2) or naive multi-view (inc 3) — **does NOT beat the validated dendrogram +
+product-of-experts + dynamic-k stack** on the structural axes, because keyword/embedding/citation
+coherence conflict and naive combinations sacrifice cohesion. **The one remaining proper test is the
+co-regularized 3-view `multi_view_spectral`** (generalize the existing 2-view Kumar-Rai-Daumé solver
+to add the term view — it *balances* views via the co-reg term `L_v − λ Σ_{w≠v} U_w U_wᵀ` instead of
+summing, which is designed to avoid exactly this conflict). That's the "full unification" and the only
+version not yet refuted; needs generalizing the solver + a pipeline rebuild. Until then the dendrogram
+stays.
+
 **Concrete directions (cheapest first):**
 1. **Add a keyword/term VIEW to the existing `multi_view_spectral` clustering** (it already
    co-regularizes an embedding view + a citation view; the term-document matrix is a natural third
