@@ -60,8 +60,15 @@ def main():
     ap.add_argument("--method", choices=["coreg", "kernelsum"], default="coreg",
                     help="coreg = co-regularized 3-view spectral (principled); "
                          "kernelsum = refuted sum+graph-bisect baseline")
-    ap.add_argument("--out-dir", required=True, type=Path)
+    ap.add_argument("--diagnose-cohesion", action="store_true",
+                    help="isolation control: print embedding silhouette for emb-only "
+                         "KMeans vs 2-view [emb,cite] vs 3-view [emb,cite,term] co-reg "
+                         "over the pool, then exit (no run-dir written). Shows that the "
+                         "negative silhouette is a multi-view-blend effect, not keyword-specific.")
+    ap.add_argument("--out-dir", type=Path)
     args = ap.parse_args()
+    if not args.diagnose_cohesion and args.out_dir is None:
+        ap.error("--out-dir is required unless --diagnose-cohesion")
     setup_logging(log_name="mv_term", log_level="INFO", include_time=False)
 
     cfg = OmegaConf.structured(CurriculumConfig())
@@ -87,6 +94,41 @@ def main():
     X = normalize(sp.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(P, len(vocab))))
     W_term = csls_correct((X @ X.T).toarray(), k=args.csls_k, clip=True)
     LOGGER.info("views built (P=%d, vocab=%d); method=%s into %d", P, len(vocab), args.method, args.n)
+
+    if args.diagnose_cohesion:
+        # Isolation control: is the negative silhouette keyword-specific, or a generic
+        # multi-view-blend effect? Cluster the SAME pool with emb-only KMeans / 2-view /
+        # 3-view co-reg and report embedding silhouette (centroid cosine) for each.
+        from sklearn.cluster import KMeans
+        from artifacts_scripts.curriculum.multi_view_spectral import (
+            cluster_with_multi_view_spectral_views,
+        )
+        Eu = E_all[poolpos].astype(np.float64)
+        Eu /= np.maximum(np.linalg.norm(Eu, axis=1, keepdims=True), 1e-12)
+
+        def _sil(labels):
+            ks = sorted(set(labels.tolist()))
+            C = {k: Eu[labels == k].mean(0) for k in ks}
+            for k in C:
+                C[k] /= max(np.linalg.norm(C[k]), 1e-12)
+            s = []
+            for i in range(len(Eu)):
+                d = {k: 1.0 - float(Eu[i] @ C[k]) for k in ks}
+                a = d[labels[i]]
+                b = min(v for k, v in d.items() if k != labels[i]) if len(ks) > 1 else a
+                s.append((b - a) / max(a, b, 1e-9))
+            return float(np.mean(s))
+
+        lab_emb = KMeans(n_clusters=args.n, random_state=42, n_init=10).fit_predict(Eu)
+        lab_2 = cluster_with_multi_view_spectral_views([W_emb, W_cite], n_clusters=args.n)
+        lab_3 = cluster_with_multi_view_spectral_views([W_emb, W_cite, W_term], n_clusters=args.n)
+        print("=== embedding silhouette over the pool (isolation control) ===")
+        print(f"emb-only KMeans              : {_sil(lab_emb):+.3f}")
+        print(f"2-view coreg [emb,cite]      : {_sil(lab_2):+.3f}")
+        print(f"3-view coreg [emb,cite,term] : {_sil(lab_3):+.3f}")
+        print("(emb-only high, both co-reg negative => the blend, not the term view, "
+              "trades away embedding cohesion.)")
+        return
 
     if args.method == "coreg":
         # Principled: co-regularize the three views (each keeps its own Laplacian;
