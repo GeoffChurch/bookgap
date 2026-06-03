@@ -525,3 +525,31 @@ the judge caught but our balance metrics missed), (3) **cross-view silhouette**.
 it; treat agreement as confidence and divergence as a flag to investigate (don't auto-side with the judge).
 Neither alone suffices — the judge missed coverage, the balance metrics missed redundancy, the objective
 AMI's reference partition is itself model-induced (nearest-chapter). Triangulate.
+
+### Coverage-matched + Jurafsky-as-a-row (2026-06-03 follow-up)
+
+Refined the objective scorer (`--restrict-to` for coverage-matching; ToC scored as a row; centroid-cosine
+redundancy that works for any partition). Two results settle the open questions:
+
+- **Coverage-matched** (every method scored only on trackA_dec's 1289 selected works): CCA-coupling AMI
+  **0.719/0.692 BEATS the embedding selection 0.634/0.667** — the judge's "CCA-coupling > embedding" was
+  right; the earlier "objective favored embedding" was ENTIRELY the 13%-coverage confound. Fidelity
+  ranking (cov-matched): CCA-embedding 0.769 > **CCA-coupling 0.719** > concat 0.692 > embedding 0.634 >
+  discardclash 0.596 > link-pLSA 0.502 > citonly 0.478.
+- **Jurafsky's own ToC redund = 0.483** (Jurafsky-INDEPENDENT centroid distinctness). FOUR methods are
+  MORE distinct than the book: discardclash 0.331, concat 0.356, **CCA-embedding 0.362, CCA-coupling
+  0.377** (link-pLSA 0.606 & citonly 0.515 are *more* redundant). So **"we might organize better than
+  Jurafsky" has objective support** — several methods produce less-redundant chapter sets than the book.
+
+**The discardclash trap (why triangulation, not any single metric):** discardclash is the MOST distinct
+(0.331) yet judged WORST (4/4) with garbled chapters → **distinctness is necessary-not-sufficient**
+(gameable by garbling). Only the triangulation flags the real winners: **CCA-embedding and CCA-coupling are
+the only methods simultaneously high-fidelity, more-distinct-than-Jurafsky, AND judge-good.**
+
+**Verdict on embedder-free CCA-coupling:** revived as the best EMBEDDER-FREE option (beats the embedding
+selection on cov-matched fidelity + judge, and beats Jurafsky's own distinctness) — BUT **CCA-embedding
+dominates it on BOTH fidelity (0.678>0.620) AND distinctness (0.362<0.377)**, so the GIST embedder still
+earns its keep. CCA-coupling = best GPU-free choice, not best overall. Settling "actually better than
+Jurafsky" (and CCA-coupling vs CCA-embedding for real) needs: deviation-inspection of where a method
+departs from the book, a **multi-syllabus consensus anchor** (not one book), and an **ORDERING metric**
+(currently unmeasured — AMI & redund are partition-only).

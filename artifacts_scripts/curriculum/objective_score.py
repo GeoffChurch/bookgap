@@ -50,17 +50,20 @@ def _nearest_chapter(work_vecs, chap_vecs) -> np.ndarray:
     return np.asarray((work_vecs @ chap_vecs.T).argmax(1)).ravel()
 
 
-def _redundancy(kw: dict) -> float:
-    """Mean cosine of each chapter's keyword-lift vector to its nearest OTHER chapter (high=duplicated)."""
-    terms = sorted({k for t in kw for k, _ in kw[t]})
-    idx = {k: i for i, k in enumerate(terms)}
-    M = np.zeros((len(kw), len(terms)))
-    for r, t in enumerate(sorted(kw, key=lambda x: int(x))):
-        for k, v in kw[t]:
-            M[r, idx[k]] = v
-    M = normalize(M)
-    S = M @ M.T
-    np.fill_diagonal(S, -1.0)
+def _redundancy(V, labels, K) -> float:
+    """Nearest-other-chapter cosine of the per-chapter CENTROIDS in feature space V (V[i] = work rows[i]).
+    Jurafsky-INDEPENDENT, works for any partition incl. the ToC; ↓ = more distinct chapters. Centroids
+    (full keyword space) avoid the disjoint-top-k-terms degeneracy."""
+    m = labels >= 0
+    lab = labels[m].astype(int); cols = np.where(m)[0]
+    present = sorted(set(lab.tolist()))
+    if len(present) < 2:
+        return float("nan")
+    remap = {k: i for i, k in enumerate(present)}
+    Ind = sp.csr_matrix((np.ones(len(lab)), ([remap[k] for k in lab], np.arange(len(lab)))),
+                        shape=(len(present), len(lab)))
+    C = normalize(Ind @ V[cols])                       # (K' × D) row-normalized centroids
+    S = (C @ C.T).toarray(); np.fill_diagonal(S, -1.0)
     return float(S.max(1).mean())
 
 
@@ -72,6 +75,9 @@ def main() -> None:
     ap.add_argument("--runs", nargs="+", required=True, help="run-dir names under artifacts/curriculum/")
     ap.add_argument("--lsa-dim", type=int, default=200)
     ap.add_argument("--sil-sample", type=int, default=3000)
+    ap.add_argument("--restrict-to", default=None,
+                    help="coverage-match: score every run only on the works covered by THIS run-dir "
+                         "(e.g. the 13%-coverage embedding selection) for an apples-to-apples AMI.")
     args = ap.parse_args()
     setup_logging(log_name="obj_score", log_level="INFO", include_time=False)
 
@@ -111,6 +117,13 @@ def main() -> None:
     Xo = Gc[rows]; cdf = np.asarray((Xo > 0).sum(0)).ravel(); Xo = Xo[:, cdf > 0]
     CITv = normalize(Xo.multiply(np.log(N / (cdf[cdf > 0] + 1.0))).tocsr())
 
+    # coverage-match: restrict scoring to the works covered by one run (e.g. the 13% embedding selection)
+    allowed = None
+    if args.restrict_to:
+        rt = json.loads((Path(AD) / args.restrict_to / "topic_work_ids.json").read_text())
+        allowed = {row_of_wid[w] for ws in rt.values() for w in ws if w in row_of_wid}
+        LOGGER.info("restrict-to %s: %d works", args.restrict_to, len(allowed))
+
     rng = np.random.RandomState(0)
     samp = rng.choice(N, min(args.sil_sample, N), replace=False)
 
@@ -120,28 +133,38 @@ def main() -> None:
             return float("nan")
         return float(silhouette_score(Vv[s], lab[s], metric="cosine"))
 
-    print(f"\n{'run':<24} {'AMI_kw':>7} {'AMI_emb':>8} {'redund':>7} {'sil_kw':>7} {'sil_emb':>8} "
-          f"{'sil_cit':>8} {'n_ch':>5} {'cover':>6}")
-    print("-" * 92)
+    # the book's own ToC chapters, scored as if it were a method (AMI vs itself is trivially 1 → "ref")
+    items = [("TOC(jurafsky)", ref_kw, len(toc))]
     for r in args.runs:
-        d = Path(AD) / r
-        twi = json.loads((d / "topic_work_ids.json").read_text())
-        kw = json.loads((d / "topic_keywords.json").read_text())
+        twi = json.loads((Path(AD) / r / "topic_work_ids.json").read_text())
         lab = np.full(N, -1)
         for t, ws in twi.items():
             for w in ws:
                 if w in row_of_wid:
                     lab[row_of_wid[w]] = int(t)
+        items.append((r, lab, len(twi)))
+
+    print(f"\n{'run':<24} {'AMI_kw':>7} {'AMI_emb':>8} {'redund':>7} {'sil_kw':>7} {'sil_emb':>8} "
+          f"{'sil_cit':>8} {'n_ch':>5} {'cover':>6}")
+    print("-" * 92)
+    for name, lab, nch in items:
         mask = lab >= 0
-        nch = len(twi); cover = 100.0 * mask.mean()
-        akw = ami(ref_kw[mask], lab[mask])
-        aem = ami(ref_em[mask], lab[mask]) if ref_em is not None else float("nan")
-        red = _redundancy(kw)
-        print(f"{r:<24} {akw:>7.3f} {aem:>8.3f} {red:>7.3f} {sil(KWv, lab, mask):>7.3f} "
+        if allowed is not None:
+            mask = mask & np.array([i in allowed for i in range(N)])
+        is_ref = name.startswith("TOC")
+        akw = float("nan") if is_ref else ami(ref_kw[mask], lab[mask])
+        aem = (float("nan") if is_ref or ref_em is None else ami(ref_em[mask], lab[mask]))
+        red = _redundancy(KWv, lab, max(nch, int(lab.max()) + 1))
+        cover = 100.0 * mask.mean()
+        akws = "  ref" if is_ref else f"{akw:.3f}"
+        aems = "   ref" if is_ref else f"{aem:.3f}"
+        print(f"{name:<24} {akws:>7} {aems:>8} {red:>7.3f} {sil(KWv, lab, mask):>7.3f} "
               f"{sil(EMv, lab, mask):>8.3f} {sil(CITv, lab, mask):>8.3f} {nch:>5} {cover:>5.0f}%")
-    print("\nAMI_kw/emb = agreement with the book's ToC-induced partition (keyword/embedding space; ↑=better "
-          "reconstruction). redund = nearest-other-chapter keyword cosine (↓=more distinct). sil_* = "
-          "cross-view cohesion (↑; a real partition stays cohesive in views it didn't use).")
+    print("\nAMI_kw/emb = agreement with the book's ToC-induced partition (↑=more FAITHFUL to Jurafsky — NOT "
+          "a quality ceiling; a better-than-Jurafsky set would score LOWER). redund = nearest-other-chapter "
+          "keyword-lift cosine, Jurafsky-INDEPENDENT (↓=more distinct chapters); beat TOC's redund = arguably "
+          "better-organized than the book. sil_* = cross-view cohesion." + (
+          f"  [restricted to {args.restrict_to}'s works]" if args.restrict_to else ""))
 
 
 if __name__ == "__main__":
