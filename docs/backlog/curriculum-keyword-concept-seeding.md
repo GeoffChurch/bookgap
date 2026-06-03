@@ -267,6 +267,40 @@ which mixes language with citation-independent real content). Reuse `denoisers.p
 (amplifies noise on the sparse citation view) → for citation, **PLS (covariance, no whitening) is the
 safer pairing** if revisiting CCA. Eval: genericness + foreign-fragments + judge, same harness.
 
+### Discard-clash RESULT — REFUTED, same root cause as citation-CCA (2026-06-03)
+
+Built it (`cluster_concept_cca --method discardclash --discard-k 6`): regress keyword-LSA `T` on citation
+features `C`, PCA the residual `T_res`, project `T` orthogonal to the top-k residual directions (the
+claimed "language clash"). On jurafsky: genericness **9.35** (highest of any method — labels look
+specific) but **n_tiny(<20)=7** (vs CCA 2, embedding 0; sizes 2067→2, several garbled chapters), foreign
+**2** (Indonesian T7 survived; ACL paratext duplicated across T16/T24), and the **LM judge prefers
+embedding on all 4 dims (discard-clash loses 4/4)** — identical to pure-citation-CCA.
+
+**Why (decisive diagnostic, logged):** **citation R²=0.040** — citations linearly explain only 4% of
+keyword variance (exactly ρ²≈0.05 from ρ=0.229). So `T_res ≈ T`, and the **top-k residual-vs-content
+subspace overlap = 0.997**: the 6 directions we removed as "language" are 99.7% identical to `T`'s own
+top-6 *principal content* axes. Discard-clash didn't sand off a language clash — **it amputated the
+biggest content directions** (the dominant topics), which is why it fragmented and lost the judge. The
+premise ("residual citations can't explain ≈ language") is false *because citations explain ~nothing*.
+
+**Unified conclusion — both ends of the citation×keyword GEP fail for ONE reason (independence):**
+CCA-*retain* keeps a 6-dim shared subspace (too small → lumpy, judge 4/4 loss); discard-clash-*remove*
+strips the top content axes (residual≈content → judge 4/4 loss). There is **no usable clash subspace
+because citations share NEITHER language NOR content with keywords** (R²=0.04). The embedder works as the
+2nd view precisely because it is **text-derived → it shares the language subspace with keywords**, so
+CCA's agreement=content / disagreement=language is meaningful; citations cannot triangulate language out
+of keywords at all.
+
+**Verdict on the symmetric cherry-pick (JIVE/GFA, "include a good citation subspace + remove a bad
+keyword subspace"):** the *framework* is canonical and sound (not fumes) — but the obstacle **bites
+hard** for the citation pairing. A symmetric decomposition can only excise the nuisance (language) if the
+2nd view **overlaps the nuisance subspace**; citations overlap neither subspace (independence), so there
+is nothing to cherry-pick. Salvage paths if the symmetric idea is revisited: (a) a 2nd view that *does*
+share language but not content — e.g. a deliberately **shallow lexical embedding** (char-n-gram / surface
+LM) as the language-sharing view, with the semantic embedder as the content-sharing view (two-sided JIVE);
+(b) drop citations as a *denoising* view entirely and keep them only for **ordering** (already validated:
+`--decouple-selection`). The language-squashing job stays with the (text-derived) embedder via CCA.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that

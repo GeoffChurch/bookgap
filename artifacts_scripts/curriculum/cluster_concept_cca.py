@@ -78,6 +78,13 @@ def main() -> None:
                     help="the robust 2nd view paired with keyword-TFIDF in the CCA: embedding (GIST), "
                          "citation (citation-similarity spectral features — embedder-free, but sparser → "
                          "weaker language-collapse for under-cited/foreign works), or both (concatenated).")
+    ap.add_argument("--method", choices=["cca", "discardclash"], default="cca",
+                    help="cca = retain the shared subspace (CCA). discardclash = keep the full keyword "
+                         "space but REMOVE its top-k directions that are UNexplained by citations (= the "
+                         "dominant citation-uncorrelated keyword variance ≈ language); embedder-free, "
+                         "and right when the views are too independent for CCA-retain (small shared subspace).")
+    ap.add_argument("--discard-k", type=int, default=6,
+                    help="[discardclash] number of dominant citation-unexplained keyword directions to remove")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="cca", log_level="INFO", include_time=False)
@@ -95,33 +102,56 @@ def main() -> None:
     idf_c = np.log(N / (np.asarray((Xc > 0).sum(0)).ravel() + 1.0))
     Tw = normalize(Xc.multiply(idf_c).tocsr())
     T = TruncatedSVD(n_components=min(args.lsa_dim, N - 1, Tw.shape[1] - 1), random_state=0).fit_transform(Tw)
-    # Robust 2nd view R (embedding / citation-spectral / both)
     dim = min(args.lsa_dim, N - 1)
-    parts = []
-    if args.view in ("embedding", "both"):
-        parts.append(normalize(np.asarray(cloud.embeddings(), dtype=np.float32)[rows].astype(np.float64)))
-    if args.view in ("citation", "both"):
+
+    def _citation_features():
         from artifacts_scripts.curriculum.multi_view_spectral import build_citation_similarity_view
         Csim = build_citation_similarity_view(cloud.citation_graph(False)[rows][:, rows], csls_k=10)
-        parts.append(normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Csim)))
-    R = parts[0] if len(parts) == 1 else normalize(np.concatenate(parts, axis=1))
-    LOGGER.info("CCA views: R(%s) %s, T(LSA) %s; n=%d", args.view, R.shape, T.shape, N)
+        return normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Csim))
 
-    rho, Ea, Tb = _rcca(R, T, args.cca_reg)
-    LOGGER.info("canonical correlations rho (top 30): %s", np.round(rho[:30], 3).tolist())
-    if args.cca_k > 0:
-        k = args.cca_k
+    if args.method == "discardclash":
+        # Keep the full keyword space, REMOVE only its top-k directions unexplained by citations.
+        # T_res = keyword variance not predictable from citations; its dominant PCs ≈ language (a big
+        # citation-uncorrelated lexical split). Project T orthogonal to them. Embedder-free; symmetric
+        # to CCA (CCA retains the shared, this removes the clash). See backlog.
+        C = _citation_features()
+        Tc = T - T.mean(0)
+        coef, *_ = np.linalg.lstsq(C, T, rcond=None)
+        T_res = T - C @ coef
+        Tr = T_res - T_res.mean(0)
+        # DIAGNOSTIC: how much keyword variance can citations actually explain? Near-0 ⇒ T_res≈T ⇒ the
+        # "top residual dirs" are just T's dominant CONTENT axes, not a language clash (independence bites).
+        r2 = 1.0 - float((Tr ** 2).sum() / (Tc ** 2).sum())
+        _, sv, Vt = np.linalg.svd(Tr, full_matrices=False)
+        _, _, VtT = np.linalg.svd(Tc, full_matrices=False)
+        align = float((np.abs(Vt[:args.discard_k] @ VtT[:args.discard_k].T) ** 2).sum() / args.discard_k)
+        Vlang = Vt[:args.discard_k]                              # (k, d_T) the "language" directions (claim)
+        frac = float((sv[:args.discard_k] ** 2).sum() / (sv ** 2).sum())
+        Z = normalize(T - (T @ Vlang.T) @ Vlang)                # keyword space minus those dirs
+        LOGGER.info("discard-clash: removed top-%d dirs (%.1f%% of residual var) -> Z %s | citation R²=%.3f "
+                    "(keyword var explained by citations); top-k residual-vs-content subspace overlap=%.3f",
+                    args.discard_k, 100 * frac, Z.shape, r2, align)
     else:
-        # elbow: largest relative drop in rho (after at least a few dims), or rho>0.3
-        d = rho[:-1] - rho[1:]
-        k = int(np.argmax(d[3:]) + 4) if len(d) > 4 else len(rho)
-        k = max(k, int((rho > 0.3).sum()))            # at least the clearly-correlated ones
-    k = max(2, min(k, Ea.shape[1]))
-    LOGGER.info("keeping k=%d canonical directions (rho[k-1]=%.3f, rho[k]=%.3f); collapsing the rest "
-                "(= disagreement/language)", k, rho[k - 1], rho[k] if k < len(rho) else 0.0)
-
-    # shared representation = rho-weighted consensus of the two canonical coordinate sets
-    Z = normalize(0.5 * (Ea[:, :k] + Tb[:, :k]) * rho[:k])
+        # CCA: retain the shared subspace of keyword-TFIDF and the robust 2nd view R.
+        parts = []
+        if args.view in ("embedding", "both"):
+            parts.append(normalize(np.asarray(cloud.embeddings(), dtype=np.float32)[rows].astype(np.float64)))
+        if args.view in ("citation", "both"):
+            parts.append(_citation_features())
+        R = parts[0] if len(parts) == 1 else normalize(np.concatenate(parts, axis=1))
+        LOGGER.info("CCA views: R(%s) %s, T(LSA) %s; n=%d", args.view, R.shape, T.shape, N)
+        rho, Ea, Tb = _rcca(R, T, args.cca_reg)
+        LOGGER.info("canonical correlations rho (top 30): %s", np.round(rho[:30], 3).tolist())
+        if args.cca_k > 0:
+            k = args.cca_k
+        else:
+            d = rho[:-1] - rho[1:]
+            k = int(np.argmax(d[3:]) + 4) if len(d) > 4 else len(rho)
+            k = max(k, int((rho > 0.3).sum()))
+        k = max(2, min(k, Ea.shape[1]))
+        LOGGER.info("keeping k=%d canonical directions (rho[k-1]=%.3f, rho[k]=%.3f); collapsing the rest",
+                    k, rho[k - 1], rho[k] if k < len(rho) else 0.0)
+        Z = normalize(0.5 * (Ea[:, :k] + Tb[:, :k]) * rho[:k])
     labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
 
     BG = X.shape[0]
@@ -145,7 +175,8 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     clusters = [np.where(labels == c)[0] for c in np.argsort(net)[::-1]]    # net-cited (foundational) first
     clusters = [m for m in clusters if len(m) > 0]
-    twi = {}; kwj = {}; sm = [f"# CCA-hybrid curriculum (k={k}) — {args.concept_gap.parent.name}", ""]
+    tag = f"discardclash k={args.discard_k}" if args.method == "discardclash" else f"cca k={k}"
+    twi = {}; kwj = {}; sm = [f"# {tag} curriculum — {args.concept_gap.parent.name}", ""]
     for new_i, members in enumerate(clusters):
         cl_rows = [rows[m] for m in members]
         mk = w2k(cl_rows, args.top_k)
@@ -156,7 +187,7 @@ def main() -> None:
     (args.out / "filtered_work_ids.json").write_text(json.dumps([w for m in clusters for w in (ids[x] for x in m)]))
     cmd = f"python -m {_MODULE} " + " ".join(shlex.quote(a) for a in sys.argv[1:])
     (args.out / "summary.md").write_text("\n".join(sm) + f"\n---\n*Generated by `{cmd}`*\n")
-    print(f"CCA k={k} -> {args.n} topics (sizes {sorted((len(m) for m in clusters), reverse=True)}) -> {args.out}")
+    print(f"{tag} -> {args.n} topics (sizes {sorted((len(m) for m in clusters), reverse=True)}) -> {args.out}")
     for new_i, members in enumerate(clusters):
         print(f"  T{new_i}: " + ", ".join(vocab[i] for i in list(w2k([rows[m] for m in members], 6))[:6]))
 
