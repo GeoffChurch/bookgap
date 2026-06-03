@@ -16,6 +16,27 @@ own co-cluster you need the anchor: **personalized PageRank on the bipartite wor
 [[full-data-soft-mixture-degenerate-bootstrap]] and the citation-soft / absorbing-walk results in
 [[curriculum-fuzzy-soft-topic-membership]].
 
+## Increment 1 — nonlinear keyword↔work iteration VALIDATED (2026-06-02)
+
+`gap_keyword_iteration.py`: the loose/nonlinear power iteration — run the real keyword extraction
+(log-lift vs the LOCAL pool background) in the loop, `works → keywords → works (top-m by match) → …`
+from a seed. Pool = the run-dir's selected works (the gap neighborhood = the boundary-local
+background; the better ambient than the global corpus). Phrases via one shared unigram+bigram
+vocabulary over the pool (the vocabulary/frequency split that resolves quantum_hall/hall_effect).
+
+Neuromorphic, **unanchored**, seeds = chapters 5 and 11:
+- **Converges** fast + stably (step-to-step Jaccard → 1.00 by iter ~5–7; no oscillation).
+- **Seed-dependent basins exist:** seed 5 → a tight VCSEL cluster (`vertical_cavity, surface_emitting,
+  vcsel`); seed 11 → a distinct photonic-NN cluster (`neuromorphic_photonics, photonic_neurons`).
+  **Jaccard between the two fixed points = 0.05** — essentially disjoint. The nonlinearity beat
+  linear mode-collapse with NO anchor, as predicted.
+- Fixed points are **coherent + keyword-clean** (no debris) and *purer* than the seed (drift-from-seed
+  ≈ 0.06–0.11 — it refines the seed into its keyword-coherent core).
+
+So the premise holds: keyword-coherent fixed points exist, are seed-dependent, coherent. The bigger
+builds below are de-risked. `K2W` (keyword→work scoring) is built and reusable. Next: multi-seed /
+deflation to make a full curriculum of these basins, then the term-view, then the full co-clustering.
+
 **Concrete directions (cheapest first):**
 1. **Add a keyword/term VIEW to the existing `multi_view_spectral` clustering** (it already
    co-regularizes an embedding view + a citation view; the term-document matrix is a natural third
