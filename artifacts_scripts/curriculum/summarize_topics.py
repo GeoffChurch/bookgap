@@ -165,6 +165,7 @@ def summarize_topics(
     soft_alpha_mode: str = "global",
     soft_class_balance: bool = False,
     soft_floor: float = 0.05,
+    soft_background: str = "none",
     citation_adj=None,
 ) -> Dict[int, List[tuple[str, float]]]:
     """Generate keyword summaries for curriculum topics.
@@ -267,11 +268,22 @@ def summarize_topics(
                 w = masses[m]
                 C[k] = np.average(E[m], axis=0, weights=w if w.sum() > 0 else None)
             C = _unit(C)
-            soft_R, tau = soft_responsibilities(E, C, soft_perplexity)
+            # Canonical ∅/background sink: append the pool's mean DIRECTION μ₀ as a (K+1)th
+            # vMF null component (boundary-background). Diffuse/boilerplate works closer to the
+            # ambient than to any chapter leak to ∅ and contribute nowhere. See the backlog.
+            ambient = None
+            if soft_background == "mass":
+                ambient = _unit(np.average(E, axis=0, weights=masses if masses.sum() > 0 else None))
+            elif soft_background == "mean":
+                ambient = _unit(E.mean(axis=0))
+            elif soft_background != "none":
+                raise ValueError(f"unknown soft_background={soft_background!r} (none|mass|mean)")
+            soft_R, tau = soft_responsibilities(E, C, soft_perplexity, ambient=ambient)
             LOGGER.info(
-                "Soft topics (embedding softmax): tau=%.4f (target perplexity %.2f), floor=%.2f "
-                "— works contribute to all topics with r>=floor, weighted mass*r",
-                tau, soft_perplexity, soft_floor,
+                "Soft topics (embedding softmax): tau=%.4f (target perplexity %.2f), floor=%.2f, "
+                "background=%s — works contribute to all topics with r>=floor, weighted mass*r%s",
+                tau, soft_perplexity, soft_floor, soft_background,
+                ("; ∅-leak mean=%.3f" % float(np.mean(1.0 - soft_R.sum(axis=1)))) if ambient is not None else "",
             )
     
     # Sample works and extract text for each topic

@@ -84,6 +84,19 @@ class KeywordConfig:
     """A work contributes to a topic's keyword pool only if its responsibility to
     that topic is >= this (keeps pools focused; the soft weight is mass*r)."""
 
+    soft_background: str = "none"
+    """For soft_mode='embedding': the canonical ∅/background sink (vMF-mixture-with-null).
+    Appends the pool's mean DIRECTION μ₀ as a (K+1)th vMF component at the same κ, so the
+    responsibilities become a softmax over the ambient-subtracted similarities (c_ik − c_i0):
+    a work whose every chapter-cosine is below its ambient-cosine leaks to ∅ and contributes
+    nowhere, instead of force-distributing its mass and polluting chapters (the boundary-
+    background move; the probabilistic --mean-center). Options:
+    - 'none'  (default): today's pure-simplex softmax (rows sum to 1, no ∅).
+    - 'mass'  : μ₀ = mass-weighted pool centroid (where the typical *important* work points;
+      consistent with the mass*r weighting everywhere else).
+    - 'mean'  : μ₀ = plain (unweighted) pool centroid (importance-agnostic geometric ambient).
+    See docs/backlog/curriculum-soft-membership-background-sink.md."""
+
     samples_per_topic: int = 5000
     """Number of works to sample per topic for keyword extraction."""
 

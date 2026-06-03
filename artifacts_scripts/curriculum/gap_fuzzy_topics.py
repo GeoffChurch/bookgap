@@ -52,17 +52,33 @@ def _unit(x: np.ndarray) -> np.ndarray:
     return x / np.maximum(np.linalg.norm(x, axis=-1, keepdims=True), 1e-12)
 
 
-def soft_responsibilities(E_unit, C_unit, perplexity):
+def soft_responsibilities(E_unit, C_unit, perplexity, ambient=None):
     """One-shot soft responsibilities R (n_works x n_topics) of each work to each
     topic: softmax over cosine-to-centroid, temperature set by target perplexity.
 
     E_unit / C_unit must be unit-normalized (works, centroids). Returns (R, tau).
     Anti-diffusion is structural: fixed centroids + the softmax simplex constraint
     (Σ_k R_ik = 1), one-shot (no iteration — iteration diffuses to uniform, see
-    docs/dead_ends/.../full-data-soft-mixture-degenerate-bootstrap.md)."""
+    docs/dead_ends/.../full-data-soft-mixture-degenerate-bootstrap.md).
+
+    ``ambient`` (a unit vector μ₀, the pool's mean direction): if given, append it as a
+    (K+1)th vMF "null" component at the SAME concentration κ=1/τ — the canonical
+    vMF-mixture-with-uniform-null (the vMF constants cancel, so the ambient enters as one
+    more direction). The posterior is then softmax over the ambient-subtracted similarities
+    (c_ik − c_i0) with ∅ the implicit logit-0 baseline; a work whose every chapter-cosine is
+    below its ambient-cosine leaks to ∅ and gets ~0 chapter responsibility (rows then sum to
+    1 − r_∅). This is the boundary-background move (commit only above the local ambient) — the
+    probabilistic version of `--mean-center` — so diffuse/boilerplate works contribute nowhere
+    instead of polluting chapters. κ is calibrated on the K chapters only (so committed works
+    keep ~perplexity chapters); the ∅ column is appended at that κ. ``ambient=None`` ⟹ today's
+    pure-simplex softmax. See docs/backlog/curriculum-soft-membership-background-sink.md."""
     sims = E_unit @ C_unit.T
     tau = _calibrate_tau(sims, perplexity)
-    return softmax(sims / tau, axis=1), tau
+    if ambient is None:
+        return softmax(sims / tau, axis=1), tau
+    amb = E_unit @ _unit(ambient)                       # (n,) ambient cosine c_i0
+    aug = np.concatenate([sims, amb[:, None]], axis=1)  # [chapters | ∅] at the same κ
+    return softmax(aug / tau, axis=1)[:, :-1], tau      # drop the ∅ column (= the leak)
 
 
 def citation_label_propagation(adj, labels, n_topics, alpha=0.5, iters=30,

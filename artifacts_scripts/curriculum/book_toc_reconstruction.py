@@ -160,7 +160,7 @@ def _materialize_track_b(out_dir: Path, chapters: list, g_titles: list,
                          g_emb: np.ndarray | None = None,
                          chap_emb: np.ndarray | None = None,
                          soft_topics: bool = False, soft_perplexity: float = 1.5,
-                         soft_floor: float = 0.05) -> None:
+                         soft_floor: float = 0.05, soft_background: str = "none") -> None:
     """Write Track B (the book's ToC, populated with the assigned gap articles) as a
     renderable curriculum run-dir (summary.md + pipeline.log), in the SAME format
     eval_book_judge.load_book_outline parses -- so the pairwise judge renders it
@@ -189,10 +189,20 @@ def _materialize_track_b(out_dir: Path, chapters: list, g_titles: list,
         from artifacts_scripts.curriculum.gap_fuzzy_topics import (
             _unit, soft_responsibilities,
         )
-        R, tau = soft_responsibilities(_unit(g_emb), _unit(chap_emb), soft_perplexity)
+        Eg = _unit(g_emb)
+        ambient = None
+        if soft_background == "mass":
+            ambient = _unit(np.average(Eg, axis=0, weights=weight if np.sum(weight) > 0 else None))
+        elif soft_background == "mean":
+            ambient = _unit(Eg.mean(axis=0))
+        elif soft_background != "none":
+            raise ValueError(f"unknown soft_background={soft_background!r} (none|mass|mean)")
+        R, tau = soft_responsibilities(Eg, _unit(chap_emb), soft_perplexity, ambient=ambient)
+        leak = float(np.mean(1.0 - R.sum(1))) if ambient is not None else 0.0
         LOGGER.info("Track B soft keyword membership: perplexity=%.2f -> tau=%.4f, "
-                    "mean topics/article=%.2f", soft_perplexity, tau,
-                    float(np.mean((R >= soft_floor).sum(1))))
+                    "mean topics/article=%.2f, background=%s, ∅-leak mean=%.3f",
+                    soft_perplexity, tau, float(np.mean((R >= soft_floor).sum(1))),
+                    soft_background, leak)
         chapter_docs: list = [[] for _ in range(n_chap)]
         chapter_doc_weights: list | None = [[] for _ in range(n_chap)]
         for j, text in enumerate(g_texts):
@@ -259,6 +269,10 @@ def main() -> None:
                     help="target mean chapters-per-article for the soft-membership softmax temperature.")
     ap.add_argument("--soft-floor", type=float, default=0.05,
                     help="min responsibility for an article to enter a chapter's soft keyword pool.")
+    ap.add_argument("--soft-background", choices=["none", "mass", "mean"], default="none",
+                    help="canonical ∅/background sink: append the pool's mean direction as a vMF null "
+                         "component so diffuse/boilerplate articles leak to ∅ instead of polluting "
+                         "chapters. mass=mass-weighted centroid, mean=plain centroid.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
 
@@ -332,7 +346,8 @@ def main() -> None:
                              masses=masses, g_emb=g_emb, chap_emb=chap_emb,
                              soft_topics=args.soft_topics,
                              soft_perplexity=args.soft_perplexity,
-                             soft_floor=args.soft_floor)
+                             soft_floor=args.soft_floor,
+                             soft_background=args.soft_background)
         # Also dump Track B's chapter->work_ids (hard nearest-chapter assignment) so
         # downstream chapter-correspondence analysis has the same handle as Track A's
         # topic_work_ids.json (gap_chapter_correspondence.py).

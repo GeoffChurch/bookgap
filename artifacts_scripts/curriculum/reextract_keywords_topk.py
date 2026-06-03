@@ -53,6 +53,10 @@ def main() -> None:
                     help="Target mean topics-per-work for the soft-membership softmax temperature.")
     ap.add_argument("--soft-floor", type=float, default=0.05,
                     help="Min responsibility for a work to enter a topic's soft keyword pool.")
+    ap.add_argument("--soft-background", choices=["none", "mass", "mean"], default="none",
+                    help="Canonical ∅/background sink for --soft-mode embedding: append the pool's "
+                         "mean direction as a vMF null component so diffuse/boilerplate works leak to ∅ "
+                         "instead of polluting chapters. mass=mass-weighted centroid, mean=plain centroid.")
     ap.add_argument("--field", type=str, default="17",
                     help="OpenAlex field id for the cloud scope (CS = 17).")
     args = ap.parse_args()
@@ -73,6 +77,7 @@ def main() -> None:
     cfg.keywords.soft_class_balance = bool(args.soft_class_balance)
     cfg.keywords.soft_perplexity = float(args.soft_perplexity)
     cfg.keywords.soft_floor = float(args.soft_floor)
+    cfg.keywords.soft_background = str(args.soft_background)
     cloud = instantiate(cfg.experiment.cloud)
 
     # Reconstruct filtered_indices: map each filtered work id -> cloud index.
