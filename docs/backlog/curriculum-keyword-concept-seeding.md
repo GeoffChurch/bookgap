@@ -216,6 +216,18 @@ surface/language robustness). The user's GEP/collapse-disagreement framing = CCA
 the ablations + the local (non-global-subspace) alternative are backlogged above; the paratext needs a
 separate hygiene filter.
 
+## Generality sweep (de-incant experimentation, 2026-06-03)
+
+`experiment_concept_generality.sh`: concept-seed + CCA + keyword-TF-IDF cluster, across 3 more field-17
+books (neuromorphic 13ch, color_image 24ch, mcs 10ch). **Keyword-concept seeding works on niche books
+too** (not just popular ones). genericness (mean field-IDF; CCA vs kwcluster) / tiny-clusters:
+neuromorphic 9.70/4 vs 9.88/8 · color_image 8.94/4 vs 9.09/5 · mcs 8.69/1 vs 8.83/5. Patterns: **both
+keyword methods are highly specific on every book** (8.7–9.9 — generic-blob problem dissolved
+universally); **CCA consistently has fewer tiny fragments** (for −0.15 IDF). Foreign-language advantage
+is topic-dependent (big for NLP, ~0 for English-dominant niche), but CCA's general de-fragmentation
+holds. → **CCA generalizes; de-incant leans CCA.** Remaining decider: the LM judge (CCA clustering vs
+embedding-dendrogram clustering, same concept seeding) — the external signal.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
