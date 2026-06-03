@@ -166,6 +166,56 @@ silhouette; **concept-internal TF-IDF on the *selected* concept is a different, 
 (this is the scoped re-test that beats it on specificity). Practical balance fix remains #2's complete-
 linkage JS merge at safe τ; (b) is the structural alternative whose remaining gap is robustness.
 
+## Follow-ups (CCA hybrid)
+
+- **Ablate the "extra stuff" in the RCCA hybrid.** The canonical recipe (concept-TF-IDF → LSA → ridge-
+  regularized CCA with the embedding → cluster the shared subspace) has several moving parts that may be
+  removable or improvable: (a) is the **LSA** reduction needed, or does sparse/kernel CCA on raw TF-IDF
+  do as well? (b) how sensitive is it to the **CCA ridge λ** (sweep)? (c) **consensus vs E-only vs
+  ρ-weighted** canonical coordinates for the clustering representation? (d) **k-selection** (Bartlett vs
+  elbow vs fixed)? (e) agglomerative-cosine vs spherical-kmeans on the shared subspace? Goal: the
+  minimal version that keeps the win (keyword-specificity + language-robustness).
+- **Linear-CCA caveat → a purely LOCAL alternative may be better.** CCA collapses **global** subspaces —
+  one "language/disagreement" direction-set for the *whole* concept. But the embedder↔TF-IDF
+  disagreement is plausibly **local** (language matters in some regions, not others; a direction that's
+  nuisance for one chapter may be signal for another). A global linear subspace can't capture that.
+  Local/colleague-proof variants where this might shine: **local/regularized CCA per neighborhood**,
+  **manifold alignment**, or — the **sample-side dual** — **cluster-merging**, which is *inherently
+  local* (merge *this* foreign-language fragment into *this* content chapter via E-similarity, no global
+  direction removed). The merge-dual is the cheap local counterpart to the global CCA; worth A/B-ing once
+  the global CCA is in, especially if CCA's global collapse over-removes signal somewhere.
+
+## CCA hybrid — the synthesis, VALIDATED (2026-06-03)
+
+`cluster_concept_cca.py`: ridge-regularized CCA between the GIST embedding (E) and the concept-internal
+TF-IDF→LSA (T); keep the top-k high-canonical-correlation directions (content agreement), collapse the
+low-ρ tail (= surface/language disagreement — T-specific, no embedding correlate since the embedder is
+language-robust); cluster the ρ-weighted consensus canonical coordinates. This is the user's
+"GEP to detect+collapse the directions where the embedder and TF-IDF disagree" — CCA is that GEP.
+
+Three-way on Jurafsky (genericness = mean field-IDF of topic keywords; higher = more specific):
+
+| approach | mean-IDF | foreign-label topics | tiny (<20) | character |
+|---|---|---|---|---|
+| embedder (decoupled) | 5.33 | 0 | 0 | robust but **generic blobs** |
+| keyword-TF-IDF (b) | 8.74 | 5 | 6 | specific but **language-fragmented** |
+| **CCA hybrid** | **8.71** | **1** | **2** | **specific AND robust** |
+
+CCA keeps (b)'s specificity (8.71≈8.74; generic blobs gone) AND recovers the embedder's
+language-robustness (foreign fragments 5→1, tiny 6→2) for −0.03 IDF. Cleaner separation than (b):
+ASR vs Phonetics/MFCC split, RLHF vs RAG split, clean text-classification (logistic/naive-bayes/RF/kNN)
+instead of a generic-ML blob; all frontier chapters present. **The ρ spectrum declines smoothly
+(0.77→0.30, no sharp elbow)** — content/agreement is spread over ~30 directions; language/surface is a
+*high-dimensional low-ρ residual* (the ~170 collapsed dims), which is why removing it cleanly de-
+fragments without losing content. **Residual: the paratext cluster persists** — proceedings titles
+embed coherently AND carry venue keywords, so BOTH views agree → CCA keeps it (it's a genuine both-views
+cluster, not a disagreement artifact → needs a content-hygiene/work-type filter, not a representation fix).
+
+**Resolution: the hybrid is a CCA shared-subspace** (keywords for structure+specificity, embedding for
+surface/language robustness). The user's GEP/collapse-disagreement framing = CCA, canonically. Open:
+the ablations + the local (non-global-subspace) alternative are backlogged above; the paratext needs a
+separate hygiene filter.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
