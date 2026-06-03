@@ -206,18 +206,21 @@ def main() -> None:
 
     n_cand = len(cand)
     if args.per_chapter and args.toc_json:
-        agg = np.zeros(n_cand); per_ch = []
+        agg = np.zeros(n_cand); per_ch = []; basins: set = set()
         for c in chs:
             ctext = f"{c.get('title','')} {c.get('description','')}".strip()
             Sc, sc, _ = find_concept(ctext)
             mx = sc.max()
             if mx > 0:
                 agg = np.maximum(agg, sc / mx)
+            basins |= Sc                                      # the per-chapter basin (top-m)
             per_ch.append((c.get('title', '')[:42], [term_name(t) for t in list(w2k(Sc))[:6]]))
         score = agg
-        S = set(np.where(score >= args.union_floor)[0].tolist())
+        # FOCUSED target = union of per-chapter basins (≤ n_chapters·top_m), not the broad
+        # union_floor support over the full score — keeps the personalization concentrated.
+        S = set(basins)
         kw_final = w2k(S); traj = []
-        LOGGER.info("per-chapter union (%d chapters) -> |concept|=%d", len(chs), len(S))
+        LOGGER.info("per-chapter union (%d chapters) -> focused |concept|=%d (∪ basins)", len(chs), len(S))
         for t, k in per_ch:
             LOGGER.info("  ch '%s': %s", t, k)
     else:
@@ -247,6 +250,13 @@ def main() -> None:
     order = sorted(S, key=lambda d: -score[d])
     weights = {wid[cand[d]]: float(score[d]) for d in order}
     (args.out / "concept_target_weights.json").write_text(json.dumps(weights))
+    # gap-json-compatible file so book_curriculum.py consumes the concept directly as its
+    # target_work_ids personalization (this replaces the empty embedding-ball gap).
+    gap_ids = [wid[cand[d]] for d in order]
+    (args.out / "concept_gap.json").write_text(json.dumps({
+        "scope_field": str(args.field), "scope_subfield": None, "method": "keyword_concept",
+        "book": {"book": seed_name, "book_id": seed_name, "gap_size": len(gap_ids),
+                 "gap_article_ids": gap_ids}}))
     cmd = f"python -m {_MODULE} " + " ".join(shlex.quote(a) for a in sys.argv[1:])
     lines = [f"# Keyword-concept — {seed_name}", "",
              f"backend={args.backend} · |concept|={len(S)} · top_k={args.top_k} · top_m={args.top_m} · "

@@ -89,7 +89,23 @@ flag every concept.
     on a popular book that had gap_size 0.**
   - **Spin-off signal fired:** the union concept's `book_lift = 0.49` (book-DEFICIT) — even mainstream NLP
     is proportionally preprint/article-heavy.
-  - **OPEN (next):** the 0.15-union-floor support is ~274k works (too broad for a focused
-    personalization). For wiring into Track A, focus it — per-chapter top-m union (≤~10k) or top-N by
-    aggregate weight, or let PageRank-personalization weight it (high-weight core dominates). Then
-    cluster → compare to the 25-ch ToC (Track B) + judge.
+  - Focused the target to the **∪ of per-chapter basins** (9,886 works, not the 274k floor-support) and
+    emit a `concept_gap.json` so `book_curriculum.py` consumes it as `target_work_ids`.
+- **2026-06-03 — END-TO-END on Jurafsky (the answer to "does it work on a popular textbook"): YES.**
+  `book_curriculum --gap-json concept_gap.json --semantic-rerank --dynamic-topk-floor 0.05
+  --desired-n-topics 25` (path note: output landed at the doubled `artifacts/curriculum/artifacts/
+  curriculum/jurafsky_trackA` — book_curriculum prepends `artifacts/curriculum/`). The **unsupervised**
+  clustering (no ToC peeking) recovered **~20/25 of Jurafsky's chapters** as distinct topics —
+  Phonetics(mfcc), N-gram LMs, Embeddings(word2vec), Neural Nets(backprop), MT(nmt), RNNs(lstm/gru),
+  Dependency Parsing, Constituency Parsing(CFG), NER, SRL(propbank), Info-Extraction, Entity-Linking,
+  Discourse(pdtb), Dialogue, Sentiment, Words/Spelling, TTS, ASR, Introduction(paratext).
+  - **The misses are diagnostic: the RECENT frontier chapters** (Transformers, Masked-LM/BERT, LLMs,
+    Post-training/RLHF, IR/RAG) are under-represented. The keyword-concept FOUND them all (basins had
+    self-attention/bert/plms/rlhf-dpo/rag), but the builder's PageRank-centrality + product-of-experts
+    selection DROPPED them. Quantified: concept = 55.6% works ≥2020; after selection = 36.0%. **The
+    recency de-frontiering (the known weakness) is localized to the SELECTION stage**, not the concept.
+  - Minor: mild redundancy (sentiment/NMT/speech each split across 2–3 topics).
+  - **Upshot:** keyword-concept seeding works on a popular textbook; completing a faithful Jurafsky
+    reconstruction now reduces to **fixing recency at the selection stage** (recency-aware re-rank, or
+    seed-weighted personalization that preserves the concept's recency). Also TODO: skip the 6.8M-field
+    background plot for full-field-concept runs (it's the slow tail); fix the doubled output-dir path.
