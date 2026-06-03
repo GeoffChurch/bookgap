@@ -74,3 +74,22 @@ flag every concept.
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
   replaces the embedding ball at the target-works/personalization interface; all work types downstream;
   book-deficit-lift as the spin-off gap detector. Next: external-seed adaptation of `gap_keyword_iteration`.
+- **2026-06-03:** BUILT (`gap_keyword_concept.py`) + the cached full-field index (`field_term_index.py`,
+  `@MEMORY.cache`: field-17 6.84M works × 1M terms, 840M nnz, ~19 min one-time, instant reuse).
+  - **Whole-ToC single seed COLLAPSES** to the tightest sub-basin (Jurafsky → all speech/ASR/perplexity) —
+    the one-basin lesson again. Fix: **per-chapter union** (`--per-chapter`).
+  - **`--backend nearest` (embedding-nearest-20k pool) basin-FUNNELS**: ~half of Jurafsky's chapters
+    collapsed into one `pos_tagging` attractor (Embeddings, IR, RNNs, Phonetics, IE, SRL, Sentiment all
+    landed there) because the pool is POS-heavy.
+  - **`--backend full` + `--per-chapter --iters 3` WORKS BEAUTIFULLY.** Each of Jurafsky's 25 chapters
+    recovered its *exact* distinct basin: Embeddings→word2vec/glove/fasttext, Alignment→rlhf/dpo,
+    Transformers→self-attention, MT→nmt, Phonetics→mfcc, SRL→propbank, Discourse→pdtb, Dialogue→
+    task-oriented, IR→rag, RNNs→lstm/gru, … (only "Introduction" is generic/paratext, as expected).
+    The full field as candidates removed the POS funnel. **Validates keyword-concept seeding end-to-end
+    on a popular book that had gap_size 0.**
+  - **Spin-off signal fired:** the union concept's `book_lift = 0.49` (book-DEFICIT) — even mainstream NLP
+    is proportionally preprint/article-heavy.
+  - **OPEN (next):** the 0.15-union-floor support is ~274k works (too broad for a focused
+    personalization). For wiring into Track A, focus it — per-chapter top-m union (≤~10k) or top-N by
+    aggregate weight, or let PageRank-personalization weight it (high-weight core dominates). Then
+    cluster → compare to the 25-ch ToC (Track B) + judge.
