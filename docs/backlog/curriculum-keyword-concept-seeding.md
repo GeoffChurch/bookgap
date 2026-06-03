@@ -347,6 +347,43 @@ Net: the earlier dead-end's *diagnosis was right for the feature it measured*, b
 The corrected reopening is the live follow-up; the validated default (embedding/CCA clustering on the
 concept) is unaffected meanwhile.
 
+### RESULT (2026-06-03): the FUSION wins embedder-free; citation-ALONE is coverage-capped
+
+Ran both follow-ups (`cluster_concept_cca --citation-source full_coupling`, judge ×5 vs embedding):
+
+**(b) CCA(keyword, full-coupling) — WINS 3/4 vs embedding** (interestingness/comprehensiveness/specificity;
+ties progressive), **embedder-free**. Canonical ρ=[0.61,0.59,0.56,…], **k=21** retained (vs the internal
+feature's ρ1=0.229/k=6) — a real, large shared subspace. genericness 8.94, n_tiny=3, ~2 paratext clusters,
+clean modern curriculum. On jurafsky, **keyword TF-IDF + bibliographic coupling together fully substitute
+for the neural embedder** (matches CCA-embedding's 3/4 jurafsky win). Direct payoff on "do we need the
+embeddings at all?" — here, no.
+
+**(a) citation-ONLY — LOSES 3/4, and is COVERAGE-CAPPED at 66.8%.** Two hard problems:
+1. **3278/9886 works have ZERO in-field out-citations** (no collaborative signal) → dropped. Many are
+   books/chapters (sparse/no parsed refs in OpenAlex) or works citing only outside field 17. **Matrix
+   completion cannot rescue an all-empty row** (nothing to extrapolate from *within* the citation graph;
+   you'd need side info = content, defeating "citation-only"). So the collaborative view is fundamentally
+   capped ~⅔ on this corpus.
+2. **Community ≠ topic**: redundant clusters — RNN/GRU across T1/T6/T17, backprop across T8/T11,
+   classical-ML across T5/T16 — citation cliques fragment one topic and merge co-citing unrelated topics.
+
+**Verdict on "use one OR the other" (the elegance):** refuted *for citation-alone* (coverage cap +
+community-fragmentation). The win is the **FUSION** — keywords supply coverage (place the ⅓ uncited works)
+and regularize citation-communities into topics; coupling supplies embedder-free language-robustness. Two
+cheap text-derived views replace the neural embedder; neither alone suffices.
+
+**Gate on completion / self-link (the design discussion):** the experiment answered it. WINNER (b) clusters
+are clean (n_tiny=3) → completion/τ-regularization is a **no-op** for it. LOSER (a) is capped by *empty*
+rows, which completion can't fill (only sparse-but-nonempty rows) → **insufficient**. So the τ-diffusion
+ladder (Katz/PPR with a global τ≈d̄, the minimal completion = a self-link) is neither needed for the winning
+path nor able to salvage the losing one *here*. It would only matter on a corpus where the collaborative
+view is sparse-but-not-empty. Self-link in the coupling feature itself stays at 0 (stripped — a self-loop
+spuriously couples a work with its own citers).
+
+**Follow-up (backlog):** multi-book judge for CCA(keyword, full-coupling) (as CCA-embedding got) — if the
+embedder-free win generalizes, it's a strong **GPU-free default**. Code: `cluster_concept_cca --method
+{cca,citation_only} --citation-source full_coupling`.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that

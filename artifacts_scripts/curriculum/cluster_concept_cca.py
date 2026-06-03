@@ -78,11 +78,18 @@ def main() -> None:
                     help="the robust 2nd view paired with keyword-TFIDF in the CCA: embedding (GIST), "
                          "citation (citation-similarity spectral features — embedder-free, but sparser → "
                          "weaker language-collapse for under-cited/foreign works), or both (concatenated).")
-    ap.add_argument("--method", choices=["cca", "discardclash"], default="cca",
+    ap.add_argument("--method", choices=["cca", "discardclash", "citation_only"], default="cca",
                     help="cca = retain the shared subspace (CCA). discardclash = keep the full keyword "
                          "space but REMOVE its top-k directions that are UNexplained by citations (= the "
                          "dominant citation-uncorrelated keyword variance ≈ language); embedder-free, "
-                         "and right when the views are too independent for CCA-retain (small shared subspace).")
+                         "and right when the views are too independent for CCA-retain (small shared subspace). "
+                         "citation_only = cluster on the citation view ALONE (no keywords/embeddings — the "
+                         "'use one or the other' collaborative-filtering view).")
+    ap.add_argument("--citation-source", choices=["full_coupling", "internal_ruzicka"], default="full_coupling",
+                    help="full_coupling = bibliographic coupling over the FULL out-citation profile (IDF-"
+                         "weighted, recency-clean; R²=0.154 vs keywords). internal_ruzicka = the refuted "
+                         "near-identity feature on the internal subgraph (~1 edge/work; kept to reproduce "
+                         "the dead-end).")
     ap.add_argument("--discard-k", type=int, default=6,
                     help="[discardclash] number of dominant citation-unexplained keyword directions to remove")
     ap.add_argument("--out", required=True, type=Path)
@@ -104,12 +111,44 @@ def main() -> None:
     T = TruncatedSVD(n_components=min(args.lsa_dim, N - 1, Tw.shape[1] - 1), random_state=0).fit_transform(Tw)
     dim = min(args.lsa_dim, N - 1)
 
+    def _coupling_features():
+        # Bibliographic coupling over the FULL out-citation profile (not the starved internal subgraph).
+        # Strip the PageRank self-loops (they spuriously couple a work with its own citers); IDF-weight the
+        # cited-work columns (down-weight megahubs everyone cites); L2-normalize rows; LSA — mirrors T.
+        G = cloud.citation_graph(False).tocsr().astype(np.float64)
+        G.setdiag(0.0); G.eliminate_zeros()
+        Xout = G[rows]
+        col_df = np.asarray((Xout > 0).sum(0)).ravel(); keep = col_df > 0
+        Xout = Xout[:, keep]; idf = np.log(N / (col_df[keep] + 1.0))
+        Xw = normalize(Xout.multiply(idf).tocsr())
+        LOGGER.info("full-coupling: %d works x %d cited targets (mean out-refs=%.1f)",
+                    Xout.shape[0], Xout.shape[1], np.diff(Xout.indptr).mean())
+        return normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Xw))
+
     def _citation_features():
+        if args.citation_source == "full_coupling":
+            return _coupling_features()
         from artifacts_scripts.curriculum.multi_view_spectral import build_citation_similarity_view
         Csim = build_citation_similarity_view(cloud.citation_graph(False)[rows][:, rows], csls_k=10)
         return normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Csim))
 
-    if args.method == "discardclash":
+    if args.method == "citation_only":
+        # Cluster on the citation view ALONE — no keywords, no embedder. The "use one or the other"
+        # collaborative view; viable now that full coupling has real structure (erank 5544, partic 1272).
+        # Works with NO in-field out-citations have an all-zero coupling row (no collaborative signal) —
+        # the honest cost of a citation-only view: drop them (keywords/embeddings could place them, this
+        # can't). rows/ids are subset in lockstep so all downstream indexing stays consistent.
+        Z = _citation_features()
+        nz = np.linalg.norm(Z, axis=1) > 1e-9
+        if not nz.all():
+            LOGGER.info("citation-only: dropping %d/%d works with no coupling signal (%.1f%% coverage)",
+                        int((~nz).sum()), len(nz), 100 * nz.mean())
+            rows = [rows[i] for i in range(len(rows)) if nz[i]]
+            ids = [ids[i] for i in range(len(ids)) if nz[i]]
+            Z = Z[nz]
+        tag = f"citation-only:{args.citation_source}"
+        LOGGER.info("citation-only clustering on %s features: Z %s", args.citation_source, Z.shape)
+    elif args.method == "discardclash":
         # Keep the full keyword space, REMOVE only its top-k directions unexplained by citations.
         # T_res = keyword variance not predictable from citations; its dominant PCs ≈ language (a big
         # citation-uncorrelated lexical split). Project T orthogonal to them. Embedder-free; symmetric
@@ -131,6 +170,7 @@ def main() -> None:
         LOGGER.info("discard-clash: removed top-%d dirs (%.1f%% of residual var) -> Z %s | citation R²=%.3f "
                     "(keyword var explained by citations); top-k residual-vs-content subspace overlap=%.3f",
                     args.discard_k, 100 * frac, Z.shape, r2, align)
+        tag = f"discardclash k={args.discard_k}:{args.citation_source}"
     else:
         # CCA: retain the shared subspace of keyword-TFIDF and the robust 2nd view R.
         parts = []
@@ -152,6 +192,7 @@ def main() -> None:
         LOGGER.info("keeping k=%d canonical directions (rho[k-1]=%.3f, rho[k]=%.3f); collapsing the rest",
                     k, rho[k - 1], rho[k] if k < len(rho) else 0.0)
         Z = normalize(0.5 * (Ea[:, :k] + Tb[:, :k]) * rho[:k])
+        tag = f"cca({args.view}:{args.citation_source}) k={k}" if args.view != "embedding" else f"cca(embedding) k={k}"
     labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
 
     BG = X.shape[0]
@@ -175,7 +216,6 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     clusters = [np.where(labels == c)[0] for c in np.argsort(net)[::-1]]    # net-cited (foundational) first
     clusters = [m for m in clusters if len(m) > 0]
-    tag = f"discardclash k={args.discard_k}" if args.method == "discardclash" else f"cca k={k}"
     twi = {}; kwj = {}; sm = [f"# {tag} curriculum — {args.concept_gap.parent.name}", ""]
     for new_i, members in enumerate(clusters):
         cl_rows = [rows[m] for m in members]
