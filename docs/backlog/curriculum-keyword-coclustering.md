@@ -37,6 +37,29 @@ So the premise holds: keyword-coherent fixed points exist, are seed-dependent, c
 builds below are de-risked. `K2W` (keyword→work scoring) is built and reusable. Next: multi-seed /
 deflation to make a full curriculum of these basins, then the term-view, then the full co-clustering.
 
+## Increment 2 — keyword-DEFINED curriculum (deflation) tested; motivates multi-view (2026-06-02)
+
+`gap_keyword_curriculum.py`: deflate the pool into N keyword-coherent basins (highest-mass seed →
+iterate → record → remove → repeat), order by citation balance, write a judge/intrinsic/
+correspondence-ready run-dir. Neuromorphic (13 basins): several excellent + distinct (VCSEL,
+reservoir computing, diffractive NN, CNN, optical-comm, activation functions). Head-to-head intrinsic:
+
+| metric | keyword-curric | book ToC | dendrogram |
+|---|---|---|---|
+| silhouette | **0.078** | 0.154 | 0.192 |
+| kw_distinct | **1.000** | 0.952 | 0.908 |
+| kw_gap_pmi | 2.713 | 4.210 | 3.635 |
+| prereq_consist | 0.678 | 0.534 | 0.710 |
+
+So pure keyword-clustering **maxes keyword-distinctiveness (1.0, by construction — the target defect)
+but tanks embedding silhouette (0.078) and gap-fidelity (2.7)**; judge still book_toc. **Two lessons:**
+(1) keyword-coherence ≠ embedding-coherence (keyword-coherent clusters are embedding-spread), so
+optimizing keywords ALONE sacrifices cohesion → **use multi-view (keyword + embedding + citation
+together)**, not keywords alone; (2) keyword-clustering **organizes but doesn't filter** — the pool's
+foundation-wander surfaced as off-topic-but-coherent basins (intrusion-detection, QKD) that drag
+gap-PMI down → gap-selection (product-of-experts) is still needed upstream. This directly motivates
+the term-view-in-multi_view_spectral as the *balanced* version.
+
 **Concrete directions (cheapest first):**
 1. **Add a keyword/term VIEW to the existing `multi_view_spectral` clustering** (it already
    co-regularizes an embedding view + a citation view; the term-document matrix is a natural third
