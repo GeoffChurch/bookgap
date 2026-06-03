@@ -483,3 +483,45 @@ wins without a knob, so it's not worth a default.) Code: `cluster_concept_cca --
   `--decouple-selection` for concept-seeded curricula** (citations order, concept selects).
   - Residual (separate from recency): embedding clustering over-allocates to dense regions (6 speech /
     3 paratext topics on Jurafsky) — a balance issue, not the frontier one.
+
+## OBJECTIVE re-score — anchoring the "faulty LLM judge" (2026-06-03)
+
+`objective_score.py`: three LLM-free lenses on the jurafsky clusterings — (1) **ToC-reconstruction AMI**
+(assign each work to its nearest book-chapter signature from the ToC, in keyword AND embedding space;
+agreement with each method's clusters = how well it reconstructs the *actual* book — the stated goal),
+(2) **inter-chapter redundancy** (nearest-other-chapter keyword cosine — the duplicate-chapter pathology
+the judge caught but our balance metrics missed), (3) **cross-view silhouette**.
+
+| run | AMI_kw | AMI_emb | redund↓ | n_ch | cover |
+|---|---|---|---|---|---|
+| **trackA_cca (CCA-embedding)** | **0.678** | **0.693** | 0.105 | 25 | 100% |
+| trackA_dec (embedding *selection*) | 0.634 | 0.667 | 0.575 | 25 | **13%** |
+| cca_coupling | 0.620 | 0.648 | **0.083** | 25 | 100% |
+| concat_vocab | 0.564 | 0.582 | 0.176 | 25 | 100% |
+| discardclash | 0.549 | 0.557 | 0.106 | 25 | 100% |
+| link_plsa | 0.430 | 0.468 | 0.413 | 25 | 100% |
+| citonly | 0.408 | 0.437 | 0.352 | 25 | 67% |
+
+**What it bought us (the answer to "are we trusting the faulty judge?"):**
+- **Closed a blind spot:** `redund` objectively flags link-pLSA (0.413) — its duplicated chapters (TTS×2,
+  paratext T18≡T19) the balance metrics (n_tiny=0, 100% cover) rated *best*. The judge's 4/4 dislike of
+  link-pLSA is now objectively confirmed (worst AMI **and** high redundancy).
+- **Exposed a judge blind spot:** the jurafsky "embedding" baseline `trackA_dec` covers only **13%** of the
+  concept (it's a top-N-per-chapter *selection*, not a clustering — and INCONSISTENT with the multi-book
+  `*_emb` full-clustering baselines). The judge reads only chapter labels, so it never saw that the
+  "CCA-coupling beats embedding 3/4" win was over a 13%-coverage curriculum. Its AMI (0.634) is on the easy
+  central-exemplar subset → not comparable to the 100%-coverage methods.
+- **Agreement → confidence:** judge and objective AGREE on the extremes — **CCA-embedding best** (top AMI,
+  low redund, 100% cover; the judge liked it too), link-pLSA & citation-only worst. The multi-book finding
+  (CCA-embedding ≥ CCA-coupling) is **objectively confirmed** (0.678 vs 0.620 AMI). So the *validated
+  default (CCA-embedding) is vindicated by the objective metric too* — and the session's CCA-coupling
+  excitement is tempered: it's competitive (and embedder-free) but reconstructs the book slightly *worse*;
+  the GIST embedder earns its keep.
+- **Open divergence:** judge said CCA-coupling > embedding; AMI says ≈/slightly-embedding — but confounded
+  by trackA_dec's 13% coverage. Clean resolution = re-score CCA-coupling restricted to trackA_dec's 1289
+  selected works (coverage-matched head-to-head). Backlogged.
+
+**Standing methodology:** the LLM judge is ONE signal, not ground truth. Run `objective_score.py` alongside
+it; treat agreement as confidence and divergence as a flag to investigate (don't auto-side with the judge).
+Neither alone suffices — the judge missed coverage, the balance metrics missed redundancy, the objective
+AMI's reference partition is itself model-induced (nearest-chapter). Triangulate.
