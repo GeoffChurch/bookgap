@@ -78,6 +78,11 @@ def main() -> None:
     ap.add_argument("--union-floor", type=float, default=0.15, help="[per-chapter] keep works whose best "
                     "per-chapter-normalized score >= this")
     ap.add_argument("--per-chapter", action="store_true", help="union of per-chapter concepts (preserves breadth)")
+    ap.add_argument("--drop-incoherent-basins", action="store_true",
+                    help="[per-chapter] corrected #1: drop basins that are keyword-coherent but "
+                         "embedding-INCOHERENT (content-scattered) — the paratext/proceedings basin — by "
+                         "comparing each basin's internal embedding cohesion to a random same-size null. "
+                         "Removes the generic hub that gates the #2 coherence-merge.")
     ap.add_argument("--distinctiveness", choices=["none", "emptysink", "peakedness", "maxresp"], default="none",
                     help="[per-chapter] down-weight each work's selection weight by how distinctively it "
                          "belongs to ONE basin vs being ambient/spread (drops paratext at the source). All "
@@ -262,6 +267,31 @@ def main() -> None:
         S, score, traj = find_concept(seed_text)
         kw_final = w2k(S)
         LOGGER.info("converged: step Jaccard %s", ["%.2f" % j for j in traj])
+
+    # ---- corrected #1: drop embedding-INCOHERENT basins (paratext: venue-coherent, content-scattered) ----
+    if args.drop_incoherent_basins and args.per_chapter:
+        from artifacts_scripts.curriculum.gap_fuzzy_topics import _unit as _u
+        Eall = E if args.backend == "nearest" else np.asarray(cloud.embeddings(), dtype=np.float32)
+        rng = np.random.default_rng(0)
+        crows = cand[sorted(S)]                                   # all concept work indices
+        coh = np.zeros(len(basin_sets)); nul = np.zeros(len(basin_sets))
+        for k, Sc in enumerate(basin_sets):
+            Eb = _u(Eall[cand[list(Sc)]].astype(np.float64))
+            coh[k] = float((Eb @ _u(Eb.mean(0))).mean())          # mean cos-to-centroid (cohesion)
+            samp = rng.choice(len(crows), min(len(Sc), len(crows)), replace=False)
+            Er = _u(Eall[crows[samp]].astype(np.float64))
+            nul[k] = float((Er @ _u(Er.mean(0))).mean())          # random same-size null
+        keep = coh > nul                                          # basin tighter than a random set
+        rank = np.argsort(coh)
+        LOGGER.info("basin embedding cohesion vs random-null (lowest first):")
+        for k in rank:
+            LOGGER.info("  %-26s coh=%.3f null=%.3f %s", per_ch[k][0][:26], coh[k], nul[k],
+                        "DROP" if not keep[k] else "")
+        kept_works = set().union(*(basin_sets[k] for k in range(len(basin_sets)) if keep[k])) if keep.any() else set(S)
+        dropped_ch = [per_ch[k][0] for k in range(len(basin_sets)) if not keep[k]]
+        S = set(S) & kept_works
+        LOGGER.info("dropped %d incoherent basin(s): %s -> concept now %d works",
+                    int((~keep).sum()), dropped_ch, len(S))
 
     # ---- book-attribute lift (spin-off book-deficit gap signal) ----
     type_line = ""

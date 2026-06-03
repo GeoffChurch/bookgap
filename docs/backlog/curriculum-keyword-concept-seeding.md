@@ -112,6 +112,30 @@ from distinct (median 0.887). **But #2 ALONE has no clean operating point:**
   With the hub removed, the permutation-null τ should be clean and can fully collapse the speech
   redundancy without endangering content. → un-defer #1 (embedding-incoherent-basin drop) next.
 
+## Corrected #1 (basin-incoherence drop) — FAILED + re-diagnosis (2026-06-03)
+
+`gap_keyword_concept.py --drop-incoherent-basins` (compare each basin's internal embedding cohesion to
+a random same-size null) — **dropped 0 basins**. ALL 25 basins scored coh 0.87–0.92 vs null ~0.84
+(cohesion barely discriminates in the tight NLP region); the "Introduction"/paratext basin is coh=0.888,
+**mid-pack, not an outlier**. The premise (paratext = embedding-incoherent) is wrong: proceedings-style
+boilerplate embeds *coherently*.
+
+**RE-DIAGNOSIS (inspected the works):** the "paratext" topics are NOT proceedings-volumes — their works
+have real abstracts (mean ~270 ch, 0% empty) and are **diverse legitimate recent NLP papers**
+(summarization, cross-lingual FT, entity typing, NLI, distillation, parsing datasets). They cluster by
+shared **generic** vocabulary (`natural_language_processing/joint/papers/tasks/venue`), forming a
+**"miscellaneous recent NLP" cluster with a generic label** — the *vague-chapter* defect, not paratext.
+The embedder *groups* them (generic framing embeds similarly) → embedding-cohesion can't flag it.
+
+**The keyword-native fix is LABEL GENERICNESS, not incoherence.** A generic/miscellaneous cluster's
+distinctive keywords have **high cross-chapter document frequency / low concept-internal IDF**
+(`natural_language_processing` is in every chapter; `wer`/`word2vec` in one). Detect by the cluster's
+top-keyword specificity *within the concept* (curriculum-marginal lift / concept-internal IDF) — reuses
+the field DF, needs **no embedder** (which actively mis-groups these by framing). Vindicates the
+"do we need embeddings?" thread: here keyword statistics are both necessary (embedder fails) and
+sufficient. NEXT (if pursued): a label-genericness filter/penalty at the cluster level, or fold
+concept-internal-IDF into the clustering so generic-framing works don't co-cluster.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
