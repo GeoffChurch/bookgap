@@ -136,6 +136,36 @@ the field DF, needs **no embedder** (which actively mis-groups these by framing)
 sufficient. NEXT (if pursued): a label-genericness filter/penalty at the cluster level, or fold
 concept-internal-IDF into the clustering so generic-framing works don't co-cluster.
 
+## (a) genericness metric + (b) keyword-TF-IDF clustering (2026-06-03)
+
+**(a) `topic_genericness.py`** — per-topic mean field-IDF of its keywords (embedder-free; reuses the
+field DF). Curriculum-level metric + diagnostic. On Jurafsky-decoupled: mean 5.33; flags the genuinely-
+generic *single-word* boilerplate topics (`machine_learning/accuracy/detection`, IDF 3.4) but NOT the
+venue-phrase misc topics (`computational_linguistics/joint_conference` are specific *phrases* → high
+IDF). So IDF catches generic single words, not venue phrases.
+
+**(b) `cluster_concept_by_keywords.py`** — cluster the concept's works by **concept-internal TF-IDF**
+keyword vectors (generic framing terms → IDF≈0 → down-weighted), agglomerative average-linkage on
+cosine. Result on Jurafsky:
+- **WIN — structure + specificity:** the 18 big clusters (347–1210 works) are clean Jurafsky chapters
+  *including the frontier* (rlhf/rag/dpo, bert, self-attention, word2vec). Genericness **mean-IDF 8.74
+  vs 5.33** (min 7.11 vs 3.37) — the generic/boilerplate blobs **dissolve**. Transparent, **no neural
+  embedder** — keywords carry the structure *better* than the embedder on specificity.
+- **LOSS — surface-form fragmentation:** the tail (6 clusters of 4–38 works) segregates by **language**
+  (Indonesian `akurasi/ejaan`, Spanish `aprendizaje_profundo`, French `resultats`) + tiny niches; and
+  the **venue/paratext cluster persists** (proceedings phrases are high-IDF, not down-weighted).
+
+**Resolution of the "do we need the embedder?" thread:** for the **core structure + specificity**, no —
+keyword-TF-IDF (concept-internal) is transparent and *better* (dissolves the generic blobs the embedder
+manufactures). The embedder's **only** residual edge is **robustness to surface form** (it groups same-
+content works across languages/phrasings; keyword-clustering fragments them). **Synthesis = hybrid:
+keyword-TF-IDF drives structure + specificity; embeddings only merge the cross-language/paraphrase
+fragments** (e.g. an embedding pass that folds the foreign-language micro-clusters into their content
+chapters). The keyword-coclustering dead-end (refuted) was global/field-IDF judged on embedding-
+silhouette; **concept-internal TF-IDF on the *selected* concept is a different, better-behaved regime**
+(this is the scoped re-test that beats it on specificity). Practical balance fix remains #2's complete-
+linkage JS merge at safe τ; (b) is the structural alternative whose remaining gap is robustness.
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
