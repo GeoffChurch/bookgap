@@ -53,6 +53,8 @@ def _l2(x: np.ndarray) -> np.ndarray:
 
 def _phrase_mine_chapter_keywords(
     chapter_docs: list, top_k: int, kcfg: KeywordConfig,
+    chapter_doc_weights: list | None = None,
+    doc_weighting: DocWeighting = DocWeighting.EQUAL,
 ) -> list:
     """Run the SAME phrase-mining chain as summarize_topics over a set of
     "topics" (here the ToC chapters), each a list of raw text docs.
@@ -62,17 +64,31 @@ def _phrase_mine_chapter_keywords(
     ``parse_with_phrases`` -> ``filter_stopwords`` ->
     ``extract_topic_keywords``. Mirrors the mining params/defaults of
     ``KeywordConfig`` exactly. Returns topics -> [(phrase, score), ...].
+
+    ``chapter_doc_weights`` (topics -> per-doc weights, aligned with
+    ``chapter_docs``) supplies per-doc relevance for ``doc_weighting=RELEVANCE``
+    — including the soft ``mass·r`` membership weights, where a gap article
+    appears in (and is weighted into) every chapter it has responsibility for.
+    Weights are carried through the same empty-doc drops as the tokens so they
+    stay aligned with ``extract_topic_keywords``'s ``topic_doc_weights`` contract.
     """
+    has_w = chapter_doc_weights is not None
     # Pass 1: tokenize each doc (no stopword filter yet — bigram mining needs
-    # raw token sequences to avoid merging across removed stopwords).
+    # raw token sequences to avoid merging across removed stopwords). Carry the
+    # per-doc weight alongside so it drops with the doc if it tokenizes empty.
     topic_raw_tokens: list = []
-    for docs in chapter_docs:
+    topic_raw_weights: list = []
+    for ti, docs in enumerate(chapter_docs):
         raw_per_doc = []
-        for text in docs:
+        w_per_doc = []
+        for di, text in enumerate(docs):
             tokens = tokenize(text)
             if tokens:
                 raw_per_doc.append(tokens)
+                if has_w:
+                    w_per_doc.append(float(chapter_doc_weights[ti][di]))
         topic_raw_tokens.append(raw_per_doc)
+        topic_raw_weights.append(w_per_doc)
 
     # Iterative lattice phrase mining (semtok-style exclusive entropy via
     # re-parse), identical to summarize_topics.summarize_topics.
@@ -104,25 +120,33 @@ def _phrase_mine_chapter_keywords(
             offset += n
         topic_raw_tokens = merged_per_topic
 
-    # Final pass: filter stopwords (merged phrases use ``_`` and survive).
+    # Final pass: filter stopwords (merged phrases use ``_`` and survive); drop
+    # the per-doc weight in lock-step with any doc that filters empty.
     topic_doc_tokens: list = []
-    for topic_docs in topic_raw_tokens:
+    topic_doc_weights: list | None = [] if has_w else None
+    for ti, topic_docs in enumerate(topic_raw_tokens):
         doc_tokens = []
-        for tokens in topic_docs:
+        doc_weights = []
+        for di, tokens in enumerate(topic_docs):
             tokens = filter_stopwords(tokens)
             if tokens:
                 doc_tokens.append(tokens)
+                if has_w:
+                    doc_weights.append(topic_raw_weights[ti][di])
         topic_doc_tokens.append(doc_tokens)
+        if has_w:
+            topic_doc_weights.append(doc_weights)
 
-    # Track B chapters have no PageRank relevance weights, so use EQUAL doc
-    # weighting (RELEVANCE — the KeywordConfig default — requires per-doc
-    # masses we don't have here). All other mining/scoring params mirror
-    # KeywordConfig.
+    # Scoring mirrors KeywordConfig; doc_weighting/topic_doc_weights are supplied
+    # by the caller (EQUAL when Track B has no masses, RELEVANCE with mass·r
+    # weights when a --mass-run-dir / --soft-topics are given) so the book's
+    # keywords get the SAME relevance + soft treatment as our Track A.
     return extract_topic_keywords(
         topic_doc_tokens,
         method=kcfg.method,
         top_k=top_k,
-        doc_weighting=DocWeighting.EQUAL,
+        doc_weighting=doc_weighting,
+        topic_doc_weights=topic_doc_weights,
         topic_weighting=kcfg.topic_weighting,
         background_mode=kcfg.background_mode,
         weight_by_freq=kcfg.weight_by_freq,
@@ -131,7 +155,12 @@ def _phrase_mine_chapter_keywords(
 
 def _materialize_track_b(out_dir: Path, chapters: list, g_titles: list,
                          g_texts: list, sims: np.ndarray, b_label: np.ndarray,
-                         book_title: str, n_works: int = 5, n_kw: int = 30) -> None:
+                         book_title: str, n_works: int = 5, n_kw: int = 30, *,
+                         masses: np.ndarray | None = None,
+                         g_emb: np.ndarray | None = None,
+                         chap_emb: np.ndarray | None = None,
+                         soft_topics: bool = False, soft_perplexity: float = 1.5,
+                         soft_floor: float = 0.05) -> None:
     """Write Track B (the book's ToC, populated with the assigned gap articles) as a
     renderable curriculum run-dir (summary.md + pipeline.log), in the SAME format
     eval_book_judge.load_book_outline parses -- so the pairwise judge renders it
@@ -141,16 +170,51 @@ def _materialize_track_b(out_dir: Path, chapters: list, g_titles: list,
     Keywords use the SAME phrase-mining chain as summarize_topics (Track A):
     per-chapter docs are the assigned gap articles' title+abstract (``g_texts``),
     mined for phrases and scored by Fightin'-Words log-odds, top_k=``n_kw``.
+
+    Eval-fairness knobs (mirror Track A's extraction so the book isn't handicapped):
+    ``masses`` (per gap article, aligned with ``g_texts``) → RELEVANCE doc-weighting,
+    suppressing generic/boilerplate vocab the same way our pipeline does;
+    ``soft_topics`` → each article contributes ``mass·r`` to every chapter it has
+    responsibility ``r ≥ soft_floor`` for (softmax over chapter centroids, target
+    perplexity ``soft_perplexity``), dissolving any thin/degenerate chapter exactly
+    as embedding-soft does on Track A. The listed "### Top Works" stay the hard
+    nearest-chapter assignment (the clean reading artifact); only the KEYWORDS use
+    the soft pools.
     """
     n_chap = len(chapters)
+    relevance = masses is not None
+    weight = masses if relevance else np.ones(len(g_texts))
 
-    # Group each chapter's assigned gap-article texts (title + abstract).
-    chapter_docs: list = [[] for _ in range(n_chap)]
-    for j, text in enumerate(g_texts):
-        chapter_docs[int(b_label[j])].append(text)
+    if soft_topics:
+        from artifacts_scripts.curriculum.gap_fuzzy_topics import (
+            _unit, soft_responsibilities,
+        )
+        R, tau = soft_responsibilities(_unit(g_emb), _unit(chap_emb), soft_perplexity)
+        LOGGER.info("Track B soft keyword membership: perplexity=%.2f -> tau=%.4f, "
+                    "mean topics/article=%.2f", soft_perplexity, tau,
+                    float(np.mean((R >= soft_floor).sum(1))))
+        chapter_docs: list = [[] for _ in range(n_chap)]
+        chapter_doc_weights: list | None = [[] for _ in range(n_chap)]
+        for j, text in enumerate(g_texts):
+            for k in range(n_chap):
+                if R[j, k] >= soft_floor:
+                    chapter_docs[k].append(text)
+                    chapter_doc_weights[k].append(float(weight[j] * R[j, k]))
+        doc_weighting = DocWeighting.RELEVANCE     # weights carry mass·r
+    else:
+        chapter_docs = [[] for _ in range(n_chap)]
+        chapter_doc_weights = [[] for _ in range(n_chap)] if relevance else None
+        for j, text in enumerate(g_texts):
+            k = int(b_label[j])
+            chapter_docs[k].append(text)
+            if relevance:
+                chapter_doc_weights[k].append(float(weight[j]))
+        doc_weighting = DocWeighting.RELEVANCE if relevance else DocWeighting.EQUAL
 
     kcfg = KeywordConfig()
-    topic_keywords = _phrase_mine_chapter_keywords(chapter_docs, n_kw, kcfg)
+    topic_keywords = _phrase_mine_chapter_keywords(
+        chapter_docs, n_kw, kcfg,
+        chapter_doc_weights=chapter_doc_weights, doc_weighting=doc_weighting)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Byte-compatible with generate_curriculum_summary's section format so
@@ -182,6 +246,19 @@ def main() -> None:
     ap.add_argument("--materialize-dir", type=Path, default=None,
                     help="also write Track B as a renderable curriculum run-dir (summary.md) "
                          "for the pairwise LLM eval (eval_pairwise_judge).")
+    ap.add_argument("--mass-run-dir", type=Path, default=None,
+                    help="eval fairness: a Track A run-dir holding filtered_work_ids.json + "
+                         "point_masses.npy; look up each gap article's PageRank relevance mass "
+                         "and use RELEVANCE doc-weighting for Track B's keywords (matches ours, "
+                         "suppressing the generic/boilerplate tail EQUAL lets through).")
+    ap.add_argument("--soft-topics", action="store_true",
+                    help="eval fairness: soft keyword membership (each article contributes mass·r "
+                         "to every chapter with responsibility r>=floor; softmax over chapter "
+                         "centroids), dissolving thin chapters exactly as embedding-soft does on ours.")
+    ap.add_argument("--soft-perplexity", type=float, default=1.5,
+                    help="target mean chapters-per-article for the soft-membership softmax temperature.")
+    ap.add_argument("--soft-floor", type=float, default=0.05,
+                    help="min responsibility for an article to enter a chapter's soft keyword pool.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
 
@@ -236,8 +313,26 @@ def main() -> None:
         g_titles = [titles[r] for (_, r) in gap_rows]
         abstracts = articles.work_abstracts()
         g_texts = [f"{titles[r]}\n{abstracts[r] or ''}" for (_, r) in gap_rows]
+        # Eval fairness: look up each gap article's PageRank relevance mass from a
+        # Track A run-dir so Track B's keywords get the SAME RELEVANCE weighting ours
+        # do (Track B's 288 gap articles are a subset of our 5000-work pool, so the
+        # masses match exactly — no separate PageRank, no proxy).
+        masses = None
+        if args.mass_run_dir:
+            mids = json.loads((args.mass_run_dir / "filtered_work_ids.json").read_text())
+            pmass = np.load(args.mass_run_dir / "point_masses.npy")
+            id2mass = {w: float(pmass[i]) for i, w in enumerate(mids)}
+            med = float(np.median(list(id2mass.values())))
+            n_missing = sum(1 for a in g_ids if a not in id2mass)
+            masses = np.array([id2mass.get(a, med) for a in g_ids], dtype=np.float64)
+            LOGGER.info("Track B RELEVANCE masses from %s: %d/%d articles matched (%d -> median)",
+                        args.mass_run_dir.name, len(g_ids) - n_missing, len(g_ids), n_missing)
         _materialize_track_b(args.materialize_dir, chapters, g_titles, g_texts,
-                             sims, b_label, toc.get("title", "Book"))
+                             sims, b_label, toc.get("title", "Book"),
+                             masses=masses, g_emb=g_emb, chap_emb=chap_emb,
+                             soft_topics=args.soft_topics,
+                             soft_perplexity=args.soft_perplexity,
+                             soft_floor=args.soft_floor)
         # Also dump Track B's chapter->work_ids (hard nearest-chapter assignment) so
         # downstream chapter-correspondence analysis has the same handle as Track A's
         # topic_work_ids.json (gap_chapter_correspondence.py).
