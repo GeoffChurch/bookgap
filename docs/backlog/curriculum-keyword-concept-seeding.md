@@ -380,9 +380,32 @@ path nor able to salvage the losing one *here*. It would only matter on a corpus
 view is sparse-but-not-empty. Self-link in the coupling feature itself stays at 0 (stripped — a self-loop
 spuriously couples a work with its own citers).
 
-**Follow-up (backlog):** multi-book judge for CCA(keyword, full-coupling) (as CCA-embedding got) — if the
-embedder-free win generalizes, it's a strong **GPU-free default**. Code: `cluster_concept_cca --method
-{cca,citation_only} --citation-source full_coupling`.
+**Multi-book judge (2026-06-03): CCA-coupling is TOPIC-DEPENDENT, generally ≤ CCA-embedding — NOT a
+universal GPU-free default.** gemma4 ×5, CCA(keyword, full_coupling) vs *both* embedding and CCA-embedding:
+- **jurafsky** (multilingual NLP, ~8 refs/work, k=21): coupling **WINS 3/4 vs embedding**.
+- **color_image** (N=24, 6.3 refs/work, k=23): coupling **TIES embedding** (loses only specificity); but
+  CCA-**embedding > coupling** (wins interestingness + specificity).
+- **mcs** (N=10, 11.7 refs/work, k=54): coupling **LOSES 4/4 vs embedding**; CCA-embedding > coupling (3/4).
+
+So the GIST embedder adds **real value on the English-dominant niche books**; keyword+citation *matches* it
+only on the citation-rich/multilingual case (jurafsky), where language-fragmentation hurts the keyword view
+and the embedder's robustness is partly redundant with the citation agreement-subspace. **Verdict:**
+CCA-coupling is a viable embedder-free option *for multilingual/citation-heavy topics*, NOT a universal
+replacement — the embedder isn't redundant. embedding/CCA-embedding stays the default. This fits the
+unified-views picture (keyword TF-IDF, bibliographic coupling, and the neural embedder are three
+co-occurrence views of one latent topic structure — *which two suffice is topic-dependent*; see the
+"using a word ≈ citing it" note). Code: `cluster_concept_cca --method {cca,citation_only} --citation-source
+full_coupling`. (Aside: mcs kept k=54 canonical dirs for 10 chapters — elbow over-retention; a possible
+knob, but doesn't flip the verdict.)
+
+**The "using a word ≈ citing it" unification (worth a backlog of its own):** both views are work×vocabulary
+incidence matrices (a work is a bag of terms OR a bag of references); TF-IDF≡megahub-down-weighting,
+LSA-topic≡citation-community, word2vec≡node2vec, Firth's "company a word keeps"≡bibliographic coupling. A
+citation is a *proper-noun word* (ultra-high-IDF, ultra-sparse) — which predicts coupling's specific-but-
+sparse profile (high genericness, 67% coverage cap) directly. Formal home: a joint latent-factor model
+emitting both words and citations (Relational Topic Model / Link-LDA; Chang & Blei 2009); ridge-CCA is its
+linear-Gaussian spectral shadow. **Cheap direct test:** factor a single `[X ‖ G_out]` incidence matrix
+(terms ⊕ cited-works) — "a reference is just another word" — vs CCA-agreement vs the generative model.
 
 ## Status / working notes
 
