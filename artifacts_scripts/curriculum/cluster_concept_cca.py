@@ -124,8 +124,16 @@ def main() -> None:
                 out[int(tid)] = lift * np.log1p(c)
         return dict(sorted(out.items(), key=lambda x: -x[1])[:k_])
 
+    # chapter ORDERING by citation balance: a chapter that is net-CITED by the others is a
+    # prerequisite → comes first (the one thing CCA-clustering lacked vs the embedding path).
+    adj = cloud.citation_graph(False)[rows][:, rows].tocoo()
+    net = np.zeros(args.n)
+    for u, v in zip(adj.row, adj.col):                # u cites v → v is the prerequisite
+        if labels[u] != labels[v]:
+            net[labels[v]] += 1; net[labels[u]] -= 1
     args.out.mkdir(parents=True, exist_ok=True)
-    clusters = sorted((np.where(labels == c)[0] for c in range(args.n)), key=lambda m: -len(m))
+    clusters = [np.where(labels == c)[0] for c in np.argsort(net)[::-1]]    # net-cited (foundational) first
+    clusters = [m for m in clusters if len(m) > 0]
     twi = {}; kwj = {}; sm = [f"# CCA-hybrid curriculum (k={k}) — {args.concept_gap.parent.name}", ""]
     for new_i, members in enumerate(clusters):
         cl_rows = [rows[m] for m in members]

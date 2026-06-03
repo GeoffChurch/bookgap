@@ -228,6 +228,21 @@ is topic-dependent (big for NLP, ~0 for English-dominant niche), but CCA's gener
 holds. → **CCA generalizes; de-incant leans CCA.** Remaining decider: the LM judge (CCA clustering vs
 embedding-dendrogram clustering, same concept seeding) — the external signal.
 
+## Follow-up — productionize the entry-point
+
+`run_concept_curriculum.py` (built 2026-06-03) is a **prototype orchestrator**: it subprocess-chains
+`gap_keyword_concept` → `cluster_concept_cca` (+citation ordering) → `render_judge_summary`, **reloading
+the cloud per step** (tolerable — the index + citation graph are joblib-cached, but wasteful). To
+productionize:
+- Refactor concept-seeding / CCA-clustering / ordering into **importable functions** so it's one cloud
+  load (and foldable into the main curriculum pipeline as a `--seed-mode keyword-concept` option, peer
+  to the embedding-ball gap).
+- Fix the **embedding-path output-dir doubling quirk** (`book_curriculum` prepends `artifacts/curriculum/`).
+- **Flip the default** to this path once the multi-book LM judge confirms (judge is 1 book so far) and
+  the paratext hygiene filter lands.
+- Carry the chapter **ordering** natively (currently citation-balance net-cited-first inside
+  `cluster_concept_cca`; the embedding path uses the richer frontier-adjacency — unify).
+
 ## Status / working notes
 
 - **2026-06-03:** idea captured. Confirmed framing: the concept fixed point is a *soft weight vector* that
