@@ -161,3 +161,35 @@ silhouette dropping). Bake-off: ambient=None (today) vs mass-weighted μ₀ vs p
 
 - **2026-06-03:** doc written; canonical derivation settled (softmax over ambient-subtracted sims, ∅ =
   implicit logit-0). Starting Method 1 with **mass-weighted** μ₀; plain-mean noted as the A/B alternative.
+- **2026-06-03:** Method 1 IMPLEMENTED (`soft_responsibilities(..., ambient)`, `KeywordConfig.soft_background
+  ∈ {none,mass,mean}`, threaded through summarize_topics / run_keyword_extraction /
+  `reextract_keywords_topk --soft-background` / `book_toc_reconstruction --soft-background`; commit 165d64d).
+  **Mechanism validated on real trackA_sem (5000 works, mass μ₀):**
+  - `argmax(soft+∅) == argmax(soft,none)` = **100%** — ∅ never changes the winning chapter (strict
+    generalization holds exactly). (`argmax == hard-citation-label` = 51.8%, the pre-existing
+    soft-embedding-vs-hard-citation gap, unchanged by ∅.)
+  - **Surgical leak:** median ≈ 0, only **4.7%** of works leak >0.5; mass-weighted leak 0.063 < unweighted
+    0.076 (core retained, periphery drained).
+  - **Drains the right works:** the heaviest-∅ works are off-topic (mechatronics, hadron calorimeters),
+    paratext (special-issue editorial, NEUROPULS press release), foreign-language (the Korean/Spanish
+    foundation-wander), and pseudoscience ("Photonic–Gravitational Transduction"). Lowest-∅ = core
+    ML/NN papers. Exactly the intrusions that shouldn't define chapter keywords.
+  - **Keyword payoff on the RELEVANCE+soft stack: NEGLIGIBLE.** Full re-extract `neuromorphic_trackA_sem_bg`
+    (soft+∅, mass μ₀) vs `trackA_sem_eval` (soft, no ∅): silhouette 0.192=0.192 (unchanged — argmax is
+    identical), prereq 0.710=0.710, **kw_distinct 0.876 vs 0.867 (+0.009), kw_gap_pmi 3.770 vs 3.782
+    (−0.012)** — both within noise; tail keywords just reshuffle. **Diagnosis: the ∅ is largely
+    REDUNDANT with RELEVANCE doc-weighting on this pipeline.** The intrusions the ∅ drains are mostly
+    *low-mass* (the mass-weighted leak 0.063 < unweighted 0.076 confirms it), and RELEVANCE already gives
+    them ≈0 weight — so removing them changes the mass·r-weighted keyword statistics almost not at all.
+    Put positively: **the pipeline's mass-weighting was already an approximate boundary-background**
+    (down-weight the periphery); the explicit vMF-∅ makes it canonical/direction-aware but adds little on
+    top. The ∅'s *unique* contribution — draining a **high-mass** but off-topic work (kept by RELEVANCE,
+    drained by ∅) — is rare on this corpus (the high-∅ works here are all low-mass).
+  - **So: keep the ∅ as a principled, harmless OPT-IN** (it's the correct generative model, a safety net
+    for EQUAL-weighted / relevance-absent contexts, and theoretically cleaner) — but it is **not a quality
+    win on the default RELEVANCE+soft stack**, so not default. Don't bother with the mass-vs-mean A/B
+    (mass is already marginal; mean would be too).
+  - **Residual soft weakness is elsewhere.** Color Image's blurb chapter is a degenerate-**centroid**
+    problem (the centroid *is* the blurb → blurb-neighbors have low ∅-leak, so ∅ won't fix it) → that's
+    **Method 3 (robust/core-set anchors)**, the better-targeted next lever. Method 2 (per-work κ / MLE-κ)
+    is the other open one. Both untested.
