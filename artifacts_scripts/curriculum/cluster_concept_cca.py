@@ -63,6 +63,72 @@ def _rcca(E, T, reg):
     return np.clip(s, 0, 1), E @ A, T @ B
 
 
+def _dissolve_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
+    """Detect & dissolve venue/paratext chapters — those whose LEXICAL coherence is NOT backed by shared
+    citation lineage (surface cohesion, no intellectual community). Per chapter, gap = lexical_coh -
+    coupling_coh (members' keyword-TFIDF self-similarity vs bibliographic-coupling self-similarity, the
+    latter over non-orphan members only). A real topic has gap ≈ 0 or NEGATIVE (it cites a shared core at
+    least as much as it shares words); paratext has a large POSITIVE gap (lexically tight, citing nothing
+    in common). Flag chapters whose gap is a high robust-outlier (> median + k·MAD across chapters) — no
+    absolute threshold, no blocklist. Size-confound-free (unlike a coupling-vs-null test, which a small
+    recency-orphan chapter fails for sparsity, not paratext). DISSOLVE the flagged: redistribute their
+    works to the nearest surviving chapter by citation-coupling (keyword fallback for orphans)."""
+    labels = np.asarray(labels).copy()
+    N = len(rows)
+    Xc = X[rows].astype(np.float64)
+    idf = np.log(N / (np.asarray((Xc > 0).sum(0)).ravel() + 1.0))
+    KW = normalize(Xc.multiply(idf).tocsr())
+    G = cloud.citation_graph(False).tocsr().astype(np.float64); G.setdiag(0.0); G.eliminate_zeros()
+    Xo = G[rows]; cdf = np.asarray((Xo > 0).sum(0)).ravel(); Xo = Xo[:, cdf > 0]
+    CP = normalize(Xo.multiply(np.log(N / (cdf[cdf > 0] + 1.0))).tocsr())
+    cpok = np.asarray(CP.multiply(CP).sum(1)).ravel() > 1e-9
+
+    def coh(V, idx):
+        return float((V[idx] @ V[idx].T).sum() / (len(idx) ** 2)) if len(idx) >= 2 else float("nan")
+
+    stats = []                                                # (chapter, lex, cpl, gap, size)
+    for c in range(n_ch):
+        R = np.where(labels == c)[0]; Rc = R[cpok[R]]
+        if len(R) < min_size or len(Rc) < min_size:           # too few coupling-bearers to assess lineage
+            continue                                          # (recency-orphan or tiny — NOT paratext)
+        lex, cpl = coh(KW, R), coh(CP, Rc)
+        stats.append((c, lex, cpl, lex - cpl, len(R)))
+    if len(stats) < 4:
+        LOGGER.info("paratext filter: too few assessable chapters"); return labels
+    gaps = np.array([s[3] for s in stats])
+    med = float(np.median(gaps)); mad = float(np.median(np.abs(gaps - med))) * 1.4826 + 1e-9
+    thresh = med + k_mad * mad
+    flagged = [s[0] for s in stats if s[3] > thresh]
+    for s in stats:
+        if s[3] > thresh:
+            LOGGER.info("paratext: ch %d lex_coh=%.3f cpl_coh=%.3f gap=%.3f > med+%.0f·MAD=%.3f n=%d -> dissolve",
+                        s[0], s[1], s[2], s[3], k_mad, thresh, s[4])
+    if not flagged:
+        LOGGER.info("paratext filter: none flagged (max gap %.3f <= thresh %.3f)", float(gaps.max()), thresh)
+        return labels
+
+    survive = np.array([c for c in range(n_ch) if c not in flagged and (labels == c).sum() > 0])
+
+    def cents(V, restrict):
+        r, col = [], []
+        for i, c in enumerate(survive):
+            mem = np.where(labels == c)[0]
+            if restrict is not None:
+                mem = mem[restrict[mem]]
+            r += [i] * len(mem); col += mem.tolist()
+        Ind = sp.csr_matrix((np.ones(len(r)), (r, col)), shape=(len(survive), N))
+        return normalize(Ind @ V)
+
+    CPc, KWc = cents(CP, cpok), cents(KW, None)
+    moved = np.where(np.isin(labels, flagged))[0]
+    for w in moved:
+        sims = (CP[w] @ CPc.T) if cpok[w] else (KW[w] @ KWc.T)
+        labels[w] = survive[int(np.asarray(sims.todense()).ravel().argmax())]
+    LOGGER.info("paratext: dissolved %d chapter(s), redistributed %d works -> %d surviving",
+                len(flagged), len(moved), len(survive))
+    return labels
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--concept-gap", required=True, type=Path)
@@ -79,7 +145,8 @@ def main() -> None:
                     help="the robust 2nd view paired with keyword-TFIDF in the CCA: embedding (GIST), "
                          "citation (citation-similarity spectral features — embedder-free, but sparser → "
                          "weaker language-collapse for under-cited/foreign works), or both (concatenated).")
-    ap.add_argument("--method", choices=["cca", "discardclash", "citation_only", "concat_vocab"], default="cca",
+    ap.add_argument("--method",
+                    choices=["cca", "discardclash", "citation_only", "concat_vocab", "link_plsa"], default="cca",
                     help="cca = retain the shared subspace (CCA). discardclash = keep the full keyword "
                          "space but REMOVE its top-k directions that are UNexplained by citations (= the "
                          "dominant citation-uncorrelated keyword variance ≈ language); embedder-free, "
@@ -96,6 +163,13 @@ def main() -> None:
     ap.add_argument("--concat-alpha", type=float, default=0.5,
                     help="[concat_vocab] energy split terms:refs = alpha:(1-alpha) (each block L2-normed per "
                          "row first, so the ~120-terms vs ~8-refs count imbalance doesn't decide it). 0.5=equal.")
+    ap.add_argument("--channel-weight", type=float, default=1.0,
+                    help="[link_plsa] refs channel mass relative to terms (refs auto-scaled to equal total "
+                         "mass first, then ×this). 1.0=equal-mass channels; >1 favors references.")
+    ap.add_argument("--dissolve-paratext", action="store_true",
+                    help="detect venue/paratext chapters (lexically coherent but NOT coupling-coherent, by "
+                         "permutation null in both views) and DISSOLVE them — redistribute their works to "
+                         "the nearest surviving chapter by citation-coupling. No blocklist.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="cca", log_level="INFO", include_time=False)
@@ -136,7 +210,28 @@ def main() -> None:
         Csim = build_citation_similarity_view(cloud.citation_graph(False)[rows][:, rows], csls_k=10)
         return normalize(TruncatedSVD(n_components=dim, random_state=0).fit_transform(Csim))
 
-    if args.method == "concat_vocab":
+    labels = None                       # Z-clustering methods set Z below; link_plsa sets labels directly
+    if args.method == "link_plsa":
+        # GENERATIVE point on the concat↔CCA↔generative spectrum: Link-pLSA (KL-NMF) — each work's topic
+        # mixture emits BOTH its terms and its references through SEPARATE channels; topics ARE the
+        # chapters (argmax of the doc-topic matrix), no whitening / no separate clustering. Per-channel
+        # mass-balancing handles the ~120-terms vs ~8-refs imbalance generatively (no α). KL-NMF is the MLE
+        # of this two-channel pLSA; full Bayesian Link-LDA (Gibbs) is the further step. (RTM-proper models
+        # doc-doc links → would hit the ~1-edge/work internal sparsity; references-as-tokens dodges it.)
+        from sklearn.decomposition import NMF
+        Gc = cloud.citation_graph(False).tocsr().astype(np.float64); Gc.setdiag(0.0); Gc.eliminate_zeros()
+        Wt = (X[rows] > 0).astype(np.float64); Wt = Wt[:, np.asarray(Wt.sum(0)).ravel() > 0]   # terms channel
+        Rt = Gc[rows]; Rt = Rt[:, np.asarray((Rt > 0).sum(0)).ravel() > 0]                      # refs channel
+        bal = (Wt.sum() / max(Rt.sum(), 1.0)) * args.channel_weight                             # equal-mass ×cw
+        M = sp.hstack([Wt, bal * Rt]).tocsr()
+        nmf = NMF(n_components=args.n, beta_loss="kullback-leibler", solver="mu",
+                  init="nndsvda", max_iter=300, random_state=0)
+        Wdt = nmf.fit_transform(M)
+        labels = Wdt.argmax(1)
+        tag = f"link_plsa(cw={args.channel_weight})"
+        LOGGER.info("link-pLSA: M %s [terms %d|refs %d], K=%d -> %d topics used, recon err=%.1f",
+                    M.shape, Wt.shape[1], Rt.shape[1], args.n, len(set(labels.tolist())), nmf.reconstruction_err_)
+    elif args.method == "concat_vocab":
         # "A reference is just another word": ONE incidence matrix over the combined vocabulary
         # (terms ⊕ cited-works), single LSA — no two-view CCA machinery. Each block is L2-normalized per
         # row then scaled by sqrt(alpha)/sqrt(1-alpha) so they share energy alpha:(1-alpha) regardless of
@@ -213,7 +308,10 @@ def main() -> None:
                     k, rho[k - 1], rho[k] if k < len(rho) else 0.0)
         Z = normalize(0.5 * (Ea[:, :k] + Tb[:, :k]) * rho[:k])
         tag = f"cca({args.view}:{args.citation_source}) k={k}" if args.view != "embedding" else f"cca(embedding) k={k}"
-    labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
+    if labels is None:
+        labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
+    if args.dissolve_paratext:
+        labels = _dissolve_paratext(X, rows, cloud, labels, args.n)
 
     BG = X.shape[0]
 

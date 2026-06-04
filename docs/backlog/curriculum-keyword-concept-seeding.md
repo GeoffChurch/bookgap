@@ -576,3 +576,29 @@ Jurafsky-INDEPENDENT metric (redund) was gameable by junk — the deviation insp
 instrument, and it sided with fidelity. **Actionable:** the paratext (M9, M24) is the one clear fix —
 removing it raises fidelity AND kills the spurious distinctness (the long-backlogged **paratext-hygiene**
 item is THE win; not "out-organize Jurafsky").
+
+### Paratext detector — built, validated, honest result (2026-06-03)
+
+`cluster_concept_cca --dissolve-paratext` (`_dissolve_paratext`): per chapter, **gap = lexical_coh −
+coupling_coh** (members' keyword-TFIDF self-similarity vs bibliographic-coupling self-similarity, coupling
+over non-orphan members only); flag chapters whose gap is a **high robust-outlier (> median + 3·MAD)** —
+lexically tight but citing nothing in common = a venue/paratext artifact, not a research community; then
+**dissolve** (redistribute works to the nearest surviving chapter by citation-coupling). No blocklist, no
+absolute threshold, no ordinal rule (per request — ordinals stay a free human diagnostic).
+
+**Design note — the FIRST attempt failed and the failure was instructive.** A coupling-coherence-vs-
+permutation-null test is **size-confounded**: a small recency-orphan chapter (RLHF/RAG, n=1468 but 82%
+orphan → small non-orphan subset → higher null) fails the coupling null for *sparsity*, not paratext — so
+it dissolved the wrong (content) chapter and AMI dropped. The **gap-outlier** is the fix: paratext's
+lexical OVER-coherence (0.148, ~4× any real topic) + near-zero coupling (0.008) makes gap 0.141 a 5×
+outlier, while RLHF's gap (0.013) sits in the pack. Validated: flags only the 567-work "proceedings 59th"
+chapter, spares RLHF.
+
+**Result — qualitative win, objective WASH.** Dissolving surgically removes the chapter: 25→24, the ONLY
+terms lost are venue boilerplate (proceedings/59th/2021/annual), EVERY real topic preserved, 567 ACL-2021
+papers re-homed by citation. BUT the objective metrics don't improve: **AMI ≈ neutral (0.620→0.598 kw —
+partly the 24-vs-25 cluster-count effect + redistribution noise); redund 0.377→0.414 (UP)**. The redund
+rise is *correct and expected*: the paratext chapter's distinctness was SPURIOUS, so removing it de-inflates
+it (the metric becoming honest — consistent with "the 4-methods-beat-Jurafsky distinctness was
+paratext-inflated"). **So paratext removal is a human-facing QUALITY win (no embarrassing junk chapter),
+NOT a fidelity gain** — correcting the earlier "paratext is THE win" prediction. Kept opt-in.
