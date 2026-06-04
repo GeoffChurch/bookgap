@@ -63,17 +63,16 @@ def _rcca(E, T, reg):
     return np.clip(s, 0, 1), E @ A, T @ B
 
 
-def _dissolve_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
-    """Detect & dissolve venue/paratext chapters — those whose LEXICAL coherence is NOT backed by shared
-    citation lineage (surface cohesion, no intellectual community). Per chapter, gap = lexical_coh -
-    coupling_coh (members' keyword-TFIDF self-similarity vs bibliographic-coupling self-similarity, the
-    latter over non-orphan members only). A real topic has gap ≈ 0 or NEGATIVE (it cites a shared core at
-    least as much as it shares words); paratext has a large POSITIVE gap (lexically tight, citing nothing
-    in common). Flag chapters whose gap is a high robust-outlier (> median + k·MAD across chapters) — no
-    absolute threshold, no blocklist. Size-confound-free (unlike a coupling-vs-null test, which a small
-    recency-orphan chapter fails for sparsity, not paratext). DISSOLVE the flagged: redistribute their
-    works to the nearest surviving chapter by citation-coupling (keyword fallback for orphans)."""
-    labels = np.asarray(labels).copy()
+def _detect_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
+    """Flag venue/paratext chapters — those whose LEXICAL coherence is NOT backed by shared citation
+    lineage. Per chapter, gap = lexical_coh - coupling_coh (members' keyword-TFIDF self-similarity vs
+    bibliographic-coupling self-similarity, the latter over non-orphan members only). A real topic has gap
+    ≈ 0 or NEGATIVE (it cites a shared core at least as much as it shares words); paratext has a large
+    POSITIVE gap (lexically tight, citing nothing in common). Flag chapters whose gap is a high robust-
+    outlier (> median + k·MAD across chapters) — no absolute threshold, no blocklist. Size-confound-free
+    (unlike a coupling-vs-null test, which a small recency-orphan chapter fails for sparsity, not
+    paratext). Returns (flagged_chapters, KW, CP, cpok) — the views reused by the caller."""
+    labels = np.asarray(labels)
     N = len(rows)
     Xc = X[rows].astype(np.float64)
     idf = np.log(N / (np.asarray((Xc > 0).sum(0)).ravel() + 1.0))
@@ -94,19 +93,53 @@ def _dissolve_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
         lex, cpl = coh(KW, R), coh(CP, Rc)
         stats.append((c, lex, cpl, lex - cpl, len(R)))
     if len(stats) < 4:
-        LOGGER.info("paratext filter: too few assessable chapters"); return labels
+        LOGGER.info("paratext filter: too few assessable chapters"); return [], KW, CP, cpok
     gaps = np.array([s[3] for s in stats])
     med = float(np.median(gaps)); mad = float(np.median(np.abs(gaps - med))) * 1.4826 + 1e-9
     thresh = med + k_mad * mad
     flagged = [s[0] for s in stats if s[3] > thresh]
     for s in stats:
         if s[3] > thresh:
-            LOGGER.info("paratext: ch %d lex_coh=%.3f cpl_coh=%.3f gap=%.3f > med+%.0f·MAD=%.3f n=%d -> dissolve",
+            LOGGER.info("paratext: ch %d lex_coh=%.3f cpl_coh=%.3f gap=%.3f > med+%.0f·MAD=%.3f n=%d",
                         s[0], s[1], s[2], s[3], k_mad, thresh, s[4])
     if not flagged:
-        LOGGER.info("paratext filter: none flagged (max gap %.3f <= thresh %.3f)", float(gaps.max()), thresh)
-        return labels
+        LOGGER.info("paratext: none flagged (max gap %.3f <= thresh %.3f)", float(gaps.max()), thresh)
+    return flagged, KW, CP, cpok
 
+
+def _paratext_suppression(X, rows, labels, flagged, top_m=40):
+    """UPSTREAM correction (vs dissolution): return a per-term multiplicative weight that ZEROES the
+    distinctive (high-lift) terms of the flagged paratext chapters — the venue boilerplate, identified
+    data-drivenly as the terms that characterize a paratext chapter. Re-clustering with these terms removed
+    lets the paratext works re-home by their TOPICAL vocabulary, freeing the slot for a real chapter — so
+    the count is preserved. 'Down-weight words acting paratextually, in the context that reveals them.'"""
+    labels = np.asarray(labels)
+    N = len(rows)
+    Xb = (X[rows] > 0).astype(np.float64)
+    bg = np.asarray(Xb.sum(0)).ravel() / N
+    sup = np.ones(Xb.shape[1])
+    killed = set()
+    for c in flagged:
+        mem = np.where(labels == c)[0]
+        cnt = np.asarray(Xb[mem].sum(0)).ravel()
+        lift = (cnt / max(len(mem), 1)) / (bg + 1e-9)
+        ok = np.where(cnt >= 2)[0]
+        top = ok[np.argsort(lift[ok])[::-1][:top_m]]
+        sup[top] = 0.0; killed.update(top.tolist())
+    LOGGER.info("paratext suppression: zeroed %d distinctive terms of %d flagged chapter(s)",
+                len(killed), len(flagged))
+    return sup
+
+
+def _dissolve_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
+    """DISSOLVE flagged paratext chapters: redistribute their works to the nearest surviving chapter by
+    citation-coupling (keyword fallback for orphans). Reduces the chapter count by the number dissolved;
+    see `_paratext_suppression` + ``--suppress-paratext`` for the count-preserving upstream alternative."""
+    labels = np.asarray(labels).copy()
+    flagged, KW, CP, cpok = _detect_paratext(X, rows, cloud, labels, n_ch, min_size, k_mad)
+    if not flagged:
+        return labels
+    N = len(rows)
     survive = np.array([c for c in range(n_ch) if c not in flagged and (labels == c).sum() > 0])
 
     def cents(V, restrict):
@@ -167,9 +200,13 @@ def main() -> None:
                     help="[link_plsa] refs channel mass relative to terms (refs auto-scaled to equal total "
                          "mass first, then ×this). 1.0=equal-mass channels; >1 favors references.")
     ap.add_argument("--dissolve-paratext", action="store_true",
-                    help="detect venue/paratext chapters (lexically coherent but NOT coupling-coherent, by "
-                         "permutation null in both views) and DISSOLVE them — redistribute their works to "
-                         "the nearest surviving chapter by citation-coupling. No blocklist.")
+                    help="detect venue/paratext chapters (lexically coherent but NOT coupling-coherent) and "
+                         "DISSOLVE them — redistribute their works to the nearest surviving chapter by "
+                         "citation-coupling. Reduces the chapter count. No blocklist.")
+    ap.add_argument("--suppress-paratext", action="store_true",
+                    help="[cca] UPSTREAM correction (count-PRESERVING): detect paratext chapters, zero their "
+                         "distinctive venue terms in the keyword feature, and RE-CLUSTER (iterated) so their "
+                         "works re-home by topic and the freed slot becomes a real chapter. No blocklist.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="cca", log_level="INFO", include_time=False)
@@ -295,19 +332,37 @@ def main() -> None:
             parts.append(_citation_features())
         R = parts[0] if len(parts) == 1 else normalize(np.concatenate(parts, axis=1))
         LOGGER.info("CCA views: R(%s) %s, T(LSA) %s; n=%d", args.view, R.shape, T.shape, N)
-        rho, Ea, Tb = _rcca(R, T, args.cca_reg)
-        LOGGER.info("canonical correlations rho (top 30): %s", np.round(rho[:30], 3).tolist())
-        if args.cca_k > 0:
-            k = args.cca_k
-        else:
-            d = rho[:-1] - rho[1:]
-            k = int(np.argmax(d[3:]) + 4) if len(d) > 4 else len(rho)
-            k = max(k, int((rho > 0.3).sum()))
-        k = max(2, min(k, Ea.shape[1]))
-        LOGGER.info("keeping k=%d canonical directions (rho[k-1]=%.3f, rho[k]=%.3f); collapsing the rest",
-                    k, rho[k - 1], rho[k] if k < len(rho) else 0.0)
-        Z = normalize(0.5 * (Ea[:, :k] + Tb[:, :k]) * rho[:k])
+
+        def _cca_Z(Tloc):                                     # R is fixed; only the keyword view changes
+            rho, Ea, Tb = _rcca(R, Tloc, args.cca_reg)
+            if args.cca_k > 0:
+                kk = args.cca_k
+            else:
+                d = rho[:-1] - rho[1:]
+                kk = int(np.argmax(d[3:]) + 4) if len(d) > 4 else len(rho)
+                kk = max(kk, int((rho > 0.3).sum()))
+            kk = max(2, min(kk, Ea.shape[1]))
+            return normalize(0.5 * (Ea[:, :kk] + Tb[:, :kk]) * rho[:kk]), rho, kk
+
+        Z, rho, k = _cca_Z(T)
+        LOGGER.info("canonical correlations rho (top 30): %s | keeping k=%d", np.round(rho[:30], 3).tolist(), k)
         tag = f"cca({args.view}:{args.citation_source}) k={k}" if args.view != "embedding" else f"cca(embedding) k={k}"
+        if args.suppress_paratext:
+            # UPSTREAM, count-preserving: cluster → detect paratext → zero its venue terms → re-CCA, iterated.
+            sup = np.ones(Xc.shape[1])
+            for _pass in range(5):
+                labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
+                flagged, *_ = _detect_paratext(X, rows, cloud, labels, args.n)
+                if not flagged:
+                    break
+                LOGGER.info("suppress-paratext pass %d: %d paratext chapter(s) -> zero venue terms, re-CCA",
+                            _pass + 1, len(flagged))
+                sup = sup * _paratext_suppression(X, rows, labels, flagged)
+                Tw_s = normalize(Xc.multiply(idf_c * sup).tocsr())
+                T_s = TruncatedSVD(n_components=min(args.lsa_dim, N - 1, Tw_s.shape[1] - 1),
+                                   random_state=0).fit_transform(Tw_s)
+                Z, rho, k = _cca_Z(T_s)
+            tag = f"cca({args.view}:{args.citation_source}) k={k}+suppress"
     if labels is None:
         labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
     if args.dissolve_paratext:

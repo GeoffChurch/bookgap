@@ -602,3 +602,25 @@ rise is *correct and expected*: the paratext chapter's distinctness was SPURIOUS
 it (the metric becoming honest — consistent with "the 4-methods-beat-Jurafsky distinctness was
 paratext-inflated"). **So paratext removal is a human-facing QUALITY win (no embarrassing junk chapter),
 NOT a fidelity gain** — correcting the earlier "paratext is THE win" prediction. Kept opt-in.
+
+### --suppress-paratext (count-preserving term-removal) — REFUTED: whack-a-mole (2026-06-03)
+
+The count-preserving alternative to dissolution: detect the paratext chapter, ZERO its top-40 distinctive
+(venue) terms, RE-CLUSTER, iterate (`cluster_concept_cca --suppress-paratext`, CCA only). **FAILED to
+converge** — zeroing the top-40 venue terms each pass just lets the venue cluster RECONSTITUTE on the long
+tail of the venue register (proceedings/59th/annual/volume/edited/isbn/papers/linguistics/11th/…). 5
+passes, never clean; final still has BOTH the venue cluster (T24) and a book-front-matter chapter (T7);
+AMI unchanged (0.616 ≈ original 0.620, 25 ch).
+
+**Diagnosis: the venue vocabulary is a LARGE, correlated register — removing the top-k terms shifts the
+cluster to the next-k. Term-removal is whack-a-mole; the stable unit is the WORK, not the term** — which is
+exactly why DISSOLUTION (removing the 567 works) worked where term-suppression doesn't. Also reframes the
+"continuous version" question: a per-TERM soft weight inherits the same instability (and the hub wall);
+the robust target is the WORK.
+
+**Path forward — continuous + count-preserving + robust (per-WORK):** a soft per-work paratext score =
+disagreement between a work's LEXICAL neighborhood and its CITATION neighborhood (a venue paper is
+lexically near other venue papers but citation-near its real topic). Use it to down-weight venue works in
+cluster FORMATION, cluster the survivors into N, then assign the down-weighted works to their nearest
+chapter → N real chapters, works preserved, no flag/threshold, no whack-a-mole. Verify first: does a venue
+paper's lexical nbhd disagree with its citation nbhd while a content paper's agree?
