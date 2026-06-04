@@ -147,36 +147,43 @@ def _paratext_suppression(X, rows, labels, flagged, top_m=40):
     return sup
 
 
-def _content_then_attach(X, rows, cloud, Z, labels, n_ch, Xc, idf_c):
-    """Count-preserving fix that exploits *why* venue works cluster: they're real, topically-DIVERSE papers
-    bound only by SHARED citation-string vocabulary (author surnames + venue markers), high-IDF because
-    rare-in-concept. (1) detect the venue chapter(s); (2) re-cluster the CONTENT works into n_ch (the freed
-    slot becomes a real topic); (3) the venue cluster being topically diverse, its SHARED terms (high
-    within-venue doc-freq) ARE the contaminants — down-weight each term by its within-venue frequency so a
-    venue work is re-represented by its TOPICAL content; (4) attach each venue work to the nearest content
-    chapter by that de-contaminated keyword representation. No global term classifier, no blocklist."""
-    flagged, *_ = _detect_paratext(X, rows, cloud, labels, n_ch)
-    if not flagged:
-        LOGGER.info("content-then-attach: no paratext flagged"); return np.asarray(labels)
-    labels = np.asarray(labels)
-    N = len(rows)
-    venue = np.isin(labels, flagged)
-    cidx = np.where(~venue)[0]; vidx = np.where(venue)[0]
-    cl = AgglomerativeClustering(n_clusters=n_ch, metric="cosine", linkage="average").fit_predict(Z[cidx])
+def _content_then_attach(X, rows, cloud, Z, labels, n_ch, Xc, idf_c, max_iter=10):
+    """ITERATED, count-preserving. Paratext is MULTI-POPULATION, so PEEL it off one pass at a time —
+    re-cluster the current content pool into n_ch, set aside any flagged venue chapter's WORKS (removing
+    works is stable: a peeled work can't reconstitute, unlike a zeroed term), and repeat until the
+    gap-detector flags nothing (the natural stopping condition; converges since the pool shrinks
+    monotonically over finitely many venue populations). Then attach all peeled works by their DE-
+    CONTAMINATED topical content: the peeled set being topically diverse, its SHARED terms (high within-set
+    doc-freq) ARE the author/venue contaminants — down-weight each term by that frequency so each work is
+    re-represented topically, and attach to the nearest content chapter. No global classifier, no blocklist."""
+    rows = list(rows); N = len(rows)
+    pool = np.arange(N)                                   # positions (into rows/Z) still treated as content
+    peeled = []
+    for _pass in range(max_iter):
+        ncl = min(n_ch, len(pool) - 1)
+        cl = AgglomerativeClustering(n_clusters=ncl, metric="cosine", linkage="average").fit_predict(Z[pool])
+        flagged, *_ = _detect_paratext(X, [rows[p] for p in pool], cloud, cl, n_ch)
+        if not flagged:
+            break                                         # natural stopping condition
+        venue_local = np.isin(cl, flagged)
+        peeled += pool[venue_local].tolist(); pool = pool[~venue_local]
+        LOGGER.info("content-then-attach pass %d: peeled %d works (%d venue chapter(s)); content pool=%d",
+                    _pass + 1, int(venue_local.sum()), len(flagged), len(pool))
+    cl = AgglomerativeClustering(n_clusters=min(n_ch, len(pool) - 1), metric="cosine",
+                                 linkage="average").fit_predict(Z[pool])       # final clean content clustering
     present = sorted(set(cl.tolist())); remap = {c: i for i, c in enumerate(present)}
-    Xb = (Xc > 0).astype(np.float64)
-    vdf = np.asarray(Xb[vidx].sum(0)).ravel() / len(vidx)              # within-venue doc-freq (shared=contaminant)
-    KWtop = normalize(Xc.multiply(idf_c * (1.0 - vdf)).tocsr())        # suppress venue-shared terms per work
-    Ind = sp.csr_matrix((np.ones(len(cl)), ([remap[c] for c in cl], np.arange(len(cidx)))),
-                        shape=(len(present), len(cidx)))
-    cent = normalize(Ind @ KWtop[cidx])                               # content centroids, de-contaminated kw space
-    asg = np.asarray((KWtop[vidx] @ cent.T).todense()).argmax(1)
-    out = np.full(N, -1)
-    out[cidx] = [present[c] for c in cl]
-    out[vidx] = [present[a] for a in asg]
-    LOGGER.info("content-then-attach: %d content -> %d chapters; %d venue works re-homed by topical content "
-                "(suppressed %d shared contaminant terms, vdf>0.3)", len(cidx), len(present), len(vidx),
-                int((vdf > 0.3).sum()))
+    out = np.full(N, -1); out[pool] = [present[c] for c in cl]
+    if peeled:
+        vidx = np.array(peeled)
+        vdf = np.asarray((Xc[vidx] > 0).sum(0)).ravel() / len(vidx)            # within-peeled doc-freq = contaminant
+        KWtop = normalize(Xc.multiply(idf_c * (1.0 - vdf)).tocsr())            # suppress shared terms per work
+        Ind = sp.csr_matrix((np.ones(len(cl)), ([remap[c] for c in cl], np.arange(len(pool)))),
+                            shape=(len(present), len(pool)))
+        cent = normalize(Ind @ KWtop[pool])
+        out[vidx] = [present[a] for a in np.asarray((KWtop[vidx] @ cent.T).todense()).argmax(1)]
+        LOGGER.info("content-then-attach: %d content -> %d chapters; %d peeled works re-homed by topical "
+                    "content (suppressed %d shared contaminants, vdf>0.3)", len(pool), len(present),
+                    len(vidx), int((vdf > 0.3).sum()))
     return out
 
 

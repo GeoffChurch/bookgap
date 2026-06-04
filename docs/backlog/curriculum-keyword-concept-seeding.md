@@ -677,3 +677,30 @@ here — the venue signal is pervasive and multi-population. Clean options, in o
 N+buffer, dissolve ALL detected venue chapters (more slots → venue separates into dedicated, detectable
 chapters) → ≈N clean content chapters (untried; the one remaining lead for exactly-clean-N). The真 upstream
 fix is index hygiene (don't index reference/author strings) — orthogonal, bigger.
+
+### Iterated content-then-attach — converges, but DETECTOR-limited (2026-06-03)
+
+Iterating content-then-attach (peel venue WORKS, re-cluster survivors into N, repeat until the gap-detector
+flags nothing) is the RIGHT mechanism: work-removal is STABLE (no reconstitution, unlike term-removal) and
+has a natural stopping condition. It **converged** — but in ONE peel: after removing the big venue cluster
+(567, gap 0.141) the detector found nothing (max gap 0.026 ≤ thresh 0.035) and stopped. YET the result STILL
+has 2 venue chapters (T3 "proceedings 59th" + T9 "series edited") — **the detector MISSES them**: their gap
+(0.026) is indistinguishable from high-end content (0.027), so they aren't outliers; lowering the threshold
+to catch them false-flags content. AMI 0.619 ≈ original (wash).
+
+**Final bottleneck: detector sensitivity, not the mechanism.** Iteration + work-removal handles
+multi-population IN PRINCIPLE (the stopping-condition instinct was right), but the gap-OUTLIER signal only
+catches the EGREGIOUS venue cluster (large lexical over-coherence); smaller venue populations have
+content-like gaps and are intrinsically undetectable (their only clean tell is the keyword label itself =
+a blocklist, which we reject). So clustering-level paratext removal is **detector-limited: removes the big
+one, never the tail**.
+
+**Conclusion (paratext, fully resolved as a research question):** the contamination makes the big venue
+cluster a detectable outlier but leaves a tail of smaller venue populations indistinguishable from content
+by every intrinsic signal we tried (4 detector signals, 5 removal mechanisms). The genuine fix is **INDEX
+HYGIENE** — strip reference/author strings at ingestion so NO venue binding exists, big or small, no
+detection needed. The clustering-level detector cannot substitute for source-level cleaning. Output-side,
+the pipeline-wide soft `p_w` fades whatever the partition keeps (selection/PageRank), independent of the
+detector floor. Shipped knobs: `--dissolve-paratext` (removes the big one, N−1), `--content-then-attach`
+(iterated, removes the big one, N), `paratext_work_weights.json` (soft p_w). None fully clean; index
+hygiene is the lead.
