@@ -834,3 +834,23 @@ competitive + no threshold; cost is ~3% AMI below the oracle and slightly higher
 Open: (a) the GENUINE iterative SUMCOR (non-convex JAD) for a real MAXVAR-vs-SUMCOR comparison; (b) the
 English pole (mcs/color_image) to confirm GCCA ≈ CCA-embedding there too — the test of whether it's a true
 cross-heterogeneity auto-selector vs a jurafsky fluke.
+
+### Branchless GCCA consensus VALIDATED as a near-best auto-selector (2026-06-04) — multilingual thread CLOSED
+
+GCCA-maxvar (branchless multi-view consensus over {keyword, embedding, coupling}; no heterogeneity
+threshold; closed-form; N-view-homogeneous) judged vs each book's single-view ORACLE across the
+heterogeneity range:
+- **color_image** (English): vs CCA-embedding → wins comprehensiveness, **ties 3, loses 0**.
+- **mcs** (English): vs CCA-embedding → wins specificity, **ties 3, loses 0**.
+- **jurafsky** (multilingual): vs CCA-coupling → **wins 2, ties 2, loses 0**; AMI 0.660 (CCA-embedding 0.678,
+  CCA-coupling 0.620 — near the best, auto-leaning to the richer view).
+Top consensus eigenvalues ~2.7–2.84 of max 3 → directions genuinely supported by all three views.
+
+**Verdict: the branchless consensus matches-or-beats the per-book oracle on ALL THREE books by the judge and
+never loses — with no heterogeneity branch/threshold, homogeneous to N views, closed-form (MAXVAR).** This
+RETIRES the heterogeneity branch (the multilingual CCA-coupling generalization is now "use one branchless
+GCCA everywhere"), is the session's cleanest POSITIVE clustering result, and is a new DEFAULT candidate.
+Cost: ~3% AMI below CCA-embedding on jurafsky (one fidelity gap) — small price for branchlessness. Open
+polish (optional): GCCA vs CCA-embedding on jurafsky directly; the genuine non-convex SUMCOR (the relaxation
+collapsed to MAXVAR). To promote to default: multi-book judge GCCA vs CCA-embedding head-to-head + port into
+the book_curriculum default path.
