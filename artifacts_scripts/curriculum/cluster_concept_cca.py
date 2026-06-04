@@ -63,15 +63,13 @@ def _rcca(E, T, reg):
     return np.clip(s, 0, 1), E @ A, T @ B
 
 
-def _detect_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
-    """Flag venue/paratext chapters — those whose LEXICAL coherence is NOT backed by shared citation
-    lineage. Per chapter, gap = lexical_coh - coupling_coh (members' keyword-TFIDF self-similarity vs
+def _chapter_gaps(X, rows, cloud, labels, n_ch, min_size=5):
+    """Per-chapter gap = lexical_coh - coupling_coh (members' keyword-TFIDF self-similarity vs
     bibliographic-coupling self-similarity, the latter over non-orphan members only). A real topic has gap
-    ≈ 0 or NEGATIVE (it cites a shared core at least as much as it shares words); paratext has a large
-    POSITIVE gap (lexically tight, citing nothing in common). Flag chapters whose gap is a high robust-
-    outlier (> median + k·MAD across chapters) — no absolute threshold, no blocklist. Size-confound-free
-    (unlike a coupling-vs-null test, which a small recency-orphan chapter fails for sparsity, not
-    paratext). Returns (flagged_chapters, KW, CP, cpok) — the views reused by the caller."""
+    ≈ 0 or NEGATIVE (cites a shared core at least as much as it shares words); a venue/paratext chapter has
+    a large POSITIVE gap (lexically tight, citing nothing in common). Returns ({chapter: gap}, KW, CP,
+    cpok). The signal is a GROUP property (an anomalously lexically-over-coherent set, citation-unbacked) —
+    sharp at the chapter level, weak per-work/per-term (4 probes), so detection is cluster-mediated."""
     labels = np.asarray(labels)
     N = len(rows)
     Xc = X[rows].astype(np.float64)
@@ -85,25 +83,43 @@ def _detect_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
     def coh(V, idx):
         return float((V[idx] @ V[idx].T).sum() / (len(idx) ** 2)) if len(idx) >= 2 else float("nan")
 
-    stats = []                                                # (chapter, lex, cpl, gap, size)
+    gaps = {}
     for c in range(n_ch):
         R = np.where(labels == c)[0]; Rc = R[cpok[R]]
         if len(R) < min_size or len(Rc) < min_size:           # too few coupling-bearers to assess lineage
             continue                                          # (recency-orphan or tiny — NOT paratext)
-        lex, cpl = coh(KW, R), coh(CP, Rc)
-        stats.append((c, lex, cpl, lex - cpl, len(R)))
-    if len(stats) < 4:
+        gaps[c] = coh(KW, R) - coh(CP, Rc)
+    return gaps, KW, CP, cpok
+
+
+def _paratext_scores(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
+    """CONTINUOUS per-chapter paratext score p(c) ∈ [0,1] = sigmoid((gap - (med + k·MAD)) / MAD) — a smooth
+    version of the hard outlier flag (p=0.5 at the old threshold). No boolean; drives the soft-EM."""
+    gaps, *_ = _chapter_gaps(X, rows, cloud, labels, n_ch, min_size)
+    p = np.zeros(n_ch)
+    if len(gaps) < 4:
+        return p
+    g = np.array(list(gaps.values()))
+    med = float(np.median(g)); mad = float(np.median(np.abs(g - med))) * 1.4826 + 1e-9
+    for c, v in gaps.items():
+        p[c] = 1.0 / (1.0 + np.exp(-(v - (med + k_mad * mad)) / mad))
+    return p
+
+
+def _detect_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
+    """Hard flag: chapters whose gap is a high robust-outlier (> median + k·MAD). Returns (flagged, KW, CP,
+    cpok). Used by the dissolution + the refuted term-suppression; the soft-EM uses `_paratext_scores`."""
+    gaps, KW, CP, cpok = _chapter_gaps(X, rows, cloud, labels, n_ch, min_size)
+    if len(gaps) < 4:
         LOGGER.info("paratext filter: too few assessable chapters"); return [], KW, CP, cpok
-    gaps = np.array([s[3] for s in stats])
-    med = float(np.median(gaps)); mad = float(np.median(np.abs(gaps - med))) * 1.4826 + 1e-9
+    g = np.array(list(gaps.values()))
+    med = float(np.median(g)); mad = float(np.median(np.abs(g - med))) * 1.4826 + 1e-9
     thresh = med + k_mad * mad
-    flagged = [s[0] for s in stats if s[3] > thresh]
-    for s in stats:
-        if s[3] > thresh:
-            LOGGER.info("paratext: ch %d lex_coh=%.3f cpl_coh=%.3f gap=%.3f > med+%.0f·MAD=%.3f n=%d",
-                        s[0], s[1], s[2], s[3], k_mad, thresh, s[4])
+    flagged = [c for c, v in gaps.items() if v > thresh]
+    for c in flagged:
+        LOGGER.info("paratext: ch %d gap=%.3f > med+%.0f·MAD=%.3f", c, gaps[c], k_mad, thresh)
     if not flagged:
-        LOGGER.info("paratext: none flagged (max gap %.3f <= thresh %.3f)", float(gaps.max()), thresh)
+        LOGGER.info("paratext: none flagged (max gap %.3f <= thresh %.3f)", float(g.max()), thresh)
     return flagged, KW, CP, cpok
 
 
@@ -204,9 +220,14 @@ def main() -> None:
                          "DISSOLVE them — redistribute their works to the nearest surviving chapter by "
                          "citation-coupling. Reduces the chapter count. No blocklist.")
     ap.add_argument("--suppress-paratext", action="store_true",
-                    help="[cca] UPSTREAM correction (count-PRESERVING): detect paratext chapters, zero their "
-                         "distinctive venue terms in the keyword feature, and RE-CLUSTER (iterated) so their "
-                         "works re-home by topic and the freed slot becomes a real chapter. No blocklist.")
+                    help="[cca] REFUTED (whack-a-mole): zero a paratext chapter's venue terms + re-cluster; "
+                         "the venue cluster reconstitutes on the term register's long tail. Use --soft-paratext.")
+    ap.add_argument("--soft-paratext", action="store_true",
+                    help="[cca] CONTINUOUS, count-preserving soft-EM: a smooth per-chapter paratext score "
+                         "(sigmoid of the lexical-vs-coupling gap) shrinks each work's keyword contribution "
+                         "by its score while keeping its citation contribution, so venue works cluster by "
+                         "what they CITE (their real topic). No flag/threshold/blocklist; saves a per-work "
+                         "paratext weight (paratext_work_weights.json) for pipeline-wide reuse.")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
     setup_logging(log_name="cca", log_level="INFO", include_time=False)
@@ -342,12 +363,35 @@ def main() -> None:
                 kk = int(np.argmax(d[3:]) + 4) if len(d) > 4 else len(rho)
                 kk = max(kk, int((rho > 0.3).sum()))
             kk = max(2, min(kk, Ea.shape[1]))
-            return normalize(0.5 * (Ea[:, :kk] + Tb[:, :kk]) * rho[:kk]), rho, kk
+            return normalize(0.5 * (Ea[:, :kk] + Tb[:, :kk]) * rho[:kk]), Ea, Tb, rho, kk
 
-        Z, rho, k = _cca_Z(T)
+        Z, Ea, Tb, rho, k = _cca_Z(T)
         LOGGER.info("canonical correlations rho (top 30): %s | keeping k=%d", np.round(rho[:30], 3).tolist(), k)
         tag = f"cca({args.view}:{args.citation_source}) k={k}" if args.view != "embedding" else f"cca(embedding) k={k}"
-        if args.suppress_paratext:
+        if args.soft_paratext:
+            # CONTINUOUS, count-preserving soft-EM. The paratext signal is a GROUP property (per-work/term
+            # signals are all weak), so it stays cluster-mediated — but no boolean: a continuous per-chapter
+            # score p(c)=sigmoid(gap) gives each work p_w, and we SHRINK its keyword (Tb) contribution by p_w
+            # while keeping its citation (Ea) contribution, so a venue work clusters by what it CITES (its
+            # real topic) instead of the venue terms it shares. p_w accumulates monotonically (sticky) ->
+            # converges, no oscillation. Venue works disperse into real topics; the freed slot becomes a
+            # real chapter (count preserved). p_w is saved for re-use as a pipeline-wide work weight.
+            p_w = np.zeros(N)
+            for _pass in range(6):
+                Zp = normalize((Ea[:, :k] + (1.0 - p_w)[:, None] * Tb[:, :k]) * rho[:k])
+                labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Zp)
+                pc = _paratext_scores(X, rows, cloud, labels, args.n)
+                new_p_w = np.maximum(p_w, pc[labels])         # monotonic / sticky -> no oscillation
+                LOGGER.info("soft-paratext pass %d: max chapter score=%.2f, works with p_w>0.5: %d",
+                            _pass + 1, float(pc.max()), int((new_p_w > 0.5).sum()))
+                if np.allclose(new_p_w, p_w, atol=1e-3):
+                    break
+                p_w = new_p_w
+            (args.out).mkdir(parents=True, exist_ok=True)
+            (args.out / "paratext_work_weights.json").write_text(
+                json.dumps({ids[i]: float(p_w[i]) for i in range(N)}))
+            tag = f"cca({args.view}:{args.citation_source}) k={k}+softpara"
+        elif args.suppress_paratext:
             # UPSTREAM, count-preserving: cluster → detect paratext → zero its venue terms → re-CCA, iterated.
             sup = np.ones(Xc.shape[1])
             for _pass in range(5):
@@ -361,7 +405,7 @@ def main() -> None:
                 Tw_s = normalize(Xc.multiply(idf_c * sup).tocsr())
                 T_s = TruncatedSVD(n_components=min(args.lsa_dim, N - 1, Tw_s.shape[1] - 1),
                                    random_state=0).fit_transform(Tw_s)
-                Z, rho, k = _cca_Z(T_s)
+                Z, Ea, Tb, rho, k = _cca_Z(T_s)
             tag = f"cca({args.view}:{args.citation_source}) k={k}+suppress"
     if labels is None:
         labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)

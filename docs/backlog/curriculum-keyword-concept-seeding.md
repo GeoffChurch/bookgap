@@ -624,3 +624,28 @@ lexically near other venue papers but citation-near its real topic). Use it to d
 cluster FORMATION, cluster the survivors into N, then assign the down-weighted works to their nearest
 chapter → N real chapters, works preserved, no flag/threshold, no whack-a-mole. Verify first: does a venue
 paper's lexical nbhd disagree with its citation nbhd while a content paper's agree?
+
+### --soft-paratext (continuous soft-EM) — REFUTED: venue works re-blob (2026-06-03)
+
+The continuous, count-preserving design: smooth per-chapter score p(c)=sigmoid(gap) → per-work p_w → shrink
+each work's keyword (Tb) contribution by p_w while keeping its citation (Ea) contribution, so venue works
+should cluster by what they cite. Monotonic/sticky p_w → converged (638 works p_w>0.5). **FAILED**: still
+TWO venue chapters (T11, T23 "proceedings 59th") + 2 garbled, AMI **0.589 (WORSE** than original 0.620 and
+dissolved 0.598).
+
+**Diagnosis (the real finding):** shrinking venue works to their citation coords `Ea` doesn't disperse them
+— the venue works have DIFFUSE citations (coupling-coherence 0.008), so their `Ea` (citation projected onto
+the CCA shared subspace) is small/noisy, and normalized near-zero vectors **RE-BLOB** into a cluster. Root
+cause: **the venue works have no coherent signal in EITHER view's shared subspace** (venue-only keywords +
+diffuse citations) — genuinely hard-to-place. So soft-reclustering re-blobs them (Ea) just as term-removal
+reconstitutes them (keyword long tail). Only HARD removal + redistribution by RAW coupling (dissolution, not
+the shared `Ea`) avoids the re-blob, at the cost of count (25→24).
+
+**Conclusion — paratext is harder than its payoff.** Objective showed removal is a WASH (AMI ~neutral, a
+cosmetic/quality fix, not a metric gain). Three count-preserving / continuous attempts (term-suppress,
+soft-EM) re-blob; only **dissolution** (24 ch, AMI ~neutral) robustly removes it. The hard-to-place venue
+works defeat every shared-subspace soft mechanism. Pragmatic verdict: use `--dissolve-paratext` (24 ch) for
+a clean human-facing curriculum, or leave the one contained venue chapter; the elegant count-preserving
+continuous fix does not pan out. Last untried idea: cluster low-p_w (content) works into N, attach high-p_w
+(venue) by raw CP — reintroduces a soft threshold, uncertain payoff. The `paratext_work_weights.json` p_w
+(soft, saved) remains usable as a pipeline-wide down-weight regardless of the clustering question.
