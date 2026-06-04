@@ -812,3 +812,25 @@ this is a clean case of objective probes catching a circular "win" the judge/eye
 `--label-filter` from "safe opt-in" to **net-negative, leave OFF** (hook kept for the record only).
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+### Branchless multi-view GCCA consensus + the MAXVAR≡SUMCOR(relaxation) collapse (2026-06-04)
+
+`--method gcca` over {keyword, embedding, coupling}: BRANCHLESS multi-view consensus (no heterogeneity
+threshold — each view weighted by agreement, read off the eigenvalues; generalizes homogeneously to N views).
+
+**MAXVAR ≡ my-SUMCOR (collapse).** Intended two variants (MAXVAR = top eigvecs of summed per-view
+projectors; SUMCOR = off-diagonal cross-view blocks) came out IDENTICAL — with whitened orthonormal bases
+the diagonal blocks are exactly I, so `B_off = B_gram − I` → SAME eigenvectors. The off-diagonal-zeroing
+relaxation collapses onto MAXVAR. The GENUINE SUMCOR (max Σ pairwise corr s.t. PER-VIEW unit norm) is the
+non-convex JAD (Horst / RNOJD) — NOT tested by this relaxation; would need the iterative form.
+
+**MAXVAR-GCCA result (jurafsky):** branchless, 25 balanced chapters, no venue chapter in top labels. AMI
+0.660/0.673 — sits near CCA-embedding (0.678), above CCA-coupling (0.620), and NOT at the midpoint (0.649) →
+it auto-LEANS toward the best (embedding) view rather than averaging. sil_emb 0.165 matches CCA-embedding;
+redund 0.401 slightly worse. Judge: GCCA **beats CCA-coupling 2/4, ties 2** (so ≥ the jurafsky judge-oracle).
+Verdict: a defensible **branchless near-best** — ~97% of the oracle single-view's fidelity + judge-
+competitive + no threshold; cost is ~3% AMI below the oracle and slightly higher redundancy.
+
+Open: (a) the GENUINE iterative SUMCOR (non-convex JAD) for a real MAXVAR-vs-SUMCOR comparison; (b) the
+English pole (mcs/color_image) to confirm GCCA ≈ CCA-embedding there too — the test of whether it's a true
+cross-heterogeneity auto-selector vs a jurafsky fluke.

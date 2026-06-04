@@ -267,8 +267,13 @@ def main() -> None:
                     help="the robust 2nd view paired with keyword-TFIDF in the CCA: embedding (GIST), "
                          "citation (citation-similarity spectral features — embedder-free, but sparser → "
                          "weaker language-collapse for under-cited/foreign works), or both (concatenated).")
+    ap.add_argument("--gcca-variant", choices=["maxvar", "sumcor"], default="maxvar",
+                    help="[gcca] MAXVAR = top eigvecs of the summed per-view projectors (closed-form GEP, "
+                         "global, self-blocks included); SUMCOR = top eigvecs of the OFF-diagonal cross-view "
+                         "blocks (pairwise-correlation; linear relaxation of the non-convex JAD form).")
     ap.add_argument("--method",
-                    choices=["cca", "discardclash", "citation_only", "concat_vocab", "link_plsa"], default="cca",
+                    choices=["cca", "discardclash", "citation_only", "concat_vocab", "link_plsa", "gcca"],
+                    default="cca",
                     help="cca = retain the shared subspace (CCA). discardclash = keep the full keyword "
                          "space but REMOVE its top-k directions that are UNexplained by citations (= the "
                          "dominant citation-uncorrelated keyword variance ≈ language); embedder-free, "
@@ -423,6 +428,35 @@ def main() -> None:
                     "(keyword var explained by citations); top-k residual-vs-content subspace overlap=%.3f",
                     args.discard_k, 100 * frac, Z.shape, r2, align)
         tag = f"discardclash k={args.discard_k}:{args.citation_source}"
+    elif args.method == "gcca":
+        # Multi-view CONSENSUS over keyword + embedding + coupling — BRANCHLESS (no heterogeneity threshold;
+        # each view's influence is set by its agreement with the others, read off the eigenvalues).
+        # Generalizes homogeneously to N views. MAXVAR = top eigvecs of the summed per-view projectors
+        # (Σ Uᵢ Uᵢᵀ, computed via the small Gram + lift; closed-form, global). SUMCOR = top eigvecs of the
+        # OFF-diagonal cross-view blocks only (pairwise correlation; the genuine constrained form is the
+        # non-convex JAD, this is its linear relaxation).
+        EMb = normalize(np.asarray(cloud.embeddings(), dtype=np.float64)[rows])
+        Us = []
+        for V in [T, EMb, _citation_features()]:
+            Vc = V - V.mean(0)
+            Uu, ss, _ = np.linalg.svd(Vc, full_matrices=False)
+            Us.append(Uu[:, : max(2, int((ss > ss[0] * 1e-3).sum()))])
+        sizes = [U.shape[1] for U in Us]
+        Ucat = np.concatenate(Us, axis=1)
+        Bgram = Ucat.T @ Ucat                                # block Gram; diagonal blocks = I (orthonormal)
+        if args.gcca_variant == "sumcor":
+            Boff = Bgram.copy(); s = 0
+            for r in sizes:
+                Boff[s:s + r, s:s + r] = 0.0; s += r         # zero self-blocks -> pairwise cross-view only
+            evals, Vv = np.linalg.eigh(Boff)
+        else:
+            evals, Vv = np.linalg.eigh(Bgram)                # MAXVAR: self-projectors included
+        order = np.argsort(evals)[::-1]
+        k = max(2, min(2 * args.n, Bgram.shape[0]))
+        Z = normalize(Ucat @ Vv[:, order[:k]])               # lift to the consensus embedding, cluster on it
+        tag = f"gcca-{args.gcca_variant}"
+        LOGGER.info("GCCA-%s: view dims %s, top eigenvalues %s (max agreement=%d views), k=%d",
+                    args.gcca_variant, sizes, np.round(evals[order[:6]], 3).tolist(), len(Us), k)
     else:
         # CCA: retain the shared subspace of keyword-TFIDF and the robust 2nd view R.
         parts = []
