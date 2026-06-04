@@ -649,3 +649,31 @@ a clean human-facing curriculum, or leave the one contained venue chapter; the e
 continuous fix does not pan out. Last untried idea: cluster low-p_w (content) works into N, attach high-p_w
 (venue) by raw CP — reintroduces a soft threshold, uncertain payoff. The `paratext_work_weights.json` p_w
 (soft, saved) remains usable as a pipeline-wide down-weight regardless of the clustering question.
+
+### The within-work diagnosis + --content-then-attach — REFUTED: paratext is multi-population (2026-06-03)
+
+**Within-work probe reframed the diagnosis.** The venue works are NOT front-matter junk — they are REAL,
+topically-DIVERSE papers (e.g. "Neural Stylistic Response Generation", "BASS: Boosting Abstractive
+Summarization"). "proceedings" terms are only ~20% of their TF-IDF mass. The actual binding signal is
+**shared citation-string vocabulary** — author surnames (zhang/wang/liu/wei/zhu/hua/cao…) + "[name]
+proceedings" bigrams — high-IDF because rare-in-concept, and shared because these papers (same author pool,
+same venues) co-occur that vocabulary while their TOPICS are diverse. **The keyword index is contaminated
+with reference-string text.** (A clean *upstream* fix would be to not index reference strings.)
+
+**content-then-attach** (the motivated build): detect the venue chapter, re-cluster the 9319 CONTENT works
+into N, attach the 567 venue works by topical content with within-venue-shared terms (the contaminants,
+high within-venue doc-freq) down-weighted. **FAILED**: re-clustering content into 25 RE-CREATED venue
+chapters (T3 "proceedings 59th" + T9 "series edited") from RESIDUAL venue sub-populations the single
+detection missed. AMI 0.619 ≈ original 0.620 (wash), 2 paratext.
+
+**Deep finding: paratext is MULTI-POPULATION and PERVASIVE** (proceedings-venue + book-front-matter + …).
+Given N slots the clustering always dedicates 1–2 to venue; every count-preserving mechanism refills the
+freed slot from residual venue. Dissolution works (→N−1) ONLY because it leaves the slot unfilled.
+
+**Verdict (paratext thread, exhaustively explored):** the elegant count-preserving fix does not exist
+here — the venue signal is pervasive and multi-population. Clean options, in order of pragmatism:
+(1) leave it (objective WASH — removal never improved AMI); (2) `--dissolve-paratext` (N−1 clean);
+(3) the pipeline-wide soft `p_w` (fades paratext in selection/PageRank); (4) OVER-PROVISION — cluster into
+N+buffer, dissolve ALL detected venue chapters (more slots → venue separates into dedicated, detectable
+chapters) → ≈N clean content chapters (untried; the one remaining lead for exactly-clean-N). The真 upstream
+fix is index hygiene (don't index reference/author strings) — orthogonal, bigger.

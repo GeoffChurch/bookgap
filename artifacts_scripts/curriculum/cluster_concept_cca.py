@@ -147,6 +147,39 @@ def _paratext_suppression(X, rows, labels, flagged, top_m=40):
     return sup
 
 
+def _content_then_attach(X, rows, cloud, Z, labels, n_ch, Xc, idf_c):
+    """Count-preserving fix that exploits *why* venue works cluster: they're real, topically-DIVERSE papers
+    bound only by SHARED citation-string vocabulary (author surnames + venue markers), high-IDF because
+    rare-in-concept. (1) detect the venue chapter(s); (2) re-cluster the CONTENT works into n_ch (the freed
+    slot becomes a real topic); (3) the venue cluster being topically diverse, its SHARED terms (high
+    within-venue doc-freq) ARE the contaminants — down-weight each term by its within-venue frequency so a
+    venue work is re-represented by its TOPICAL content; (4) attach each venue work to the nearest content
+    chapter by that de-contaminated keyword representation. No global term classifier, no blocklist."""
+    flagged, *_ = _detect_paratext(X, rows, cloud, labels, n_ch)
+    if not flagged:
+        LOGGER.info("content-then-attach: no paratext flagged"); return np.asarray(labels)
+    labels = np.asarray(labels)
+    N = len(rows)
+    venue = np.isin(labels, flagged)
+    cidx = np.where(~venue)[0]; vidx = np.where(venue)[0]
+    cl = AgglomerativeClustering(n_clusters=n_ch, metric="cosine", linkage="average").fit_predict(Z[cidx])
+    present = sorted(set(cl.tolist())); remap = {c: i for i, c in enumerate(present)}
+    Xb = (Xc > 0).astype(np.float64)
+    vdf = np.asarray(Xb[vidx].sum(0)).ravel() / len(vidx)              # within-venue doc-freq (shared=contaminant)
+    KWtop = normalize(Xc.multiply(idf_c * (1.0 - vdf)).tocsr())        # suppress venue-shared terms per work
+    Ind = sp.csr_matrix((np.ones(len(cl)), ([remap[c] for c in cl], np.arange(len(cidx)))),
+                        shape=(len(present), len(cidx)))
+    cent = normalize(Ind @ KWtop[cidx])                               # content centroids, de-contaminated kw space
+    asg = np.asarray((KWtop[vidx] @ cent.T).todense()).argmax(1)
+    out = np.full(N, -1)
+    out[cidx] = [present[c] for c in cl]
+    out[vidx] = [present[a] for a in asg]
+    LOGGER.info("content-then-attach: %d content -> %d chapters; %d venue works re-homed by topical content "
+                "(suppressed %d shared contaminant terms, vdf>0.3)", len(cidx), len(present), len(vidx),
+                int((vdf > 0.3).sum()))
+    return out
+
+
 def _dissolve_paratext(X, rows, cloud, labels, n_ch, min_size=5, k_mad=3.0):
     """DISSOLVE flagged paratext chapters: redistribute their works to the nearest surviving chapter by
     citation-coupling (keyword fallback for orphans). Reduces the chapter count by the number dissolved;
@@ -222,6 +255,10 @@ def main() -> None:
     ap.add_argument("--suppress-paratext", action="store_true",
                     help="[cca] REFUTED (whack-a-mole): zero a paratext chapter's venue terms + re-cluster; "
                          "the venue cluster reconstitutes on the term register's long tail. Use --soft-paratext.")
+    ap.add_argument("--content-then-attach", action="store_true",
+                    help="[cca] count-preserving: detect the venue chapter, re-cluster the CONTENT works into "
+                         "n (freed slot -> real topic), then attach each venue work by its TOPICAL content "
+                         "with the venue cluster's SHARED terms (author/venue contaminants) down-weighted.")
     ap.add_argument("--soft-paratext", action="store_true",
                     help="[cca] CONTINUOUS, count-preserving soft-EM: a smooth per-chapter paratext score "
                          "(sigmoid of the lexical-vs-coupling gap) shrinks each work's keyword contribution "
@@ -411,6 +448,8 @@ def main() -> None:
         labels = AgglomerativeClustering(n_clusters=args.n, metric="cosine", linkage="average").fit_predict(Z)
     if args.dissolve_paratext:
         labels = _dissolve_paratext(X, rows, cloud, labels, args.n)
+    if args.content_then_attach:
+        labels = _content_then_attach(X, rows, cloud, Z, labels, args.n, Xc, idf_c)
 
     BG = X.shape[0]
 
