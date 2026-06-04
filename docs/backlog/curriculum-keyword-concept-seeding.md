@@ -704,3 +704,35 @@ the pipeline-wide soft `p_w` fades whatever the partition keeps (selection/PageR
 detector floor. Shipped knobs: `--dissolve-paratext` (removes the big one, N−1), `--content-then-attach`
 (iterated, removes the big one, N), `paratext_work_weights.json` (soft p_w). None fully clean; index
 hygiene is the lead.
+
+### Pipeline-wide soft p_w — do NOT default it; it removes REAL papers (2026-06-04)
+
+`book_curriculum --paratext-weights <p_w.json>` multiplies target_work_weights by (1-p_w). Tested OFF vs ON
+on jurafsky (embedding default path):
+- The embedding path forms **0 venue chapters** (GIST embeds the topical abstract, ignoring the author/venue
+  TERMS that bind in keyword space) — confirming the venue chapter is a **keyword/CCA-path artifact**.
+- OFF selected **187/1250 (15%)** "venue" works (p_w>0.5) as exemplars; ON removed all → 0.
+
+**BUT the removed works are REAL papers** (verified titles: "GTM: Generative Triple-wise Model for
+Conversational Question Generation", "StructFormer", "PTR: Prompt Tuning with Rules", "Neural Bi-Lexicalized
+PCFG Induction", …). They were flagged only because they share author/venue vocabulary in the contaminated
+keyword index; the embedding path places them correctly by topic. So **p_w removed 187 legitimate, well-
+placed exemplars → HARM, not do-no-harm.** My initial "apply it always" lean was REFUTED by checking the
+titles.
+
+**Corrected verdict:**
+- **Do NOT default p_w.** The gap-derived per-work "paratext weight" is really "membership in the
+  keyword-venue cluster", which is OVERWHELMINGLY real papers (bound by contamination), not junk. Down-
+  weighting by it throws out babies with bathwater.
+- The **embedding default path is naturally paratext-resistant** (no venue chapter) AND p_w would only hurt
+  it. So on the default, do nothing.
+- The keyword-venue "paratext chapter" is itself **mostly real papers** — the whole "paratext problem" was
+  partly overcounted: a small genuine-junk core (front-matter, no-abstract proceedings entries) + a large
+  real-paper halo caught by shared author/venue n-grams.
+- The genuine fix remains **index hygiene** (strip reference/author strings); then the real papers stop
+  clustering as venue and only the small genuine-junk core remains, which IS isolable (e.g. no-abstract).
+
+`--paratext-weights` kept as a hook (works as specified) but documented not-a-default. Net paratext arc:
+the clean partition is detector-limited, and the output-side soft weight over-removes real papers — both
+because the per-work paratext SIGNAL (keyword-venue membership) is mostly real papers. Index hygiene is the
+one fix that doesn't have a false-positive problem.

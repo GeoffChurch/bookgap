@@ -55,6 +55,7 @@ def build_curriculum_from_book_gap(
     soft_topics: bool = False,
     pagerank_alpha: Optional[float] = None,
     decouple_selection: bool = False,
+    paratext_weights: Optional[Path] = None,
     plot_enabled: bool = True,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
@@ -63,6 +64,17 @@ def build_curriculum_from_book_gap(
     if not ids:
         raise ValueError(f"empty gap_article_ids in {gap_json}")
     weights = bk.get("gap_article_weights")  # keyword-concept soft target weights (optional)
+    if paratext_weights is not None:
+        # PIPELINE-WIDE paratext mitigation: multiply each work's target weight by (1 - p_w), so paratext
+        # works are down-weighted in the PageRank personalization AND the per-chapter exemplar selection —
+        # they never become a chapter's representative work or a central node, regardless of how the
+        # clustering resolves. Soft, no boolean; a paratext work is never a good exemplar, so this is
+        # do-no-harm even when p_w is imperfect.
+        pw = json.loads(Path(paratext_weights).read_text())
+        weights = list(weights) if weights else [1.0] * len(ids)
+        weights = [w * (1.0 - float(pw.get(wid, 0.0))) for w, wid in zip(weights, ids)]
+        nz = sum(1 for wid in ids if float(pw.get(wid, 0.0)) > 0.5)
+        LOGGER.info("paratext-weights: down-weighted %d/%d works (p_w>0.5) in target_work_weights", nz, len(ids))
     sf = subfield or rec.get("scope_subfield")
     fld = field or rec.get("scope_field")
     book_id = bk.get("book_id", "unknown")
@@ -173,6 +185,9 @@ def main() -> None:
     ap.add_argument("--decouple-selection", action="store_true",
                     help="use the concept personalization DIRECTLY as the selection mass (citation PR "
                          "only orders chapters) — recency-faithful; the α→0 limit for selection.")
+    ap.add_argument("--paratext-weights", type=Path, default=None,
+                    help="paratext_work_weights.json (work_id -> p_w in [0,1]); multiplies target_work_weights "
+                         "by (1-p_w) so paratext works fade from selection + PageRank, pipeline-wide.")
     ap.add_argument("--no-plot", action="store_true",
                     help="skip the curriculum plot (the field-background projection is the ~20min tail).")
     args = ap.parse_args()
@@ -185,6 +200,7 @@ def main() -> None:
         dynamic_topk_floor=args.dynamic_topk_floor,
         anchor_mode=args.anchor_mode, soft_topics=args.soft_topics,
         pagerank_alpha=args.pagerank_alpha, decouple_selection=args.decouple_selection,
+        paratext_weights=args.paratext_weights,
         plot_enabled=not args.no_plot,
     )
     print(f"DONE -> {out}")
