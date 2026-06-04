@@ -792,3 +792,23 @@ removal of the KNOWN contaminant text (b), which a learned signal cannot do beca
 Banked hooks (all default-OFF, none fully clean): `--dissolve-paratext`, `--content-then-attach`,
 `--soft-paratext` (p_w), `--label-filter`, `--decontaminate`. **Ship the hooks, default none, leave paratext
 to index hygiene.**
+
+### --label-filter — objective metrics say net-NEGATIVE, not just judge-neutral (2026-06-04)
+
+Investigated the judge-tie with three objective label-quality probes (same clustering, filtered vs
+unfiltered labels; `label_metrics.py`):
+- **reassign_acc** (works re-homed to own chapter by LABEL alone, term-space, non-circular): 0.840 → **0.795**
+  (worse — ~445 works no longer match their own chapter's label).
+- **coverage** (mean within-chapter doc-freq of label terms): 0.401 → **0.331** (worse — labels describe
+  fewer of the actual works).
+- **title_align** (label vs the book chapter's real TITLE, external anchor): 0.807 → 0.815 (**flat**, ≈noise).
+- **redund** (inter-chapter label cosine): 0.083 → **0.000** (better — but TAUTOLOGICAL: the filter literally
+  maximizes contrastive discriminativeness, so orthogonal labels are by construction, not validation).
+
+**Verdict:** the only metric it improves is the one it optimizes (circular); on the non-circular metrics it
+DEGRADES (reassignment, coverage) with no external gain (title-align flat). The contrastive re-rank trades
+real representativeness for tautological distinctiveness. **Plain lift labels are objectively better** — and
+this is a clean case of objective probes catching a circular "win" the judge/eye would miss. Downgrade
+`--label-filter` from "safe opt-in" to **net-negative, leave OFF** (hook kept for the record only).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
