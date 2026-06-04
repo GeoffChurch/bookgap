@@ -736,3 +736,31 @@ titles.
 the clean partition is detector-limited, and the output-side soft weight over-removes real papers — both
 because the per-work paratext SIGNAL (keyword-venue membership) is mostly real papers. Index hygiene is the
 one fix that doesn't have a false-positive problem.
+
+### Contrastive embedder label-filter — SAFE but judge-NEUTRAL, mixed (2026-06-04)
+
+`cluster_concept_cca --label-filter`: re-rank each chapter's keyword label by lift × max(contrastive
+embedder relevance, 0) — a term must be closer to THIS chapter's embedding centroid than any other's
+("recover the embedder's discriminative judgement in the label", the user's idea; safe — only displayed
+text changes, no work touched). Validated on jurafsky CCA-coupling (same clustering + works, filtered vs
+unfiltered labels):
+- Labels changed, **mixed quality**: BETTER on some (T1 "perplexity word"→"language modeling"; T2→"machine
+  translation"; T7→"llm alignment"), WORSE on others (T3 dep-parsing LOST the specific "attachment score,
+  transition-based" for generic "dependency, based dependency"; T0 gained "grammars which" noise).
+- **LM judge: TIE on all 4 dims** — indifferent.
+- Still does NOT clean the venue chapter (venue vocab IS its discriminative signature → contrastive keeps
+  it; both raw-relevance and contrastive fail it, for opposite reasons).
+
+**Why mixed:** contrastive favors CENTRAL terms over SPECIFIC-PERIPHERAL ones, so it trades informative
+specifics ("attachment score") for canonical-but-generic phrasings. Net judge-neutral. And on the CCA path
+real chapters rarely carry stray paratext in their top-30 anyway (venue terms concentrate in the venue
+chapter), so there's little stray paratext for it to clean. So: **safe, but not a validated improvement and
+not a paratext fix; kept as an opt-in hook, NOT a default.**
+
+**Paratext arc — DEFINITIVE close:** every layer was tried — clustering removal (detector-limited tail),
+work-suppression p_w (over-removes REAL papers), label-filter (judge-neutral, mixed). None cleanly works,
+because the per-work/per-term paratext SIGNAL is mostly real papers bound by index contamination, and the
+venue chapter is a genuine real-papers cluster. **The one clean, false-positive-free fix is INDEX HYGIENE**
+(strip reference/author strings at ingestion). The default embedding path is naturally paratext-resistant
+(no venue chapter) and needs none of this. Recommendation: ship the documented hooks, default NONE, leave
+paratext to index hygiene if it ever matters.
