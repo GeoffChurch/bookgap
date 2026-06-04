@@ -764,3 +764,31 @@ venue chapter is a genuine real-papers cluster. **The one clean, false-positive-
 (strip reference/author strings at ingestion). The default embedding path is naturally paratext-resistant
 (no venue chapter) and needs none of this. Recommendation: ship the documented hooks, default NONE, leave
 paratext to index hygiene if it ever matters.
+
+### The 'meet' (cell-level de-contamination) — REFUTED both ways; no sweet spot. DEFINITIVE CLOSE (2026-06-04)
+
+`--decontaminate`: down-weight each (work, term) keyword cell by embedder relevance of the term to the work
+— the bipartite-EDGE 'meet' of which work-suppression (row) and word-suppression (column) are the cruder
+marginals. The surgical no-detection/threshold/loss idea. Both relevance forms tested on jurafsky:
+- **RAW** cos(term, work): mean cell weight **0.656** (too mild — venue terms are field-NLP-relevant, kept
+  ~0.5–0.6 → binding survives). Venue chapters PERSIST; AMI 0.619 ≈ 0.620 (wash).
+- **CONTRASTIVE** cos(term,work) − cos(term, field-centroid): mean **0.001** (over-suppressed — real topical
+  terms ARE somewhat field-relevant, so subtracting the field baseline kills nearly all). Clustering
+  COLLAPSES (3443-work mega-cluster, garbled chapters); AMI **0.620→0.424**; venue STILL persists.
+
+**No sweet spot: raw too weak, contrastive too strong, neither removes the venue.** The ironclad reason:
+the venue chapter is real NLP papers bound by a MIX of **(a) field-generic NLP vocabulary** (computational
+linguistics, natural language — genuinely shared AND genuinely topical) and **(b) literal reference-string
+contamination** (proceedings 59th, author surnames). Any LEARNED suppression weak enough to spare (a)'s
+real content leaves the venue binding; strong enough to kill (a) destroys the topical signal. **(a) and (b)
+are inseparable by any embedder/lift/citation signal — they occupy the same semantic neighborhood.**
+
+**DEFINITIVE close of the paratext arc.** Across the full space — work / word / cell × hard / soft × raw /
+contrastive × detection / no-detection (~10 distinct mechanisms) — NOTHING cleanly removes the venue chapter
+without damaging content, and the objective was a WASH throughout (removal never improved AMI). The ONLY
+clean fix is **index hygiene: strip the literal reference-string / author tokens at ingestion** — a TARGETED
+removal of the KNOWN contaminant text (b), which a learned signal cannot do because it conflates (b) with
+(a). The default embedding path embeds the topical abstract and forms no venue chapter, so needs none of it.
+Banked hooks (all default-OFF, none fully clean): `--dissolve-paratext`, `--content-then-attach`,
+`--soft-paratext` (p_w), `--label-filter`, `--decontaminate`. **Ship the hooks, default none, leave paratext
+to index hygiene.**

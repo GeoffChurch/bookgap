@@ -63,6 +63,29 @@ def _rcca(E, T, reg):
     return np.clip(s, 0, 1), E @ A, T @ B
 
 
+def _decontaminate(Xc, rows, cloud, vocab, model_name):
+    """The bipartite-EDGE 'meet': down-weight each (work, term) cell by the embedder relevance of the term
+    to the work. A reference-string/venue term is OFF-TOPIC for a real paper → cos(embed term, embed work)
+    is low → it's suppressed inside that work (leaving its topical vocabulary), while the same term stays
+    full-weight in works where it genuinely IS the topic. Surgical de-contamination, no detection / threshold
+    / work-loss / whack-a-mole — the cell-level form of which work-suppression (row) and word-suppression
+    (column) are the cruder marginals. Returns the reweighted Xc."""
+    from sentence_transformers import SentenceTransformer
+    EMw = normalize(np.asarray(cloud.embeddings(), dtype=np.float64)[rows])
+    terms = np.asarray((Xc > 0).sum(0)).ravel().nonzero()[0]
+    loc = np.full(Xc.shape[1], -1, dtype=np.int64); loc[terms] = np.arange(len(terms))
+    st = SentenceTransformer(model_name, device="cpu")
+    termE = normalize(np.asarray(st.encode([vocab[int(t)] for t in terms]), dtype=np.float64))
+    ccent = normalize(EMw.mean(0)[None, :])[0]                              # concept (field) centroid
+    rel_c = termE @ ccent                                                   # cos(term, field) per term
+    coo = Xc.tocoo()
+    rel_w = (termE[loc[coo.col]] * EMw[coo.row]).sum(1)                     # cos(term, this work)
+    rel = np.maximum(rel_w - rel_c[loc[coo.col]], 0.0)                      # CONTRASTIVE: work-specific, not field-generic
+    LOGGER.info("decontaminate: %d cells × %d terms reweighted by CONTRASTIVE term-work relevance (mean=%.3f)",
+                len(coo.data), len(terms), float(rel.mean()))
+    return sp.csr_matrix((coo.data * rel, (coo.row, coo.col)), shape=Xc.shape)
+
+
 def _chapter_gaps(X, rows, cloud, labels, n_ch, min_size=5):
     """Per-chapter gap = lexical_coh - coupling_coh (members' keyword-TFIDF self-similarity vs
     bibliographic-coupling self-similarity, the latter over non-orphan members only). A real topic has gap
@@ -227,6 +250,11 @@ def main() -> None:
     ap.add_argument("--cca-reg", type=float, default=1e-3, help="CCA ridge (relative to unit-scaled covariances)")
     ap.add_argument("--cca-k", type=int, default=0, help="# canonical directions to keep (0 = auto by elbow)")
     ap.add_argument("--top-k", type=int, default=30)
+    ap.add_argument("--decontaminate", action="store_true",
+                    help="the bipartite-EDGE 'meet': down-weight each (work, term) keyword cell by the "
+                         "embedder relevance of the term to the work, so off-topic reference-string/venue "
+                         "terms are suppressed INSIDE each work (kept where they ARE the topic). Surgical "
+                         "de-contamination at the source — no detection/threshold/work-loss.")
     ap.add_argument("--label-filter", action="store_true",
                     help="re-rank each chapter's keyword label by lift × max(contrastive embedder relevance, "
                          "0) — a term must DISCRIMINATE this chapter (closer to its embedding centroid than "
@@ -291,7 +319,9 @@ def main() -> None:
     N = len(rows)
     # T view: concept-internal TF-IDF -> LSA
     Xc = X[rows].astype(np.float64)
-    idf_c = np.log(N / (np.asarray((Xc > 0).sum(0)).ravel() + 1.0))
+    idf_c = np.log(N / (np.asarray((Xc > 0).sum(0)).ravel() + 1.0))   # IDF on original presence
+    if args.decontaminate:
+        Xc = _decontaminate(Xc, rows, cloud, vocab, cfg.experiment.cloud.embedder.model_name)
     Tw = normalize(Xc.multiply(idf_c).tocsr())
     T = TruncatedSVD(n_components=min(args.lsa_dim, N - 1, Tw.shape[1] - 1), random_state=0).fit_transform(Tw)
     dim = min(args.lsa_dim, N - 1)
