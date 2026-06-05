@@ -1,11 +1,14 @@
-"""One-command curriculum-from-a-book-ToC pipeline — the de-incanted best recipe (2026-06-03).
+"""One-command curriculum-from-a-book-ToC pipeline — the de-incanted best recipe.
 
 Chains the validated steps so the recipe is ONE command, not a flag-incantation:
-  keyword-concept seeding  ->  CCA-hybrid clustering (+ citation ordering)  ->  judge-parseable summary
+  keyword-concept seeding  ->  GCCA multi-view consensus clustering (+ citation ordering)
+  ->  judge-parseable summary
 
-Default clusterer = CCA (the experimentation decider: judge-preferred 3/4 over embedding-dendrogram,
-most specific, generalizes across 4 books, recency-faithful by construction). ``--cluster embedding``
-uses the validated-longer decoupled-selection + embedding path instead.
+Default clusterer = GCCA (branchless multi-view consensus over keyword + embedding + bibliographic-
+coupling; validated 2026-06-04 as a near-best AUTO-SELECTOR — 15/16 dimension-comparisons tie-or-win vs
+each book's best single-view CCA oracle, so it retires the per-book embedding-vs-coupling view choice).
+``--cluster cca`` = the single-view CCA-hybrid oracle; ``--cluster embedding`` = the decoupled-selection
++ embedding-dendrogram path.
 
 Prereq: the cached field work×term index (`field_term_index --field <F> --build`, ~19 min once); the
 sub-steps build it on first use if missing.
@@ -41,10 +44,10 @@ def main() -> None:
     ap.add_argument("--toc-json", required=True, type=Path)
     ap.add_argument("--field", default="17")
     ap.add_argument("--n", type=int, default=25, help="number of chapters (match the book's ToC)")
-    ap.add_argument("--cluster", choices=["cca", "embedding"], default="embedding",
-                    help="embedding = decoupled-selection + dendrogram (DEFAULT: validated longest, "
-                         "wins/ties the multi-book judge); cca = CCA-hybrid, the opt-in for "
-                         "multilingual/foreign-heavy topics (won jurafsky but not the English-niche books)")
+    ap.add_argument("--cluster", choices=["gcca", "cca", "embedding"], default="gcca",
+                    help="gcca = branchless multi-view consensus (DEFAULT: near-best auto-selector, "
+                         "retires the per-book embedding-vs-coupling view choice); cca = single-view "
+                         "CCA-hybrid oracle; embedding = decoupled-selection + dendrogram")
     ap.add_argument("--iters", type=int, default=3)
     ap.add_argument("--out-dir", required=True, type=Path)
     args = ap.parse_args()
@@ -58,11 +61,13 @@ def main() -> None:
          "--backend", "full", "--per-chapter", "--iters", str(args.iters), "--out", str(concept_dir))
     gap = str(concept_dir / "concept_gap.json")
 
-    if args.cluster == "cca":
-        # 2a. CCA-hybrid clustering + citation ordering (the de-incant default)
+    if args.cluster in ("gcca", "cca"):
+        # 2a. GCCA (default) or single-view CCA clustering + citation ordering.
+        extra = (["--method", "gcca", "--gcca-variant", "maxvar", "--citation-source", "full_coupling"]
+                 if args.cluster == "gcca" else [])
         _run("cluster_concept_cca", "--concept-gap", gap, "--field", args.field,
-             "--n", str(args.n), "--out", str(track))
-        # 3. render the judge-parseable summary (CCA writes a terser one)
+             "--n", str(args.n), "--out", str(track), *extra)
+        # 3. render the judge-parseable summary (cluster_concept_cca writes a terser one)
         _run("render_judge_summary", "--run-dir", str(track), "--field", args.field)
         out = track
     else:

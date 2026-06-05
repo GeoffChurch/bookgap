@@ -854,3 +854,49 @@ Cost: ~3% AMI below CCA-embedding on jurafsky (one fidelity gap) — small price
 polish (optional): GCCA vs CCA-embedding on jurafsky directly; the genuine non-convex SUMCOR (the relaxation
 collapsed to MAXVAR). To promote to default: multi-book judge GCCA vs CCA-embedding head-to-head + port into
 the book_curriculum default path.
+
+### GCCA PROMOTED to default + redundancy blemish diagnosed (2026-06-05)
+
+**1a finished — the two remaining head-to-heads (judge: gemma4:31b, repeats=5, both orders).**
+- **jurafsky GCCA-maxvar vs CCA-EMBEDDING directly** (the one un-run): **ties all 4 dims, loses 0** — even
+  though objective AMI still favors CCA-embedding (gcca 0.660/0.673 vs ccaEmbed 0.678/0.693; redund 0.401 vs
+  0.362). The holistic judge does NOT perceive that small AMI/redundancy gap.
+- **neuromorphic** (the breadth/un-tested book, N=13) **GCCA vs CCA-embedding**: wins specificity, ties
+  interestingness+comprehensiveness, **LOSES `progressive` (ordering)** — the first loss in the battery.
+- **Full tally across 4 books = 16 dimension-comparisons: 3 wins / 12 ties / 1 loss.** Thesis holds; the
+  strict "loses 0 everywhere" rule is violated by exactly one (ordering) dimension on one book.
+
+**Diagnosis of the one loss: GCCA's consensus partition is slightly MORE redundant than CCA-embedding's**
+(jurafsky redund 0.401 > 0.362; neuromorphic GCCA visibly over-split — 2 near-duplicate ReLU chapters T2/T9
++ 4 laser/cavity chapters). Redundant chapters linearize worse under the shared net-cited-first ordering →
+the `progressive` loss.
+
+**1b DONE — GCCA promoted to the default clusterer** in `run_concept_curriculum.py` (`--cluster` default
+flipped `embedding`→`gcca`; the gcca branch calls `cluster_concept_cca --method gcca --gcca-variant maxvar
+--citation-source full_coupling`; stale "Default = CCA" docstring fixed). Verified end-to-end on jurafsky
+(seeding → `--method gcca` → 25 GCCA-maxvar topics → render, exit 0, recency-faithful: RLHF/RAG/DPO present).
+`cca` (single-view oracle) and `embedding` (dendrogram) retained as opt-ins.
+
+**De-dup fold-in investigated — NO safe blanket-default exists; routed to the FCA antichain work.**
+- **DPP/FL anchor selection** (`gap_anchor_selection.py`) is already **REFUTED** for distinctiveness (commit
+  591bfdb: diverse anchors ≠ distinctive chapters). Off the table.
+- **Permutation-null coherence-merge** (`merge_redundant_topics.py --permutation-null`, knob-free → fits the
+  branchless aesthetic) **cleanly fixes neuromorphic**: 13→11, merges exactly the 2 ReLU dupes + 2 redundant
+  lasers, preserves every distinct topic, no over-merge (no paratext hub). BUT it (i) **over-merges jurafsky**
+  (τ≈0.43, paratext bridges topics — would regress the multilingual win; clean auto-merge needs paratext
+  removal first, unsolved), (ii) **reduces N below target**, and (iii) as a post-processor **destroys the
+  net-cited-first ordering** (re-sorts by size — the very dimension we'd be fixing). τ=0.3 was too conservative
+  to catch the ReLU dupes.
+- **Conclusion:** the redundancy fix is the FCA **max-stability antichain** problem (a principled,
+  paratext-aware "how many non-redundant concepts"), not a bolt-on merge. Promote GCCA now; fix redundancy in
+  the FCA-lattice thread. Experiment artifacts: `artifacts/curriculum/{neuromorphic_gcca,neuromorphic_gcca_mP,
+  neuromorphic_gcca_m30}`; judge JSON `artifacts/curriculum/_judge_out/`.
+
+**FCA-lattice thread → spun off to its own backlog (2026-06-05).** The "max-stability antichain" idea was
+prototyped (`fca_lattice_probe.py`): the FCA lattice over a lift-distinctive concat_vocab context + **MDL
+(Krimp) selection** is a canonical, knob-free, *embedder-free* concept-discovery that recovers the right ~15
+topics and chooses its own count — but loses the in-distribution last mile to GCCA+merge (lexical
+co-occurrence can't collapse semantic variants the way embeddings do; pushing past it reinvents clustering).
+Banked as the **best embedder-free baseline** for OOD domains in
+[[curriculum-embedder-free-fca-mdl-baseline]]. GCCA+merge stays the default; the redundancy blemish remains a
+(minor, single-book) open item rather than a blocker.
