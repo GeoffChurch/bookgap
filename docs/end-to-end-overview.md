@@ -27,7 +27,7 @@ The coverage at a glance (✓✓ deep, ✓ done, — open):
 | stage | articles / research | lemmas / theorems |
 |---|---|---|
 | 0. substrate | GIST embeddings + OpenAlex citation graph | Mathlib dependency graph |
-| 1. gap detection | ✓✓ | **— open** |
+| 1. gap detection | ✓✓ | ✓ plant-recover validated (temporal pending) |
 | 2. selection | ✓ | ✓ |
 | 3. ordering | ✓ | ✓ |
 | 4. generation | ✓ | ✓ |
@@ -85,19 +85,22 @@ Everything downstream is about distance and adjacency, so first you need a space
   `docs/gap_method_comparison.md`, `docs/backlog/curriculum-applications.md`,
   `artifacts/gap_detection_eval/report.md`.
 
-**Theorems (open cell — now scoped + prototyped, not yet validated).** We'd used the dependency graph
-for *selection* and *ordering* but never for gap detection. The analogy ports cleanly: **theorems are
-the dense "literature" (F), definitions/structures the "anchors" (B)** (~239K theorems, ~98K defs); a
-gap = an *under-theorized concept* (a def reused by other defs but with few theorems about it),
-`Δ = log r_F − log r_B`, hard-gated to math-core (Mathlib minus Tactic/Util/Meta/instances — the
-habitability analog). But a 9-second prototype on the cached graph **reproduces the article-domain
-caveat in sharper form**: single-decl Δ ranks *definitional scaffolding* (`zpowRec`,
-`Function.Injective.*`, prime-suffixed helpers) — the Lean analog of "templated-leak" /
-"raw-emptiness-anti-correlates" — while *genuine* new objects (inductives/structures) are almost never
-theorem-starved (median 25 theorem-users). So a naive point-scorer likely fails here too; the fix is
-regions + embedding space (see Future work). Encouragingly, the **temporal evaluation is feasible and
-cheap**: Mathlib's git tags (v4.10–4.20, ~25K datable arrivals, no network) give a direct analog of
-the article temporal holdout.
+**Theorems (open cell — now *validated by plant-and-recover*; a clean domain inversion).** The
+analogy ports (theorems = F, defs = B; ~190K vs ~38K math-core decls), and a quick prototype's
+*ranking* is — as in the article domain — dominated by **definitional scaffolding** (`zpowRec`,
+`Function.Injective.*`: the Lean "templated-leak"). But the decisive test — **plant-and-recover**
+(delete a concept's theorem cluster, can a detector recover the orphaned region?), null-calibrated
+against *local* deletions, two seeds, clustered bootstrap — gives a surprising, validated verdict:
+the **graph citation-ratio** `Δ = log(def_users+1) − log(thm_users+1)`, recomputed against the
+post-deletion graph, is the **only** detector with real signal (lift **+0.17 / +0.13** over the
+local null, CIs excluding 0; 35/40 plants recovered), while the **embedding density-ratio and
+level-set *regions* — the article domain's winners — FAIL** (lift ≤0; level-set flat at 0.50, recall
+0). The mechanism is unifying: **Lean's dependency graph is a *clean oracle*** (proof-term `uses`
+edges), so a citation-count signal that was noisy/circular for Wikipedia is *sharp* here, whereas
+bge-small embeddings of symbol-heavy type statements place unrelated objects together and let
+scaffolding dominate. **So the right gap detector flips by domain** — graph-citation in Lean,
+embedding density-ratio in articles. (Temporal validation is also feasible: Mathlib git tags
+v4.10–4.20 give ~25K datable arrivals, no network — see Future work.)
 
 ---
 
@@ -197,16 +200,15 @@ its best signals don't predict *future* human effort from a snapshot.
 pre-registered Lean selection/ordering verdicts; the two generators; the Lean verifier as a clean
 evaluation oracle.
 
-**The open cell — gap detection on theorems** (scoped + prototyped, not yet validated). The analogy
-(theorems = F, defs = B) ports, but a single-decl density-ratio inherits the article domain's
-negative result (it ranks definitional scaffolding, not under-theorized concepts). The two levers
-that might rescue a real signal — the same ones that worked for articles — are **(a) level-set
-*regions*** (the only gap method that survived the article temporal test) and **(b) scoring in
-statement-*embedding* space** (so "under-theorized" is semantic, not citation-count, which
-de-weights the transport-helper artifact). Recommended next experiment: **plant-and-recover** — delete
-a theorem cluster, does an embedding level-set detector flag its neighborhood? — vs single-decl Δ; if
-it recovers, promote to the **Mathlib git-tag temporal holdout** (calibrate the matcher on random
-nulls first, clustered bootstrap). That would give Lean its first validated gap detector.
+**The open cell — gap detection on theorems** — now has a *validated* detector, with a twist.
+Plant-and-recover confirms the **graph citation-ratio** recovers planted concept-deletions
+(lift **+0.17** over a local-deletion null, two seeds, CIs exclude 0), while the embedding and
+level-set levers — the *article* winners — **fail**: a clean domain inversion (Lean's dep graph is a
+clean oracle, so the graph signal is sharp; article citations are noisy, so they need embedding
+density-ratio + regions). **Next:** promote the graph citation-ratio to the **Mathlib git-tag
+temporal holdout** (predict under-theorized concepts at version T, check the theorems that arrive by
+T+Δ; calibrate the matcher on local-deletion nulls first, clustered bootstrap over modules) — that
+completes the cell.
 
 **Other open threads.**
 - *Ordering:* a causal corpus-fit test (does order-recovery strengthen with a tighter per-book
