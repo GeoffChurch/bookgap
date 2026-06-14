@@ -92,20 +92,24 @@ p=0.19).
 vs 8–13 chapters: a narrow book covers a small corner of a broad field, so the field has far more
 topics than the book has chapters. N\* measures the corpus, not the book.
 
-**Good-edges tracks corpus-fit — the headline.** The ordering signal is **monotone in
-distinct-coverage**: well-resolved books show it strongly (Jurafsky .64 → 98–100th pctile),
-poorly-resolved ones drop to **random** (Crowdsensing/Neuromorphic .19–.20 → ≤31st pctile). Below
-~.3 distinct-coverage the human's "good local transitions" are indistinguishable from a random
-chapter order — not because the human is disordered, but because the corpus lacks the topics to
-detect it. UOT-similarity falls the same way (.57 → .20). So "human ToCs follow good edges" holds
-**when the corpus is the right field at the right resolution**, not unconditionally.
+**Good-edges *appeared* to track corpus-fit** — across the subfield runs it looked monotone in
+distinct-coverage (Jurafsky .64 → 98–100th pctile; Crowdsensing/Neuromorphic .19–.20 → ≤31st).
+That motivated a causal test.
 
-**Resolution caveat (honest).** Part of Jurafsky's superior fit is that it used a *topic*-level
-corpus while the niche books used broader *subfield* corpora (their OpenAlex `primary_topic` tags
-were too noisy to trust — Color Image's resolved to "blood-disease imaging"). So fit is confounded
-with corpus-resolution. The clean next test is a **tighter per-book corpus** (the book's
-referenced-works neighborhood) — if good-edges strengthens with fit there, the corpus-fit law is
-causal.
+**Causal test (tight per-book corpora) — FALSIFIES the corpus-fit law.** Re-running the three niche
+books on their own gap-ball neighborhoods (`fetch_ids_corpus.py`, ~270–430 works each) raised fit
+sharply — UOT .20→.68 (Neuromorphic), .29→.68 (Crowdsensing); distinct 2–3→5–9, 1–3→5–7 — but
+**good-edges did NOT rise**: Neuromorphic 0–31→22–33rd, Crowdsensing 0–14→9–39th, Color Image even
+*fell* 62–89→24–68th (still at/below random). So improving corpus-fit does **not** buy ordering
+signal; the subfield "good-edges ∝ fit" pattern was a **confound**.
+
+**The leading explanation is genre, not fit.** Jurafsky is a single-author *pedagogical* textbook —
+deliberately sequenced, so consecutive chapters are topically adjacent (good edges). The four niche
+titles are *edited research volumes* (Color Image Processing, Neuromorphic Photonics, Cyberbullying
+Detection, Mobile Crowdsensing): author-independent chapters, topic-grouped but not pedagogically
+ordered → no good edges even at high fit. (Co-caveat: 8–13 chapters also underpowers the
+permutation test — too few transitions.) The corpus-fit gap was real for *fit* (topic vs subfield
+resolution) but is **not** what drives good-edges.
 
 ## What's settled / what's next
 
@@ -115,12 +119,14 @@ causal.
   chapters a flat partition can't represent — the diagnostic half of the cycle idea, without the
   cycle machinery. The *generative* half (emit a ToC with a real intro node + Euler-tour order)
   is still open.
-- **Ordering:** human ToCs sequence by **local good edges, never a global path** — but the signal
-  is only measurable when the corpus resolves the book (good-edges ∝ distinct-coverage across all
-  five books; ≤~.3 fit ⇒ random). This is as much a measurement law as a finding about humans.
-- **Open (the causal test):** corpus-fit is the lever, and it's currently confounded with
-  topic-vs-subfield resolution. Pull each book's **referenced-works neighborhood** (a tight,
-  book-specific field) and re-measure: if good-edges climbs with fit on the *same* books, the
-  corpus-fit law is causal, and the niche-book "nulls" are corpus artifacts, not disordered ToCs.
+- **Ordering:** human ToCs sequence by **local good edges, never a global path** — but **only
+  pedagogical single-author textbooks do** (Jurafsky 98–100th pctile). Edited research volumes
+  don't (≤40th even at high corpus-fit, post-causal-test). Good-edges looks like a **genre signal**
+  (sequenced monograph vs edited collection), *not* a corpus-fit effect — the causal test killed
+  the fit interpretation.
+- **Open (confirm genre):** the genre hypothesis is still confounded with chapter-count power
+  (textbook n=25 vs volumes n=8–13). Test a **single-author pedagogical monograph in a niche field
+  with many chapters** (e.g. Koehn's SMT, Bishop, Goodfellow) — if it shows good edges at its own
+  fit, genre is confirmed over both fit and n.
 - **Still open (generative):** emit an algorithmic ToC with a real intro node + Euler-tour order
   (the generative half of the cycle idea); UOT/recovery only *diagnose* generality so far.
