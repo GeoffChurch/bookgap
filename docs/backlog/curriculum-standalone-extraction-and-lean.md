@@ -358,3 +358,6 @@ proxy** than a proof DAG. Do it only after Lean proves the method.
 - Engine history + validated graph-generic features: `docs/backlog/curriculum-generalization-pedagogical-subspace.md`.
 - Quality metrics (intrinsic + extrinsic): `docs/curriculum-quality-metrics.md`.
 - Lean ecosystem: LeanDojo + ReProver (traced mathlib + premise retrieval), miniF2F, ProofNet.
+- **2026-06-10: t1 controls (shuffled/bm25/irrelevant) + trace-backed proof-size difficulty +
+  waypoint-usage detection are BUILT** (`curriculum_lean/{controls,difficulty,waypoint_usage,run_controls}.py`;
+  real arm runs deferred to GPU) — see `docs/handoffs/2026-06-10-experiment-controls-and-difficulty.md`.
