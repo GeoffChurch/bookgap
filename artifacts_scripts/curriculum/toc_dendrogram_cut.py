@@ -154,13 +154,14 @@ class Node:
         self.sil = float("nan")
 
 
-def build_tree(Z: np.ndarray) -> Tuple[Node, Dict[int, Node]]:
+def build_tree(Z: np.ndarray) -> Tuple[Node, Dict[int, Node], Dict[int, int]]:
     import sys
 
-    from scipy.cluster.hierarchy import linkage, to_tree
+    from scipy.cluster.hierarchy import leaves_list, linkage, to_tree
 
     sys.setrecursionlimit(max(10000, 4 * Z.shape[0]))
     L = linkage(Z, method="ward")
+    leaf_pos = {int(lid): rank for rank, lid in enumerate(leaves_list(L))}  # 1-D order
     root_c, nodes_c = to_tree(L, rd=True)
     nodes: Dict[int, Node] = {}
 
@@ -173,7 +174,29 @@ def build_tree(Z: np.ndarray) -> Tuple[Node, Dict[int, Node]]:
         nodes[c.id] = n
         return n
 
-    return conv(root_c), nodes
+    return conv(root_c), nodes, leaf_pos
+
+
+def adaptive_cut(root: Node, key: str, Z: np.ndarray, mass: np.ndarray,
+                 alpha: float = 0.06, max_n: int = 40) -> List[Node]:
+    """Let the data pick N: split the largest cluster (by `key`) while every
+    cluster stays >= alpha * equal-mass-share. The balance-floor operationalizes
+    'split the top, stop when the smallest would fall' (split-and-evict's intent).
+    """
+    # Ward top-splits are very unbalanced (one broad cluster + a sliver each level),
+    # so a balance-floor degenerates to N=2. Instead split the biggest OVER-CAP
+    # cluster until none exceeds the cap -> N* is whatever the field's granularity
+    # yields. (alpha = cap as a fraction of the corpus; eviction-merge is a future
+    # refinement of the literal split-and-evict.)
+    cap = max(8.0, alpha * len(root.members))
+    clusters = [root]
+    while len(clusters) < max_n:
+        cand = [c for c in clusters if c.left is not None and len(c.members) > cap]
+        if not cand:
+            break
+        largest = max(cand, key=lambda c: len(c.members))
+        clusters = [c for c in clusters if c is not largest] + [largest.left, largest.right]
+    return clusters
 
 
 def child_silhouette(node: Node, Z: np.ndarray) -> float:
@@ -343,6 +366,135 @@ def kmeans_cut(Z: np.ndarray, N: int, seed: int = 42) -> List["Node"]:
 
 
 # --------------------------------------------------------------------------- #
+# Soft / structure-aware matching suite (ST space; cluster in LSA, evaluate here)
+# --------------------------------------------------------------------------- #
+def st_embed(work_texts: List[str], chapters, model_name: str = "all-MiniLM-L6-v2"):
+    from sentence_transformers import SentenceTransformer
+    from sklearn.preprocessing import normalize
+
+    m = SentenceTransformer(model_name, device="cpu")
+    ctext = [f"{c.get('title','')}. {c.get('description','')}" for c in chapters]
+    W = normalize(m.encode(work_texts, batch_size=64, show_progress_bar=False))
+    C = normalize(m.encode(ctext, show_progress_bar=False))
+    return W, C
+
+
+def assign_chapters(W: np.ndarray, C: np.ndarray, mean_center: bool = True) -> List[set]:
+    if mean_center:
+        mu = W.mean(0, keepdims=True)
+        W, C = W - mu, C - mu
+    a = (W @ C.T).argmax(1)
+    return [set(np.where(a == j)[0].tolist()) for j in range(C.shape[0])]
+
+
+def topic_centroids(leaves: List[Node], W: np.ndarray, mass: np.ndarray) -> np.ndarray:
+    from sklearn.preprocessing import normalize
+
+    rows = []
+    for c in leaves:
+        w = mass[c.members]
+        rows.append((W[c.members] * w[:, None]).sum(0) / (w.sum() + 1e-12))
+    return normalize(np.array(rows))
+
+
+def _uot(C: np.ndarray, a: np.ndarray, b: np.ndarray, eps=0.05, rho=1.0, iters=500):
+    """Unbalanced Sinkhorn — KL-relaxed marginals so neither side is forced to
+    fully match (lets the algo over/under-resolve vs the human ToC)."""
+    K = np.exp(-C / eps)
+    u, v = np.ones_like(a), np.ones_like(b)
+    f = rho / (rho + eps)
+    for _ in range(iters):
+        u = (a / (K @ v + 1e-300)) ** f
+        v = (b / (K.T @ u + 1e-300)) ** f
+    return u[:, None] * K * v[None, :]
+
+
+def uot_match(T: np.ndarray, C_st: np.ndarray, leaves, jsets, mass, chapters):
+    """Soft topic<->chapter transport. Returns transported similarity + per-chapter
+    'effective #topics feeding it' = exp(entropy of its transport column): high =>
+    GENERAL chapter (many topics flow in), ~1 => specific. Reveals intro/survey
+    chapters without pre-deciding how many to include."""
+    S = T @ C_st.T                       # (nT, M) cosine in ST space
+    a = np.array([mass[c.members].sum() for c in leaves], float); a /= a.sum()
+    b = np.array([sum(mass[i] for i in s) for s in jsets], float); b /= b.sum()
+    P = _uot(1.0 - S, a, b)
+    transported = float((P * S).sum() / P.sum())
+    gen = []
+    for j in range(len(jsets)):
+        col = P[:, j] / (P[:, j].sum() + 1e-12)
+        ent = float(-(col * np.log(col + 1e-12)).sum())
+        gen.append((chapters[j].get("n"), chapters[j].get("title", ""), math.exp(ent)))
+    return transported, gen
+
+
+def path_likeness(T: np.ndarray, C_st: np.ndarray, leaves, leaf_pos, chapters):
+    """Map each chapter to its nearest topic; is the chapter sequence monotone in
+    the dendrogram's 1-D leaf order? High |Spearman| => the ToC traces a path."""
+    from scipy.stats import spearmanr
+
+    tpos = np.array([np.mean([leaf_pos[m] for m in c.members]) for c in leaves])
+    nearest = (T @ C_st.T).argmax(0)                      # chapter -> topic
+    chap_pos = [tpos[nearest[j]] for j in range(len(chapters))]
+    rho, p = spearmanr(range(len(chapters)), chap_pos)
+    return float(rho), float(p), len(set(nearest.tolist())), nearest
+
+
+def transition_edges(T: np.ndarray, C_st: np.ndarray, chapters, n_perm=4000, seed=0):
+    """The weighted complete graph BEFORE linearization: do Jurafsky's consecutive
+    chapters land on high-similarity topic pairs (good edges) vs a random order?"""
+    G = T @ T.T                                           # topic-topic similarity
+    nearest = (T @ C_st.T).argmax(0)                      # chapter -> topic
+    seq = [nearest[j] for j in range(len(chapters))]
+
+    def mean_edge(order):
+        w = [G[seq[order[k]], seq[order[k + 1]]]
+             for k in range(len(order) - 1) if seq[order[k]] != seq[order[k + 1]]]
+        return float(np.mean(w)) if w else float("nan")
+
+    actual = mean_edge(list(range(len(chapters))))
+    rng = np.random.default_rng(seed)
+    rand = [mean_edge(list(rng.permutation(len(chapters)))) for _ in range(n_perm)]
+    pct = float(np.mean([r < actual for r in rand]))
+    return actual, float(np.nanmean(rand)), pct
+
+
+def run_analyses(root, Z, mass, texts, chapters, leaf_pos, N):
+    print("ST-embedding works + chapters (neutral space)...")
+    W_st, C_st = st_embed(texts, chapters)
+    jsets = assign_chapters(W_st, C_st)
+    jtitles = [(c.get("n"), c.get("title", "")) for c in chapters]
+
+    adaptive = adaptive_cut(root, "effN_sil", Z, mass)
+    cuts = {
+        f"effN_sil@{N}": heap_cut(root, "effN_sil", N, Z, mass),
+        f"adaptive@{len(adaptive)}": adaptive,
+        f"kmeans@{N}": kmeans_cut(Z, N),
+    }
+    print(f"adaptive split-and-evict picked N* = {len(adaptive)} (vs forced {N})\n")
+
+    gen_for_table = None
+    print(f"{'cut':<16}{'UOT-sim':>9}{'path-Spearman':>15}{'distinct/'+str(N):>12}"
+          f"{'good-edge pctile':>18}")
+    for name, leaves in cuts.items():
+        T = topic_centroids(leaves, W_st, mass)
+        uot, gen = uot_match(T, C_st, leaves, jsets, mass, chapters)
+        rho, p, ndist, _ = path_likeness(T, C_st, leaves, leaf_pos, chapters)
+        act, rnd, pct = transition_edges(T, C_st, chapters)
+        print(f"{name:<16}{uot:>9.3f}{f'{rho:+.2f} (p={p:.2f})':>15}"
+              f"{f'{ndist}/{len(jsets)}':>12}{f'{act:.2f} vs {rnd:.2f} [{pct:.0%}]':>18}")
+        if name.startswith("effN_sil"):
+            gen_for_table = gen
+
+    print("\nMost GENERAL Jurafsky chapters (UOT effective #topics feeding in; "
+          "high => overview/intro that a flat partition can't represent):")
+    for n, t, g in sorted(gen_for_table, key=lambda x: -x[2])[:6]:
+        print(f"  ch{n:>2} {str(t)[:40]:<40} eff#topics={g:.1f}")
+    print("Most SPECIFIC (eff#topics ~1 => one topic owns it):")
+    for n, t, g in sorted(gen_for_table, key=lambda x: x[2])[:6]:
+        print(f"  ch{n:>2} {str(t)[:40]:<40} eff#topics={g:.1f}")
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> None:
@@ -356,6 +508,8 @@ def main(argv=None) -> None:
                     help="disable register/language filtering (show raw debris)")
     ap.add_argument("--materialize", choices=["lsa", "st"], default="lsa",
                     help="reference materialization space: lsa (confounded) or st (neutral)")
+    ap.add_argument("--analyses", action="store_true",
+                    help="run the soft/structure suite (adaptive-N, UOT, path, edges)")
     args = ap.parse_args(argv)
 
     toc = json.load(open(args.toc))
@@ -368,8 +522,12 @@ def main(argv=None) -> None:
           f"mass range {mass.min():.0f}-{mass.max():.0f}")
     Z, X, vocab, evr, vec, svd = embed(texts, args.dim, clean=args.clean)
     print(f"embed: TF-IDF -> LSA-{args.dim}, EVR {evr:.3f}, vocab {len(vocab)}")
-    root, nodes = build_tree(Z)
+    root, nodes, leaf_pos = build_tree(Z)
     print(f"tree: {len(nodes)} nodes")
+
+    if args.analyses:
+        run_analyses(root, Z, mass, texts, chapters, leaf_pos, N)
+        return
 
     if args.materialize == "st":
         jsets = materialize_toc_st(chapters, texts)
