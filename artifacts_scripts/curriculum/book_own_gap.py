@@ -47,6 +47,12 @@ def main() -> None:
                     help="exact single-book gap (requires --book-id): nearest non-self book "
                          "+ article ball via dot-products. No all-books query, no HNSW build "
                          "-- the lean book-first path; minutes even at whole-domain scope.")
+    ap.add_argument("--query-text", default=None,
+                    help="(brute-force) gap for an EXTERNAL book not in the corpus: embed this "
+                         "'title. description' text fresh as the query point (nearest corpus "
+                         "book sets the radius). Use instead of --book-id.")
+    ap.add_argument("--query-id", default=None,
+                    help="label/id for the --query-text book (e.g. jurafsky_slp3).")
     ap.add_argument("--subfield", default=None,
                     help="scope to this OpenAlex subfield id (e.g. 1702 = AI)")
     ap.add_argument("--field", default=None,
@@ -77,8 +83,8 @@ def main() -> None:
     article_ids = articles.work_ids()
     LOGGER.info("scope: %d books, %d articles", len(book_ids), len(article_ids))
 
-    if not args.book_id and not args.rank_top:
-        LOGGER.error("pass --book-id and/or --rank-top")
+    if not args.book_id and not args.rank_top and not args.query_text:
+        LOGGER.error("pass --book-id, --rank-top, or --query-text")
         sys.exit(2)
 
     # Lean book-first path: compute ONLY this book's own gap, exactly, via
@@ -86,15 +92,30 @@ def main() -> None:
     # No all-books query, no HNSW build/discard. Matches get_kball_coverage(k=1)
     # semantics (exact L2 sqdist; is_intra_cloud self-drop = excluding self book).
     if args.brute_force:
-        if not args.book_id or args.book_id not in book_ids:
-            LOGGER.error("--brute-force requires a --book-id present in scope")
-            sys.exit(2)
-        bi = book_ids.index(args.book_id)
         b_emb = np.asarray(books.embeddings(), dtype=np.float32)      # Lever A: only book rows
-        book_vec = b_emb[bi]
+        if args.query_text:
+            # External book (not in the corpus): embed its title+description fresh.
+            # The corpus embeddings are L2-normalized (normalize_embeddings=True,
+            # denoiser NONE), so normalize the query to match the space.
+            embedder = instantiate(cfg.experiment.cloud.embedder)
+            with embedder as _e:
+                # embed as (title, abstract): empty title slot so a slug/id doesn't
+                # pollute the embedding; the query_text carries title+description.
+                qv = np.asarray(_e.embed_texts([("", args.query_text)]), dtype=np.float32)[0]
+            book_vec = qv / (float(np.linalg.norm(qv)) + 1e-12)
+            self_bi = None
+            out_book, out_id = (args.query_id or "query_text"), (args.book_id or args.query_id)
+        else:
+            if not args.book_id or args.book_id not in book_ids:
+                LOGGER.error("--brute-force requires --book-id in scope OR --query-text")
+                sys.exit(2)
+            self_bi = book_ids.index(args.book_id)
+            book_vec = b_emb[self_bi]
+            out_book, out_id = books.work_titles()[self_bi], args.book_id
         b_norm2 = float(book_vec @ book_vec)
         d2_books = b_norm2 + np.einsum("ij,ij->i", b_emb, b_emb) - 2.0 * (b_emb @ book_vec)
-        d2_books[bi] = np.inf                                         # drop self
+        if self_bi is not None:
+            d2_books[self_bi] = np.inf                                # drop self (corpus book)
         d_nn2 = float(d2_books.min())
         radius = args.radius_fraction * d_nn2
         LOGGER.info("nearest non-self book sqdist=%.4f -> ball radius(sqdist)=%.4f", d_nn2, radius)
@@ -105,7 +126,7 @@ def main() -> None:
         a_titles = articles.work_titles()
         gap_article_ids = [article_ids[int(j)] for j in in_gap]
         sample_titles = [a_titles[int(j)] for j in in_gap[:args.sample]]
-        LOGGER.info("Book %s own gap (brute-force): %d articles", args.book_id, len(gap_article_ids))
+        LOGGER.info("Book %s own gap (brute-force): %d articles", out_id, len(gap_article_ids))
         for t in sample_titles:
             LOGGER.info("  - %s", t)
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +134,7 @@ def main() -> None:
             "scope_subfield": args.subfield, "scope_field": args.field,
             "radius_fraction": args.radius_fraction, "method": "brute_force",
             "n_books_in_scope": len(book_ids), "n_articles_in_scope": len(article_ids),
-            "book": {"book": books.work_titles()[bi], "book_id": args.book_id,
+            "book": {"book": out_book, "book_id": out_id,
                      "gap_size": len(gap_article_ids), "d_nn_sqdist": d_nn2,
                      "sample_titles": sample_titles, "gap_article_ids": gap_article_ids},
         }, open(args.out, "w"), indent=1)
@@ -169,6 +190,11 @@ def main() -> None:
             LOGGER.info("  [%4d art] %s", g["gap_size"], g["book"][:70])
             ranked.append({k: g[k] for k in ("book", "book_id", "gap_size", "gap_size_percentile", "sample_titles")})
         payload["top_books"] = ranked
+        # Full ranking (ALL books: id + gap), so candidate curation can go to any
+        # depth from this one expensive run -- no re-ranking / HNSW rebuild ever
+        # needed (get_kball_coverage already computed every book's gap above).
+        order = np.argsort(gap_sizes)[::-1]
+        payload["all_book_gaps"] = [[book_ids[int(i)], int(gap_sizes[int(i)])] for i in order]
 
     json.dump(payload, open(args.out, "w"), indent=1)
     LOGGER.info("wrote %s", args.out)

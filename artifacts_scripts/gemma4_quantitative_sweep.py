@@ -81,6 +81,56 @@ CELLS = [
     ("google/embeddinggemma-300m",          "NONE", 0, 5, 0),
     ("google/embeddinggemma-300m",          "NONE", 0, 5, 5),
     ("google/embeddinggemma-300m",          "NONE", 0, 10, 5),
+    # Denoiser bake-off cells for the Appendix B comparison table. Only the
+    # headline (a=10, b=5) config per (embedder, denoiser) -- the bake-off
+    # narrative is "at the headline config, how does each denoiser do",
+    # not a full (a,b) sweep. GIST at k=10 and Gemma at k=394 match the
+    # 374D retained-subspace size used in the headline LPP cells.
+    ("avsolatorio/GIST-small-Embedding-v0", "ANTI_LDA",           10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "ANTI_CSP",           10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "AUG_LPP",            10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "CITATION_ERROR_LDA", 10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "SYM_NORM_LPP",       10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "CCP",                10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "CCLIP",              10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "LIP",                10, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "JAD_EQUAL",          10, 10, 5),
+    ("google/embeddinggemma-300m",          "ANTI_LDA",           394, 10, 5),
+    ("google/embeddinggemma-300m",          "ANTI_CSP",           394, 10, 5),
+    ("google/embeddinggemma-300m",          "AUG_LPP",            394, 10, 5),
+    ("google/embeddinggemma-300m",          "CITATION_ERROR_LDA", 394, 10, 5),
+    ("google/embeddinggemma-300m",          "SYM_NORM_LPP",       394, 10, 5),
+    ("google/embeddinggemma-300m",          "CCP",                394, 10, 5),
+    ("google/embeddinggemma-300m",          "CCLIP",              394, 10, 5),
+    ("google/embeddinggemma-300m",          "LIP",                394, 10, 5),
+    ("google/embeddinggemma-300m",          "JAD_EQUAL",          394, 10, 5),
+    # Retain-128 round 2: same denoiser portfolio at a more aggressive
+    # operating point. drop_k=256 for GIST (retain 128 of 384, ~33%);
+    # drop_k=640 for Gemma (retain 128 of 768, ~17%). NONE excluded
+    # (NoneDenoiser is k-independent). Stress-tests whether the
+    # ranking among denoisers is stable under aggressive denoising,
+    # and provides the 2nd point per (denoiser, embedder) curve needed
+    # to bootstrap a GP-based k-search in round 3.
+    ("avsolatorio/GIST-small-Embedding-v0", "LPP",                256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "ANTI_LDA",           256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "ANTI_CSP",           256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "AUG_LPP",            256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "CITATION_ERROR_LDA", 256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "SYM_NORM_LPP",       256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "CCP",                256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "CCLIP",              256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "LIP",                256, 10, 5),
+    ("avsolatorio/GIST-small-Embedding-v0", "JAD_EQUAL",          256, 10, 5),
+    ("google/embeddinggemma-300m",          "LPP",                640, 10, 5),
+    ("google/embeddinggemma-300m",          "ANTI_LDA",           640, 10, 5),
+    ("google/embeddinggemma-300m",          "ANTI_CSP",           640, 10, 5),
+    ("google/embeddinggemma-300m",          "AUG_LPP",            640, 10, 5),
+    ("google/embeddinggemma-300m",          "CITATION_ERROR_LDA", 640, 10, 5),
+    ("google/embeddinggemma-300m",          "SYM_NORM_LPP",       640, 10, 5),
+    ("google/embeddinggemma-300m",          "CCP",                640, 10, 5),
+    ("google/embeddinggemma-300m",          "CCLIP",              640, 10, 5),
+    ("google/embeddinggemma-300m",          "LIP",                640, 10, 5),
+    ("google/embeddinggemma-300m",          "JAD_EQUAL",          640, 10, 5),
 ]
 
 

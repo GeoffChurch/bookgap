@@ -37,7 +37,9 @@ class RunSummary:
     row_count: int
     gap_coverage_fraction_mean: float
     gap_coverage_fraction_median: float
+    gap_coverage_fraction_std: float
     proposal_gap_size_percentile_mean: float
+    proposal_gap_size_percentile_std: float
     target_gap_size_percentile_mean: float
     proposal_gap_zscore_mean: float
     proposal_gap_zscore_median: float
@@ -94,7 +96,9 @@ def summarize_run(run_dir: Path, topic_subset: Optional[set] = None) -> Dict[int
         article_median = float("nan")
         coverage_mean = float("nan")
         coverage_median = float("nan")
+        coverage_std = float("nan")
         gap_size_percentile_mean = float("nan")
+        gap_size_percentile_std = float("nan")
         target_gap_size_percentile_mean = float("nan")
         proposal_gap_zscore_mean = float("nan")
         proposal_gap_zscore_median = float("nan")
@@ -116,6 +120,8 @@ def summarize_run(run_dir: Path, topic_subset: Optional[set] = None) -> Dict[int
                 coverage_values = coverage_column.loc[coverage_mask]
                 coverage_mean = float(coverage_values.mean())
                 coverage_median = float(coverage_values.median())
+                # Sample std across topics. With ~20 topics, SE_mean = std/sqrt(20).
+                coverage_std = float(coverage_values.std(ddof=1))
 
         if "proposal_gap_size_percentile" in gap_df.columns:
             gap_size_percentile_column = gap_df["proposal_gap_size_percentile"]
@@ -125,6 +131,7 @@ def summarize_run(run_dir: Path, topic_subset: Optional[set] = None) -> Dict[int
                     gap_size_percentile_mask
                 ]
                 gap_size_percentile_mean = float(gap_size_percentile_values.mean())
+                gap_size_percentile_std = float(gap_size_percentile_values.std(ddof=1))
         if "gap_size_percentile" in gap_df.columns:
             target_gap_size_percentile_column = gap_df["gap_size_percentile"]
             target_gap_size_percentile_mask = target_gap_size_percentile_column.notna()
@@ -165,7 +172,9 @@ def summarize_run(run_dir: Path, topic_subset: Optional[set] = None) -> Dict[int
             row_count=int(gap_df.shape[0]),
             gap_coverage_fraction_mean=coverage_mean,
             gap_coverage_fraction_median=coverage_median,
+            gap_coverage_fraction_std=coverage_std,
             proposal_gap_size_percentile_mean=gap_size_percentile_mean,
+            proposal_gap_size_percentile_std=gap_size_percentile_std,
             target_gap_size_percentile_mean=target_gap_size_percentile_mean,
             proposal_gap_zscore_mean=proposal_gap_zscore_mean,
             proposal_gap_zscore_median=proposal_gap_zscore_median,
@@ -225,7 +234,9 @@ def write_csvs(
                     "row_count": summary.row_count,
                     "gap_coverage_fraction_mean": summary.gap_coverage_fraction_mean,
                     "gap_coverage_fraction_median": summary.gap_coverage_fraction_median,
+                    "gap_coverage_fraction_std": summary.gap_coverage_fraction_std,
                     "proposal_gap_size_percentile_mean": summary.proposal_gap_size_percentile_mean,
+                    "proposal_gap_size_percentile_std": summary.proposal_gap_size_percentile_std,
                     "target_gap_size_percentile_mean": summary.target_gap_size_percentile_mean,
                     "proposal_gap_zscore_mean": summary.proposal_gap_zscore_mean,
                     "proposal_gap_zscore_median": summary.proposal_gap_zscore_median,

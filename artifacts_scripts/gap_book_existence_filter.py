@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from artifacts_scripts._keyword_helpers import (
+from artifacts_scripts.keyword_helpers import (
     compute_book_existence_signal,
     compute_gap_keywords,
     compute_top_books,

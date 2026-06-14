@@ -38,12 +38,22 @@ def friendly_embedder_name(embedder_model: Optional[str]) -> str:
 # Mapping from raw denoiser identifiers to friendly display names.
 # Each entry maps to a tuple of (latex_display, plain_display).
 _DENOISER_DISPLAY_NAME_MAP: dict[str, tuple[str, str]] = {
-    # Use \alpha for LaTeX, Unicode α for plain text
-    "CCLIP": (r"$\mathrm{CCLIP}(\alpha=0.5)$", "CCLIP(α=0.5)"),
-    "CCLIP_1": (r"$\mathrm{CCLIP}(\alpha=0.1)$", "CCLIP(α=0.1)"),
+    # CCLIP family (trace-normalized canonical variants; the un-normalized
+    # versions live under *_DEPRECATED enum entries and are not surfaced here).
+    "CCP":     (r"$\mathrm{CCLIP}(\alpha=0)$",    "CCLIP(α=0)"),
     "CCLIP_01": (r"$\mathrm{CCLIP}(\alpha=0.01)$", "CCLIP(α=0.01)"),
+    "CCLIP_1": (r"$\mathrm{CCLIP}(\alpha=0.1)$",  "CCLIP(α=0.1)"),
+    "CCLIP":   (r"$\mathrm{CCLIP}(\alpha=0.5)$",  "CCLIP(α=0.5)"),
+    "LIP":     (r"$\mathrm{CCLIP}(\alpha=1)$",    "CCLIP(α=1)"),
     "CITATION_ERROR_LDA": ("GRAPH_ERROR", "GRAPH_ERROR"),
-    "LIP": (r"$\mathrm{CCLIP}(\alpha=1)$", "CCLIP(α=1)"),
+    # Other denoisers that appear in the bake-off table by enum name only;
+    # render them with hyphens where the math name conventionally uses one.
+    "ANTI_LDA":     ("Anti-LDA",   "Anti-LDA"),
+    "ANTI_CSP":     ("Anti-CSP",   "Anti-CSP"),
+    "AUG_LPP":      ("Aug-LPP",    "Aug-LPP"),
+    "SYM_NORM_LPP": ("Norm-LPP",   "Norm-LPP"),
+    "JAD_EQUAL":    ("JAD",        "JAD"),
+    "JAD_EQUAL_DEPRECATED": ("JAD (pre-fix)", "JAD (pre-fix)"),
 }
 
 
