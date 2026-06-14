@@ -212,7 +212,12 @@ class WorkDenoisers(enum.Enum):
     REL_AMP = ProjectiveDenoiser(denoisers.RelAmpDenoiser())
     # NEIGHBOR_DIST_MIN = ProjectiveDenoiser(denoisers.NeighborDistMinDenoiser())
     LPP = ProjectiveDenoiser(denoisers.LPPDenoiser())
-    AUG_LPP = ProjectiveDenoiser(denoisers.AugmentedLPPDenoiser())
+    # Trace-normalized Augmented LPP. The _DEPRECATED variant below sums
+    # X_c^T L X_c + gamma * S_W_new with no rescaling; tr of the first is ~10^5
+    # while tr of the second is ~10^-1, so the augmentation term contributes
+    # nothing regardless of gamma and the method collapses to plain LPP.
+    AUG_LPP = ProjectiveDenoiser(denoisers.AugmentedLPPDenoiser(normalize_traces=True))
+    AUG_LPP_DEPRECATED = ProjectiveDenoiser(denoisers.AugmentedLPPDenoiser())
     ORTHO_MANIFOLD = ProjectiveDenoiser(denoisers.OrthogonalManifoldDenoiser())
     NORM_LPP = ProjectiveDenoiser(denoisers.NormalizedLPPDenoiser())
     SYM_NORM_LPP = ProjectiveDenoiser(denoisers.SymmetricNormalizedLPPDenoiser())
@@ -226,36 +231,65 @@ class WorkDenoisers(enum.Enum):
     # W_LPP = ProjectiveDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.LPPDenoiser()))
     # W_NEIGHBOR_DIST_MIN = ProjectiveDenoiser(denoisers.EmbeddedGraphDenoiser(denoisers.NeighborDistMinDenoiser()))
     
+    # Trace-normalized Anti-CSP. The _DEPRECATED variant below has no per-matrix
+    # trace normalization (skips the standard CSP convention); kept for
+    # reproducing the historical bake-off.
     ANTI_CSP = ProjectiveDenoiser(
+        denoisers.AntiCSPDenoiser(normalize_traces=True),
+        Filter(work_types=(WorkType.BOOK.value,)),
+        Filter(work_types=(WorkType.ARTICLE.value,)),
+    )
+    ANTI_CSP_DEPRECATED = ProjectiveDenoiser(
         denoisers.AntiCSPDenoiser(),
         Filter(work_types=(WorkType.BOOK.value,)),
         Filter(work_types=(WorkType.ARTICLE.value,)),
     )
 
     ANTI_LDA = ProjectiveDenoiser(denoisers.AntiLDADenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    DOM_INVAR = ProjectiveDenoiser(denoisers.DomainInvariantDenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,))) 
-    
-    CCLIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    CCLIP_1 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    CCLIP_01 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    CCP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    LIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    
+    DOM_INVAR = ProjectiveDenoiser(denoisers.DomainInvariantDenoiser(), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+
+    # Trace-normalized CCLIP variants (pre-rescale S_B and S_L to trace=d
+    # before the convex combination, so α actually mixes the two terms instead
+    # of being swamped by the order-of-magnitude difference in tr(S_L) vs tr(S_B)).
+    CCLIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.5, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCLIP_1 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.1, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCLIP_01 = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.01, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    LIP = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=1, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+
+    # _DEPRECATED CCLIP family: original implementation that omitted trace normalization
+    # in the convex combination, so α was effectively ignored for intermediate values.
+    # CCP_DEPRECATED and LIP_DEPRECATED happen to coincide with CCP and LIP because at
+    # the α=0 and α=1 endpoints the convex combination is moot.
+    CCLIP_DEPRECATED = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCLIP_1_DEPRECATED = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    CCLIP_01_DEPRECATED = ProjectiveDenoiser(denoisers.CCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+
     # Within-Class CCLIP variants (regularize by S_W instead of S_T)
-    WC_CCLIP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    WC_CCLIP_1 = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    WC_CCLIP_01 = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    WC_CCP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pure Anti-LDA with S_W
-    WC_LIP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pure LPP with S_W
-    
-    # Joint Approximate Diagonalization denoisers
-    # JAD_1_4 = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.25, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Optimal 1:4 book:article ratio
-    # JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, wsubset1=1.0, wsubset2=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pre-sample-covariance optimal
-    # JAD_PRIO_T = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, wsubset1=0.5, wsubset2=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Equal emphasis
-    JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    JAD_HALF_L = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    JAD_CCP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
-    JAD_LIP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.5, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP_1 = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.1, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP_01 = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.01, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pure Anti-LDA with S_W
+    WC_LIP = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=1, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))  # Pure LPP with S_W
+    # _DEPRECATED Within-Class CCLIP family (same un-normalized bug as the CCLIP family).
+    WC_CCLIP_DEPRECATED = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.5), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP_1_DEPRECATED = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.1), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    WC_CCLIP_01_DEPRECATED = ProjectiveDenoiser(denoisers.WithinClassCCLIPDenoiser(alpha=0.01), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+
+    # Joint Approximate Diagonalization denoisers.
+    # The trace-normalized variants are the canonical ones; the _DEPRECATED entries
+    # apply weights to raw matrices whose traces differ by ~6 orders of magnitude
+    # (tr(S_L) >> tr(S_T) ≈ tr(S_subset_i)), so S_L dominates the joint objective
+    # regardless of nominal weights. The same rescaling applies to the per-component
+    # scoring step so its multiplicative exponents combine dimensionless quantities.
+    JAD_EQUAL = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_HALF_L = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_CCP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_LIP = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0, normalize_traces=True), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_EQUAL_DEPRECATED = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_HALF_L_DEPRECATED = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.5, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_CCP_DEPRECATED = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=0.0, w_conflate=1.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
+    JAD_LIP_DEPRECATED = ProjectiveDenoiser(denoisers.JADDenoiser(wt=1.0, wl=1.0, w_conflate=0.0), Filter(work_types=(WorkType.BOOK.value,)), Filter(work_types=(WorkType.ARTICLE.value,)))
 
     def __str__(self):
         return self.name

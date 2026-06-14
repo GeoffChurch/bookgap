@@ -12,9 +12,13 @@ Deviations from the OpenAI batch path:
 
 - One-at-a-time synchronous calls (no batch); suitable for offline eval
   runs but not for the production pipeline.
-- No structured-output API; the orchestrator-rendered user prompt
-  carries a JSON-output instruction (see ``prompt_render`` for the
-  exact text) and we parse the response.
+- Optional structured-output enforcement: when ``use_structured_output``
+  is True (the default), the :class:`Proposal` JSON schema is passed to
+  ``ollama.chat``'s ``format`` parameter so the model is constrained to
+  a single ``{title, abstract}`` object — making JSON-array outputs and
+  free-form prose impossible. The orchestrator-rendered user prompt
+  also carries a JSON-output instruction (see ``prompt_render``) so
+  unstructured runs still get the same hint via prose.
 - Ollama models that produce a ``thinking`` block (e.g. gemma4) have
   their thoughts captured separately for transparency but only the
   final ``content`` is parsed as the proposal.
@@ -73,11 +77,18 @@ class OllamaProposalGenerator:
         temperature: float,
         num_ctx: int,
         num_predict: int,
+        use_structured_output: bool = True,
+        max_retries: int = 2,
     ) -> None:
         self.model = model
         self.temperature = temperature
         self.num_ctx = num_ctx
         self.num_predict = num_predict
+        self.use_structured_output = use_structured_output
+        self._response_format = (
+            Proposal.model_json_schema() if use_structured_output else None
+        )
+        self.max_retries = max_retries
 
     def generate(
         self, context: ProposalContext, prompts: PromptPair,
@@ -86,13 +97,14 @@ class OllamaProposalGenerator:
         the orchestrator using the shared ``render_prompts`` function.
 
         On strict-parse failure (anything other than a single JSON
-        object, optionally fenced), we re-call ``ollama.chat`` ONCE more
-        — non-zero temperature gives the model another draw at a clean
-        response. If the retry also fails strict parsing, we leave
-        ``proposal=None`` (the offline recovery utility
-        :func:`_try_parse_proposal_lenient` can still extract a
+        object, optionally fenced), we re-call ``ollama.chat`` up to
+        ``max_retries`` more times — non-zero temperature gives the
+        model another draw at a clean response. If all attempts fail
+        strict parsing, we leave ``proposal=None`` (the offline recovery
+        utility :func:`_try_parse_proposal_lenient` can still extract a
         proposal from the persisted ``raw_content`` if the operator
-        opts in).
+        opts in). Every prior attempt's raw output and thinking text is
+        preserved under ``metadata["prior_attempts"]`` for forensics.
         """
         response = self._chat_once(prompts)
         raw = response.message.content or ""
@@ -100,31 +112,18 @@ class OllamaProposalGenerator:
         proposal = _try_parse_proposal(raw)
         metadata = self._build_metadata(response)
 
-        if proposal is None:
-            # ONE retry. Same prompt, fresh sampling.
-            first_raw = raw
-            first_thinking = thinking
-            retry_response = self._chat_once(prompts)
-            retry_raw = retry_response.message.content or ""
-            retry_thinking = getattr(retry_response.message, "thinking", None)
-            retry_proposal = _try_parse_proposal(retry_raw)
+        prior_attempts: list[dict[str, str | None]] = []
+        while proposal is None and len(prior_attempts) < self.max_retries:
+            prior_attempts.append({"raw_content": raw, "thinking": thinking})
+            response = self._chat_once(prompts)
+            raw = response.message.content or ""
+            thinking = getattr(response.message, "thinking", None)
+            proposal = _try_parse_proposal(raw)
+            metadata.update(self._build_metadata(response))
+
+        if prior_attempts:
             metadata["retried"] = True
-            metadata["first_raw_content"] = first_raw
-            metadata["first_thinking"] = first_thinking
-            if retry_proposal is not None:
-                # Success on retry: persist the retry as `raw_content`
-                # for downstream / re-parse consistency. The first
-                # attempt is preserved in metadata for forensics.
-                proposal = retry_proposal
-                raw = retry_raw
-                thinking = retry_thinking
-                metadata.update(self._build_metadata(retry_response))
-            else:
-                # Both failed: persist the retry as `raw_content` (most
-                # recent attempt) and the first in metadata.
-                raw = retry_raw
-                thinking = retry_thinking
-                metadata.update(self._build_metadata(retry_response))
+            metadata["prior_attempts"] = prior_attempts
 
         return OllamaProposalRecord(
             proposal=proposal,
@@ -136,18 +135,21 @@ class OllamaProposalGenerator:
         )
 
     def _chat_once(self, prompts: PromptPair):
-        return ollama.chat(
-            model=self.model,
-            messages=[
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": prompts.system_prompt},
                 {"role": "user", "content": prompts.user_prompt},
             ],
-            options={
+            "options": {
                 "temperature": self.temperature,
                 "num_ctx": self.num_ctx,
                 "num_predict": self.num_predict,
             },
-        )
+        }
+        if self._response_format is not None:
+            kwargs["format"] = self._response_format
+        return ollama.chat(**kwargs)
 
     def _build_metadata(self, response) -> dict[str, Any]:
         return {

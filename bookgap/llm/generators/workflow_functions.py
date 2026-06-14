@@ -1231,6 +1231,7 @@ def _run_ollama_local_path(
         temperature=float(config.llm.temperature),
         num_ctx=int(config.llm.ollama_num_ctx),
         num_predict=int(config.llm.ollama_num_predict),
+        use_structured_output=bool(config.llm.use_structured_output),
     )
 
     pseudo_batch_id = f"ollama:{config.llm.ollama_model}"

@@ -707,21 +707,39 @@ class AugmentedLPPDenoiser:
     It combines the standard LPP goal (preserving neighbor distances) with the goal of
     minimizing the distance between a point and its A-transformed image.
     This is achieved by summing their respective scatter matrices in the numerator.
+
+    When ``normalize_traces=True``, the two summed scatter matrices (S_W_lpp and S_W_new)
+    are each pre-rescaled to tr=d before the gamma-weighted sum. Without this,
+    tr(S_W_lpp) is ~6 orders of magnitude larger than tr(S_W_new) on our embeddings,
+    so the augmentation term contributes nothing regardless of gamma and the method
+    collapses to plain LPP.
     """
+    def __init__(self, gamma: float = 1.0, normalize_traces: bool = False):
+        self.gamma = gamma
+        self.normalize_traces = normalize_traces
+
     def projector(self, context: DenoiserContext, n_components: int):
         X_c = context.X_centered() # Use centered data
         B = context.A_sym()
         N, d = X_c.shape
         D = sp.diags(np.asarray(B.sum(axis=1)).squeeze())
         L = D - B
-        # Tuning parameter to balance the two objectives
-        gamma = 1.0
+        gamma = self.gamma
         if N < d:
             LOGGER.info(f"AugmentedLPP: N < d, using dual formulation. N={N}, d={d}")
             K = X_c @ adj(X_c) # Use centered data
             M_lpp = L
             M_new = adj(B - sp.eye(N)) @ (B - sp.eye(N))
-            a_dual = K @ (M_lpp + gamma * M_new) @ K
+            a_lpp = K @ M_lpp @ K
+            a_new = K @ M_new @ K
+            if self.normalize_traces:
+                tr_lpp = float(np.trace(a_lpp))
+                tr_new = float(np.trace(a_new))
+                if tr_lpp > 0:
+                    a_lpp = a_lpp * (N / tr_lpp)
+                if tr_new > 0:
+                    a_new = a_new * (N / tr_new)
+            a_dual = a_lpp + gamma * a_new
             b_dual = K @ D @ K
             subset = subset_range(n=N, subset_size=n_components, smallest=True)
             res = _solve_eigh_robustly(a_dual, b_dual, subset)
@@ -735,6 +753,14 @@ class AugmentedLPPDenoiser:
             B_X_c_centered = B_X_c - B_X_c.mean(axis=0, keepdims=True)
             X_c_centered = X_c # already centered
             S_W_new = adj(B_X_c_centered - X_c_centered) @ (B_X_c_centered - X_c_centered) / N
+
+            if self.normalize_traces:
+                tr_lpp = float(np.trace(S_W_lpp))
+                tr_new = float(np.trace(S_W_new))
+                if tr_lpp > 0:
+                    S_W_lpp = S_W_lpp * (d / tr_lpp)
+                if tr_new > 0:
+                    S_W_new = S_W_new * (d / tr_new)
 
             S_A_combined = S_W_lpp + gamma * S_W_new
             S_B_lpp = adj(X_c) @ D @ X_c # Use centered data
@@ -900,17 +926,44 @@ class CCLIPDenoiser(_CCLIPBaseDenoiser):
 
     The objective is to find a projection P that minimizes the Rayleigh quotient:
         R(P) = Trace(Pᵀ * ((1-α)*S_B + α*S_L) * P) / Trace(Pᵀ * S_T * P)
-    
+
     The optimal projection directions are the eigenvectors corresponding to the
     smallest eigenvalues.
-    
+
     Constraint matrix: S_T (Total Scatter)
+
+    When ``normalize_traces=True``, each of S_B and S_L is pre-rescaled so its
+    trace equals d (the embedding dimensionality) before the convex combination
+    is formed. Without this, tr(S_L) can be 10^7× tr(S_B) at scale, so α=0.5
+    does not actually balance the two terms; with it, α has its natural
+    interpretation as the mixing weight. Formula matches the exploratory
+    `_denoise_cclip` implementation in artifacts_scripts/hdbscan_gap_probe.py.
     """
-    def __init__(self, alpha: float = 0.5):
+    def __init__(self, alpha: float = 0.5, normalize_traces: bool = False):
         super().__init__(alpha=alpha, class_weights=None)
+        self.normalize_traces = normalize_traces
 
     def get_constraint_matrix(self, context: DenoiserContext) -> NDArray:
         return context.S_T()
+
+    def projector(self, context: DenoiserContext, n_components: int):
+        if not self.normalize_traces:
+            return super().projector(context, n_components)
+        # Trace-normalized variant: rescale each scatter matrix to trace=d
+        # before the convex combination. Guards against tr=0 (degenerate
+        # topics with identical class means or empty citation graphs).
+        d = context.X().shape[1]
+        S_B = context.S_B_multi(list(range(context.num_subsets())))
+        S_L = context.S_L()
+        tr_B = float(np.trace(S_B))
+        tr_L = float(np.trace(S_L))
+        S_B_norm = S_B * (d / tr_B) if tr_B > 0 else S_B
+        S_L_norm = S_L * (d / tr_L) if tr_L > 0 else S_L
+        A_matrix = (1 - self.alpha) * S_B_norm + self.alpha * S_L_norm
+        B_matrix = self.get_constraint_matrix(context)
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        res = _solve_eigh_robustly(a_matrix=A_matrix, b_matrix=B_matrix, subset=subset)
+        return res.P_or_U, res.eigvals
 
 
 class WithinClassCCLIPDenoiser(_CCLIPBaseDenoiser):
@@ -933,7 +986,8 @@ class WithinClassCCLIPDenoiser(_CCLIPBaseDenoiser):
     Equal weights (default) treat each class's structure as equally important.
     To weight by sample count, pass class_weights proportional to (n_1, n_2, ...).
     """
-    def __init__(self, alpha: float = 0.5, class_weights: Optional[tuple[float, ...]] = None):
+    def __init__(self, alpha: float = 0.5, class_weights: Optional[tuple[float, ...]] = None,
+                 normalize_traces: bool = False):
         """
         Args:
             alpha (float): 0.0 = Pure Anti-LDA (Class Conflation).
@@ -941,8 +995,14 @@ class WithinClassCCLIPDenoiser(_CCLIPBaseDenoiser):
             class_weights (Optional[tuple[float, ...]]): Weights for each class scatter.
                            None = equal weights (recommended for imbalanced classes).
                            e.g., (1.0, 1.0) for equal emphasis on books and articles.
+            normalize_traces (bool): If True, trace-normalize S_B and S_L to tr=d before the
+                           convex combination, so alpha actually balances the two terms.
+                           Without this, tr(S_L) >> tr(S_B) and the convex combination
+                           collapses to pure locality regardless of alpha. See
+                           ``CCLIPDenoiser`` for details.
         """
         super().__init__(alpha=alpha, class_weights=class_weights)
+        self.normalize_traces = normalize_traces
 
     def get_constraint_matrix(self, context: DenoiserContext) -> NDArray:
         """Compute weighted within-class scatter S_W = sum(w_i * S_subset_i)."""
@@ -953,16 +1013,49 @@ class WithinClassCCLIPDenoiser(_CCLIPBaseDenoiser):
             S_W += weights[i] * context.S_subset(i)
         return S_W
 
+    def projector(self, context: DenoiserContext, n_components: int):
+        if not self.normalize_traces:
+            return super().projector(context, n_components)
+        d = context.X().shape[1]
+        S_B = context.S_B_multi(list(range(context.num_subsets())))
+        S_L = context.S_L()
+        tr_B = float(np.trace(S_B))
+        tr_L = float(np.trace(S_L))
+        S_B_norm = S_B * (d / tr_B) if tr_B > 0 else S_B
+        S_L_norm = S_L * (d / tr_L) if tr_L > 0 else S_L
+        A_matrix = (1 - self.alpha) * S_B_norm + self.alpha * S_L_norm
+        B_matrix = self.get_constraint_matrix(context)
+        subset = subset_range(n=d, subset_size=n_components, smallest=True)
+        res = _solve_eigh_robustly(a_matrix=A_matrix, b_matrix=B_matrix, subset=subset)
+        return res.P_or_U, res.eigvals
+
 class AntiCSPDenoiser:
     """
     Finds the least discriminative directions between two classes by finding
     eigenvectors of the generalized system S1*v = λ*(S1+S2)*v where λ is
     closest to 0.5.
+
+    When ``normalize_traces=True``, each of S_1 and S_2 is pre-rescaled so its
+    trace equals d (the embedding dimensionality) before the GEP is formed.
+    This matches the standard CSP normalization convention and prevents
+    class-size or per-class-variance imbalance from tilting the ratio.
     """
+    def __init__(self, normalize_traces: bool = False):
+        self.normalize_traces = normalize_traces
+
     def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
         S1 = context.S_subset(0) # Use context to get CENTERED subset scatter
         S2 = context.S_subset(1) # Use context to get CENTERED subset scatter
-        
+
+        if self.normalize_traces:
+            d = context.X().shape[1]
+            tr_1 = float(np.trace(S1))
+            tr_2 = float(np.trace(S2))
+            if tr_1 > 0:
+                S1 = S1 * (d / tr_1)
+            if tr_2 > 0:
+                S2 = S2 * (d / tr_2)
+
         # 1. Use the robust solver to get the full set of orthogonal eigenvectors.
         result = _solve_eigh_robustly(a_matrix=S1, b_matrix=(S1 + S2), subset=None)
         P_full = result.P_or_U
@@ -1001,23 +1094,32 @@ class JADDenoiser:
     Uses Manopt+RNOJD for superior convergence performance.
     """
     
-    def __init__(self, trials: int = 30, use_positive_definite: bool = False, 
-                 wt: float = 1.0, wl: float = 1.0, w_conflate: float = 1.0):
+    def __init__(self, trials: int = 30, use_positive_definite: bool = False,
+                 wt: float = 1.0, wl: float = 1.0, w_conflate: float = 1.0,
+                 normalize_traces: bool = False):
         """
         Initialize the JAD denoiser.
-        
+
         Args:
             trials: Number of random trials for the RNOJD algorithm
             use_positive_definite: If True, use the positive definite formulation
             wt: Weight for total scatter matrix S_T
             wl: Weight for Laplacian scatter matrix S_L
             w_conflate: Weight for the class-conflation objective (1 - normalized_entropy of subset variances)
+            normalize_traces: If True, pre-rescale each input scatter matrix (S_T, S_L, S_subset_i)
+                              so its trace equals d before applying weights. Without this, the raw
+                              tr(S_L) is ~6 orders of magnitude larger than tr(S_T) or tr(S_subset_i)
+                              on our embeddings, so S_L dominates the joint-diagonalization objective
+                              regardless of nominal weights. The same rescaling is applied to the
+                              per-component quadratic forms used in the scoring step, so that the
+                              wt/wl/w_conflate exponents combine dimensionless quantities.
         """
         self.trials = trials
         self.use_positive_definite = use_positive_definite
         self.wt = wt
         self.wl = wl
         self.w_conflate = w_conflate
+        self.normalize_traces = normalize_traces
     
     def projector(self, context: DenoiserContext, n_components: int) -> tuple[NDArray, Optional[NDArray]]:
         """
@@ -1037,18 +1139,26 @@ class JADDenoiser:
         # Get the scatter matrices (all are now centered)
         S_T = context.S_T()
         S_L = context.S_L()
-        
+
         # Get all subset scatter matrices (all are now centered)
         subset_scatter_matrices = []
         for i in range(num_subsets):
             subset_scatter_matrices.append(context.S_subset(i))
-        
+
+        if self.normalize_traces:
+            def _tn(S):
+                tr = float(np.trace(S))
+                return S * (d / tr) if tr > 0 else S
+            S_T = _tn(S_T)
+            S_L = _tn(S_L)
+            subset_scatter_matrices = [_tn(S) for S in subset_scatter_matrices]
+
         # Apply weights and stack the matrices for joint diagonalization.
         matrices_list = [
             self.wt * S_T,
             self.wl * S_L
         ]
-        
+
         # Add weighted subset matrices
         for i, S_subset in enumerate(subset_scatter_matrices):
             matrices_list.append(self.w_conflate * S_subset)
