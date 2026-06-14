@@ -12,7 +12,8 @@
 - Diversification @ `top_n=30`: **null** (tie 8/11 = 8/11) — confirms 30 is too shallow for the 11.
 - **Salvage [DONE — null]:** even at `top_n=60` on the 6 winnable deep-cone targets (the *only* regime where diversification can act), it's a **TIE: ON@60 = OFF@60 = 4/6** (context genuinely differs, pass@3 doesn't). So diversification is moot where needed (top_n=4) AND null where it can act (top_n=60). **🏁 Curriculum thread CLOSED — clean negative result: tight forward-flat-top-N (10/11) beats every elaboration (bidir 4/11, depth 8/11, diversification null). The prover wants a few tight, relevant theorems; bidir/depth/diversification all dilute that. Keep the simple baseline; don't pursue diversification further in this frame.**
 
-**Books:** r3 (ds6) = 140pp compiling book, **7/8 gates** (overfull the only fail). r4 (ds7 — overfull-forcing + leaner brief) **RUNNING [PENDING]** (~3h) → testing the first clean `done.sh` pass. Both repos' backlogs committed (per your "commit frequently"). Sweep ~1875 finishing.
+**Books:** r3 (ds6) = 140pp compiling book, **7/8 gates** (overfull the only fail). r4 (ds7 — overfull-forcing + leaner brief): **structurally complete** — 8/8 chapters real+closed, 87pp compiling `book.pdf`, at 37/40 nudges in the final gate-clearing phase **[clean-`done.sh`-pass test PENDING, ≤3 nudges]**. Both repos' backlogs committed (per your "commit frequently").
+**Sweep:** ✅ **DONE — 1875/1875 complete** (all 6 shards full, cluster idle). Pre-reg analysis (task #12) now unblocked.
 
 *(Details, timestamped, below.)*
 
