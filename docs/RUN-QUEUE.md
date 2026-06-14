@@ -118,10 +118,13 @@ strictly serial. CPU work (analysis, subagents) may run in parallel with any GPU
 - Pause/instrumentation history: `docs/preregistration-curriculum-context-v2.md` §10.
   Anomaly auditor: `scripts/check_confirm_anomaly.py` (tokens=0 rows; base rate ~0.3%).
 
-### 5. Sweep analysis + the Markov book — THE END  [QUEUED — fires on sweep completion]
+### 5. Sweep analysis + the Markov book — THE END  [ANALYSIS DONE 2026-06-14 (minus markov, per owner); see Readouts + docs/lean-confirmatory-results.md. Markov NOT launched. H4 pending a GPU decision.]
 - Pre-registered analysis per `docs/preregistration-curriculum-context-v2.md` (§5 metrics:
   audited pass@3, exact McNemar, H1–H5; ingest ONLY run_ids confirm_v3_goedel32b /
   confirm_v3_gemma_off). Report to owner.
+- DONE: `curriculum_lean/confirm_analysis.py` (reproducible §5 runner) + report
+  `docs/lean-confirmatory-results.md`. Markov-categories deliberately NOT launched (owner:
+  "finish task #12 as written, minus the Markov book").
 - Then launch the markov-categories book (owner's standing order, explicitly
   deferred-until-the-end): `~/src/learn-and-teach/engagements/markov-categories/` (built by the
   compiler WITH a roster + dual-track analytic||synthetic spec). OPEN QUESTION for the owner at
@@ -176,3 +179,20 @@ strictly serial. CPU work (analysis, subagents) may run in parallel with any GPU
   each (2.0MB session jsonl, single session continued 40× — consistent with context saturation).
 - Disposition: round 2 QUEUED after showdown Phase 1 (fresh-session resume vs the file state —
   the harness's designed recovery; second 40 budget; NOT a content rescue). Then ds4.
+
+### Lean confirmatory sweep — RESULT (2026-06-14; run_id confirm_v3_goedel32b, 1875/1875 gen+verify)
+Full report: `docs/lean-confirmatory-results.md`. Reproduce: `python -m curriculum_lean.confirm_analysis`.
+- **Primary (audited pass@3, n=125):** control 2.4% · t1 15.2% · t1_shuffled 14.4% · bm25 13.6% ·
+  irrelevant 3.2%. Relevant context ≈6× control; control≈placebo.
+- **H1 NOT supported (discriminating):** t1≫control (+12.8pp, p<.001) but t1≈bm25 (+1.6pp, +14/−12,
+  p=.85) — "curriculum" = premise retrieval, graph-centrality buys nothing over BM25.
+- **H2 FALSIFIED:** t1≈t1_shuffled (+5/−4, p=1.0) — set not order.
+- **H3 SUPPORTED:** t1≫irrelevant (+16/−1, p<.001); waypoint mechanism — relevant-arm successes cite
+  a surfaced premise 95–97%, placebo successes 0/9 (0%). Content, not warmth, mechanistically sealed.
+- **H4 NO DATA:** confirm_v3_gemma_off never generated (cluster ran 32B-only). ~4h gemma to fill;
+  GPU currently on the ds7 book. DECISION PENDING.
+- **H5 SUPPORTED:** audited success ↓ with total premise surprisal s_sum (Spearman −0.28, p=.001),
+  pre-committed direction; it's the sum not the mean.
+- Instrument clean: 29/1875 circular draws, all demoted; 0 targets pass@3 on a circular.
+- Markov book NOT launched (owner). t1 (curriculum) toggle elaborations remain dead (see
+  `lean-curriculum-bidir-and-topics`): the simple forward top-N is the keeper; even it ties BM25.
