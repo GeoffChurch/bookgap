@@ -2,6 +2,22 @@
 
 *Autonomous session; user asleep from ~05:30 UTC. Running log of hypotheses → actions → results so you can catch up. Newest results appended at the bottom of "Results".*
 
+## ☀ MORNING TL;DR (read this first)
+
+**Lean curriculum — the elaborations don't beat the simple baseline (a clean, mostly-negative result):**
+- Forward flat top-N at the pre-reg depth (`top_n=4`) = **10/11 audited pass@3** — a strong baseline.
+- Bidirectional / axiom-source-seed: **HURTS** → 4/11 (reverse-PR-from-axioms = a foundationalness prior → context dilution). Retired.
+- Diversification (dendrogram → reformulated as k-DPP / greedy facility-location): **moot at `top_n=4`** — not the optimizer's fault but the `t1` theorem-kind filter + ~2-premise cones (nothing to diversify; diverse≡flat after the filter on 9/11). The facility selector is built, tested, committed (`b2f0888`, OFF byte-identical) but dormant here.
+- Depth: **HURTS** → OFF@30 = 8/11 < OFF@4 = 10/11 (more premises = worse; goedel wants a *tight* context, not a deep one).
+- Diversification @ `top_n=30`: **null** (tie 8/11 = 8/11) — confirms 30 is too shallow for the 11.
+- **Salvage [PENDING]:** the *only* regime where diversification can act = `top_n=60` on **6 winnable deep-cone targets** (≥8 theorem-kind; found by scanning all 125). Eval RUNNING (OFF@60 vs ON@60); verdict ~1–2h, and at top_n=60 diversification genuinely changes the context (unlike top_n=4). Even a relative ON>OFF win wouldn't dislodge the headline, since top_n=60 is a worse regime than top_n=4. **Practical takeaway: tight forward top-N is hard to beat.**
+
+**Books:** r3 (ds6) = 140pp compiling book, **7/8 gates** (overfull the only fail). r4 (ds7 — overfull-forcing + leaner brief) **RUNNING [PENDING]** (~3h) → testing the first clean `done.sh` pass. Both repos' backlogs committed (per your "commit frequently"). Sweep ~1875 finishing.
+
+*(Details, timestamped, below.)*
+
+---
+
 ## Standing instruction
 User approved: (1) probe at the **real** `top_n=4` whether there's similarity structure to repel; (2) if yes, swap the ON-path selection from spectral-dendrogram to a **greedy k-DPP / facility-location** (utility = forward-PR `selection_score`, repulsion = direct-adjacency); (3) test **OFF (flat top-4) vs ON (DPP-diverse top-4)** at the pre-reg depth. Plus: try obvious follow-ups, log everything. "Weight vectors over works" = parked soft/fractional extension.
 
