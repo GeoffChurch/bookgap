@@ -246,6 +246,19 @@ def latex_escape(text: str) -> str:
         "~": r"\textasciitilde{}",
         "^": r"\textasciicircum{}",
         "\\": r"\textbackslash{}",
+        # Unicode characters that appear in OpenAlex titles/abstracts but aren't
+        # in T1 fontenc; map them to LaTeX equivalents to keep the appendix
+        # compilable with pdflatex.
+        " ": "~",
+        "‑": "-",
+        "–": "--",
+        "—": "---",
+        "‘": "`",
+        "’": "'",
+        "“": "``",
+        "”": "''",
+        "α": r"$\alpha$",
+        "β": r"$\beta$",
     }
     out = []
     for ch in text:
@@ -393,9 +406,9 @@ def render_latex_table(
             if v is None:
                 labels.append("--")
             elif max_val is not None and v == max_val:
-                labels.append(rf"\textbf{{{v:.1f}}}")
+                labels.append(rf"\textbf{{{v:.2f}}}")
             else:
-                labels.append(f"{v:.1f}")
+                labels.append(f"{v:.2f}")
         return labels
 
     for topic_id in sorted(by_topic.keys()):
@@ -422,13 +435,13 @@ def render_latex_table(
         publishable_labels = format_group(row_values[6:9])
 
         # topic_label = latex_escape(topic_id)
-        MAX_LENGTH = 35
+        MAX_LENGTH = 33
         truncated_name = topic_names[topic_id][:MAX_LENGTH]
         if len(topic_names[topic_id]) > MAX_LENGTH:
-            truncated_name += "…"
+            truncated_name += "›"
         
-        topic_label = rf"\texttt{{{latex_escape(truncated_name)}}}"
-        topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{{topic_label}}}"
+        # topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\footnotesize {latex_escape(truncated_name)}}}}}"
+        topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\scriptsize {latex_escape(truncated_name)}}}}}"
         row = " ".join(
             [
                 f"{topic_label} & {interesting_labels[0]} & {interesting_labels[1]} & {interesting_labels[2]} "
@@ -443,20 +456,41 @@ def render_latex_table(
             return "--"
         return f"{(sum(vals) / len(vals)):.1f}"
 
-    avg_numeric = [format_avg(vals) for vals in column_sums]
-    def parse_avg(val: str) -> Optional[float]:
-        try:
-            return float(val)
-        except ValueError:
-            return None
-    avg_labels = (
-        format_group([parse_avg(v) for v in avg_numeric[0:3]])
-        + format_group([parse_avg(v) for v in avg_numeric[3:6]])
-        + format_group([parse_avg(v) for v in avg_numeric[6:9]])
-    )
-    avg_row = " & ".join(avg_labels)
+    # Average row: emitted as two LaTeX rows --- means on one, 95% CI
+    # half-widths on the next --- so per-cell width stays narrow and the
+    # decimal points align column-wise (both "4.10" and "$\pm$0.20" have
+    # the decimal at position 2 from the right under \texttt{r}-columns).
+    # CIs use the t-distribution on n = number of topics with data; bolding
+    # is dropped here since CIs convey uncertainty better than a
+    # max-highlight (see paired-difference report printed in main()).
+    import math
+    T_TABLE = {
+        1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+        6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+    }
+    def mean_and_ci_strs(vals: List[float]) -> tuple[str, str]:
+        if not vals:
+            return ("--", "")
+        n = len(vals)
+        mean = sum(vals) / n
+        mean_str = f"{mean:.2f}"
+        if n < 2:
+            return (mean_str, "")
+        variance = sum((v - mean) ** 2 for v in vals) / (n - 1)
+        sd = math.sqrt(variance)
+        se = sd / math.sqrt(n)
+        t_crit = T_TABLE.get(n - 1, 1.96)
+        half = t_crit * se
+        # Half-width only (no "±" prefix); the row label "CI" plus the
+        # caption together make it clear these are 95% CI half-widths
+        # to be read as "mean ± value".
+        return (mean_str, f"{half:.2f}")
+    avg_pairs = [mean_and_ci_strs(vals) for vals in column_sums]
+    avg_means_row = " & ".join(p[0] for p in avg_pairs)
+    avg_cis_row = " & ".join(p[1] for p in avg_pairs)
     lines.append(r"\midrule")
-    lines.append(f"Average & {avg_row} \\\\")
+    lines.append(f"Average & {avg_means_row} \\\\")
+    lines.append(f"CI & {avg_cis_row} \\\\")
 
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
@@ -474,14 +508,15 @@ def main() -> None:
     parser.add_argument(
         "--survey-path",
         type=Path,
-        default=Path("artifacts_scripts/survey/Survey_+Textbook+Proposal+Evaluation_December+19,+2025_10.55.csv"),
+        default=Path("artifacts_scripts/survey/Survey_finalresults.csv"),
         help="Path to survey results CSV",
     )
     parser.add_argument(
         "--latex-path",
         type=Path,
-        default=Path("artifacts_scripts/survey/selected_books_table.tex"),
-        help="Where to write the generated LaTeX table",
+        default=Path("paper/selected_books_table.tex"),
+        help="Where to write the generated LaTeX table (default: paper/ so "
+        "main.tex can \\input it directly).",
     )
     parser.add_argument(
         "--skip-validation",
@@ -502,6 +537,112 @@ def main() -> None:
 
     print(f"Validated {len(selected)} selected books against {len(survey_questions)} survey questions.")
     print(f"LaTeX table written to {args.latex_path}")
+
+    # Paired-difference statistics for §5.6: for each (rater, topic, criterion),
+    # compute the differences (ours - high) and (ours - low) and report mean
+    # ± 95% CI from a paired t-test (n = rater × topic pairs with both values).
+    report_paired_differences(selected, survey_questions, survey_responses)
+
+
+def report_paired_differences(
+    selected: List[BookRecord],
+    questions: List[SurveyQuestion],
+    responses: List[Dict[str, str]],
+) -> None:
+    """Print paired-difference statistics for the §5.6 hybrid claim:
+    `ours − ↑` and `ours − ↓` per criterion, with mean ± 95% CI.
+
+    For each (rater, topic, criterion), we compute the score differences
+    between the generated proposal and each of the two existing-book
+    baselines. The paired-t framing accounts for both rater bias and
+    per-topic difficulty automatically.
+    """
+    import math
+
+    # Map book title -> (topic_id, system_label)
+    by_topic_local: Dict[str, List[BookRecord]] = defaultdict(list)
+    for rec in selected:
+        by_topic_local[rec.topic_id].append(rec)
+    title_to_system: Dict[str, Tuple[str, str]] = {}
+    for topic_id, recs in by_topic_local.items():
+        high, low, generated = choose_by_percentile(recs)
+        if high:
+            title_to_system[high.title] = (topic_id, "high")
+        if low:
+            title_to_system[low.title] = (topic_id, "low")
+        if generated:
+            title_to_system[generated.title] = (topic_id, "ours")
+
+    # Index questions by (title, qtype) for lookup
+    qkey_to_col: Dict[Tuple[str, QuestionType], str] = {
+        (q.title, q.question_type): q.column_name for q in questions
+    }
+
+    criteria: List[QuestionType] = ["interesting", "well_written", "publishable"]
+    # For each criterion, accumulate paired diffs across (rater, topic) pairs.
+    diffs_ours_minus_high: Dict[QuestionType, List[float]] = {c: [] for c in criteria}
+    diffs_ours_minus_low: Dict[QuestionType, List[float]] = {c: [] for c in criteria}
+
+    for response in responses:
+        for topic_id, recs in by_topic_local.items():
+            high, low, generated = choose_by_percentile(recs)
+            if not generated:
+                continue
+            for crit in criteria:
+                gen_col = qkey_to_col.get((generated.title, crit))
+                if gen_col is None:
+                    continue
+                gen_raw = response.get(gen_col, "").strip()
+                if not gen_raw:
+                    continue
+                try:
+                    gen_val = float(gen_raw)
+                except ValueError:
+                    continue
+                if high:
+                    hi_col = qkey_to_col.get((high.title, crit))
+                    if hi_col is not None:
+                        hi_raw = response.get(hi_col, "").strip()
+                        try:
+                            hi_val = float(hi_raw)
+                            diffs_ours_minus_high[crit].append(gen_val - hi_val)
+                        except ValueError:
+                            pass
+                if low:
+                    lo_col = qkey_to_col.get((low.title, crit))
+                    if lo_col is not None:
+                        lo_raw = response.get(lo_col, "").strip()
+                        try:
+                            lo_val = float(lo_raw)
+                            diffs_ours_minus_low[crit].append(gen_val - lo_val)
+                        except ValueError:
+                            pass
+
+    def summarize(name: str, diffs: List[float]) -> str:
+        n = len(diffs)
+        if n < 2:
+            return f"{name:<32s}  n={n} (insufficient data)"
+        mean = sum(diffs) / n
+        variance = sum((v - mean) ** 2 for v in diffs) / (n - 1)
+        sd = math.sqrt(variance)
+        se = sd / math.sqrt(n)
+        # For n>30 (typical here), use z=1.96; otherwise use t (we expect n~150-180)
+        crit = 1.96 if n > 30 else 2.0
+        half = crit * se
+        ci_lo, ci_hi = mean - half, mean + half
+        contains_zero = ci_lo <= 0 <= ci_hi
+        marker = "  (CI includes 0)" if contains_zero else "  (CI EXCLUDES 0)"
+        return (f"{name:<32s}  mean={mean:+.3f}  95% CI=[{ci_lo:+.3f}, {ci_hi:+.3f}]"
+                f"  n={n}{marker}")
+
+    print()
+    print("Paired-difference statistics (per criterion, on the 1-7 Likert scale):")
+    print("=" * 90)
+    for crit in criteria:
+        crit_label = crit.replace("_", "-")
+        print(f"\n  {crit_label}:")
+        print(f"    {summarize('ours − high-cited', diffs_ours_minus_high[crit])}")
+        print(f"    {summarize('ours − low-cited',  diffs_ours_minus_low[crit])}")
 
 
 if __name__ == "__main__":
