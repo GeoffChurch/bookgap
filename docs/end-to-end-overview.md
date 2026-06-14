@@ -85,11 +85,19 @@ Everything downstream is about distance and adjacency, so first you need a space
   `docs/gap_method_comparison.md`, `docs/backlog/curriculum-applications.md`,
   `artifacts/gap_detection_eval/report.md`.
 
-**Theorems (open — the one empty cell).** We've used the dependency graph for *selection* and
-*ordering*, but never asked "where is Mathlib's theorem coverage thin / where should the next lemma
-go?" The natural analogy: **definitions/structures act as the "anchors" (like books) and
-theorems/lemmas as the dense "literature" (like articles)**; a gap = an under-theorized concept.
-Methods + an evaluation for this cell are the subject of active brainstorming (see Future work).
+**Theorems (open cell — now scoped + prototyped, not yet validated).** We'd used the dependency graph
+for *selection* and *ordering* but never for gap detection. The analogy ports cleanly: **theorems are
+the dense "literature" (F), definitions/structures the "anchors" (B)** (~239K theorems, ~98K defs); a
+gap = an *under-theorized concept* (a def reused by other defs but with few theorems about it),
+`Δ = log r_F − log r_B`, hard-gated to math-core (Mathlib minus Tactic/Util/Meta/instances — the
+habitability analog). But a 9-second prototype on the cached graph **reproduces the article-domain
+caveat in sharper form**: single-decl Δ ranks *definitional scaffolding* (`zpowRec`,
+`Function.Injective.*`, prime-suffixed helpers) — the Lean analog of "templated-leak" /
+"raw-emptiness-anti-correlates" — while *genuine* new objects (inductives/structures) are almost never
+theorem-starved (median 25 theorem-users). So a naive point-scorer likely fails here too; the fix is
+regions + embedding space (see Future work). Encouragingly, the **temporal evaluation is feasible and
+cheap**: Mathlib's git tags (v4.10–4.20, ~25K datable arrivals, no network) give a direct analog of
+the article temporal holdout.
 
 ---
 
@@ -189,11 +197,16 @@ its best signals don't predict *future* human effort from a snapshot.
 pre-registered Lean selection/ordering verdicts; the two generators; the Lean verifier as a clean
 evaluation oracle.
 
-**The open cell — gap detection on theorems.** The most-developed article-side aspect has no theorem
-analog yet. Candidate framing: definitions = anchors, theorems = literature; a gap = an
-under-theorized concept or a definition-dense / theorem-sparse region; evaluated by a **Mathlib
-temporal holdout** (predict at version T, check what lemmas land by T+Δ) — the direct analog of the
-article temporal test. *(A design + light prototype for this cell is in progress.)*
+**The open cell — gap detection on theorems** (scoped + prototyped, not yet validated). The analogy
+(theorems = F, defs = B) ports, but a single-decl density-ratio inherits the article domain's
+negative result (it ranks definitional scaffolding, not under-theorized concepts). The two levers
+that might rescue a real signal — the same ones that worked for articles — are **(a) level-set
+*regions*** (the only gap method that survived the article temporal test) and **(b) scoring in
+statement-*embedding* space** (so "under-theorized" is semantic, not citation-count, which
+de-weights the transport-helper artifact). Recommended next experiment: **plant-and-recover** — delete
+a theorem cluster, does an embedding level-set detector flag its neighborhood? — vs single-decl Δ; if
+it recovers, promote to the **Mathlib git-tag temporal holdout** (calibrate the matcher on random
+nulls first, clustered bootstrap). That would give Lean its first validated gap detector.
 
 **Other open threads.**
 - *Ordering:* a causal corpus-fit test (does order-recovery strengthen with a tighter per-book
