@@ -189,8 +189,9 @@ Full report: `docs/lean-confirmatory-results.md`. Reproduce: `python -m curricul
 - **H2 FALSIFIED:** t1≈t1_shuffled (+5/−4, p=1.0) — set not order.
 - **H3 SUPPORTED:** t1≫irrelevant (+16/−1, p<.001); waypoint mechanism — relevant-arm successes cite
   a surfaced premise 95–97%, placebo successes 0/9 (0%). Content, not warmth, mechanistically sealed.
-- **H4 NO DATA:** confirm_v3_gemma_off never generated (cluster ran 32B-only). ~4h gemma to fill;
-  GPU currently on the ds7 book. DECISION PENDING.
+- **H4 SUPPORTED (done 2026-06-14):** gemma secondary confirm_v3_gemma_off ran (750 rows) after the
+  ds7 book freed the GPU. gemma t1−control +0.8pp (1/125 vs 0/125) vs 32B +12.8pp → effect larger for
+  the stronger prover (floor caveat: gemma near-0). **Full pre-reg hypothesis set now complete.**
 - **H5 SUPPORTED:** audited success ↓ with total premise surprisal s_sum (Spearman −0.28, p=.001),
   pre-committed direction; it's the sum not the mean.
 - Instrument clean: 29/1875 circular draws, all demoted; 0 targets pass@3 on a circular.

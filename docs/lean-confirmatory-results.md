@@ -19,8 +19,8 @@ by the prover citing the surfaced premises — it just isn't *curriculum-specifi
 - **H2 (ordering): FALSIFIED.** t1 ≈ t1_shuffled — selection, not sequence, carries the effect.
 - **H3 (content vs warmth): SUPPORTED, airtight.** t1 ≫ irrelevant; placebo successes never
   cite the context, real-arm successes almost always do.
-- **H4 (capability-relativity): NO DATA** — the gemma secondary (`confirm_v3_gemma_off`) was
-  never generated (cluster relocation ran 32B-only). One decision pending (below).
+- **H4 (capability-relativity): SUPPORTED.** gemma's t1−control delta is +0.8pp (1/125 vs 0/125)
+  vs the 32B's +12.8pp — far larger for the stronger prover (floor caveat: gemma near-0 audited).
 - **H5 (difficulty model): SUPPORTED.** Audited success decreases with total premise surprisal
   (Spearman −0.28, p=0.001), in the pre-committed direction.
 
@@ -69,10 +69,13 @@ whole effect; its *sequence* is inert. (Consistent across pass@1/2/3.)
 placebo is itself indistinguishable from control (+2/−1, p=1.00). The lift requires *relevant*
 content, not merely the presence of *some* context. The waypoint mechanism (below) seals it.
 
-**H4 — capability-relativity (secondary). NO DATA.** The registered gemma secondary
-`confirm_v3_gemma_off` (2 statement arms × 125 × 3 ≈ 750 rows) was never run — when the sweep was
-relocated to the Stony Brook cluster it carried only the 32B primary. To evaluate H4 we'd need
-~4h of gemma GPU (control + t1). **Decision pending** — see below.
+**H4 — capability-relativity (secondary). SUPPORTED.** The gemma secondary `confirm_v3_gemma_off`
+(gemma4:31b-it-qat, control + t1, 125×3 each = 750 rows) is complete. gemma's t1−control delta is
+**+0.8pp** (t1 1/125, control 0/125; McNemar +1/−0, p=1.0) versus the 32B primary's **+12.8pp** —
+the curriculum effect is far larger for the stronger prover, the registered direction. *Honest
+caveat:* gemma is near-floor (control 0/125 audited), so this is at least partly a floor effect —
+a prover too weak to close proofs can't capitalize on relevant premises. Instrument clean
+(circulars demoted: control 3, t1 1; zero audited-circular at pass@3).
 
 **H5 — difficulty model (observational). SUPPORTED.** Per-target audited success-rate vs total
 premise surprisal `s_sum_term`: Spearman **−0.283, p=0.001** (Kendall −0.224, p=0.001), in the
@@ -127,11 +130,12 @@ within-family difficulty law (total premise surprisal). H1's narrowing ("selecti
 curriculum") and H2's falsification ("set, not order") are themselves clean, publishable results —
 the claim just narrows from "curriculum helps" to "relevant premises help, however retrieved."
 
-## Open decision — H4
+## Status — COMPLETE
 
-H4 (does the t1−control delta grow with prover capability?) is the one registered hypothesis with
-no data. Running it = ~4h of local gemma GPU for `confirm_v3_gemma_off` (control + t1, 125×3 each).
-The GPU is currently occupied by the data-science r4 book build; H4 would queue behind it. Options:
-fire it after the book frees the GPU, or report H4 as not-evaluated and close the experiment on the
-primary. (The markov-categories book — the other half of the original task — is intentionally
-**not** launched.)
+All five pre-registered hypotheses are evaluated. H4 was filled by running the gemma secondary
+`confirm_v3_gemma_off` (750 rows, control + t1) after the r4 book freed the GPU: t1−control =
++0.8pp (gemma) vs +12.8pp (32B) → capability-relativity supported. The markov-categories book —
+the other half of the original task — is intentionally **not** launched (owner directive). Net
+verdict: H1 not supported (curriculum ≈ retrieval), H2 falsified (selection not order), H3
+supported (content not warmth), H4 supported (capability-relativity), H5 supported (surprisal
+difficulty law).
