@@ -111,6 +111,30 @@ ordered → no good edges even at high fit. (Co-caveat: 8–13 chapters also und
 permutation test — too few transitions.) The corpus-fit gap was real for *fit* (topic vs subfield
 resolution) but is **not** what drives good-edges.
 
+## Genre confirmation (Koehn) + generative ToC
+
+**Koehn's SMT (single-author monograph, 11 ch) — moderate genre support.** Run on the NLP topic
+corpus (same as Jurafsky; Koehn's `primary_topic` is also T10181). At the **same chapter count as
+the edited volumes** (8–13), the monograph shows ordering structure the volumes lacked: adaptive
+cut good-edge **83rd pctile** and a *significant global path* (Spearman +0.64, p=0.04), vs the
+volumes' ≤40th and nulls. So genre beats n-power — *but* it's cut-sensitive (effN_sil@11 only 29th)
+and weaker than Jurafsky, because the broad NLP corpus is a medium fit for an SMT-specific book.
+Not a slam dunk; directionally confirms genre.
+
+**Generative ToC (`--generate`): good-edge order recovers the human sequence.** A greedy
+good-edge walk over the topics (the leaf-order/Euler-tour is null, so order by local adjacency
+instead) + a general intro node:
+- **Generated order aligns with Jurafsky's human order: Kendall-τ +0.39, p=0.008** — where the
+  naive leaf-order was null (−0.16). Humans order by *local good edges*, and a greedy good-edge
+  generator reproduces ~39% of the human sequence. (Koehn τ=−0.26, p=0.31 — null, medium fit + n=11.)
+- Generated orders are **more locally coherent than the human's** (good-edge weight 0.805 vs 0.776
+  Jurafsky; 0.773 vs 0.730 Koehn) — the human trades some local coherence for pedagogical
+  dependency/narrative.
+- **The intro-node heuristic FAILED** — "broadest internal node" landed on N-gram LMs (Jurafsky) /
+  Language Models (Koehn), not the Introduction. Size ≠ intro; a real overview node needs a
+  different selector (centrality to the global centroid, or the node maximizing coverage of all
+  topics), not raw cardinality.
+
 ## What's settled / what's next
 
 - **Matching:** use UOT, not Hungarian — it dissolves the spurious cut-method ranking and reads
@@ -124,9 +148,10 @@ resolution) but is **not** what drives good-edges.
   don't (≤40th even at high corpus-fit, post-causal-test). Good-edges looks like a **genre signal**
   (sequenced monograph vs edited collection), *not* a corpus-fit effect — the causal test killed
   the fit interpretation.
-- **Open (confirm genre):** the genre hypothesis is still confounded with chapter-count power
-  (textbook n=25 vs volumes n=8–13). Test a **single-author pedagogical monograph in a niche field
-  with many chapters** (e.g. Koehn's SMT, Bishop, Goodfellow) — if it shows good edges at its own
-  fit, genre is confirmed over both fit and n.
-- **Still open (generative):** emit an algorithmic ToC with a real intro node + Euler-tour order
-  (the generative half of the cycle idea); UOT/recovery only *diagnose* generality so far.
+- **Genre (Koehn, done):** moderately confirmed over n-power — the n=11 monograph shows ordering
+  structure (adaptive 83rd pctile, path p=0.04) the same-n edited volumes lacked. Cut-sensitive;
+  a higher-fit monograph corpus (or Bishop/Goodfellow) would sharpen it.
+- **Generative (done, the keeper):** a greedy **good-edge** order — not the leaf-order — recovers
+  Jurafsky's human chapter sequence (Kendall-τ +0.39, p=0.008). The generative half of the cycle
+  idea works for the ordering. Two fixes open: a real **intro-node selector** (centrality, not
+  size — the size heuristic missed ch1 on both books) and re-testing generation at high corpus-fit.
