@@ -527,10 +527,15 @@ def generate_toc(root, leaves, T, W_st, mass, n_total):
     while stack:
         nd = stack.pop()
         if nd.left is not None:
-            if 0.2 * n_total <= len(nd.members) <= 0.65 * n_total:
+            if 0.10 * n_total <= len(nd.members) <= 0.6 * n_total:
                 high.append(nd)
             stack += [nd.left, nd.right]
-    intro = max(high, key=lambda c: len(c.members)) if high else root
+    if not high:
+        high = [root]
+    # intro = the broad node most CENTRAL to all topics (max mean similarity to the
+    # topic centroids) — a hub overview, not the most populous cluster (size != intro).
+    hc = topic_centroids(high, W_st, mass)
+    intro = high[int((hc @ T.T).mean(1).argmax())]
     intro_cen = topic_centroids([intro], W_st, mass)[0]
     G = T @ T.T
     start = int((T @ intro_cen).argmax())          # topic nearest the intro overview

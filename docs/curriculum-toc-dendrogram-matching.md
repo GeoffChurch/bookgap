@@ -131,9 +131,22 @@ instead) + a general intro node:
   Jurafsky; 0.773 vs 0.730 Koehn) — the human trades some local coherence for pedagogical
   dependency/narrative.
 - **The intro-node heuristic FAILED** — "broadest internal node" landed on N-gram LMs (Jurafsky) /
-  Language Models (Koehn), not the Introduction. Size ≠ intro; a real overview node needs a
-  different selector (centrality to the global centroid, or the node maximizing coverage of all
-  topics), not raw cardinality.
+  Language Models (Koehn), not the Introduction. Size ≠ intro.
+
+**Follow-ups (a) centrality intro + (b) high-fit corpus — corpus-fit is the master variable.**
+Replacing size with a **centrality** selector (the broad node most similar on average to all topic
+centroids) and re-running Koehn on an **MT-tight** corpus (the NLP corpus filtered to ≥2 MT terms,
+3,963 works — a tight fit to its SMT scope):
+- **High fit fixes both at once.** On the MT-tight corpus the centrality intro lands on **ch1
+  Introduction (match)**, and order-recovery **flips from null to positive: Kendall-τ −0.26 →
+  +0.32** (p=0.195; n=11 underpowers significance, but the sign now matches Jurafsky). Higher fit
+  strengthens order-recovery, as predicted.
+- **Centrality alone, on the broad corpus, is not enough** — it still missed ch1 on Jurafsky (→ch3)
+  and Koehn/NLP (→ch7): the full NLP field's residual debris ("sciendo, professional
+  organizations") pollutes the central node. The selector is correct in principle (works on the
+  clean tight corpus) but **corpus-fit-gated** — like good-edges and order-recovery before it.
+  Corpus-fit/cleanliness governs the whole study: it sets whether good-edges is measurable, whether
+  the intro resolves, and whether the generated order recovers the human's.
 
 ## What's settled / what's next
 
