@@ -1,0 +1,28 @@
+# Overnight log — 2026-06-14 (curriculum k-DPP + book r4 + in-flight evals)
+
+*Autonomous session; user asleep from ~05:30 UTC. Running log of hypotheses → actions → results so you can catch up. Newest results appended at the bottom of "Results".*
+
+## Standing instruction
+User approved: (1) probe at the **real** `top_n=4` whether there's similarity structure to repel; (2) if yes, swap the ON-path selection from spectral-dendrogram to a **greedy k-DPP / facility-location** (utility = forward-PR `selection_score`, repulsion = direct-adjacency); (3) test **OFF (flat top-4) vs ON (DPP-diverse top-4)** at the pre-reg depth. Plus: try obvious follow-ups, log everything. "Weight vectors over works" = parked soft/fractional extension.
+
+## In-flight at start (05:30 UTC)
+- **r4 / ds7 book** (overfull-forcing + leaner brief): `learn-and-teach/outputs/2026-06-14/01-15-36/`, ~5–7h. Watch: does it reach the **first clean `done.sh` pass** (0 failed gates) and stop *early* vs grind to 40/40?
+- **Deep topic eval** (dendrogram, `top_n=30`): cluster cells OFF@30 / ON@30, run_id `toggle_topics_deep_v1`, gen running.
+- **Sweep** `confirm_v3_goedel32b`: ~1857/1875; s3=43411 running (8h `-t`), **s1=43412 stuck PENDING** (needs a backfill nudge).
+
+## Hypotheses
+- **H1 (k-DPP salvage @ k=4):** facility/DPP is non-degenerate at k=4, so diversification is *testable* at the pre-reg depth. Sub-questions: (a) does the M≈8 pool have redundancy structure to exploit? [probe]; (b) does diversified top-4 actually beat flat top-4 at proving? [eval vs OFF=10/11].
+- **H2 (depth effect):** does a deeper curriculum (`top_n=30`, ~30 premises) help or hurt the prover vs `top_n=4`? [OFF@30 vs OFF@4=10/11]
+- **H3 (diversification @ depth):** ON@30 (dendrogram-diversified) vs OFF@30 (flat) — does diversifying a deep context help? [deep eval]
+- **H4 (r4 book / overfull-forcing):** does forcing the overfull gate per-chapter turn r3's 7/8-gate book into the first clean `done.sh` pass?
+
+## Prior results (recap)
+- Axiom-source-seed (bidir PR) toggle **HURTS**: 10/11 → 4/11 (foundations dilution; reverse-PR-from-axioms = a foundationalness prior). Retired.
+- Topic-clustering (dendrogram) **degenerate at top_n=4** (~8-node pool → singular eigensolve); probed at top_n=60 by mistake. Hence the k-DPP reformulation + the deep (top_n=30) eval.
+- Book arc: r1 2/12 no-book (solo collapse) → r2 14/14 no-book (won't assemble) → **r3 140pp compiling book, 7/8 gates** (overfull only). r4 in flight.
+
+## Results (chronological)
+- **05:30 UTC** — Plan set. Dispatched the **k=4 structure probe** (does the M=8 pool have redundancy to repel? does flat-top-4 differ from diverse-top-4?). Checking cluster (deep-eval gen progress, sweep/s1). Will set a waiter on the deep-eval gen so I'm re-woken to verify it.
+- **05:32 UTC** — Cluster healthy, 4 jobs RUNNING: **s1 unstuck itself** (43412 now RUNNING, backfilled — no nudge needed); **deep-eval cells both live** (43422 `leandeepoff30` quadro2, 43423 `leandeepon30` quadro1 — building contexts, no gen rows yet; generous 24h `-t` so no timeout risk); s3=43411 still going (2h35m in). Sweep climbing: s1=294, s3=235 (~1789/1875, both still generating). k=4 probe running → its completion re-wakes me; I'll decide the k-DPP build then, and set a waiter on the deep-eval gen when it nears done (~2h).
+- **05:33 UTC** — Deep-eval agent done: both cells **RUNNING** (43422 OFF@30 quadro2, 43423 ON@30 quadro1), no PENDING; fresh `top_n=30` sig-cache (47 sigs, 0 missing) staged; verify cmds ready. ETA first proofs OFF ~6min / ON ~25min, full gen ~2h.
+  - **⚠ CAVEAT (re-frames H1/H3) — the binding constraint may be CONE DEPTH, not the optimizer.** The agent flagged: the `t1` arm filters to **theorem-kind decls only**, and these 11 probability-theory targets have **shallow theorem-kind forward cones (~3/target** — the sig-cache union was only 36 theorem-kind names across 11 targets). So ON@30 selects ~30 raw premises but only ~3 theorem-kind survive into the t1 context — likely the SAME ~3 as OFF@30. If so, *no selection method* (dendrogram, k-DPP, facility-location) can change the t1 context → diversification is moot here regardless of optimizer. This also explains why the axiom toggle mattered (it changed *which* ~3, toward foundations) while diversification may not (you can't diversify ~3). **Implication for the k-DPP decision:** the real question isn't dendrogram-vs-DPP, it's whether ANY target has a theorem-kind cone deep enough to diversify. I'll measure theorem-kind cone depth across targets when the k=4 probe lands, and let the deep eval give the empirical OFF@30-vs-ON@30 answer, before building the k-DPP. Set deep-cell waiter.
