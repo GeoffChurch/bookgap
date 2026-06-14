@@ -127,8 +127,20 @@ def _cluster(
     )
 
 
-def build_curriculum(graph: GraphSource, cfg: CurriculumConfig) -> Curriculum:
-    """Build a curriculum from a graph source + config (the public entry point)."""
+def build_curriculum(
+    graph: GraphSource,
+    cfg: CurriculumConfig,
+    *,
+    source_indices: Optional[NDArray[np.int64]] = None,
+) -> Curriculum:
+    """Build a curriculum from a graph source + config (the public entry point).
+
+    ``source_indices`` (optional) are extra reverse-direction seed node indices
+    threaded straight to :func:`compute_relevance`. They are consumed ONLY by the
+    ``RankMethod.BIDIRECTIONAL_PAGE_RANK`` branch (reverse-walk seeds); for every
+    other method, and whenever ``None``, the call is byte-identical to the default
+    forward-PR path (``compute_relevance(adj, seed_indices, cfg)``).
+    """
     adj = graph.adjacency().tocsr()
     n_nodes = adj.shape[0]
 
@@ -147,7 +159,7 @@ def build_curriculum(graph: GraphSource, cfg: CurriculumConfig) -> Curriculum:
 
     LOGGER.info("Ranking %d nodes from %d seeds (method=%s)",
                 n_nodes, len(seed_indices), cfg.method.value)
-    rank = compute_relevance(adj, seed_indices, cfg)
+    rank = compute_relevance(adj, seed_indices, cfg, source_indices=source_indices)
 
     top_idx = select_top_n(
         rank.selection_score, cfg.selection.top_n,
