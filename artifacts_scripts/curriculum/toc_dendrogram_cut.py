@@ -282,6 +282,25 @@ def materialize_toc(chapters, vec, svd, Z, mean_center: bool = True) -> List[set
     return [set(np.where(assign == j)[0].tolist()) for j in range(len(chapters))]
 
 
+def materialize_toc_st(chapters, work_texts: List[str], mean_center: bool = True,
+                       model_name: str = "all-MiniLM-L6-v2") -> List[set]:
+    """De-confounded materialization: assign works to chapters in an INDEPENDENT
+    sentence-transformer space (not the LSA-64 geometry the cuts cluster in), so
+    KMeans loses its centroid-objective home advantage over the agglomerative cuts."""
+    from sentence_transformers import SentenceTransformer
+    from sklearn.preprocessing import normalize
+
+    m = SentenceTransformer(model_name, device="cpu")  # don't contend with a resident GPU model
+    ctext = [f"{c.get('title','')}. {c.get('description','')}" for c in chapters]
+    W = normalize(m.encode(work_texts, batch_size=64, show_progress_bar=False))
+    C = normalize(m.encode(ctext, show_progress_bar=False))
+    if mean_center:
+        mu = W.mean(0, keepdims=True)
+        W, C = W - mu, C - mu
+    assign = (W @ C.T).argmax(1)
+    return [set(np.where(assign == j)[0].tolist()) for j in range(len(chapters))]
+
+
 def ruzicka(a: set, b: set, mass: np.ndarray) -> float:
     """Mass-weighted Jaccard of two work-sets: Σmin / Σmax."""
     union = a | b
@@ -335,6 +354,8 @@ def main(argv=None) -> None:
     ap.add_argument("--keys", nargs="+", default=["height", "effN_sil"])
     ap.add_argument("--no-clean", dest="clean", action="store_false",
                     help="disable register/language filtering (show raw debris)")
+    ap.add_argument("--materialize", choices=["lsa", "st"], default="lsa",
+                    help="reference materialization space: lsa (confounded) or st (neutral)")
     args = ap.parse_args(argv)
 
     toc = json.load(open(args.toc))
@@ -350,9 +371,13 @@ def main(argv=None) -> None:
     root, nodes = build_tree(Z)
     print(f"tree: {len(nodes)} nodes")
 
-    jsets = materialize_toc(chapters, vec, svd, Z)
+    if args.materialize == "st":
+        jsets = materialize_toc_st(chapters, texts)
+    else:
+        jsets = materialize_toc(chapters, vec, svd, Z)
     jtitles = [(c.get("n"), c.get("title", "")) for c in chapters]
-    print(f"materialized ToC: chapter sizes {sorted((len(s) for s in jsets), reverse=True)}\n")
+    print(f"materialized ToC [{args.materialize}]: "
+          f"chapter sizes {sorted((len(s) for s in jsets), reverse=True)}\n")
 
     summary = []
     for key in args.keys:
