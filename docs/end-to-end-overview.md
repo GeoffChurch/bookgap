@@ -69,10 +69,14 @@ Everything downstream is about distance and adjacency, so first you need a space
   miner, corridor gaps → a voltage/current detector).
 - **What makes human books *maximally exceptional*?** (this session) Scoring every definition as a
   point-test of books vs a matched null: the winner is the **density log-ratio
-  `Δ = log r_F,k − log r_B,k`** (article-distance minus book-distance), **AUC 0.738 [0.722, 0.755]**
-  (vs a matched-control null; clustered bootstrap). *CI flag:* the **chapter-level** signal is wider
-  (kde `0.725 [0.657, 0.789]`, only 4 book ToCs → ~47 chapter groups) and should be tightened with
-  more ToCs (see Future work). Strikingly, **raw
+  `Δ = log r_F,k − log r_B,k`** (article-distance minus book-distance) vs a matched-control null,
+  clustered bootstrap. **Robust at scale:** A3 stays the book-level winner at **AUC 0.691 [0.674,
+  0.710]** over 29 books / 1,717 groups (was 0.738 on 4 niche books). But CI-tightening *corrected*
+  the **chapter-level** story: kde's `0.725 [0.657, 0.789]` (47 chapters) fell to **0.564 [0.538,
+  0.596]** at 371 chapters — the small-sample number was optimism; chapters are only *modestly*
+  exceptional. (And the unit-inversion is sharp: the book winner A3 scores 0.43 at chapter level,
+  the chapter winner kde scores 0.46 at book level — the two units want opposite definitions.)
+  Strikingly, **raw
   emptiness *anti*-correlates** — books sit in article-*dense* pockets, so it's the *ratio*
   (articles far yet books near), not the void, that marks where books go.
   → `artifacts_scripts/curriculum/book_surprise_bakeoff.py`.
@@ -217,10 +221,11 @@ completes the cell.
   surviving lead.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
-- *Confidence intervals:* several results rest on small n — the **chapter-level** book-surprise and
-  the ToC-matching/ordering findings use only ~4 book ToCs. Harvesting **more books with extractable
-  ToCs** is the cheapest way to tighten these CIs (in progress). The article-level book-surprise
-  (~1,700 book groups) is already tight; the chapter and ordering numbers are the loose ones.
+- *Confidence intervals (book-surprise now tightened):* re-run over **29 books / 371 chapters** —
+  book-level A3 is robust (0.691 [.674,.710]), but chapter-level kde *shrank* from a small-sample
+  0.725 to **0.564 [.538,.596]** (real but weak — a CI-tightening that corrected a conclusion). The
+  **ToC-matching / ordering** findings (good-edges percentiles, the Kendall-τ) still rest on a handful
+  of books and are the loose ones to tighten next.
 
 ## Deep-dive pointers
 
