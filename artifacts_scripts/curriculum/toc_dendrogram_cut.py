@@ -485,6 +485,31 @@ def run_analyses(root, Z, mass, texts, chapters, leaf_pos, N):
         if name.startswith("effN_sil"):
             gen_for_table = gen
 
+    # --- general-node recovery: add broad internal nodes as match candidates so
+    #     general/overview chapters can match a general node instead of being
+    #     force-fit to a specific leaf (the non-antichain / cycle idea, diagnostic) ---
+    n_total = len(root.members)
+    high, stack = [], [root]
+    while stack:
+        nd = stack.pop()
+        if nd.left is not None and len(nd.members) > 0.15 * n_total:
+            high.append(nd)
+            stack += [nd.left, nd.right]
+    high = sorted(high, key=lambda c: -len(c.members))[:8]
+    base = cuts[f"effN_sil@{N}"]
+    print(f"\n--- general-node recovery (+{len(high)} broad nodes as candidates) ---")
+    for label, cand in [("leaves only", base), ("leaves+general", base + high)]:
+        Tc = topic_centroids(cand, W_st, mass)
+        nearest = (Tc @ C_st.T).argmax(0)
+        routed = sum(1 for j in range(len(jsets)) if nearest[j] >= len(base))
+        print(f"  [{label:<14}] distinct candidates hit = {len(set(nearest.tolist()))}"
+              f"/{len(jsets)}; chapters routed to a general node = {routed}")
+    Tc = topic_centroids(base + high, W_st, mass)
+    nearest = (Tc @ C_st.T).argmax(0)
+    routed_ch = [jtitles[j] for j in range(len(jsets)) if nearest[j] >= len(base)]
+    print("  chapters that PREFER a general node: "
+          + ", ".join(f"ch{n}:{str(t)[:18]}" for n, t in routed_ch))
+
     print("\nMost GENERAL Jurafsky chapters (UOT effective #topics feeding in; "
           "high => overview/intro that a flat partition can't represent):")
     for n, t, g in sorted(gen_for_table, key=lambda x: -x[2])[:6]:
