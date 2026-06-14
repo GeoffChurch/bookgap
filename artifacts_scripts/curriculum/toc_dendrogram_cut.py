@@ -519,6 +519,66 @@ def run_analyses(root, Z, mass, texts, chapters, leaf_pos, N):
         print(f"  ch{n:>2} {str(t)[:40]:<40} eff#topics={g:.1f}")
 
 
+def generate_toc(root, leaves, T, W_st, mass, n_total):
+    """Emit an ordered algo ToC: a general INTRO node + the topics in a greedy
+    GOOD-EDGE walk (the leaf-order/Euler-tour is null even for Jurafsky, so order
+    by local topical adjacency instead). Returns (intro_node, order_indices)."""
+    high, stack = [], [root]
+    while stack:
+        nd = stack.pop()
+        if nd.left is not None:
+            if 0.2 * n_total <= len(nd.members) <= 0.65 * n_total:
+                high.append(nd)
+            stack += [nd.left, nd.right]
+    intro = max(high, key=lambda c: len(c.members)) if high else root
+    intro_cen = topic_centroids([intro], W_st, mass)[0]
+    G = T @ T.T
+    start = int((T @ intro_cen).argmax())          # topic nearest the intro overview
+    order, rem = [start], set(range(len(T))) - {start}
+    while rem:                                       # greedy nearest-unvisited (good-edge) walk
+        last = order[-1]
+        nxt = max(rem, key=lambda j: G[last, j])
+        order.append(nxt)
+        rem.discard(nxt)
+    return intro, order
+
+
+def run_generate(root, Z, mass, texts, chapters, leaf_pos, N, X, vocab):
+    from scipy.stats import kendalltau
+
+    print("ST-embedding...")
+    W_st, C_st = st_embed(texts, chapters)
+    jtitles = [(c.get("n"), c.get("title", "")) for c in chapters]
+    leaves = heap_cut(root, "effN_sil", N, Z, mass)
+    T = topic_centroids(leaves, W_st, mass)
+    intro, order = generate_toc(root, leaves, T, W_st, mass, len(root.members))
+
+    print(f"\n=== GENERATED ToC ({N} topics, good-edge order, + intro node) ===")
+    intro_cen = topic_centroids([intro], W_st, mass)[0]
+    intro_chap = int((C_st @ intro_cen).argmax())
+    print(f"  [INTRO/general node, n={len(intro.members)}] {log_odds_terms(X, intro.members, vocab)}")
+    print(f"     ↳ nearest human chapter: ch{jtitles[intro_chap][0]} {jtitles[intro_chap][1]}")
+    for rank, ti in enumerate(order, 1):
+        print(f"  {rank:>2}. {log_odds_terms(X, leaves[ti].members, vocab, 5)}")
+
+    # evaluate the generated ORDER against the human chapter sequence
+    G = T @ T.T
+    gen_edge = float(np.mean([G[order[k], order[k + 1]] for k in range(len(order) - 1)]))
+    nearest = (T @ C_st.T).argmax(0)                 # human chapter -> topic index
+    pos = {t: i for i, t in enumerate(order)}
+    chap_genpos = [pos[nearest[j]] for j in range(len(chapters))]
+    tau, p = kendalltau(range(len(chapters)), chap_genpos)
+    # human order's own good-edge weight (consecutive matched topics) for comparison
+    hum_edge = float(np.mean([G[nearest[j], nearest[j + 1]]
+                              for j in range(len(chapters) - 1)
+                              if nearest[j] != nearest[j + 1]]))
+    print(f"\n  generated-order good-edge weight = {gen_edge:.3f}; "
+          f"human-order good-edge weight = {hum_edge:.3f}")
+    print(f"  Kendall-tau(generated order, human order) = {tau:+.2f} (p={p:.3f})")
+    print(f"  intro node's nearest chapter = ch{jtitles[intro_chap][0]} "
+          f"({'MATCHES human ch1' if jtitles[intro_chap][0] == 1 else 'not ch1'})")
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -535,6 +595,8 @@ def main(argv=None) -> None:
                     help="reference materialization space: lsa (confounded) or st (neutral)")
     ap.add_argument("--analyses", action="store_true",
                     help="run the soft/structure suite (adaptive-N, UOT, path, edges)")
+    ap.add_argument("--generate", action="store_true",
+                    help="generate an ordered algo ToC (intro node + good-edge order) + eval")
     args = ap.parse_args(argv)
 
     toc = json.load(open(args.toc))
@@ -552,6 +614,9 @@ def main(argv=None) -> None:
 
     if args.analyses:
         run_analyses(root, Z, mass, texts, chapters, leaf_pos, N)
+        return
+    if args.generate:
+        run_generate(root, Z, mass, texts, chapters, leaf_pos, N, X, vocab)
         return
 
     if args.materialize == "st":
