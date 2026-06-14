@@ -27,7 +27,7 @@ The coverage at a glance (✓✓ deep, ✓ done, — open):
 | stage | articles / research | lemmas / theorems |
 |---|---|---|
 | 0. substrate | GIST embeddings + OpenAlex citation graph | Mathlib dependency graph |
-| 1. gap detection | ✓✓ | ✓ plant-recover validated (temporal pending) |
+| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative (both domains) |
 | 2. selection | ✓ | ✓ |
 | 3. ordering | ✓ | ✓ |
 | 4. generation | ✓ | ✓ |
@@ -103,8 +103,13 @@ level-set *regions* — the article domain's winners — FAIL** (lift ≤0; leve
 edges), so a citation-count signal that was noisy/circular for Wikipedia is *sharp* here, whereas
 bge-small embeddings of symbol-heavy type statements place unrelated objects together and let
 scaffolding dominate. **So the right gap detector flips by domain** — graph-citation in Lean,
-embedding density-ratio in articles. (Temporal validation is also feasible: Mathlib git tags
-v4.10–4.20 give ~25K datable arrivals, no network — see Future work.)
+embedding density-ratio in articles. **But a second result cuts the other way:** the git-tag
+temporal holdout is *negative* — M1 recovers *planted* concepts (static) yet does **not predict
+where new theorems land** (centrality-matched AUC 0.50; what actually attracts new theorems is
+*preferential attachment* — already-theorized defs grow ~2.4× their matched null — the **opposite**
+of a gap). This mirrors the article temporal result exactly, so the *temporal* finding is
+**universal: a gap does not forecast arrivals — rich-get-richer does**, and the clean oracle did
+**not** rescue prediction.
 
 ---
 
@@ -209,10 +214,11 @@ Plant-and-recover confirms the **graph citation-ratio** recovers planted concept
 (lift **+0.17** over a local-deletion null, two seeds, CIs exclude 0), while the embedding and
 level-set levers — the *article* winners — **fail**: a clean domain inversion (Lean's dep graph is a
 clean oracle, so the graph signal is sharp; article citations are noisy, so they need embedding
-density-ratio + regions). **Next:** promote the graph citation-ratio to the **Mathlib git-tag
-temporal holdout** (predict under-theorized concepts at version T, check the theorems that arrive by
-T+Δ; calibrate the matcher on local-deletion nulls first, clustered bootstrap over modules) — that
-completes the cell.
+density-ratio + regions). **Done — and negative:** the git-tag temporal holdout shows M1's static recovery does **not**
+transfer to *predicting* arrivals (centrality-matched AUC 0.50; preferential attachment, not gaps,
+drives where new theorems land — mirroring the article temporal negative). So the cell is
+*resolved*: Lean has a validated **static** gap detector, but in **both** domains gaps don't forecast
+the field's future — a universal negative, independent of oracle cleanness.
 
 **Other open threads.**
 - *Ordering:* a causal corpus-fit test (does order-recovery strengthen with a tighter per-book
