@@ -36,7 +36,7 @@ TABULAR_ONLY = False
 # When USE_LONGTABLE is False and TABULAR_ONLY is False, break the table into
 # multiple table* floats of at most this many rows each.  Set to None to emit a
 # single table* regardless of length.
-CHUNK_ROWS: int | None = 35
+CHUNK_ROWS: int | None = 39
 
 DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
@@ -214,6 +214,20 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Maximum character length for topic display names in best-run tables. "
             "Use a negative value to leave names untrimmed."
+        ),
+    )
+    parser.add_argument(
+        "--preferred-denoiser",
+        type=str,
+        default=None,
+        help=(
+            "If set, restrict the per-(embedder, articles, books) best-run "
+            "selection to rows with this denoiser (e.g. 'LPP'). Without this "
+            "flag, the script picks the denoiser with the highest "
+            "proposal_gap_size_percentile_mean per cell, which may differ "
+            "from the headline choice the paper text adopts. Falls back to "
+            "auto-pick for any (embedder, articles, books) cell where the "
+            "preferred denoiser has no run."
         ),
     )
     parser.add_argument(
@@ -1440,8 +1454,11 @@ def build_best_run_caption(
 ) -> str:
     # Use denoiser mapping with parameters (e.g., CCLIP(alpha=0.5))
     denoiser_display = friendly_denoiser_name(str(denoiser), latex=True)
-    # Explicitly use plain $k$ without makecell wrapper in caption.
-    return f"Best {friendly_embedder} run (Denoiser={denoiser_display}, $k$={drop_k})"
+    # Neutral phrasing (no "best" framing now that --preferred-denoiser
+    # bypasses the auto-pick). The template is intentionally plain so
+    # paper authors can edit it in this file without diving into the
+    # script's selection logic.
+    return f"Per-topic results for {friendly_embedder} with denoiser {denoiser_display} at $k={drop_k}$."
 
 
 def ordered_embedder_columns(columns: Sequence[str]) -> Sequence[str]:
@@ -2157,7 +2174,24 @@ def main() -> None:
             if not should_generate_individual_tables or gap_output_dir is None:
                 continue
                 
-            best_row = select_best_summary_row(summary_subset)
+            # If --preferred-denoiser is set, restrict the candidate pool
+            # before picking the best row. Falls back to the full pool if
+            # the preferred denoiser has no runs in this cell.
+            best_pool = summary_subset
+            if args.preferred_denoiser:
+                preferred = summary_subset[
+                    summary_subset["denoiser"].astype(str) == args.preferred_denoiser
+                ]
+                if preferred.empty:
+                    LOGGER.warning(
+                        "--preferred-denoiser=%s has no runs for gap %s, %s "
+                        "(articles=%s, books=%s); falling back to auto-pick",
+                        args.preferred_denoiser, gap_idx, friendly_embedder,
+                        num_articles, num_books,
+                    )
+                else:
+                    best_pool = preferred
+            best_row = select_best_summary_row(best_pool)
             if best_row is None:
                 LOGGER.warning(
                     "No best run identified for gap %s, %s (articles=%s, books=%s)",
@@ -2202,7 +2236,7 @@ def main() -> None:
             )
             # Use stable label based on embedder/articles/books instead of run timestamp
             label = (
-                f"tab:best_run_gap{gap_idx}_{sanitize_component(embedder_model_str).lower()}"
+                f"tab:per_topic_gap{gap_idx}_{sanitize_component(embedder_model_str).lower()}"
                 f"_articles_{num_articles}_books_{num_books}"
             )
 
@@ -2242,7 +2276,7 @@ def main() -> None:
 
             write_latex(
                 best_table_display,
-                gap_output_dir / "best_run_gaps_analysis.tex",
+                gap_output_dir / "per_topic.tex",
                 caption=caption,
                 label=label,
                 formatters=formatters,

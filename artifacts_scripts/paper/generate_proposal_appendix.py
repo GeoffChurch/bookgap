@@ -23,6 +23,29 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import math
+from typing import Literal
+
+BookMarkerStyle = Literal["physics", "linear"]
+_DEFAULT_BOOK_MARKER_STYLE: BookMarkerStyle = "physics"
+
+# Default curated appendix: the six topics named as failures in §5.1
+# (\Cref{sec:overall_performance}) and T10181 (Natural Language Processing
+# Techniques) as a representative successful case. T10126 and T12026
+# (parse-recovered via lenient parsing — see
+# artifacts_scripts/lenient_recover_failed_proposals.py) are commented out
+# for the current paper revision; uncomment to include them in the appendix.
+DEFAULT_TOPIC_IDS = (
+    # "T10126",
+    "T10181",
+    "T10215",
+    "T10639",
+    # "T12026",
+    "T12157",
+    "T13623",
+    "T13674",
+    "T14381",
+)
 import csv
 import html
 import re
@@ -140,6 +163,21 @@ _FIGURE_HEIGHT_CM = 6.0       # shared height of both side-by-side figures
 _STACK_BAR_WIDTH_CM = 0.5     # width of each stack column
 _STACK_GAP_CM = 0.15          # horizontal gap between pre and post stacks
 
+# Book-marker physics: existing books are rendered at a "perceived
+# distance" derived from their coverage of the topic's article cloud.
+# Higher-coverage books are drawn closer-and-brighter; lower-coverage
+# ones recede into atmospheric haze. Two physics relationships:
+#   apparent size      ∝ 1 / d           (small-angle approximation)
+#   apparent intensity ∝ exp(-α · d)     (Beer-Lambert haze)
+# We map coverage c ∈ [0, c_max] linearly to d ∈ [_BOOK_D_MIN, _BOOK_D_MAX]
+# (closest at c=c_max, farthest at c=0). _BOOK_BASE_SIZE_PT is the
+# closest book's font size; _BOOK_HAZE_ALPHA controls how much the
+# farthest book fades.
+_BOOK_D_MIN = 1.0
+_BOOK_D_MAX = 2.5  # size ratio is _BOOK_D_MAX / _BOOK_D_MIN
+_BOOK_BASE_SIZE_PT = 12.0  # 1.5× larger than the original 4pt baseline
+_BOOK_HAZE_ALPHA = 0.4
+
 
 def _render_twin_stacks_tikz(
     pre_counts: list[int],
@@ -209,12 +247,24 @@ def _render_twin_stacks_tikz(
 def _render_projection_scatter_tikz(
     projection: LocalProjection2D,
     book_coverages: list[int],
+    book_marker_style: BookMarkerStyle = _DEFAULT_BOOK_MARKER_STYLE,
 ) -> str:
     """TikZ scatter of gap articles + books + proposal in PCA-on-all-articles
     coordinates. ``book_coverages`` is parallel to ``projection.books`` and
     provides each book's in-gap article count, used to set per-book opacity
     (more covered articles → more opaque). The seed marker is omitted —
     seeds are a gap-detection provenance artifact, not visually informative.
+
+    ``book_marker_style`` selects how coverage maps to marker appearance:
+
+    - ``"physics"`` (default): coverage maps to a perceived distance
+      ``d``; size is ``∝ 1/d`` (small-angle) and opacity is
+      ``∝ exp(-α·d)`` (Beer-Lambert haze). Less-covered books shrink
+      *and* fade, evoking a depth cue. Constants are
+      ``_BOOK_D_MIN/MAX``, ``_BOOK_BASE_SIZE_PT``, ``_BOOK_HAZE_ALPHA``.
+    - ``"linear"``: original styling — constant scriptsize × glyph,
+      opacity linearly interpolated from 0.15 (least covered) to 1.0
+      (most covered).
     """
     all_xs = (
         [p.x for p in projection.gap_articles]
@@ -253,19 +303,41 @@ def _render_projection_scatter_tikz(
     if projection.books:
         max_count = max(book_coverages) if book_coverages else 0
         for pt, count in zip(projection.books, book_coverages, strict=True):
-            alpha = 0.15 + 0.85 * (count / max_count) if max_count > 0 else 0.15
+            if book_marker_style == "physics":
+                if max_count > 0:
+                    # Linear map: c=c_max → d=D_MIN (closest);
+                    # c=0 → d=D_MAX (farthest).
+                    d = _BOOK_D_MIN + (_BOOK_D_MAX - _BOOK_D_MIN) * (
+                        1.0 - count / max_count
+                    )
+                else:
+                    d = _BOOK_D_MAX
+                opacity = math.exp(-_BOOK_HAZE_ALPHA * (d - _BOOK_D_MIN))
+                size_pt = _BOOK_BASE_SIZE_PT * _BOOK_D_MIN / d
+                font_spec = (
+                    f"font=\\fontsize{{{size_pt:.2f}pt}}{{0pt}}\\selectfont"
+                )
+            elif book_marker_style == "linear":
+                opacity = (
+                    0.15 + 0.85 * (count / max_count) if max_count > 0 else 0.15
+                )
+                font_spec = "font=\\scriptsize"
+            else:
+                raise ValueError(
+                    f"unknown book_marker_style={book_marker_style!r}"
+                )
             out.append(
-                f"\\node[blue, opacity={alpha:.3f}, font=\\scriptsize] at "
+                f"\\node[blue, opacity={opacity:.3f}, {font_spec}] at "
                 f"({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) {{$\\times$}};"
             )
-    # Gap articles: orange for those still covered by an existing book,
+    # Gap articles: black for those still covered by an existing book,
     # green for those that flip to the proposal's Voronoi cell.
     for pt, flipped in zip(
         projection.gap_articles,
         projection.gap_articles_flipped_to_proposal,
         strict=True,
     ):
-        color = "green!60!black" if flipped else "orange!80!black"
+        color = "green!60!black" if flipped else "black"
         out.append(
             f"\\fill[{color}] ({pt.x * scale:.4f}cm,{pt.y * scale:.4f}cm) "
             f"circle (0.5pt);"
@@ -297,13 +369,13 @@ def _render_projection_scatter_tikz(
          f"({col_left_marker:.3f}cm,{legend_y1:.3f}cm) {{$\\times$}};",
          "existing books"),
         (col_left_marker, col_left_text, legend_y2,
-         "\\node[orange!80!black, font=\\scriptsize] at "
+         "\\node[black, font=\\scriptsize] at "
          f"({col_left_marker:.3f}cm,{legend_y2:.3f}cm) {{$\\bullet$}};",
-         "gap articles"),
+         "other in-gap articles"),
         (col_right_marker, col_right_text, legend_y1,
          "\\node[green!60!black, font=\\scriptsize] at "
          f"({col_right_marker:.3f}cm,{legend_y1:.3f}cm) {{$\\bullet$}};",
-         "articles flipped to proposal"),
+         "in-gap articles flipped to proposal"),
         (col_right_marker, col_right_text, legend_y2,
          "\\node[star, star points=5, star point ratio=2.25, "
          "draw=black, line width=0.3pt, fill=green!60!black, "
@@ -336,6 +408,7 @@ def emit_topic_page(
     proposal_coverage: ProposalCoverage,
     covering_books_for_chart: list[BookCoverage],
     local_projection: LocalProjection2D,
+    book_marker_style: BookMarkerStyle = _DEFAULT_BOOK_MARKER_STYLE,
 ) -> str:
     out: list[str] = []
     out.append("\\clearpage")
@@ -351,19 +424,20 @@ def emit_topic_page(
     )
     out.append(f"\\label{{appendix:proposal-{latex_escape(topic_id)}}}")
     pct_str = (
-        f"{gap_size_pct:.2f}" if gap_size_pct is not None else "n/a"
+        f"{gap_size_pct * 100:.1f}\\%" if gap_size_pct is not None else "n/a"
     )
     out.append(
         f"\\noindent\\textit{{Topic has {num_books} books and "
         f"{num_articles} articles; proposal covers "
         f"{gap_coverage * 100:.1f}\\% of the target gap; "
-        f"target-gap size percentile = {pct_str}.}}"
+        f"target gap size percentile = {pct_str}.}}"
     )
     out.append("\\par\\medskip")
 
     scatter_tikz = _render_projection_scatter_tikz(
         local_projection,
         book_coverages=[b.articles_covered for b in covering_books_for_chart],
+        book_marker_style=book_marker_style,
     )
     out.append("\\begin{center}")
     out.append(scatter_tikz)
@@ -420,6 +494,26 @@ def main() -> None:
         "coverage fraction (worst first, to foreground data-quality "
         "cases); csv=original CSV order.",
     )
+    ap.add_argument(
+        "--topic-ids",
+        nargs="+",
+        default=list(DEFAULT_TOPIC_IDS),
+        help="Topic IDs to emit pages for, in --sort order. Defaults to the "
+        "curated nine that highlight the §5.1 failure cases, the two "
+        "label-noise / parse-recovered topics, and one representative "
+        "success (T10181).",
+    )
+    ap.add_argument(
+        "--book-marker-style",
+        choices=("physics", "linear"),
+        default=_DEFAULT_BOOK_MARKER_STYLE,
+        help="How existing-book markers in the per-topic scatter plot scale "
+        "with coverage. 'physics' (default): size ∝ 1/d and opacity ∝ "
+        "exp(-α·d) with d derived linearly from coverage — books shrink "
+        "and fade into haze as coverage drops. 'linear': original styling "
+        "with constant marker size and opacity linearly interpolated from "
+        "0.15 (least covered) to 1.0 (most covered).",
+    )
     args = ap.parse_args()
 
     csv_path = args.run_dir / "gaps_analysis_results.csv"
@@ -435,6 +529,15 @@ def main() -> None:
 
     with csv_path.open() as f:
         rows = list(csv.DictReader(f))
+
+    if args.topic_ids:
+        wanted = set(args.topic_ids)
+        rows = [r for r in rows if r["topic_id"] in wanted]
+        missing = wanted - {r["topic_id"] for r in rows}
+        if missing:
+            raise SystemExit(
+                f"--topic-ids included unknown id(s): {sorted(missing)}"
+            )
 
     if args.sort == "name":
         rows.sort(key=lambda r: r["topic_name"].lower())
@@ -479,6 +582,7 @@ def main() -> None:
                 proposal_coverage=context.proposal_coverage,
                 covering_books_for_chart=context.covering_books,
                 local_projection=context.local_projection_2d,
+                book_marker_style=args.book_marker_style,
             )
         )
 
