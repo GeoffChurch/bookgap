@@ -22,10 +22,9 @@ How candidate gaps are produced and refined.
 - [kball-residual-mass](gap-detection-methods/kball-residual-mass.md) — four discount-by-book-claim variants for k-ball gap sizing (virtual-centroid / partition mutual-NN / global k-NN discount / KDE-on-KDE), implemented sequentially as alternative `gap.size_metric` options
 - [nearest-book-radius](gap-detection-methods/nearest-book-radius.md) — replace `radius_fraction` with per-seed adaptive radius = distance to nearest book × rank-fraction safety margin. Probably inferior to existing n_eff-based approaches (see entry for full cross-refs to `gap_effective_size*.py`, `kde_ratio`, etc.) but cleanly aligns with the d=0 random-shuffle null
 - [gap-algorithm-sweep-axis](gap-detection-methods/gap-algorithm-sweep-axis.md) — **living doc**: 3-tier plan for adding gap-selection/scoring algorithm as a sweep axis alongside embedder/denoiser/d. Tier 1 = post-hoc rescoring of fixed gaps (apples-to-apples by construction); Tier 2 = alternative algorithms with random-baseline normalization; Tier 3 = external held-out-book-recovery metric
-- [modality-fusion-and-predictor](gap-detection-methods/modality-fusion-and-predictor.md) — **(code-triangulation follow-on, easiest)** does fusing M1+M_emb ever beat either (strict substitutes?), + an a-priori modality predictor
-- [change-form-temporal-gaps](gap-detection-methods/change-form-temporal-gaps.md) — **(follow-on)** do *widening* gaps (ΔΔ across epochs) forecast arrivals where static gaps don't — the one shot at a positive temporal signal; reuses the new births
-- [modality-conflict-within-corpus](gap-detection-methods/modality-conflict-within-corpus.md) — **(follow-on, decisive)** plant a structural AND a semantic-void gap in one Python corpus; show each detector blind to the other → modality, not domain, sets the detector
-- [gap-driven-test-generation](gap-detection-methods/gap-driven-test-generation.md) — **(follow-on, hardest; the application)** LLM-generate tests for high-Δ under-tested concepts, scored by real coverage delta vs baseline (coverage = code's clean oracle)
+
+*(The four code-gap-triangulation follow-ons added 2026-06-15 are all executed — results in
+`docs/code-gap-triangulation.md` §Follow-on; the two refuted leads are in `docs/dead_ends/`.)*
 
 ## Cohesion metric design
 

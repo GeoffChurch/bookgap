@@ -19,6 +19,8 @@ Approaches to per-gap quality measurement that were tried and refuted.
 ## Gap detection methods
 
 - [exact-match-dedup-misses-near-duplicates](gap-detection-methods/exact-match-dedup-misses-near-duplicates.md) — confluence in path-dependent expansion is real but imperfect; basin-edge seeds produce ~95% identical but bit-different sets that exact-match misses but Jaccard catches
+- [modality-fusion](gap-detection-methods/modality-fusion.md) — REFUTED: fusing M1+M_emb never beats either; the off-modality detector is anti-signal (strict substitutes) — select the modality-matched detector, don't combine
+- [change-form-temporal-gaps](gap-detection-methods/change-form-temporal-gaps.md) — REFUTED: widening gaps (ΔM1 across epochs) anti-predict arrivals (poor-get-poorer); the change-form lead doesn't rescue the universal temporal negative
 
 ## Curriculum
 
