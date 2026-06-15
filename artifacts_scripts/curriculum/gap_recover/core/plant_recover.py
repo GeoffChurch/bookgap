@@ -51,6 +51,8 @@ CORE_RATIO = 1.15         # orphan-core growth factor (article radial default)
 TOPFRAC = 0.05            # level-set selection budget
 IOU_THR = 0.10            # recall@K IoU threshold (article default)
 CLUSTER_LO, CLUSTER_HI = 20, 400   # planted theorem-cluster size budget
+GRAPH_CORE_MIN_LOST = 3            # graph-region: min #operational citers a candidate must lose
+GRAPH_CORE_FRAC = 0.5             # graph-region: min fraction of operational support lost
 
 
 # --------------------------------------------------------------------------- M1
@@ -115,14 +117,34 @@ def orphan_core(data: Data, near_mask: np.ndarray, r_before: np.ndarray,
 
 
 def region_for_deletion(data: Data, tbl: FgNeighborTable, del_pos_F: np.ndarray,
-                        center_row: int | None, ratio: float = CORE_RATIO) -> np.ndarray:
-    """Orphaned-core region (positions in B) produced by deleting theorem set del_pos_F."""
+                        center_row: int | None, ratio: float = CORE_RATIO,
+                        mode: str = "embedding") -> np.ndarray:
+    """Orphaned-region (positions in B) produced by deleting foreground set del_pos_F.
+
+    mode='embedding' (Lean default): the EMBEDDING orphan core — candidates whose k-th
+        nearest-foreground distance grew >= ratio. Requires citation/embedding COUPLING
+        (a theorem about a concept is embedding-near it).
+    mode='graph': the GRAPH orphan core — candidates that lost a substantial share of their
+        operational (foreground) citers. Needed where the call graph and the text-embedding
+        space are DECOUPLED (e.g. code: a function that calls a class is not textually similar
+        to it), so deleting a concept's callers does not move its embedding neighbourhood and
+        the embedding core never forms.
+    """
     dmask = np.zeros(data.F_idx.size, dtype=bool)
     dmask[del_pos_F] = True
+    if mode == "graph":
+        del_rows = data.F_idx[del_pos_F]
+        del_mask_full = np.zeros(data.emb.shape[0], dtype=np.int8)
+        del_mask_full[del_rows] = 1
+        lost_b = np.asarray(data.subT_B.dot(del_mask_full)).ravel()      # #deleted oper-citers / B
+        oper_b = data.operational_users[data.B_idx].astype(np.float64)
+        frac_lost = lost_b / np.maximum(oper_b, 1.0)
+        region = np.where((lost_b >= GRAPH_CORE_MIN_LOST) & (frac_lost >= GRAPH_CORE_FRAC))[0]
+        return region, dmask
     r_before = tbl.r_F_intact
     r_after = tbl.r_F_k(dmask)
-    # 'near' guard: restrict to candidates whose intact nearest-theorem set actually
-    # contained a deleted theorem (the deletion can only orphan those).
+    # 'near' guard: restrict to candidates whose intact nearest-foreground set actually
+    # contained a deleted foreground node (the deletion can only orphan those).
     touched = np.isin(tbl.idx, del_pos_F).any(axis=1)
     return orphan_core(data, touched, r_before, r_after, ratio), dmask
 
@@ -180,12 +202,13 @@ def levelset_recall(scores: np.ndarray, Zb: np.ndarray, region_pos: np.ndarray,
 
 # --------------------------------------------------------------------------- one trial
 def run_trial(data: Data, tbl: FgNeighborTable, r_B: np.ndarray, concept: dict,
-              control_regions: list[np.ndarray], control_dmask_none: bool = True) -> dict:
+              control_regions: list[np.ndarray], control_dmask_none: bool = True,
+              region_mode: str = "embedding", min_region: int = 3) -> dict:
     """Plant concept's cluster, score all detectors, compute region-vs-control AUC + recall."""
     del_pos = concept["cluster"]
-    region, dmask = region_for_deletion(data, tbl, del_pos, concept["c_gated"])
-    if region.size < 3:
-        return {"ok": False, "reason": "region<3", "region_size": int(region.size)}
+    region, dmask = region_for_deletion(data, tbl, del_pos, concept["c_gated"], mode=region_mode)
+    if region.size < min_region:
+        return {"ok": False, "reason": "region<min", "region_size": int(region.size)}
     scores = score_all(data, tbl, r_B, dmask)
     ls = levelset_recall(scores["M_emb"], data.Zb, region)
     ls01 = levelset_recall(scores["M_emb"], data.Zb, region, top_frac=0.01)  # matched-budget
@@ -221,7 +244,7 @@ def _local_random_cluster(data: Data, size: int, rng: np.random.Generator) -> np
 
 def run_null(data: Data, tbl: FgNeighborTable, r_B: np.ndarray, size: int,
              control_regions: list[np.ndarray], rng: np.random.Generator,
-             mode: str = "scatter") -> dict:
+             mode: str = "scatter", region_mode: str = "embedding", min_region: int = 3) -> dict:
     """Delete a null theorem set of `size`; its orphan core should NOT beat controls.
 
     mode='scatter'  : random theorems anywhere (machinery null — does the pipeline
@@ -235,8 +258,8 @@ def run_null(data: Data, tbl: FgNeighborTable, r_B: np.ndarray, size: int,
         del_pos = _local_random_cluster(data, size, rng)
     else:
         del_pos = rng.choice(data.F_idx.size, size=min(size, data.F_idx.size), replace=False)
-    region, dmask = region_for_deletion(data, tbl, del_pos, None)
-    if region.size < 3:
+    region, dmask = region_for_deletion(data, tbl, del_pos, None, mode=region_mode)
+    if region.size < min_region:
         return {"ok": False, "region_size": int(region.size), "mode": mode}
     scores = score_all(data, tbl, r_B, dmask)
     ls = levelset_recall(scores["M_emb"], data.Zb, region)
@@ -308,6 +331,10 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--m-window", type=int, default=256)
     ap.add_argument("--out", default="/tmp/lean_gap/results.json")
+    ap.add_argument("--region", choices=["embedding", "graph"], default="embedding",
+                    help="orphan-region definition: embedding core (Lean) or graph oper-loss (code)")
+    ap.add_argument("--min-region", type=int, default=3, dest="min_region",
+                    help="minimum orphaned-region size for a usable plant/null")
     args = ap.parse_args()
     t0 = time.time()
     rng = np.random.default_rng(args.seed)
@@ -342,9 +369,9 @@ def main() -> None:
     # filter to concepts whose deletion actually leaves a >=3 orphan core
     usable = []
     for c in concepts:
-        reg, _ = region_for_deletion(data, tbl, c["cluster"], c["c_gated"])
+        reg, _ = region_for_deletion(data, tbl, c["cluster"], c["c_gated"], mode=args.region)
         c["hyp_region"] = reg
-        if reg.size >= 3:
+        if reg.size >= args.min_region:
             usable.append(c)
         if len(usable) >= args.n_plants:
             break
@@ -357,7 +384,7 @@ def main() -> None:
     plant_rows: list[dict] = []
     for ci, c in enumerate(usable):
         ctrls = [r for k, r in enumerate(all_hyp) if k != ci]
-        res = run_trial(data, tbl, r_B, c, ctrls)
+        res = run_trial(data, tbl, r_B, c, ctrls, region_mode=args.region, min_region=args.min_region)
         res["concept_idx"] = ci
         plant_rows.append(res)
         if res.get("ok"):
@@ -377,7 +404,8 @@ def main() -> None:
     null_rows: dict[str, list[dict]] = {"scatter": [], "local": []}
     for mode in ("scatter", "local"):
         for j in range(args.n_null):
-            nr = run_null(data, tbl, r_B, median_size, ctrl_all, rng, mode=mode)
+            nr = run_null(data, tbl, r_B, median_size, ctrl_all, rng, mode=mode,
+                          region_mode=args.region, min_region=args.min_region)
             nr["null_idx"] = j
             null_rows[mode].append(nr)
         nok = [r for r in null_rows[mode] if r.get("ok")]
