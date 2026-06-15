@@ -21,6 +21,7 @@ Approaches to per-gap quality measurement that were tried and refuted.
 - [exact-match-dedup-misses-near-duplicates](gap-detection-methods/exact-match-dedup-misses-near-duplicates.md) — confluence in path-dependent expansion is real but imperfect; basin-edge seeds produce ~95% identical but bit-different sets that exact-match misses but Jaccard catches
 - [modality-fusion](gap-detection-methods/modality-fusion.md) — REFUTED: fusing M1+M_emb never beats either; the off-modality detector is anti-signal (strict substitutes) — select the modality-matched detector, don't combine
 - [change-form-temporal-gaps](gap-detection-methods/change-form-temporal-gaps.md) — REFUTED: widening gaps (ΔM1 across epochs) anti-predict arrivals (poor-get-poorer); the change-form lead doesn't rescue the universal temporal negative
+- [funding-waste-inverse-delta](gap-detection-methods/funding-waste-inverse-delta.md) — REFUTED: "funded-but-invisible" (high $ / low research output) as the sign-flipped gap score has no population once you control for grant age; NIH dollars and output are *positively* coupled, so the two axes don't dissociate (unlike structural-centrality vs coverage in code)
 
 ## Curriculum
 
