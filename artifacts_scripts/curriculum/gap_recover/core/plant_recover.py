@@ -69,7 +69,8 @@ def concept_theorem_cluster(data: Data, c_gated: int) -> np.ndarray:
     return data.f_pos[users]                           # -> positions in F
 
 
-def coherent_concepts(data: Data, rng: np.random.Generator, n_want: int) -> list[dict]:
+def coherent_concepts(data: Data, rng: np.random.Generator, n_want: int,
+                      cluster_lo: int = CLUSTER_LO, cluster_hi: int = CLUSTER_HI) -> list[dict]:
     """Pick concepts: gated B-decls with a theorem cluster in the size budget.
 
     Preference: ``.Defs``-module objects / inductives (the 'genuine objects' the brief
@@ -88,7 +89,7 @@ def coherent_concepts(data: Data, rng: np.random.Generator, n_want: int) -> list
     for bpos in rng_order:
         j = cand_rows[bpos]
         n_thm = int(n_thm_per_B[bpos])
-        if not (CLUSTER_LO <= n_thm <= CLUSTER_HI):
+        if not (cluster_lo <= n_thm <= cluster_hi):
             continue
         mod = str(data.mods[j])
         rec = {"c_gated": int(j), "n_thm": n_thm, "mod": mod,
@@ -335,6 +336,10 @@ def main() -> None:
                     help="orphan-region definition: embedding core (Lean) or graph oper-loss (code)")
     ap.add_argument("--min-region", type=int, default=3, dest="min_region",
                     help="minimum orphaned-region size for a usable plant/null")
+    ap.add_argument("--cluster-lo", type=int, default=CLUSTER_LO, dest="cluster_lo",
+                    help="min operational-cluster size for a plantable concept (lower for coarse graphs)")
+    ap.add_argument("--cluster-hi", type=int, default=CLUSTER_HI, dest="cluster_hi",
+                    help="max operational-cluster size for a plantable concept")
     args = ap.parse_args()
     t0 = time.time()
     rng = np.random.default_rng(args.seed)
@@ -363,7 +368,8 @@ def main() -> None:
                           for i in top), flush=True)
 
     # ---- select concepts and precompute each concept's cluster + hypothetical core
-    concepts = coherent_concepts(data, rng, n_want=args.n_plants * 3 + 40)
+    concepts = coherent_concepts(data, rng, n_want=args.n_plants * 3 + 40,
+                                 cluster_lo=args.cluster_lo, cluster_hi=args.cluster_hi)
     for c in concepts:
         c["cluster"] = concept_theorem_cluster(data, c["c_gated"])
     # filter to concepts whose deletion actually leaves a >=3 orphan core
