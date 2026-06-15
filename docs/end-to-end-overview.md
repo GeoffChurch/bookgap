@@ -140,11 +140,14 @@ keeps failing to pay — in both domains.
 
 - **Articles.** Human textbook chapters are **not** a global sweep of the topic structure
   (Spearman of chapter-number vs dendrogram order is null), **but** they follow **good local
-  edges** — consecutive chapters are topically adjacent far more than chance. And this is a
-  **genre signal**: a single-author *textbook* orders this way (Jurafsky 98–100th percentile vs
-  random), an *edited volume* doesn't (random, even at high corpus-fit). A greedy good-edge
-  generator *recovers* the human order (Kendall-τ **+0.39, p=0.008**, n=25 chapters; the per-book
-  good-edge percentiles are from single books and would tighten with more ToCs). → `docs/curriculum-toc-dendrogram-matching.md`.
+  edges** — consecutive chapters are topically adjacent far more than chance. This is **robust
+  across textbooks** (firmed at n=25 ToCs: **22/25 single-author textbooks ≥90th percentile**,
+  median 100th). The original "*genre signal*" (textbook orders, edited volume doesn't) is
+  **partly revised** by the larger sample: 2 of 4 edited volumes *also* order by good edges, and
+  the real exceptions are **dependency-ordered math texts** (Cover & Thomas IT 5th pctile, Koehn
+  12th — they sequence by *prerequisite*, not topical similarity), not edited volumes per se. A
+  greedy good-edge generator *recovers* the human order (Kendall-τ **+0.39, p=0.008**). →
+  `docs/curriculum-toc-dendrogram-matching.md`, `artifacts_scripts/curriculum/ordering_genre_firmup.py`.
 - **Theorems.** `t1` vs `t1_shuffled` (same premises, order randomized): **ordering is inert** — the
   pre-registered H2 was *falsified*. Selection, not order, carries the whole effect.
   → `docs/lean-confirmatory-results.md`.
