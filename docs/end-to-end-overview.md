@@ -265,7 +265,12 @@ the field's future — a universal negative, independent of oracle cleanness.
   (+0.161, yet embedding still loses). **All spec substrates now covered:** the graph-wins/
   embedding-weak verdict holds across **Lean + 4 code substrates**, fine→coarse granularity,
   noisy→clean edges (the controlled CHA→RTA dial + exact build deps), 4 languages/4 extractors, and a
-  **4.3× coupling range** (+0.037→+0.161). Modality, not cleanness/granularity/coupling-strength. →
+  **4.3× coupling range** (+0.037→+0.161). Modality, not cleanness/granularity/coupling-strength. The
+  *decisive* coupling datum: **articles have the highest citation↔embedding coupling of all six
+  domains (+0.215) yet are the one where the embedding wins** — so coupling *strength* is not the axis
+  (range now +0.037→+0.215, 5.8×). And the **temporal negative is universal across every measurable
+  domain** — articles, Lean, Python, Rust, Go all show gaps not forecasting arrivals (Bazel temporal
+  alone is not cleanly measurable: historical `bazel query` fails under a modern Bazel). →
   `docs/code-gap-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.

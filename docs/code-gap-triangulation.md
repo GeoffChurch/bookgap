@@ -124,9 +124,15 @@ gap — **preferential attachment**, identical to the Lean (centrality-matched A
 (snapshot→arrival negative) temporal results. (Namespace-attachment is the one near-neutral signal,
 M1 fill ≈ 0.8 / AUCstrat ≈ 0.53 — weak and not the primary citation oracle.)
 
-So the temporal half is now a **three-domain universal**: in articles, Lean, *and* code, a detected
-gap does not forecast the field's next unit — rich-get-richer does — independent of substrate or
-graph cleanness.
+So the temporal half is a **universal across every measurable substrate**: in articles, Lean, Python,
+**Rust** (git-tag epochs; M1 fill-ratio 0.01–0.21, AUCraw 0.22–0.36 — anti-predictive), and **Go**
+(`golang/go` release epochs, 94% name-resolution via a `go/parser` dumper; M1 fill-ratio 0.02–0.05,
+AUCstrat ≈0.5; the saturated foundational interfaces `io.Reader`/`context.Context` are high-Δ yet
+attract nothing new), a detected gap does not forecast the field's next unit — rich-get-richer does —
+independent of substrate, language, or graph cleanness. (Bazel temporal is the one substrate that is
+*not cleanly measurable*: historical `bazel query` fails under a modern pinned Bazel, so births
+compress to recent epochs and the lib-vs-test target structure leaves no attributable arrivals — a
+tooling limit, not a counter-result.)
 
 ## Stage 2 — Go: the CHA→RTA cleanness dial (the *controlled* test)
 
@@ -223,22 +229,26 @@ are face-valid (`absl/base:nullability`, `absl/meta:type_traits`, `protobuf …c
 share name tokens), yet the embedding **still** loses to the graph. So even when the embedding is at
 its most informative, the graph wins for structural gaps — coupling *strength* is not the axis either.
 
-### Final five-substrate summary
+### Final summary — six domains, one rule
 
-| substrate | granularity | edges | M1 graph AUC | M_emb AUC | coupling |
+| domain | gap modality | granularity | winning detector | losing detector | coupling |
 |---|---|---|---|---|---|
-| **Lean** | decl | proof-term (clean) | 0.93 | 0.62 | +0.115 |
-| **Python** | function | `ast` call (noisy) | 0.96 | 0.50 | +0.108 |
-| **Go** | function | CHA↔RTA (the *dial*) | 0.90 | 0.46 | +0.037 |
-| **Rust** | function | tree-sitter (noisy) | 0.94 | 0.59 | +0.057 |
-| **Bazel** | **target (coarse)** | build deps (clean) | 0.86 | 0.59 | +0.161 |
+| **Articles** (research) | **semantic-void** | work | **embedding** density-ratio (≈0.69) | graph-citation (noisy) | **+0.215** |
+| **Lean** | structural | decl | **graph** citation-ratio (0.93) | embedding (0.62) | +0.115 |
+| **Python** | structural | function | **graph** (0.96) | embedding (0.50) | +0.108 |
+| **Go** | structural | function (CHA↔RTA *dial*) | **graph** (0.90) | embedding (0.46) | +0.037 |
+| **Rust** | structural | function | **graph** (0.94) | embedding (0.59) | +0.057 |
+| **Bazel** | structural | **target (coarse)** | **graph** (0.86) | embedding (0.59) | +0.161 |
 
-The **graph detector wins and the embedding detector is weak-to-chance in every substrate** — across
-**fine→coarse granularity**, **noisy→clean edges** (the controlled Go dial *and* Bazel's exact build
-deps), four languages and four extraction methods, and a **4.3× coupling range** (+0.037→+0.161). The
-detector is set by the gap's **modality** (structural → graph), robust to cleanness, granularity,
-language, extractor, and coupling strength. Articles are the contrast pole: semantic-void gaps →
-embedding wins.
+**The detector is set by the gap's modality** — semantic-void → embedding, structural → graph — and is
+invariant to everything else we varied: fine→coarse **granularity**, noisy→clean **edges** (the
+controlled Go CHA↔RTA dial *and* Bazel's exact build deps), four **languages**, four **extractors**,
+and — decisively — a **5.8× coupling range** (+0.037 → +0.215) in which the **single most
+citation↔embedding-coupled domain, articles, is the one where the *embedding* wins.** Coupling
+*strength* is therefore not the axis; modality is. In parallel, the **temporal** result is a universal
+negative across every measurable domain (articles, Lean, Python, Rust, Go): a gap does not forecast
+where the field's next unit lands — preferential attachment does. (`gap_recover/article_coupling.py`
+computes the article coupling; `core/coupling_diagnostics.py` the code ones.)
 
 ## Limitations / honest caveats
 
@@ -262,7 +272,9 @@ embedding wins.
 - **Bazel** is small-scale (931 targets, 3 repos) with a lowered `--cluster-lo 3` (target-level
   operational clusters are small) and a terse-label embedding arm; `grpc //:all` returned only
   libraries (its tests live elsewhere). It is a single clean+coarse point, not a sweep — but it *does*
-  carry a working positive M1 lift, unlike the dense fine-grained code domains.
+  carry a working positive M1 lift, unlike the dense fine-grained code domains. Its **temporal arm is
+  the one substrate not cleanly measurable** — historical `bazel query` fails under a modern pinned
+  Bazel, so births compress to recent epochs and leave no attributable arrivals (a tooling limit).
 
 ## Reproduce
 
