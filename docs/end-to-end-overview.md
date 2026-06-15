@@ -236,6 +236,11 @@ the field's future — a universal negative, independent of oracle cleanness.
   centrality intro-node generator remain untried.
 - *Gap prediction:* the snapshot→arrival signal is weak; differenced/change-form signals are the
   surviving lead.
+- *Gap detection — third domain (triangulate the clean-oracle thesis):* articles + Lean give a
+  two-point line through "oracle cleanness"; **code** is the third point (an intermediate-cleanness
+  call/import/build graph). Rerun the plant-and-recover + temporal holdout on a code dep graph to
+  test whether *static method ∝ cleanness* is a line and whether the temporal negative still holds.
+  Spec (with 3 substrate options): `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
 - *Confidence intervals (book-surprise now tightened):* re-run over **29 books / 371 chapters** —
