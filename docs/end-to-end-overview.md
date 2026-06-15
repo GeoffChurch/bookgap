@@ -27,7 +27,7 @@ The coverage at a glance (✓✓ deep, ✓ done, — open):
 | stage | articles / research | lemmas / theorems |
 |---|---|---|
 | 0. substrate | GIST embeddings + OpenAlex citation graph | Mathlib dependency graph |
-| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative (both domains) |
+| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Stage-1 Python done; graph-modality, not cleanness) |
 | 2. selection | ✓ | ✓ |
 | 3. ordering | ✓ | ✓ |
 | 4. generation | ✓ | ✓ |
@@ -236,11 +236,23 @@ the field's future — a universal negative, independent of oracle cleanness.
   centrality intro-node generator remain untried.
 - *Gap prediction:* the snapshot→arrival signal is weak; differenced/change-form signals are the
   surviving lead.
-- *Gap detection — third domain (triangulate the clean-oracle thesis):* articles + Lean give a
-  two-point line through "oracle cleanness"; **code** is the third point (an intermediate-cleanness
-  call/import/build graph). Rerun the plant-and-recover + temporal holdout on a code dep graph to
-  test whether *static method ∝ cleanness* is a line and whether the temporal negative still holds.
-  Spec (with 3 substrate options): `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
+- *Gap detection — third domain (code), Stage 1 (Python) — DONE, and it REVISES the thesis.* Code was
+  predicted to be the *intermediate* point on a "cleanness line"; it isn't. On planted-concept
+  recovery code patterns with **Lean** (graph citation-ratio recovers, AUC 0.96; embedding
+  density-ratio at **chance**, 0.50), not in between — and **not because the call graph is clean** (it
+  is far noisier than Lean's proof DAG). Citation↔embedding coupling is comparable in both domains
+  (+0.11 cosine lift), so the discriminating axis is the gap's **modality**, not cleanness:
+  structural/usage gaps (Lean theorems, code concepts) live in the **graph** and are invisible to
+  text-embeddings; articles' semantic-void gaps live in the **embedding**. The temporal holdout is a
+  clean **third negative** (high-gap concepts *anti*-predict new operations: fill-ratio <0.2,
+  stratified AUC ≈0.47; preferential attachment wins), making the temporal-negative a three-domain
+  universal. Honest caveat: the Lean embedding-orphan-core plant *degenerates* on code (2/160 plants
+  — a quantitative fragility, not decoupling), so a runnable graph-region variant was needed and M1's
+  code recovery lacks a working discriminating null; the load-bearing static signal is
+  embedding-at-chance + the coupling measurement. → `docs/code-gap-triangulation.md`. **Still open:**
+  Go (the `go/callgraph` CHA→RTA cleanness *dial* — the cleanest test of cleanness-vs-modality on one
+  corpus), Rust, monorepo build graph. Spec:
+  `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
 - *Confidence intervals (book-surprise now tightened):* re-run over **29 books / 371 chapters** —

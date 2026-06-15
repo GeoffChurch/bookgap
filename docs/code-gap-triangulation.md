@@ -103,7 +103,30 @@ not by how clean the graph is.**
 
 ## Temporal result — git-tag holdout
 
-<!-- TEMPORAL_PLACEHOLDER -->
+Epoch-normalised git-tag holdout (each repo's release history mapped to E=6 shared epochs; node
+"birth" = earliest epoch its qualified name appears; 92.7% of nodes resolved). At epoch T we rank
+candidate concepts by `M1 = Δ` and ask whether **high-gap concepts attract more NEW operations**
+(functions/tests born after T that call them) than a **growth-matched null** on (existing
+operational-count, in-degree) deciles. Calibration first: a random ranking must give fill-ratio ≈ 1 /
+AUC ≈ 0.5 — it does (AUC 0.49–0.52 across seeds/epochs), so the matcher is unbiased.
+
+**Verdict: a clean NEGATIVE — gaps *anti*-predict arrivals (2 seeds, epochs e2/e3):**
+
+| metric (citation attachment) | value | reading |
+|---|---|---|
+| M1 fill-ratio (top-gap vs matched null) | **0.04–0.18** | high-gap concepts attract *<20%* as many new callers as the null |
+| M1 stratified AUC (centrality-matched) | **0.45–0.49** | at/below chance — no predictive signal above centrality |
+| M1 raw AUC | **0.15–0.30** | *anti*-predictive — high-gap ⇒ *fewer* arrivals |
+
+What actually grows is the **already-central** concept (`sklearn.base.BaseEstimator`,
+`tornado.web.RequestHandler`, `PIL.ImageFile` all attract new operations), not the under-exercised
+gap — **preferential attachment**, identical to the Lean (centrality-matched AUC 0.50) and article
+(snapshot→arrival negative) temporal results. (Namespace-attachment is the one near-neutral signal,
+M1 fill ≈ 0.8 / AUCstrat ≈ 0.53 — weak and not the primary citation oracle.)
+
+So the temporal half is now a **three-domain universal**: in articles, Lean, *and* code, a detected
+gap does not forecast the field's next unit — rich-get-richer does — independent of substrate or
+graph cleanness.
 
 ## Limitations / honest caveats
 
