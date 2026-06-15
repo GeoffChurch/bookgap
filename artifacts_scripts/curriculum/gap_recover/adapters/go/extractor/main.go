@@ -611,6 +611,12 @@ func corpusRoots(prog *ssa.Program, rootPaths map[string]bool) []*ssa.Function {
 		if !rootPaths[fn.Pkg.Pkg.Path()] {
 			continue
 		}
+		// RTA panics if seeded with an uninstantiated generic template
+		// (addRuntimeType on a type parameter). Skip templates; their concrete
+		// instantiations remain reachable through the call graph.
+		if fn.TypeParams().Len() > 0 && len(fn.TypeArgs()) == 0 {
+			continue
+		}
 		if seen[fn] {
 			continue
 		}
