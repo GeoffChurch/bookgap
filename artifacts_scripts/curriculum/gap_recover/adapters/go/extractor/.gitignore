@@ -1,0 +1,5 @@
+# Compiled extractor binary (build with: go build ./...)
+/goextract
+
+# Local extractor output dirs (TSV graphs are regenerated, never committed)
+/out/
