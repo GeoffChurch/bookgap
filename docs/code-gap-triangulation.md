@@ -1,9 +1,8 @@
 # Code-domain gap detection — triangulating the clean-oracle thesis (Stage 1: Python)
 
-*Status: Stage 1 (Python) + Stage 2 (Go, the CHA→RTA cleanness dial) complete, 2026-06-15. Spec +
-program: `docs/backlog/gap-detection-methods/code-domain-triangulation.md`. This doc reports what the
-Python and Go points showed — and how they **revise** the thesis. Still open: Rust, monorepo build
-graph.*
+*Status: Stages 1 (Python) + 2 (Go CHA→RTA dial) + 3 (Rust) complete, 2026-06-15. Spec + program:
+`docs/backlog/gap-detection-methods/code-domain-triangulation.md`. This doc reports what the Python,
+Go, and Rust points showed — and how they **revise** the thesis. Still open: monorepo build graph.*
 
 ## What we set out to test
 
@@ -170,6 +169,37 @@ Lean's +0.13). The clean, null-independent signals are **M_emb-at-chance** and t
 invariance** across CHA/RTA. Temporal-Go not run (needs the Go repo with version tags; the installed
 SDK is a single snapshot).
 
+## Stage 3 — Rust: a 4th language (does the verdict generalize?)
+
+Stage 2 settled cleanness; Rust asks whether the *modality* verdict (graph wins, embedding weak)
+generalizes to a third code language with a very different type system (traits, generics, ownership).
+Extracted with a **`tree-sitter-rust` parser in Python** (no Rust toolchain — source parsing only;
+mirrors the Python `ast` adapter, deliberately noisy by-name resolution): 18 crates (`bitflags`…
+`tokio`), **33,636 nodes** (3,802 types=B, 29,834 funcs=F), 49,446 edges. Top-Δ types are face-valid
+(`tokio::AsyncWrite`, `clap::TypedValue` — traits implemented widely but constructed/exercised
+narrowly).
+
+**Result — Rust patterns with the others** (plant-recover, graph region, 2 seeds): M1 (graph) plant
+AUC **0.961 / 0.918**, M_emb (embedding) **0.62 / 0.57**. The embedding-orphan-core plant
+**degenerates** (0/160 plants) and coupling is **+0.057** (between Go's +0.037 and Lean/Python's
++0.11). Rust's M_emb is *slightly* above chance (its type-annotated signatures carry a little more
+text signal than Python/Go's) but still loses decisively to the graph.
+
+### The four-domain picture (Lean theorems + three code languages)
+
+| domain | M1 graph plant AUC | M_emb embedding plant AUC | embedding-core plants | coupling |
+|---|---|---|---|---|
+| **Lean** (proof DAG) | 0.93 | 0.62 | 40/160 (forms) | +0.115 |
+| **Python** (ast call graph) | 0.96 | 0.50 | 2/160 | +0.108 |
+| **Go** (CHA / RTA) | 0.90 | 0.46 | 0/160 | +0.037 |
+| **Rust** (tree-sitter) | 0.94 | 0.59 | 0/160 | +0.057 |
+
+In **every** domain the **graph detector wins and the embedding detector is weak-to-chance**. The
+verdict holds across a true dependency graph (Lean), three independent call/usage graphs
+(Python/Go/Rust), the *controlled* CHA→RTA cleanness dial (Go), and a **3× range of
+citation↔embedding coupling** (+0.037 → +0.115). Modality, not cleanness, decides the detector — and
+it is robust to language, extraction method, graph cleanness, and coupling strength.
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
@@ -184,6 +214,11 @@ SDK is a single snapshot).
 - Temporal `build_births` falls back to the wrong package dir for a few repos at their oldest tags
   (e.g. numpy→`weave`, scipy→`Lib`), shifting some early births later; `networkx`/`sqlalchemy` have
   no semver tags and are temporal-excluded.
+- **Rust** uses a tree-sitter by-name resolver (no type info): `x.method()` dispatch is dropped and
+  cross-crate refs are unresolved, so the graph is noisy/low-recall — *intended* (Stage 2 showed noise
+  doesn't change the verdict), but the recovery has the same graph-region/null caveats as Python/Go.
+  Temporal-Rust not run. As with Go/Python, the load-bearing signal is **M_emb-below-M1** + the
+  coupling/degeneracy measurements, not M1's raw AUC.
 
 ## Reproduce
 

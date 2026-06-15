@@ -27,7 +27,7 @@ The coverage at a glance (✓✓ deep, ✓ done, — open):
 | stage | articles / research | lemmas / theorems |
 |---|---|---|
 | 0. substrate | GIST embeddings + OpenAlex citation graph | Mathlib dependency graph |
-| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Python + Go CHA/RTA dial done; static winner is *cleanness-invariant* → modality, not cleanness) |
+| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Python/Go/Rust + the Go CHA/RTA dial; static winner is *cleanness-invariant* → modality, not cleanness) |
 | 2. selection | ✓ | ✓ |
 | 3. ordering | ✓ | ✓ |
 | 4. generation | ✓ | ✓ |
@@ -254,8 +254,12 @@ the field's future — a universal negative, independent of oracle cleanness.
   shows the static winner is **invariant to cleanness** — M1 ≈ 0.90 and M_emb ≈ chance under *both*
   CHA and RTA. The one controlled experiment that isolates cleanness confirms cleanness is *not* the
   axis; modality is. (Go's embedding-orphan-core *fully* degenerates, 0/160 plants; its coupling is
-  the weakest of the three, +0.037, yet the graph detector still wins.) **Still open:** Rust, monorepo
-  build graph. Spec: `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
+  the weakest of the three, +0.037, yet the graph detector still wins.) **Stage 3 (Rust) — DONE:** a
+  4th language (tree-sitter extractor, 18 crates) patterns with the others (M1 0.94 ≫ M_emb 0.59;
+  embedding-core degenerates 0/160; coupling +0.057). The verdict now holds across **Lean + 3 code
+  languages**, the controlled CHA→RTA dial, and a **3× coupling range** (+0.037→+0.115) — robust to
+  language, extractor, cleanness, and coupling. **Still open:** monorepo build graph. Spec:
+  `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
 - *Confidence intervals (book-surprise now tightened):* re-run over **29 books / 371 chapters** —
