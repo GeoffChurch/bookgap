@@ -21,7 +21,13 @@ Approaches to per-gap quality measurement that were tried and refuted.
 - [exact-match-dedup-misses-near-duplicates](gap-detection-methods/exact-match-dedup-misses-near-duplicates.md) — confluence in path-dependent expansion is real but imperfect; basin-edge seeds produce ~95% identical but bit-different sets that exact-match misses but Jaccard catches
 - [modality-fusion](gap-detection-methods/modality-fusion.md) — REFUTED: fusing M1+M_emb never beats either; the off-modality detector is anti-signal (strict substitutes) — select the modality-matched detector, don't combine
 - [change-form-temporal-gaps](gap-detection-methods/change-form-temporal-gaps.md) — REFUTED: widening gaps (ΔM1 across epochs) anti-predict arrivals (poor-get-poorer); the change-form lead doesn't rescue the universal temporal negative
-- [funding-waste-inverse-delta](gap-detection-methods/funding-waste-inverse-delta.md) — REFUTED: "funded-but-invisible" (high $ / low research output) as the sign-flipped gap score has no population once you control for grant age; NIH dollars and output are *positively* coupled, so the two axes don't dissociate (unlike structural-centrality vs coverage in code)
+
+## Domain transfer (gap method → new domains)
+
+Applying the gap-detection method to domains beyond articles/code. Both spikes (2026-06-15) deflated — instructive about *when* the transfer works: you need the structural/operational axes to **dissociate** AND the method's competence region to coincide with where the **value** is AND no incumbent owning that region.
+
+- [funding-waste-inverse-delta](domain-transfer/funding-waste-inverse-delta.md) — REFUTED: "funded-but-invisible" (high $ / low research output) as the sign-flipped gap score has no population once you control for grant age; NIH dollars and output are *positively* coupled, so the axes don't dissociate (holds under direct *and* transitive/PR output measures). Contrast structural-centrality vs coverage in code, which do dissociate.
+- [osm-completeness-context-expectation](domain-transfer/osm-completeness-context-expectation.md) — QUALIFIED / mostly-dead: context-expectation finds missing buildings only at the *fringe* of mapped fabric (AUC ~0.73), dead in interiors where the value is (and imagery extraction owns it); synthetic MCAR (0.92) massively over-promised vs real block-scale missingness (0.55–0.73).
 
 ## Curriculum
 
