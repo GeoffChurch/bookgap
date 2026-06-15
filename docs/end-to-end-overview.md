@@ -210,7 +210,10 @@ its best signals don't predict *future* human effort from a snapshot.
 
 **What's solid.** Article gap detection (esp. the density-ratio / book-surprise result); the
 pre-registered Lean selection/ordering verdicts; the two generators; the Lean verifier as a clean
-evaluation oracle.
+evaluation oracle. **The placement half of the end-to-end loop now closes:** seeding a curriculum
+at a real book's detected own-gap recovers 7–23% of that book's actual works while a
+count-matched random region recovers **0%** (4/4 books, A1−A0 coverage +0.16; see the close-loop
+ablation, `docs/curriculum-close-loop.md`).
 
 **The open cell — gap detection on theorems** — now has a *validated* detector, with a twist.
 Plant-and-recover confirms the **graph citation-ratio** recovers planted concept-deletions
@@ -224,8 +227,13 @@ drives where new theorems land — mirroring the article temporal negative). So 
 the field's future — a universal negative, independent of oracle cleanness.
 
 **Other open threads.**
-- *Ordering:* a causal corpus-fit test (does order-recovery strengthen with a tighter per-book
-  corpus?) and a centrality-based **intro-node** generator (the "cycle in the dendrogram" idea).
+- *Ordering:* the close-loop ablation shows good-edge ordering **recovers the human chapter
+  sequence as an *undirected* chain** (|Kendall-τ| 0.23–0.62, beats the citation-frontier order
+  4/4) — but the **1-bit orientation** (which end is Chapter 1) is *not* recoverable from
+  citations: both citation anchors flip all 4 books, yet 2/4 human orders run *against* the
+  citation DAG (human ordering ≠ topological sort). Open: a non-citation orientation anchor
+  (publication-year foundational→recent, or general→specific). The causal corpus-fit test and the
+  centrality intro-node generator remain untried.
 - *Gap prediction:* the snapshot→arrival signal is weak; differenced/change-form signals are the
   surviving lead.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
@@ -244,6 +252,7 @@ the field's future — a universal negative, independent of oracle cleanness.
 | Gap detection — evaluation (plant-and-recover, temporal) | `artifacts/gap_detection_eval/report.md` |
 | Book placement / book-surprise (which gap def) | memory `gap-book-surprise-definition`, `artifacts_scripts/curriculum/book_surprise_bakeoff.py` |
 | Curriculum (articles) — selection & ToC matching | `docs/wikipedia-curriculum-bgnorm.md`, `docs/curriculum-toc-dendrogram-matching.md`, `docs/curriculum-toc-reconstruction-eval.md` |
+| Curriculum — end-to-end close-the-loop ablation | `docs/curriculum-close-loop.md` |
 | Lean curriculum experiment — the pre-reg verdict | `docs/preregistration-curriculum-context-v2.md`, `docs/lean-confirmatory-results.md` |
 | Lean substrate & harness | `docs/lean_decl_graph.md`, `docs/lean-eval-harness.md` |
 | Generation — the textbook compiler | `~/src/learn-and-teach` (compilers/textbook) |
