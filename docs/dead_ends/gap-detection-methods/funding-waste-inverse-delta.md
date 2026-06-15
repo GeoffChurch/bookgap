@@ -25,6 +25,16 @@ gap score, analogous to how high-structural / low-operational surfaces genuinely
   clinical/device trials (results report to ClinicalTrials.gov, not always PubMed-linked),
   vaccine/product development, behavioral interventions — plus imperfect grant↔PubMed linkage. Not duds.
 
+**Follow-up — transitive output (the one measure the direct triple skipped):** re-ran with a
+transitive / PageRank-style output (2-hop forward-Katz over the iCite citation graph, β=0.5;
+`transitive_impact.py`, n=250 grant subsample — the full 2-hop over all 3000 grants needs ~3M citer
+fetches, intractable). It does **not** flip the sign: age-controlled partial r(log$, transitive) =
+**+0.18 (p=0.005)**, sitting right among the direct measures on the *same* grants (n_pub +0.23,
+citations +0.16, RCR +0.15). Weighting output by structural/transitive impact still leaves dollars and
+impact *positively* coupled — no high-$/low-impact corner; the "impact-weighting might flatten it"
+hypothesis is not borne out (69% hop-2 coverage, logged; subsample partials run higher than the n=3000
+run, but the transitive-vs-direct comparison is on identical grants). The dead-end stands.
+
 **Diagnosis:** the inverse-Δ fails for a structural reason that distinguishes this domain from code:
 in NIH funding **dollars and output are positively coupled** (more money → modestly *more* footprint),
 so there is no high-$/low-output corner to mine — unlike code, where structural centrality genuinely
