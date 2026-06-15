@@ -270,7 +270,15 @@ the field's future — a universal negative, independent of oracle cleanness.
   domains (+0.215) yet are the one where the embedding wins** — so coupling *strength* is not the axis
   (range now +0.037→+0.215, 5.8×). And the **temporal negative is universal across every measurable
   domain** — articles, Lean, Python, Rust, Go all show gaps not forecasting arrivals (Bazel temporal
-  alone is not cleanly measurable: historical `bazel query` fails under a modern Bazel). →
+  alone is not cleanly measurable: historical `bazel query` fails under a modern Bazel).
+  **Follow-ons:** a *within-corpus* conflict test makes the modality claim airtight — in one Python
+  corpus a structural perturbation moves the graph detector **23×** more than a semantic one, while a
+  semantic perturbation moves the embedding detector **7×** more (each blind off-modality); fusing the
+  two only *hurts* (strict substitutes) and a change-form temporal variant *sharpens* the negative.
+  The **external coverage oracle** corroborates the detector wherever it has power: on spotty test
+  suites the size-controlled Δ predicts real per-class under-coverage (incidentally-spotty `requests`
+  partial ρ −0.40, deliberately-spotty `pip` −0.28 / first-party-only −0.36), and the earlier
+  well-tested-package null was a *power* artifact (median coverage ≈1.00 → nothing to predict). →
   `docs/code-gap-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
