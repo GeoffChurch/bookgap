@@ -288,6 +288,27 @@ here — the raw fill-ratio is uninformative at these sparse-attach sizes (its c
   under-exercise is *accelerating* are the *least* likely to attract new operations (the gap
   compounds — poor-get-poorer). The temporal negative is robust even to differencing.
 
+### Within-corpus modality conflict — the decisive test (each detector blind off-modality)
+*Backlog: `modality-conflict-within-corpus.md`.* The cross-domain story (articles=embedding,
+code=graph) had a lurking objection: the gap *definitions* differed per domain. This kills it. In ONE
+Python corpus, with the same two detectors and embeddings, perturb the same concept C two ways
+(`modality_conflict.py`): **STRUCTURAL** (delete C's graph-citers — functions that call C) vs
+**SEMANTIC** (delete C's embedding-nearest foreground — functions textually near C). Metric: mean
+Δscore at C (60 concepts, 2 seeds, stable):
+
+| Δscore at planted concept | STRUCTURAL plant | SEMANTIC plant |
+|---|---|---|
+| **M1 (graph)** | **+3.00** | +0.13 |
+| **M_emb (embedding)** | +0.01 | **+0.07** |
+
+A clean **diagonal**: the structural perturbation moves M1 **23×** more than the semantic does
+(+3.00 vs +0.13); the semantic perturbation moves M_emb **7×** more than the structural does (+0.07 vs
++0.01). **Each detector is blind to the off-modality gap — within one substrate, zero cross-domain
+confounds, identical definitions.** (M_emb's absolute moves are smaller because its score is a
+distance-log-ratio, less volatile than M1's count-log-ratio; the within-detector on/off ratio is the
+signal.) This is the decisive confirmation that the gap's **modality** — which perturbation, i.e. how
+the gap is *defined* — sets the detector, not the domain, graph cleanness, granularity, or coupling.
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
