@@ -309,6 +309,28 @@ distance-log-ratio, less volatile than M1's count-log-ratio; the within-detector
 signal.) This is the decisive confirmation that the gap's **modality** — which perturbation, i.e. how
 the gap is *defined* — sets the detector, not the domain, graph cleanness, granularity, or coupling.
 
+### Coverage oracle — detector confirmed, but Δ partly proxies class size
+*Backlog: `gap-driven-test-generation.md`.* Code's clean external oracle = test coverage. Ran click's
+full suite under `coverage.py` (1672 passed, 83% line coverage), computed each class's covered-line
+fraction (ast line spans ∩ coverage) vs Δ over 80 classes (`coverage_oracle.py`):
+
+- **Raw** ρ(Δ, coverage) = −0.03 (null) — masked by a strong **size confound**: high-Δ classes are
+  small utility classes (ρ(size, Δ) = −0.45) and small classes are trivially well-covered
+  (ρ(size, coverage) = −0.42). The **size-controlled partial** ρ(Δ, coverage | size) = **−0.26
+  (p=0.02)**, robust to dropping platform-only files: **at fixed size, the detector's high-Δ classes
+  do have lower real coverage — the gap detector is confirmed by the external oracle.**
+- The oracle surfaced a caveat the *circular* plant/temporal evals could not: **Δ partly proxies class
+  size.** It doesn't threaten the modality verdict (which detector wins) but means Δ-as-a-gap-*score*
+  is partly a size artifact — future gap rankings should size-control.
+
+**Application (Phase B — LLM test-gen via local ollama `gemma4:12b`):** gap-seeded vs size-matched
+baseline test generation added 16 vs 5 NEW covered lines — but the *entire* gap advantage was ONE
+class (`CommandCollection`, the lone high-Δ class with real coverage headroom); the genuinely-high-Δ
+classes (`UsageError`, `ShellComplete`, …) are already ~100% covered and yielded zero. On a mature
+package the application is **headroom-limited** (the small central classes the detector favors are
+already well-tested), and generated-test run-rates were low (3–5/8). The durable, reusable result is
+Phase A's oracle validation.
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
