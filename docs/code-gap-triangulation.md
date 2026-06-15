@@ -309,7 +309,7 @@ distance-log-ratio, less volatile than M1's count-log-ratio; the within-detector
 signal.) This is the decisive confirmation that the gap's **modality** — which perturbation, i.e. how
 the gap is *defined* — sets the detector, not the domain, graph cleanness, granularity, or coupling.
 
-### Coverage oracle — detector confirmed, but Δ partly proxies class size
+### Coverage oracle (click) — a negative signal that does NOT generalize, + the size confound
 *Backlog: `gap-driven-test-generation.md`.* Code's clean external oracle = test coverage. Ran click's
 full suite under `coverage.py` (1672 passed, 83% line coverage), computed each class's covered-line
 fraction (ast line spans ∩ coverage) vs Δ over 80 classes (`coverage_oracle.py`):
@@ -317,8 +317,9 @@ fraction (ast line spans ∩ coverage) vs Δ over 80 classes (`coverage_oracle.p
 - **Raw** ρ(Δ, coverage) = −0.03 (null) — masked by a strong **size confound**: high-Δ classes are
   small utility classes (ρ(size, Δ) = −0.45) and small classes are trivially well-covered
   (ρ(size, coverage) = −0.42). The **size-controlled partial** ρ(Δ, coverage | size) = **−0.26
-  (p=0.02)**, robust to dropping platform-only files: **at fixed size, the detector's high-Δ classes
-  do have lower real coverage — the gap detector is confirmed by the external oracle.**
+  (p=0.02)** on click: at fixed size, click's high-Δ classes do have lower real coverage. **But this
+  is click-specific — across 7 packages it does NOT generalize (multi-package check below); the
+  durable, generalizing result is the size confound itself.**
 - The oracle surfaced a caveat the *circular* plant/temporal evals could not: **Δ partly proxies class
   size.** It doesn't threaten the modality verdict (which detector wins) but means Δ-as-a-gap-*score*
   is partly a size artifact — future gap rankings should size-control.
@@ -346,13 +347,39 @@ coverage signal **as a single score** (validated by `gap_size_control.py`):
 | Δ_resid \| n_stmt (LOC, needs source) | −0.29 |
 | partial ρ(Δ, coverage \| n_stmt) (reference) | −0.26 |
 
-So the detector can de-confound its **own** ranking from graph data alone — the graph-intrinsic
-size-controlled Δ is the *best* single-score predictor of under-coverage (−0.33, edging even the
-LOC-based controls). **The modality / plant-recover results are unchanged** by swapping Δ→Δ_resid:
+So the detector can de-confound its **own** ranking from graph data alone (the −0.33-vs-coverage is
+**click-specific** — see the multi-package check next; the *size proxy* generalizes, its
+coverage-correlation does not). **The modality / plant-recover results are unchanged** by swapping Δ→Δ_resid:
 `method_count` is invariant under a structural deletion (deleting a concept's callers doesn't change
 its methods), so Δ_resid responds to the structural perturbation exactly as Δ does. Net: a gap
 *ranking* should use `size_controlled_delta` (Δ-as-a-score is partly size); the modality *verdict*
 stands.
+
+### Multi-package check — the coverage validation does NOT generalize (click was an outlier)
+*Generalized click to 6 more packages (`coverage_oracle_multi.py`: attrs, black, flask, jinja2, rich,
+typer — each runs its own suite under coverage, per-class Δ vs covered fraction).*
+
+| pkg | n | partial ρ(Δ,cov\|size) | graph SCD ρ | median class coverage |
+|---|---|---|---|---|
+| click | 80 | **−0.26** | −0.33 | 0.99 |
+| typer | 89 | −0.19 | −0.21 | 1.00 |
+| jinja2 | 153 | −0.10 | +0.06 | 1.00 |
+| black | 45 | −0.08 | −0.25 | 1.00 |
+| flask | 46 | +0.02 | +0.06 | 1.00 |
+| rich | 173 | +0.08 | +0.11 | 1.00 |
+| attrs | 37 | +0.10 | +0.24 | 1.00 |
+| **pooled (7)** | | **mean −0.06, range [−0.26,+0.10], 4/7 < 0** | mean −0.05 | |
+
+**Verdict: the coverage oracle cannot validate the detector on mature OSS — median class coverage is
+≈1.00 in every package**, so there is essentially no variance for *any* score to predict (the test has
+no power; this is "uninformative," not a clean refutation). click (and weakly typer/black) showed the
+hypothesized negative only because they carried a bit more coverage variance. So the earlier
+"detector confirmed by the oracle" was an **over-claim from a single package** — the honest statement
+is that **coverage is the wrong oracle for already-well-tested code**; the detector's validation rests
+on the graph-internal plant-recover + modality conflict. **What DOES generalize cleanly: the graph
+size proxy** — ρ(method_count, LOC) = 0.81–0.91 in *all 7* packages — so `size_controlled_delta` is a
+sound de-confounding transform even though its coverage-correlation is click-specific. (Using coverage
+as an oracle would need a corpus with deliberately *incomplete* suites — an open follow-up.)
 
 ## Limitations / honest caveats
 

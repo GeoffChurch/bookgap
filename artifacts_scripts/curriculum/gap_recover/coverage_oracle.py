@@ -155,8 +155,10 @@ def per_class_coverage(
     for rel_path, fd in files.items():
         abs_path = (repo / rel_path).resolve()
         if not abs_path.exists():
-            # coverage keys can be repo-relative or absolute; try as-is too.
-            abs_path = Path(rel_path)
+            # coverage keys can be repo-relative or absolute; try as absolute
+            # path, then as cwd-relative (coverage may record paths relative to
+            # the working directory the suite was run from, not the repo root).
+            abs_path = Path(rel_path).resolve()
             if not abs_path.exists():
                 continue
         try:
