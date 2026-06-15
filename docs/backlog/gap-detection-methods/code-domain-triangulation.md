@@ -1,7 +1,9 @@
 # Gap detection — triangulating the clean-oracle thesis with a third domain: code
 
-**Status: not started (spec only).** Pickup-ready. The idea lives, until this doc, only in the
-2026-06-15 strategy thread.
+**Status: design complete (2026-06-15); implementation not started.** Pickup-ready. The full
+design — staged program, generic-core refactor + Lean migration, and the concrete Stage-1 (Python)
+design — is in *## Design / working notes (2026-06-15)* below; the upstream idea is the 2026-06-15
+strategy thread.
 
 ## The thesis we're triangulating
 
@@ -72,9 +74,11 @@ Reuse `lean_gap_kernels.py` (the Δ / density kernels), `build_lean_gap_data.py`
 loader), `build_lean_gap_births.py` + `fqn_reconstruct.py` (temporal name-resolution analogue =
 resolve symbols across tags). Keep transcript hygiene: graphs, ids, counts — never source bodies.
 
-## Three substrate options (a cleanness × granularity spread)
+## Substrate options (a cleanness × granularity spread)
 
-Run one to start; the value compounds if 2–3 are placed on the axis.
+Originally three; the 2026-06-15 design adds **Go** (option 4 below) and runs them as a staged
+program in increasing difficulty — see *Design / working notes*. The value compounds as more are
+placed on the axis.
 
 1. **Python import + call graph** — *cheapest, fuzziest oracle, fine granularity.* Static call
    resolution via `ast` + `jedi`/`pyan`/`pydeps` (or a project's own import graph). Noisy:
@@ -93,7 +97,84 @@ Run one to start; the value compounds if 2–3 are placed on the axis.
    dependencies → a **clean oracle at the package level**, millions of edges. Coarse (module, not
    function), so it **crosses cleanness with granularity**: if graph-citation wins here too, clean
    edges suffice; if it degrades, granularity matters independently of cleanness — a bonus axis the
-   other two can't isolate.
+   other three can't isolate.
+4. **Go `go/callgraph` (CHA / RTA / VTA)** — *low–moderate cost, fine granularity, and a built-in
+   within-corpus cleanness dial.* The 2026-06-15 **centerpiece** (full detail in *Design / working
+   notes*): the same corpus run under `cha` (over-approximate, noisy) vs `rta`/`vta` (precise,
+   clean) is a *controlled* cleanness contrast — domain, embedder, granularity and scale all held
+   fixed — so it tests the line causally, not as a third confounded dot. Off-the-shelf
+   `golang.org/x/tools`; `_test.go` is a clean plant site; huge corpus + rich git history.
+
+## Design / working notes (2026-06-15)
+
+Decided in a brainstorming session. Supersedes nothing above — it *operationalizes* the substrate
+options into a staged program with a shared harness.
+
+### Shape: a staged program, easiest substrate first
+
+Not one confounded third dot — a *spread* that traces the cleanness line. Run substrates in
+increasing difficulty; each adds a row to the thesis table:
+
+1. **Python** — *noisy / fine granularity.* `ast` import graph (exact) + call graph via
+   `jedi`/`pyan` (noisy: duck-typing, dynamic dispatch). Plant site: delete a module's `tests/`.
+   **Buys:** "does a noisy code oracle behave like articles?" — the noisy-end anchor (expect the
+   embedding density-ratio ≈ wins, graph-citation weak).
+2. **Go** — *low–moderate cost; the CENTERPIECE.* `golang.org/x/tools/go/callgraph` ships
+   **CHA → RTA → VTA** (decreasing noise) on the *same corpus*, so this stage is a **controlled
+   cleanness dial**: rerun the identical corpus under `cha` (noisy) vs `rta` (clean) and watch the
+   static winner flip with domain/embedder/granularity/scale held fixed. This is the causal test
+   articles-vs-Lean can't give. Plant site: delete `_test.go`. F/B: types/interfaces vs
+   funcs/methods + `Test*`. A small Go extractor emits the graph as TSV; the Python harness ingests.
+3. **Rust** — *clean / fine; HARDEST.* `rust-analyzer`/MIR call graph; builds per tag;
+   mutation-injection as the clean task source. The clean fixed point.
+4. **Monorepo build graph** — *clean / coarse; OPPORTUNISTIC, not strictly ordered.* `bazel query`
+   / Buck / Pants edges are exact and trivial to extract — its only difficulty is **finding a
+   public monorepo with rich tagged history.** Slot it whenever such a corpus is in hand; it
+   uniquely crosses **cleanness × granularity** (the bonus axis the fine-grained three can't isolate).
+
+### Architecture: one generic core, thin per-substrate adapters
+
+`lean_gap_kernels.py`, `run_lean_gap_plant_recover.py`, and `run_lean_gap_temporal_holdout.py` are
+*already* substrate-agnostic — they only touch `(node-text embeddings, F/B masks, edge list,
+structural/operational user counts, cross-tag births)`. So:
+
+- **Promote** `artifacts_scripts/curriculum/lean_gap/` → a substrate-neutral
+  `gap_recover/core/` (kernels + both evaluators + bootstrap/null machinery), and **migrate Lean to
+  be its first adapter** (`gap_recover/adapters/lean/`). Per the no-back-compat rule, this is a
+  migration: delete the old `lean_gap/` path and update imports — **no dual-path**.
+- Each substrate is then **only an adapter**: a graph extractor that emits the shared `data.npz`
+  contract; nothing downstream changes.
+
+**Shared `data.npz` contract** (generalized from `build_lean_gap_data.py`):
+`name, kind, module, text, edges(src→dst = depends-on), is_F, is_B, structural_users,
+operational_users`, plus the gated `subgraph.npz` (CSR) and git-tag `births` for the temporal arm.
+
+**F/B analogy:** `B` = types / structs / interfaces (concepts); `F` = functions / methods + tests
+(operations). `Δ = log(structural_users + 1) − log(operational_users + 1)`.
+
+### Stage-1 (Python) defaults
+
+- **Corpus:** a curated ~20–40 large, well-tested PyPI packages (many bootstrap units + diversity
+  for the clustered bootstrap), each with real `tests/` and tagged history. (Alt considered: one big
+  multi-module library, e.g. scikit-learn/Django — rejected for fewer bootstrap units.)
+- **Node-text embedder:** reuse **bge-small** (same as Lean) so the embedding-detector arm is
+  apples-to-apples across domains; add a code embedder (`jina-embeddings-v2-base-code`) only as an
+  optional robustness check.
+- **Plant site:** delete a module's `tests/` (the operations exercising a concept) → recover the
+  now-under-exercised types — the direct analogue of deleting a concept's theorem cluster.
+
+### Rigor (inherited from Lean — non-negotiable)
+
+Plant-recover: **local-deletion null** (load-bearing in Lean — keep it). Temporal:
+**growth-matched null on (existing-usage-count, in-degree) deciles** (this is what exposed
+preferential attachment). **Clustered bootstrap** over packages/modules; **two seeds.** Transcript
+hygiene: graphs / ids / counts only — **never source bodies.**
+
+### Decomposition into implementation plans
+
+- **Plan 1:** core refactor + Lean adapter migration + **Stage 1 (Python)** end-to-end through both
+  evaluations.
+- **Plan 2+:** Go (the dial), then Rust; monorepo when a corpus is available. Each its own plan.
 
 ## Done / success criteria
 
