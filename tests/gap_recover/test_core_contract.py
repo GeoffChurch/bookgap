@@ -78,3 +78,35 @@ def test_plant_recovers_known_region(tmp_path):
     rest = np.setdiff1d(np.arange(data.B_idx.size), region)
     auc = pr.mann_whitney_auc(scores["M_emb"][region], scores["M_emb"][rest])
     assert auc >= 0.8   # clean synthetic clusters -> strong embedding recovery
+
+
+def test_temporal_calibration_is_chance(tmp_path):
+    import argparse
+    import numpy as np
+    from artifacts_scripts.curriculum.gap_recover.core import temporal_holdout as th
+    # Large n so the single-draw calibration AUC concentrates near chance.
+    _write_synthetic(tmp_path, n_concepts=100, thms_per=8, seed=2)
+    d = np.load(tmp_path / "data.npz", allow_pickle=True)
+    names = [str(n) for n in d["names"]]
+    is_B = d["is_B"]
+    N = len(names)
+    # 5 tags (0..4); evaluate at T="v1" (Ti=1). Construct births so that HALF the
+    # present concepts get future (in-window) arrivals and half get none -> a genuinely
+    # MIXED arrival label set, against which a RANDOM ranking must score ~chance.
+    # (A uniform-random birth assignment makes every dense concept attract an arrival,
+    # collapsing the negative class and yielding a degenerate nan AUC.)
+    birth = np.zeros(N, dtype=np.int16)
+    for i, nm in enumerate(names):
+        grp = int(nm.split(".")[0][1:])      # "M7.Concept7"/"M7.op7_3" -> 7
+        if is_B[i]:
+            birth[i] = 0                      # all concepts present from the start
+        else:
+            birth[i] = 3 if (grp % 2 == 0) else 0   # even groups' ops arrive AFTER T
+    np.savez(tmp_path / "births.npz", birth=birth,
+             tags=np.array([f"v{i}" for i in range(5)], object))
+    data = th.Data(tmp_path).load_births(tmp_path)
+    args = argparse.Namespace(topfrac=0.1, min_deg=0, nb=5, boot=200, seed=0)
+    out = th.run_for_T(data, "v1", args, np.random.default_rng(0))
+    cal = out["citation_all"]["calibration"]["auc"]
+    assert not np.isnan(cal)                  # mixed labels -> a finite calibration AUC
+    assert abs(cal - 0.5) < 0.15              # random ranking does NOT predict arrivals
