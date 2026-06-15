@@ -7,8 +7,7 @@ whose source contains the node's fully-qualified name. Nodes never matched (~18%
 auto-generated/derived projections) keep the SENTINEL value (== never-present)."""
 import os, sys, time
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fqn_reconstruct import collect_tag
+from .fqn_reconstruct import collect_tag
 import numpy as np
 
 OUT = Path(os.environ.get("LEAN_GAP_DATA", "/tmp/lean_gap"))

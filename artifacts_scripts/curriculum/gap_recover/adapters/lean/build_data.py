@@ -14,11 +14,13 @@ and kernel auto-generated decls (``.casesOn/.recOn/.rec/.below/.noConfusion…/.
                             ``inductive``/``ctor`` family — both land in B by kind)
 
 Emits ``/tmp/lean_gap/data.npz`` with:
-  emb            float32 [N,384]  L2-normalized bge-small statement embeddings
-  is_F, is_B     bool   [N]
-  kinds, mods    object [N]
-  names          object [N]
-  def_users, thm_users  int [N]   # citation in-degree split by citer kind (for M1)
+  emb                  float32 [N,384]  L2-normalized bge-small statement embeddings
+  is_F, is_B           bool   [N]
+  kinds, mods          object [N]
+  names                object [N]
+  structural_users     int    [N]   # citation in-degree from def-citers (for M1)
+  operational_users    int    [N]   # citation in-degree from theorem-citers (for M1)
+  concept_pref         bool   [N]   # True for .Defs-module or inductive kinds
 and ``/tmp/lean_gap/meta.json``.
 """
 
@@ -40,7 +42,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import numpy as np
 import scipy.sparse as sp
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[5]
 GRAPH = ROOT / "cache" / "lean" / "decl_graph"
 OUT = Path("/tmp/lean_gap")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -180,6 +182,12 @@ def main() -> None:
     emb = np.zeros((n, dim), dtype=np.float32)
     emb[keep_idx] = emb_keep
 
+    # concept_pref: True for .Defs-module decls or inductive kinds — the
+    # "genuine object" concepts (exact analogue of the old coherent_concepts gate).
+    concept_pref = np.array(
+        [(".Defs" in str(mods[i]) or kinds[i] == "inductive") for i in keep_idx],
+        dtype=bool)
+
     np.savez(
         OUT / "data.npz",
         keep_idx=keep_idx,
@@ -189,8 +197,9 @@ def main() -> None:
         kinds=np.array([kinds[i] for i in keep_idx], dtype=object),
         mods=np.array([mods[i] for i in keep_idx], dtype=object),
         names=np.array([names[i] for i in keep_idx], dtype=object),
-        def_users=def_users[keep_idx],
-        thm_users=thm_users[keep_idx],
+        structural_users=def_users[keep_idx],
+        operational_users=thm_users[keep_idx],
+        concept_pref=concept_pref,
     )
     meta = {
         "n_total_nodes": int(n),
@@ -200,7 +209,9 @@ def main() -> None:
         "dim": int(dim),
         "embedder": "BAAI/bge-small-en-v1.5",
         "gating": "Mathlib.* minus .Tactic/.Util/.Meta; drop instances + auto-generated; "
-                  "non-empty type_str; F=theorem, B=def+inductive",
+                  "non-empty type_str; F=theorem, B=def+inductive; "
+                  "structural_users=def-citers, operational_users=thm-citers, "
+                  "concept_pref=.Defs-module or inductive",
         "elapsed_s": round(time.time() - t0, 1),
     }
     (OUT / "meta.json").write_text(json.dumps(meta, indent=2))

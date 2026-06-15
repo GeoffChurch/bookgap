@@ -5,7 +5,7 @@ recover planted theorem-deletions where a single-decl citation-count density-rat
 does not? Mirrors the article-domain plant-and-recover (artifacts/gap_detection_eval),
 whose one temporally-validated method was level-set components.
 
-Setup (math-core gated; see build_lean_gap_data.py):
+Setup (math-core gated; see adapters/lean/build_data.py):
   F = theorems/lemmas  (foreground = dense literature)
   B = defs/inductives  (background = objects/scaffolding) -> the CANDIDATE set
 
