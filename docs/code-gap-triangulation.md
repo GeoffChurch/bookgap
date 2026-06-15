@@ -331,6 +331,29 @@ package the application is **headroom-limited** (the small central classes the d
 already well-tested), and generated-test run-rates were low (3–5/8). The durable, reusable result is
 Phase A's oracle validation.
 
+### Size-controlled gap score — the confound, fixed (graph-intrinsically)
+*Resolves the size confound the coverage oracle surfaced.* The fix must be usable by the detector,
+which sees only the graph — not source LOC. A **graph-intrinsic size proxy works**:
+`method_count(C)` = the number of F-nodes directly under a class's namespace (its methods) tracks true
+LOC-size at **Spearman ρ = 0.91** on click. Residualizing Δ on log(method_count) gives a
+size-controlled gap score (`core/gap_scores.size_controlled_delta`) that recovers the de-confounded
+coverage signal **as a single score** (validated by `gap_size_control.py`):
+
+| gap score vs click coverage | Spearman ρ |
+|---|---|
+| raw Δ | −0.03 (masked by size) |
+| **Δ_resid \| method_count (graph-intrinsic, shipped)** | **−0.33** |
+| Δ_resid \| n_stmt (LOC, needs source) | −0.29 |
+| partial ρ(Δ, coverage \| n_stmt) (reference) | −0.26 |
+
+So the detector can de-confound its **own** ranking from graph data alone — the graph-intrinsic
+size-controlled Δ is the *best* single-score predictor of under-coverage (−0.33, edging even the
+LOC-based controls). **The modality / plant-recover results are unchanged** by swapping Δ→Δ_resid:
+`method_count` is invariant under a structural deletion (deleting a concept's callers doesn't change
+its methods), so Δ_resid responds to the structural perturbation exactly as Δ does. Net: a gap
+*ranking* should use `size_controlled_delta` (Δ-as-a-score is partly size); the modality *verdict*
+stands.
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
