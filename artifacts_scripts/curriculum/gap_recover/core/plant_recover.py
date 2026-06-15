@@ -167,7 +167,13 @@ def score_all(data: Data, tbl: FgNeighborTable, r_B: np.ndarray,
         lost_b = np.asarray(data.subT_B.dot(del_mask_full)).ravel()
         thm_after = np.maximum(thm_after - lost_b, 0.0)
     m1 = np.log(data.structural_users[data.B_idx] + 1.0) - np.log(thm_after + 1.0)
-    return {"M1": m1, "M_emb": delta_emb, "_r_F": r_F}
+    # fused detector: z-score each score (over the candidate set) and sum — tests whether the
+    # two modalities carry complementary signal or are strict substitutes.
+    def _z(x: np.ndarray) -> np.ndarray:
+        s = float(x.std())
+        return (x - x.mean()) / s if s > 0 else np.zeros_like(x)
+    m_fused = _z(m1) + _z(delta_emb)
+    return {"M1": m1, "M_emb": delta_emb, "M_fused": m_fused, "_r_F": r_F}
 
 
 def levelset_recall(scores: np.ndarray, Zb: np.ndarray, region_pos: np.ndarray,
@@ -225,7 +231,7 @@ def run_trial(data: Data, tbl: FgNeighborTable, r_B: np.ndarray, concept: dict,
            "levelset_tf01": {"recall_topk": ls01["recall_topk"],
                              "best_iou_topk": ls01["best_iou_topk"],
                              "region_cover_best_comp": ls01["region_cover_best_comp"]}}
-    for det in ("M1", "M_emb"):
+    for det in ("M1", "M_emb", "M_fused"):
         res["auc"][det] = mann_whitney_auc(scores[det][region], scores[det][neg])
     res["auc"]["M_emb_levelset"] = mann_whitney_auc(ls["ls_score"][region], ls["ls_score"][neg])
     return res
@@ -268,7 +274,7 @@ def run_null(data: Data, tbl: FgNeighborTable, r_B: np.ndarray, size: int,
     neg = np.setdiff1d(neg, region)
     out = {"ok": True, "region_size": int(region.size), "n_deleted": int(del_pos.size),
            "mode": mode, "auc": {}}
-    for det in ("M1", "M_emb"):
+    for det in ("M1", "M_emb", "M_fused"):
         out["auc"][det] = mann_whitney_auc(scores[det][region], scores[det][neg])
     out["auc"]["M_emb_levelset"] = mann_whitney_auc(ls["ls_score"][region], ls["ls_score"][neg])
     return out
@@ -427,7 +433,7 @@ def main() -> None:
     summary = {"n_plants_ok": len(ok), "n_null_scatter_ok": len(nulls_scatter),
                "n_null_local_ok": len(nulls_local),
                "median_cluster_size": median_size, "detectors": {}}
-    for det in ("M1", "M_emb", "M_emb_levelset"):
+    for det in ("M1", "M_emb", "M_fused", "M_emb_levelset"):
         vals = [r["auc"][det] for r in ok]
         pt, lo, hi = clustered_ci(vals, groups, rng)
         rec = None

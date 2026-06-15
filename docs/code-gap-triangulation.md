@@ -250,6 +250,30 @@ negative across every measurable domain (articles, Lean, Python, Rust, Go): a ga
 where the field's next unit lands — preferential attachment does. (`gap_recover/article_coupling.py`
 computes the article coupling; `core/coupling_diagnostics.py` the code ones.)
 
+## Follow-on experiments (2026-06-15)
+
+### Modality fusion — strict substitutes (fusion HURTS)
+*Backlog: `modality-fusion-and-predictor.md`.* Does fusing the two detectors beat either? Added a
+z-scored `M1 + M_emb` fused detector (`core/plant_recover.py`) and ran the graph-region plant on all
+five structural substrates (seed 12345):
+
+| substrate | M1 (graph) | M_emb (embedding) | **M_fused** |
+|---|---|---|---|
+| Lean | 0.929 | 0.619 | 0.917 |
+| Python | 0.961 | 0.458 | 0.960 |
+| Go (rta) | 0.898 | 0.465 | **0.788** |
+| Rust | 0.961 | 0.618 | 0.955 |
+| Bazel | 0.859 | 0.599 | 0.800 |
+
+**In every substrate fused ≤ M1, never exceeding it** — and where M_emb is at/below chance (Go, Bazel)
+fusion *drags M1 down substantially* (Go 0.898→0.788). So for a given gap modality the off-modality
+detector is not merely weaker, it is **anti-signal**: blending only dilutes. The modalities are
+**strict substitutes** — the right move is to *pick* the modality-matched detector, not combine. (This
+is equal-weight fusion; a learned weight would simply collapse to the graph detector, M_emb→0.) This
+also largely answers the *a-priori-predictor* sub-question: modality is set by the gap **definition**
+(known up front), not by an intrinsic substrate property — to be shown decisively by the within-corpus
+conflict test (next).
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
