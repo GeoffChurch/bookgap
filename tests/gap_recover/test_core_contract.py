@@ -60,3 +60,21 @@ def test_data_loads_contract(tmp_path):
     assert data.is_B.sum() == 6 and data.is_F.sum() == 180
     assert set(data.operational_users[data.B_idx].tolist()) == {30}
     assert set(data.structural_users[data.B_idx].tolist()) == {0}
+
+
+def test_plant_recovers_known_region(tmp_path):
+    import numpy as np
+    from artifacts_scripts.curriculum.gap_recover.core import plant_recover as pr
+    from artifacts_scripts.curriculum.gap_recover.core.kernels import knn_dists, FgNeighborTable
+    _write_synthetic(tmp_path, n_concepts=8, thms_per=40, seed=1)
+    data = pr.Data(tmp_path)
+    r_B = knn_dists(data.Zb, data.Zb, min(pr.K_NN, data.B_idx.size), exclude_self=True)[:, -1].astype(np.float32)
+    tbl = FgNeighborTable(data.Zb, data.Zf, m=128, k=pr.K_NN)
+    c0 = int(data.B_idx[0])
+    cluster = pr.concept_theorem_cluster(data, c0)
+    region, dmask = pr.region_for_deletion(data, tbl, cluster, c0)
+    assert region.size >= 1
+    scores = pr.score_all(data, tbl, r_B, dmask)
+    rest = np.setdiff1d(np.arange(data.B_idx.size), region)
+    auc = pr.mann_whitney_auc(scores["M_emb"][region], scores["M_emb"][rest])
+    assert auc >= 0.8   # clean synthetic clusters -> strong embedding recovery
