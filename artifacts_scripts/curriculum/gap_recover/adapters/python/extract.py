@@ -177,7 +177,9 @@ def _class_text(qualname: str, node: ast.ClassDef) -> str:
 # --------------------------------------------------------------------------- #
 # pass 1: collect defs + per-module symbol tables
 # --------------------------------------------------------------------------- #
-def build_import_map(tree: ast.Module, module: str) -> dict[str, str]:
+def build_import_map(
+    tree: ast.Module, module: str, *, is_package: bool = False,
+) -> dict[str, str]:
     """alias -> fully-qualified ``"module.qual"`` target string.
 
     Handles ``import x`` / ``import x as y`` / ``from m import n`` /
@@ -185,9 +187,16 @@ def build_import_map(tree: ast.Module, module: str) -> dict[str, str]:
     ``from ..pkg import n`` (leading dots resolved against ``module``'s package).
     Targets pointing outside the scanned package are recorded anyway; they simply
     fail to map to a node in pass 2.
+
+    ``is_package`` is True when ``module`` comes from a ``__init__.py``: a
+    package's ``__init__`` IS the package, so a single leading dot
+    (``from .core import X``) anchors at ``module`` itself, not its parent.
     """
     imports: dict[str, str] = {}
-    pkg_parts = module.split(".")[:-1]  # the module's containing package path
+    # Containing-package path that a single leading dot anchors at. For a
+    # package __init__ that is the module itself; for a regular module it is the
+    # module minus its own last component.
+    pkg_parts = module.split(".") if is_package else module.split(".")[:-1]
     for stmt in ast.walk(tree):
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
@@ -211,10 +220,15 @@ def build_import_map(tree: ast.Module, module: str) -> dict[str, str]:
     return imports
 
 
-def _collect_module(tree: ast.Module, module: str, defs: _Defs) -> None:
+def _collect_module(
+    tree: ast.Module, module: str, defs: _Defs, *, is_package: bool = False,
+) -> None:
     """Register every class/function node in ``module`` into ``defs``."""
     is_test_mod = _is_test_module(module)
-    md = _ModuleDefs(module=module, imports=build_import_map(tree, module))
+    md = _ModuleDefs(
+        module=module,
+        imports=build_import_map(tree, module, is_package=is_package),
+    )
     defs.modules[module] = md
 
     def visit(node: ast.AST, qual_prefix: str, enclosing_class: str | None) -> None:
@@ -272,27 +286,120 @@ def _add_node(
     return idx
 
 
+def _parse_file(py_path: Path) -> ast.Module | None:
+    """Parse one ``.py`` file, returning its AST or None if unparseable."""
+    try:
+        source = py_path.read_text(encoding="utf-8")
+        return ast.parse(source, filename=str(py_path))
+    except (SyntaxError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _module_name_under(py_path: Path, root: Path) -> str:
+    """Dotted module name for ``py_path`` relative to ``root`` (root excluded).
+
+    ``<root>/tests/test_core.py``        -> ``tests.test_core``
+    ``<root>/tests/__init__.py``         -> ``tests``
+    Used for root-level sibling test dirs, whose modules are NOT under the
+    located package and so cannot use :func:`module_name_for`.
+    """
+    rel = py_path.relative_to(root)
+    parts = list(rel.parts)
+    if parts[-1] == "__init__.py":
+        parts = parts[:-1]
+    else:
+        parts[-1] = parts[-1][:-3]  # strip ".py"
+    return ".".join(parts)
+
+
 def collect_defs(pkg_dir: Path, import_name: str) -> _Defs:
     """Pass 1: walk every ``.py`` under the package, build nodes + symbol tables."""
     defs = _Defs()
     skipped = 0
     for py_path in sorted(pkg_dir.rglob("*.py")):
         module = module_name_for(py_path, pkg_dir, import_name)
-        try:
-            source = py_path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(py_path))
-        except (SyntaxError, UnicodeDecodeError, ValueError):
+        tree = _parse_file(py_path)
+        if tree is None:
             skipped += 1
             continue
-        _collect_module(tree, module, defs)
+        _collect_module(tree, module, defs, is_package=py_path.name == "__init__.py")
     if skipped:
         LOGGER.info("python-extract: skipped %d unparseable file(s)", skipped)
     return defs
 
 
+def collect_root_tests(repo_path: Path, pkg_dir: Path, defs: _Defs) -> None:
+    """Pass 1b: scan top-level sibling ``tests/`` / ``test/`` dirs.
+
+    Repos like click/flask/requests keep their tests in a top-level directory
+    that is a sibling of the package, so :func:`collect_defs` never reaches
+    them. Module names here are taken relative to ``repo_path`` (e.g.
+    ``tests/test_core.py`` -> ``tests.test_core``). Every def is registered as
+    a test-module node (``is_test=True`` for functions, ``concept_pref=False``
+    for everything). Dirs already living inside the package (``pkg/tests/``,
+    already scanned by :func:`collect_defs`) are skipped to avoid double-count.
+    """
+    skipped = 0
+    try:
+        pkg_resolved = pkg_dir.resolve()
+    except OSError:
+        pkg_resolved = pkg_dir
+    for dname in ("tests", "test"):
+        tdir = repo_path / dname
+        if not tdir.is_dir():
+            continue
+        # skip a tests dir that is the package itself or lives inside it.
+        try:
+            tdir_resolved = tdir.resolve()
+        except OSError:
+            tdir_resolved = tdir
+        if tdir_resolved == pkg_resolved or pkg_resolved in tdir_resolved.parents:
+            continue
+        for py_path in sorted(tdir.rglob("*.py")):
+            module = _module_name_under(py_path, repo_path)
+            if module in defs.modules:  # already scanned -> never double-count
+                continue
+            tree = _parse_file(py_path)
+            if tree is None:
+                skipped += 1
+                continue
+            _collect_module(
+                tree, module, defs, is_package=py_path.name == "__init__.py",
+            )
+    if skipped:
+        LOGGER.info("python-extract: skipped %d unparseable root-test file(s)", skipped)
+
+
 # --------------------------------------------------------------------------- #
 # pass 2: resolve edges
 # --------------------------------------------------------------------------- #
+def _resolve_target(target: str, defs: _Defs, _hops: int = 2) -> int | None:
+    """Map a fully-qualified target string ``"M.q"`` to a node idx.
+
+    Directly if it already names a node; otherwise *follow package re-exports*:
+    if ``M`` is a scanned module that re-exports ``q`` (i.e. ``q`` lives in
+    ``M``'s import map, as produced by ``pkg/__init__.py`` doing
+    ``from .core import q``), chase that mapping to the real node. Bounded to
+    ``_hops`` chases (default 2) to avoid import cycles; unresolved -> None.
+    """
+    seen: set[str] = set()
+    for _ in range(_hops + 1):
+        if target in defs.name_to_idx:
+            return defs.name_to_idx[target]
+        if target in seen:
+            break
+        seen.add(target)
+        # split into containing module + symbol; chase a re-export if present.
+        if "." not in target:
+            break
+        mod_str, _, sym = target.rpartition(".")
+        re_mod = defs.modules.get(mod_str)
+        if re_mod is None or sym not in re_mod.imports:
+            break
+        target = re_mod.imports[sym]
+    return None
+
+
 def resolve_name(
     name: str, md: _ModuleDefs, defs: _Defs, enclosing_class: str | None,
 ) -> int | None:
@@ -302,7 +409,9 @@ def resolve_name(
       1. same-module top-level ``local``;
       2. module ``imports`` -> fully-qualified target -> global name index
          (also try a one-hop ``from-module import alias`` where the alias is a
-         submodule and ``name`` was ``alias.attr``);
+         submodule and ``name`` was ``alias.attr``); a target that names a
+         package re-export (``from .core import X`` in ``pkg/__init__.py``) is
+         chased through ``_resolve_target`` to the real node;
     ``name`` may be dotted (``mod.Thing`` / ``pkg.mod.Thing``).
     """
     # bare same-module name
@@ -317,8 +426,9 @@ def resolve_name(
         target_head = md.imports[head]
         rest = name.split(".", 1)[1] if "." in name else ""
         target = f"{target_head}.{rest}" if rest else target_head
-        if target in defs.name_to_idx:
-            return defs.name_to_idx[target]
+        idx = _resolve_target(target, defs)
+        if idx is not None:
+            return idx
     # fully-qualified reference that already names a node directly
     if name in defs.name_to_idx:
         return defs.name_to_idx[name]
@@ -465,6 +575,7 @@ def extract_repo(repo_path, import_name: str) -> ExtractResult:
     LOGGER.info("python-extract: scanning package %s (import_name=%r)", pkg_dir, import_name)
 
     defs = collect_defs(pkg_dir, import_name)
+    collect_root_tests(repo_path, pkg_dir, defs)
     edges_src, edges_dst = resolve_edges(defs)
 
     return ExtractResult(

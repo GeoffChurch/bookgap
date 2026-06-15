@@ -36,3 +36,35 @@ def test_extract_nodes_and_users(tmp_path):
     # tests are marked plantable operations; concept_pref only on public classes (non-test module)
     assert r.is_test[idx["shapes.tests.test_core.test_area"]]
     assert r.concept_pref[idx["shapes.core.Circle"]]
+
+
+PKG_REEXPORT = {
+    "lib/__init__.py": "from .core import Engine\n",
+    "lib/core.py": "class Engine:\n    def run(self):\n        return 1\n",
+    "lib/usage.py": "from lib import Engine\ndef boot():\n    return Engine().run()\n",
+}
+
+def test_reexport_resolution(tmp_path):
+    for rel, src in PKG_REEXPORT.items():
+        p = tmp_path / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(src)
+    r = extract.extract_repo(tmp_path, import_name="lib")
+    idx = {n: i for i, n in enumerate(r.names)}
+    # boot() constructs Engine via the re-exported `from lib import Engine` -> operational edge
+    assert r.operational_users()[idx["lib.core.Engine"]] >= 1
+
+
+PKG_ROOTTESTS = {
+    "widget/__init__.py": "from .base import Widget\n",
+    "widget/base.py": "class Widget:\n    def draw(self):\n        return 0\n",
+    "tests/test_widget.py": "from widget import Widget\ndef test_draw():\n    assert Widget().draw() == 0\n",
+}
+
+def test_root_level_tests_scanned(tmp_path):
+    for rel, src in PKG_ROOTTESTS.items():
+        p = tmp_path / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(src)
+    r = extract.extract_repo(tmp_path, import_name="widget")
+    idx = {n: i for i, n in enumerate(r.names)}
+    tname = "tests.test_widget.test_draw"
+    assert tname in idx and r.is_test[idx[tname]] and r.is_F[idx[tname]]
+    # its use of Widget (via re-export) is an operational edge
+    assert r.operational_users()[idx["widget.base.Widget"]] >= 1
