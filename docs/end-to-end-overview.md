@@ -27,7 +27,7 @@ The coverage at a glance (✓✓ deep, ✓ done, — open):
 | stage | articles / research | lemmas / theorems |
 |---|---|---|
 | 0. substrate | GIST embeddings + OpenAlex citation graph | Mathlib dependency graph |
-| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Python/Go/Rust + the Go CHA/RTA dial; static winner is *cleanness-invariant* → modality, not cleanness) |
+| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Python/Go/Rust/Bazel + the controlled Go CHA/RTA dial; winner invariant to cleanness AND granularity → modality, not cleanness) |
 | 2. selection | ✓ | ✓ |
 | 3. ordering | ✓ | ✓ |
 | 4. generation | ✓ | ✓ |
@@ -258,8 +258,15 @@ the field's future — a universal negative, independent of oracle cleanness.
   4th language (tree-sitter extractor, 18 crates) patterns with the others (M1 0.94 ≫ M_emb 0.59;
   embedding-core degenerates 0/160; coupling +0.057). The verdict now holds across **Lean + 3 code
   languages**, the controlled CHA→RTA dial, and a **3× coupling range** (+0.037→+0.115) — robust to
-  language, extractor, cleanness, and coupling. **Still open:** monorepo build graph. Spec:
-  `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
+  language, extractor, cleanness, and coupling. **Stage 4 (Bazel monorepo build graph) — DONE:** the
+  clean+coarse corner (abseil+protobuf+grpc, 931 targets; `cc_library`=B, `cc_test`/`cc_binary`=F,
+  build `deps`=edges) — M1 0.86 (with a genuine **positive** lift +0.18/+0.07, like Lean) ≫ M_emb 0.60;
+  coarsening function→target doesn't flip the winner, and Bazel's coupling is the *highest* of all
+  (+0.161, yet embedding still loses). **All spec substrates now covered:** the graph-wins/
+  embedding-weak verdict holds across **Lean + 4 code substrates**, fine→coarse granularity,
+  noisy→clean edges (the controlled CHA→RTA dial + exact build deps), 4 languages/4 extractors, and a
+  **4.3× coupling range** (+0.037→+0.161). Modality, not cleanness/granularity/coupling-strength. →
+  `docs/code-gap-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
 - *Confidence intervals (book-surprise now tightened):* re-run over **29 books / 371 chapters** —

@@ -1,15 +1,16 @@
 # Gap detection — triangulating the clean-oracle thesis with a third domain: code
 
-**Status: Stages 1–3 (Python, Go CHA→RTA dial, Rust) DONE (2026-06-15) — results in `docs/code-gap-triangulation.md`.**
+**Status: COMPLETE (2026-06-15) — all 4 spec substrates done: Python, Go (CHA→RTA dial), Rust, Bazel monorepo. Results in `docs/code-gap-triangulation.md`.**
 They **revised the thesis**: code patterns with Lean (graph wins, embedding at chance), NOT
 intermediate, and the axis is gap **modality** (structural vs semantic-void), not graph cleanness; the
 temporal holdout is a clean **third negative** (preferential attachment). **The Go CHA→RTA cleanness
 dial is the controlled clincher** — two call graphs of different precision on the *same* corpus, with
 the static winner **invariant** to cleanness (M1≈0.90, M_emb≈chance under both CHA and RTA). Infra:
-generic `artifacts_scripts/curriculum/gap_recover/` harness (core + lean/python/go/rust adapters; Lean
-reproduced exactly). The graph-wins/embedding-weak verdict holds across **Lean + 3 code languages**,
-the controlled CHA→RTA dial, and a **3× coupling range** (+0.037→+0.115). **Still open:** monorepo
-build graph. The full design — staged program,
+generic `artifacts_scripts/curriculum/gap_recover/` harness (core + lean/python/go/rust/bazel adapters;
+Lean reproduced exactly). The graph-wins/embedding-weak verdict holds across **Lean + 4 code
+substrates**, fine→coarse granularity, noisy→clean edges (the controlled CHA→RTA dial + Bazel's exact
+build deps), and a **4.3× coupling range** (+0.037→+0.161) — modality, not cleanness/granularity/
+coupling. **All spec substrates covered; the triangulation is complete.** The full design — staged program,
 generic-core refactor, and the Stage-1 (Python) design — is in *## Design / working notes
 (2026-06-15)* below.
 

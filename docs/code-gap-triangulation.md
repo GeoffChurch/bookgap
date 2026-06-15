@@ -1,8 +1,8 @@
 # Code-domain gap detection — triangulating the clean-oracle thesis (Stage 1: Python)
 
-*Status: Stages 1 (Python) + 2 (Go CHA→RTA dial) + 3 (Rust) complete, 2026-06-15. Spec + program:
-`docs/backlog/gap-detection-methods/code-domain-triangulation.md`. This doc reports what the Python,
-Go, and Rust points showed — and how they **revise** the thesis. Still open: monorepo build graph.*
+*Status: Stages 1–4 complete (Python, Go CHA→RTA dial, Rust, Bazel monorepo build graph), 2026-06-15.
+Spec + program: `docs/backlog/gap-detection-methods/code-domain-triangulation.md`. All spec substrates
+covered. This doc reports what the four code substrates showed — and how they **revise** the thesis.*
 
 ## What we set out to test
 
@@ -200,6 +200,46 @@ verdict holds across a true dependency graph (Lean), three independent call/usag
 citation↔embedding coupling** (+0.037 → +0.115). Modality, not cleanness, decides the detector — and
 it is robust to language, extraction method, graph cleanness, and coupling strength.
 
+## Stage 4 — Monorepo build graph: the clean + coarse corner (the granularity cross)
+
+The last substrate fills the one cell the others miss: a **clean** graph at **coarse** granularity.
+Bazel build graphs are EXACT (`bazel query` reads the BUILD files — no static-resolution noise) but
+**target-level** (a library, not a function), so this stage crosses cleanness with granularity. Nodes
+= build targets (via `bazel query --output=xml`); **B = `cc_library`** (concepts), **F = `cc_test`/
+`cc_binary`** (operations); edges = build `deps`. Corpus = abseil + protobuf + grpc — **931 targets**
+(518 libraries, 413 tests/binaries), 4,564 edges. (At target granularity operational clusters are
+small — median ~2 dependents — so the plant selector's cluster bounds were lowered, `--cluster-lo 3`.)
+
+**Result — the verdict holds at coarse granularity** (plant-recover, graph region, 2 seeds): M1
+(graph) plant AUC **0.86 / 0.87** with a genuine **positive lift +0.18 / +0.07** over the local null —
+*cleaner* than the fine-grained code domains, because at target granularity the graph is sparse, so a
+random local deletion rarely forms a core and the planted library genuinely stands out
+(concept-coherent, like Lean). M_emb (embedding) **0.60 / 0.56** — loses decisively. Top-Δ libraries
+are face-valid (`absl/base:nullability`, `absl/meta:type_traits`, `protobuf …compiler:code_generator`
+— foundational utilities depended-on widely but exercised narrowly).
+
+**The coupling twist:** Bazel's citation↔embedding coupling is the **highest** of all substrates
+(**+0.161** — target labels like "absl strings str_split" are semantic *and* co-depending targets
+share name tokens), yet the embedding **still** loses to the graph. So even when the embedding is at
+its most informative, the graph wins for structural gaps — coupling *strength* is not the axis either.
+
+### Final five-substrate summary
+
+| substrate | granularity | edges | M1 graph AUC | M_emb AUC | coupling |
+|---|---|---|---|---|---|
+| **Lean** | decl | proof-term (clean) | 0.93 | 0.62 | +0.115 |
+| **Python** | function | `ast` call (noisy) | 0.96 | 0.50 | +0.108 |
+| **Go** | function | CHA↔RTA (the *dial*) | 0.90 | 0.46 | +0.037 |
+| **Rust** | function | tree-sitter (noisy) | 0.94 | 0.59 | +0.057 |
+| **Bazel** | **target (coarse)** | build deps (clean) | 0.86 | 0.59 | +0.161 |
+
+The **graph detector wins and the embedding detector is weak-to-chance in every substrate** — across
+**fine→coarse granularity**, **noisy→clean edges** (the controlled Go dial *and* Bazel's exact build
+deps), four languages and four extraction methods, and a **4.3× coupling range** (+0.037→+0.161). The
+detector is set by the gap's **modality** (structural → graph), robust to cleanness, granularity,
+language, extractor, and coupling strength. Articles are the contrast pole: semantic-void gaps →
+embedding wins.
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
@@ -219,6 +259,10 @@ it is robust to language, extraction method, graph cleanness, and coupling stren
   doesn't change the verdict), but the recovery has the same graph-region/null caveats as Python/Go.
   Temporal-Rust not run. As with Go/Python, the load-bearing signal is **M_emb-below-M1** + the
   coupling/degeneracy measurements, not M1's raw AUC.
+- **Bazel** is small-scale (931 targets, 3 repos) with a lowered `--cluster-lo 3` (target-level
+  operational clusters are small) and a terse-label embedding arm; `grpc //:all` returned only
+  libraries (its tests live elsewhere). It is a single clean+coarse point, not a sweep — but it *does*
+  carry a working positive M1 lift, unlike the dense fine-grained code domains.
 
 ## Reproduce
 
