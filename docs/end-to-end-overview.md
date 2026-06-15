@@ -27,7 +27,7 @@ The coverage at a glance (✓✓ deep, ✓ done, — open):
 | stage | articles / research | lemmas / theorems |
 |---|---|---|
 | 0. substrate | GIST embeddings + OpenAlex citation graph | Mathlib dependency graph |
-| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Stage-1 Python done; graph-modality, not cleanness) |
+| 1. gap detection | ✓✓ | ✓ static (validated); temporal = negative — universal across articles, Lean, **code** (Python + Go CHA/RTA dial done; static winner is *cleanness-invariant* → modality, not cleanness) |
 | 2. selection | ✓ | ✓ |
 | 3. ordering | ✓ | ✓ |
 | 4. generation | ✓ | ✓ |
@@ -249,10 +249,13 @@ the field's future — a universal negative, independent of oracle cleanness.
   universal. Honest caveat: the Lean embedding-orphan-core plant *degenerates* on code (2/160 plants
   — a quantitative fragility, not decoupling), so a runnable graph-region variant was needed and M1's
   code recovery lacks a working discriminating null; the load-bearing static signal is
-  embedding-at-chance + the coupling measurement. → `docs/code-gap-triangulation.md`. **Still open:**
-  Go (the `go/callgraph` CHA→RTA cleanness *dial* — the cleanest test of cleanness-vs-modality on one
-  corpus), Rust, monorepo build graph. Spec:
-  `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
+  embedding-at-chance + the coupling measurement. → `docs/code-gap-triangulation.md`. **Stage 2 (Go) — DONE, and it nails it:** the `go/callgraph`
+  **CHA→RTA cleanness dial** (two call graphs of different precision on the *same* Go-std corpus)
+  shows the static winner is **invariant to cleanness** — M1 ≈ 0.90 and M_emb ≈ chance under *both*
+  CHA and RTA. The one controlled experiment that isolates cleanness confirms cleanness is *not* the
+  axis; modality is. (Go's embedding-orphan-core *fully* degenerates, 0/160 plants; its coupling is
+  the weakest of the three, +0.037, yet the graph detector still wins.) **Still open:** Rust, monorepo
+  build graph. Spec: `docs/backlog/gap-detection-methods/code-domain-triangulation.md`.
 - *Generation:* the weak-model context ceiling is the binding constraint; stronger executors or
   smaller per-unit context are the levers.
 - *Confidence intervals (book-surprise now tightened):* re-run over **29 books / 371 chapters** —

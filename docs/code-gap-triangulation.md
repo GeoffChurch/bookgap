@@ -1,8 +1,9 @@
 # Code-domain gap detection — triangulating the clean-oracle thesis (Stage 1: Python)
 
-*Status: Stage 1 (Python substrate) complete, 2026-06-15. Spec + program:
-`docs/backlog/gap-detection-methods/code-domain-triangulation.md`. This doc reports what the
-Python point actually showed — and how it **revises** the thesis.*
+*Status: Stage 1 (Python) + Stage 2 (Go, the CHA→RTA cleanness dial) complete, 2026-06-15. Spec +
+program: `docs/backlog/gap-detection-methods/code-domain-triangulation.md`. This doc reports what the
+Python and Go points showed — and how they **revise** the thesis. Still open: Rust, monorepo build
+graph.*
 
 ## What we set out to test
 
@@ -127,6 +128,47 @@ M1 fill ≈ 0.8 / AUCstrat ≈ 0.53 — weak and not the primary citation oracle
 So the temporal half is now a **three-domain universal**: in articles, Lean, *and* code, a detected
 gap does not forecast the field's next unit — rich-get-richer does — independent of substrate or
 graph cleanness.
+
+## Stage 2 — Go: the CHA→RTA cleanness dial (the *controlled* test)
+
+Stage 1 argued the axis is *modality, not cleanness* — but across articles/Lean/Python, cleanness and
+modality are confounded (the domains differ in many ways at once). **Go removes the confound.**
+`go/callgraph` ships **CHA** (over-approximate — an interface call points to *all* implementers) and
+**RTA** (precise — reachability-pruned): two call graphs of *different cleanness on the SAME corpus*,
+holding domain, embedder, granularity and scale fixed. If cleanness were the axis, the static winner
+would shift CHA→RTA. **It doesn't.**
+
+**Corpus:** the Go standard library (`-pkgs std`; dep-free, interface-rich, well-tested), extracted by
+a `go/packages`+SSA+`go/callgraph` program (`adapters/go/extractor/`): **23,122 nodes** (3,617
+types=B, 19,505 funcs=F); CHA **73,103** vs RTA **69,352** operational edges — the dial is real (e.g.
+`net/http.socksConn` operational in-degree **88→1** as RTA prunes unreachable `io.Writer` dispatch).
+Operational edges (func→type) come from **method-call resolution under each algorithm**, so the two
+datasets differ *only* where dispatch precision differs.
+
+**Result — the winner is invariant to cleanness** (plant-recover, graph region, 2 seeds each):
+
+| Go std · region=graph | M1 (graph) plant AUC | M_emb (embedding) plant AUC |
+|---|---|---|
+| **CHA** (noisy) | 0.893 / 0.902 | 0.44 / 0.47 (chance) |
+| **RTA** (clean) | 0.898 / 0.905 | 0.45 / 0.47 (chance) |
+
+Cleaning the oracle (CHA→RTA) moves M1 by **<0.01** and leaves M_emb at chance. **The static winner
+does not shift with cleanness** — the controlled confirmation of Stage 1: the gap's *modality* (it
+lives in the graph) decides the detector, not how clean the graph is. The thesis's original
+"static method ∝ cleanness" is refuted by its own sharpest test.
+
+**Supporting:** the Lean embedding-orphan-core plant **fully degenerates on Go** (0/160 usable plants,
+both resolutions — even more than Python's 2/160), and Go's citation↔embedding coupling is the
+*weakest* of the three domains (**+0.037** cosine lift vs +0.11 in Lean/Python; top-10 caller fraction
+0.05) — i.e. Go is the *closest to decoupled*, yet the graph detector still wins outright. Weak
+coupling doesn't let the embedding find graph-gaps either.
+
+**Caveat:** Go std is densely cohesive, so a random *local* function-deletion forms a graph-core about
+as readily as a planted concept (local-null AUC 0.87–0.96) — M1's lift over that null is ≈0, i.e. M1
+detects "operational support was removed," not concept-coherence specifically (as in Python; unlike
+Lean's +0.13). The clean, null-independent signals are **M_emb-at-chance** and the **cleanness
+invariance** across CHA/RTA. Temporal-Go not run (needs the Go repo with version tags; the installed
+SDK is a single snapshot).
 
 ## Limitations / honest caveats
 

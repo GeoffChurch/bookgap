@@ -1,12 +1,13 @@
 # Gap detection — triangulating the clean-oracle thesis with a third domain: code
 
-**Status: Stage 1 (Python) DONE (2026-06-15) — results in `docs/code-gap-triangulation.md`.** It
-**revised the thesis**: code patterns with Lean (graph wins, embedding at chance), NOT intermediate,
-and the axis is gap **modality** (structural vs semantic-void), not graph cleanness; the temporal
-holdout is a clean **third negative** (preferential attachment). Infra delivered: substrate-generic
-`artifacts_scripts/curriculum/gap_recover/` harness (core + lean/python adapters; Lean result
-reproduced exactly). **Still open (Stages 2–4):** Go (`go/callgraph` CHA→RTA cleanness *dial* — the
-sharpest cleanness-vs-modality test), Rust, monorepo build graph. The full design — staged program,
+**Status: Stages 1 (Python) + 2 (Go) DONE (2026-06-15) — results in `docs/code-gap-triangulation.md`.**
+They **revised the thesis**: code patterns with Lean (graph wins, embedding at chance), NOT
+intermediate, and the axis is gap **modality** (structural vs semantic-void), not graph cleanness; the
+temporal holdout is a clean **third negative** (preferential attachment). **The Go CHA→RTA cleanness
+dial is the controlled clincher** — two call graphs of different precision on the *same* corpus, with
+the static winner **invariant** to cleanness (M1≈0.90, M_emb≈chance under both CHA and RTA). Infra:
+generic `artifacts_scripts/curriculum/gap_recover/` harness (core + lean/python/go adapters; Lean
+reproduced exactly; Go toolchain at `~/go-sdk`). **Still open:** Rust, monorepo build graph. The full design — staged program,
 generic-core refactor, and the Stage-1 (Python) design — is in *## Design / working notes
 (2026-06-15)* below.
 
