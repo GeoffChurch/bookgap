@@ -274,6 +274,20 @@ also largely answers the *a-priori-predictor* sub-question: modality is set by t
 (known up front), not by an intrinsic substrate property — to be shown decisively by the within-corpus
 conflict test (next).
 
+### Change-form temporal — widening gaps don't get filled either (the lead fails)
+*Backlog: `change-form-temporal-gaps.md`.* The one shot at a positive temporal signal: does ΔM1 (a gap
+actively *widening* across epochs, `M1(T) − M1(prev)`) forecast arrivals where static M1 doesn't?
+Compared static_M1 vs change_dM1 on the same candidates + growth-matched null (Python/Rust/Go births,
+`change_form_temporal.py`). The **centrality-stratified AUC** is the de-confounded metric to read
+here — the raw fill-ratio is uninformative at these sparse-attach sizes (its clustered-bootstrap
+*random* baseline swings 0.09→14.7). Verdict:
+
+- **change_dM1 is robustly *anti*-predictive in Python** (stratAUC ≈ **0.26**, consistent across 3
+  epoch-pairs × 2 seeds), near-chance in Go (0.55), too-small in Rust (141 candidates).
+- So the change-form lead **does not rescue prediction — it sharpens the negative**: concepts whose
+  under-exercise is *accelerating* are the *least* likely to attract new operations (the gap
+  compounds — poor-get-poorer). The temporal negative is robust even to differencing.
+
 ## Limitations / honest caveats
 
 - **21/24 repos** in the static corpus: `sqlalchemy`/`matplotlib` use a `lib/` package layout and
