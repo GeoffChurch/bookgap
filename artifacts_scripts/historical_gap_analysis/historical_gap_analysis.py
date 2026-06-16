@@ -29,7 +29,9 @@ from bookgap.configs.config_store import register_configs
 from bookgap.filters import TemporalFilter, _extract_year
 from bookgap.subcloud import SubCloud
 from bookgap.types import CellType
-from bookgap.util import LOGGER, MEMORY, TIMER, WorkType, get_stats, create_unicode_safe_filename, setup_logging
+from functools import lru_cache
+
+from bookgap.util import LOGGER, TIMER, WorkType, get_stats, create_unicode_safe_filename, setup_logging
 
 from .config import HistoricalAnalysisConfig
 
@@ -46,7 +48,7 @@ cs.store(name="historical_analysis", node=HistoricalAnalysisConfig(year=2010))
 
 
 @TIMER.time()
-@MEMORY.cache
+@lru_cache(maxsize=None)
 def _build_temporal_subcloud(
     cloud: Cloud,
     max_year: int,
@@ -81,7 +83,7 @@ def _build_temporal_subcloud(
 
 
 @TIMER.time()
-@MEMORY.cache
+@lru_cache(maxsize=None)
 def _build_temporal_test_set(
     cloud: Cloud,
     target_year: int,

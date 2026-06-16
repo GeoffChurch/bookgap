@@ -110,7 +110,7 @@ def resolve_abstract_inverted_index(abstract_inverted_index: Dict[str, List[int]
 
 
 @TIMER.time()
-@MEMORY.cache
+@lru_cache(maxsize=None)
 def _resolve_filter_scopes(work_filter: Filter, snapshot_date: str) -> list[ResolvedScope]:
     """Resolve a filter into concrete (field, subfield, topic, work_type) scopes.
 
