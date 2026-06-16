@@ -151,6 +151,45 @@ the on-disk cl_A1_* runs — NOT the new average-linkage default).**
   opposite end — **this author ordered against the generality gradient**, the same way they
   ordered against the citation DAG.
 
+**Experiment B′ — does the average-linkage default lift chain quality / orientation? NO (null).**
+Experiment B reused the OLD `weighted_bisecting_kmeans` A1 clusters. Since average-linkage is now
+the dendrogram default (+0.137 ARI over bisecting on the recon metric), we regenerated all four A1
+curricula with `linkage_method='average'` (same gap, same `ranking_top_k=5000`, same chapter
+count) and re-ran the *identical* generality+orientation pipeline — Track B (`cl_B_*`, the human
+ToC populated with gap articles) is linkage-independent and shared, so only A1 changes. Script:
+`artifacts_scripts/curriculum/intro_orientation_avglink.py`; results
+`artifacts/book_gaps/intro_orientation_avglink.json` (the bisecting arm reproduces Experiment B's
+numbers exactly, confirming an apples-to-apples pipeline).
+
+  ```
+  book           bisecting           average             Δ|τ|    orient (eigen+grad)
+                 |τ|   dir-τ  orient  |τ|   dir-τ  orient          bis → avg
+  cyberbullying  0.476 +0.476  OK     0.316 +0.316  OK     −0.160  OK → OK
+  mcs            0.617 +0.617  OK     0.370 −0.370  ✗      −0.247  OK → ✗  (FLIP)
+  neuromorphic   0.593 −0.593  ✗      0.394 −0.394  ✗      −0.199  ✗ → ✗
+  color_image    0.231 −0.231  ✗      0.501 +0.501  OK     +0.270  ✗ → OK  (FLIP)
+  pooled: mean |τ| 0.479 → 0.395 (Δ −0.084); |τ| DOWN in 3/4 books; orient-correct 2/4 → 2/4
+  ```
+
+- **Chain quality does NOT improve — it drops.** Mean undirected |τ| falls 0.479 → 0.395
+  (Δ −0.084), and average-linkage *lowers* |τ| in **3 of 4 books** (only the broad 24-chapter
+  Color-Image rises, 0.231 → 0.501). The "#books past |τ|≥0.25" headline nominally goes 3/4 → 4/4,
+  but that is an artifact: 3 of the 4 books moved *down* in |τ| and merely stayed above the line;
+  Color-Image is the lone genuine crossing. (`n_pairs`, the count of human chapters that overlap
+  any A1 cluster, also drops 1–2 per book under average-linkage — its singleton/tail clusters
+  cover the human chapters slightly less, e.g. cyberbullying 7 → 5 pairs.)
+- **Orientation does NOT improve — it stays 2/4, by a swap.** The eigen+gradient anchor is correct
+  on 2/4 in *both* arms; the composition just shuffles (mcs flips correct→wrong as its chain
+  degrades 0.617 → 0.370; Color-Image flips wrong→correct as its chain sharpens 0.231 → 0.501).
+  Directed-τ positive count is likewise 2/4 → 2/4. The two genuinely reverse-ordered authors
+  (neuromorphic, and now also the degraded mcs) remain mis-oriented for the same reason as before
+  — they sequence against the generality gradient.
+
+So the cleaner tree does **not** push orientation into the conditional-89% regime here: it does not
+raise chain quality (it lowers it on average), so the orientation bottleneck is **unmoved**. The
+ARI gain that makes average-linkage the recon default does not translate into a sharper *good-edge
+chain to the human chapter sequence* on this n=4 panel.
+
 **Verdict (orientation).** A generality anchor recovers the 1-bit orientation **partially, not
 cleanly**. The underlying signal is real and significant (intro > conclusion in generality,
 ≈77–79%, embeddings only, no year/size), and **eigen-centrality** (not transport-entropy) is the
@@ -161,7 +200,10 @@ and (b) a real minority of authors order general→specific in reverse (against 
 do against citations). **We cannot yet emit a reliably fully-directed ToC**; we can orient
 *correctly most of the time when the sequence itself was well-recovered*. Orientation is narrowed,
 not closed. The conclusion-confound (U-shape) was the stated risk and is **not** the main
-blocker — chain quality and genuine reverse-ordered authors are.
+blocker — chain quality and genuine reverse-ordered authors are. **And switching to the
+average-linkage dendrogram default does not relieve either** (Experiment B′): it lowers undirected
+|τ| in 3/4 books and leaves orientation at 2/4, so the cleaner recon-tree does not buy us a
+fully-directed ToC on this panel.
 
 ## Caveats
 
@@ -178,7 +220,18 @@ python -m artifacts_scripts.curriculum.close_loop_summary            # panel tab
 python -m artifacts_scripts.curriculum.close_loop_order_diag --gap-json ... --toc-json ... \
     --run-a1 ... --run-b ...                                          # orientation diagnostic
 CUDA_VISIBLE_DEVICES="" python -m artifacts_scripts.curriculum.intro_orientation  # general→specific anchor (Exp A+B)
+# Average-linkage A/B (Exp B′): regenerate the 4 A1 curricula with the default tree, then re-run
+# the orientation pipeline. Track B (cl_B_*) is linkage-independent and reused; only A1 changes.
+for s in cyberbullying:W2898513995_cyberbullying_ai:8 mcs:mcs_gap:10 \
+         neuromorphic:neuromorphic_gap:13 color_image:color_image_gap:24; do
+  IFS=: read slug gap n <<<"$s"
+  CUDA_VISIBLE_DEVICES="" python -m artifacts_scripts.curriculum.book_curriculum \
+      --gap-json artifacts/book_gaps/${gap}.json --desired-n-topics $n \
+      --ranking-top-k 5000 --output-dir cl_A1_avg_${slug} --no-plot   # default linkage = average
+done
+CUDA_VISIBLE_DEVICES="" python -m artifacts_scripts.curriculum.intro_orientation_avglink  # A/B table + verdict
 ```
-Artifacts: `artifacts/book_gaps/cl_<slug>_metrics.json`, `cl_<slug>_recon.json`, `cl_summary.json`.
+Artifacts: `artifacts/book_gaps/cl_<slug>_metrics.json`, `cl_<slug>_recon.json`, `cl_summary.json`,
+`intro_orientation_avglink.json`.
 Connects to [curriculum-toc-dendrogram-matching](curriculum-toc-dendrogram-matching.md) (good-edge
 ordering, genre signal) and the book-surprise gap definition (memory `gap-book-surprise-definition`).

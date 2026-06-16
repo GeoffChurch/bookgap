@@ -189,6 +189,15 @@ SPACE lever (cyberbullying 0.121→0.368 in-space vs PCA@bisecting +0.055 real; 
 optimization) signal — held up. Salvage for PCA: it's a per-book wildcard (big on mcs), not a default; revisit only
 if a book-specific selector emerges.
 
+**Placement ≠ ordering caveat (2026-06-16).** This adoption is a **placement** win (recon ARI — which works
+land in which chapter). It does NOT transfer to **ordering**: an end-to-end A/B on the 4 books
+(`intro_orientation_avglink.py`) found average-linkage *lowers* good-edge chain quality vs bisecting (mean
+undirected |τ| 0.479→0.395, worse 3/4) and leaves the 1-bit orientation at 2/4 — average-linkage's chaining
+spins off straggly tail clusters whose noisier centroids make a messier topical-adjacency chain (same shape as
+the ARI-beats-DP split). So: average-linkage for **content/placement** (the default; primary close-loop metric);
+**bisecting gives cleaner ordering chains** (n=4, suggestive). The orientation bottleneck is *not* fixed by the
+tree. → `docs/curriculum-close-loop.md` (Exp B′).
+
 ## Provenance
 Regenerate (don't hand-edit the JSON):
 - `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.intrinsic_dendro_sweep`
