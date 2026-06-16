@@ -119,9 +119,12 @@ of a gap). This mirrors the article temporal result exactly, so the *temporal* f
 
 - **Articles.** Rank by **target-seeded PageRank** with a **background-normalized** score
   (`p^a · log((p+ε)/(g+ε))`) → flat top-N; or cut a **dendrogram** of the field into topic clusters
-  (the `effN_sil` adaptive cut, etc.). A key finding: under soft optimal-transport matching, the
-  cut *method* barely matters — clustering is second-order. → `docs/wikipedia-curriculum-bgnorm.md`,
-  `docs/curriculum-toc-dendrogram-matching.md`.
+  (the `effN_sil` adaptive cut, etc.). The cut *method* looks second-order under soft optimal-transport matching, **but that was a
+  metric artifact** (OT flat-matching is blind to tree shape). On the **real close-loop recon
+  metric** the linkage *does* matter — **average-linkage beats the bisecting default by +0.137 ARI
+  (positive 4/4 books)** and is now the curriculum default; the embedding geometry, not the
+  algorithm, still sets the between-book ceiling. → `docs/curriculum-dendrogram-quality.md`,
+  `docs/wikipedia-curriculum-bgnorm.md`, `docs/curriculum-toc-dendrogram-matching.md`.
 - **Theorems.** `t1` = curriculum-selected premise statements (dependency-graph centrality, flat
   top-N, filtered to theorem-kind). The pre-registered verdict: **`t1` *ties* BM25** — graph
   "curriculum" selection does **not** beat equal-budget lexical retrieval. What helps a prover is
@@ -295,7 +298,7 @@ the field's future — a universal negative, independent of oracle cleanness.
 | Gap detection — methods, bake-offs, worklog | `docs/gap-detection-worklog.md`, `docs/gap_method_comparison.md`, `docs/backlog/curriculum-applications.md` |
 | Gap detection — evaluation (plant-and-recover, temporal) | `artifacts/gap_detection_eval/report.md` |
 | Book placement / book-surprise (which gap def) | memory `gap-book-surprise-definition`, `artifacts_scripts/curriculum/book_surprise_bakeoff.py` |
-| Curriculum (articles) — selection & ToC matching | `docs/wikipedia-curriculum-bgnorm.md`, `docs/curriculum-toc-dendrogram-matching.md`, `docs/curriculum-toc-reconstruction-eval.md` |
+| Curriculum (articles) — selection & ToC matching | `docs/curriculum-dendrogram-quality.md`, `docs/wikipedia-curriculum-bgnorm.md`, `docs/curriculum-toc-dendrogram-matching.md`, `docs/curriculum-toc-reconstruction-eval.md` |
 | Curriculum — end-to-end close-the-loop ablation | `docs/curriculum-close-loop.md` |
 | Lean curriculum experiment — the pre-reg verdict | `docs/preregistration-curriculum-context-v2.md`, `docs/lean-confirmatory-results.md` |
 | Lean substrate & harness | `docs/lean_decl_graph.md`, `docs/lean-eval-harness.md` |
