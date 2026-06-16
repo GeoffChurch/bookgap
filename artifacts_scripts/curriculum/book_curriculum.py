@@ -57,6 +57,10 @@ def build_curriculum_from_book_gap(
     decouple_selection: bool = False,
     paratext_weights: Optional[Path] = None,
     plot_enabled: bool = True,
+    linkage_method: Optional[str] = None,
+    denoiser: Optional[str] = None,
+    drop_k: Optional[int] = None,
+    ranking_top_k: Optional[int] = None,
 ) -> Path:
     rec = json.loads(Path(gap_json).read_text())
     bk = rec.get("book", rec)  # single-book mode nests under "book"; fall back to flat
@@ -93,9 +97,24 @@ def build_curriculum_from_book_gap(
     cfg.output_dir = name
     cfg.desired_n_topics = desired_n_topics
     cfg.rank_before_clustering = True
-    cfg.ranking_top_k = 5000
+    cfg.ranking_top_k = int(ranking_top_k) if ranking_top_k is not None else 5000
     cfg.keywords.top_k = keywords_top_k
     cfg.keywords.dynamic_topk_floor = dynamic_topk_floor
+    if linkage_method:
+        # Clustering geometry lever: override the config default ('average', scipy
+        # agglomerative average-linkage on the top-k subset). E.g. pass
+        # 'weighted_bisecting_kmeans' to A/B against it. anchor_mode (facility/dpp)
+        # below still wins if both are passed (it is the more specific selector).
+        cfg.linkage_method = linkage_method
+    if denoiser is not None:
+        # Embedding-SPACE lever: e.g. 'PCA' with drop_k to reduce GIST-small 384d to
+        # (384-drop_k) dims, fit unsupervised on the scope corpus. Applied to the
+        # clustered works here AND, by sharing the same cloud config, to anything the
+        # recon embeds (book_toc_reconstruction projects chapters through the same
+        # denoiser_projection so the chapter-assignment space matches).
+        cfg.experiment.cloud.denoiser = denoiser
+    if drop_k is not None:
+        cfg.experiment.cloud.drop_k = int(drop_k)
     if anchor_mode:
         # FL/DPP diverse-anchor clustering (de-duplicates topics) instead of the
         # dendrogram cut. Pairs with soft_topics for clean per-chapter keywords.
@@ -190,6 +209,17 @@ def main() -> None:
                          "by (1-p_w) so paratext works fade from selection + PageRank, pipeline-wide.")
     ap.add_argument("--no-plot", action="store_true",
                     help="skip the curriculum plot (the field-background projection is the ~20min tail).")
+    ap.add_argument("--linkage-method", default=None,
+                    help="clustering geometry: e.g. 'average' (scipy agglomerative average-linkage on "
+                         "the top-k subset) vs default 'weighted_bisecting_kmeans'. See config.py "
+                         "CurriculumConfig.linkage_method for the full set.")
+    ap.add_argument("--denoiser", default=None,
+                    help="embedding-space denoiser (WorkDenoisers name, e.g. 'PCA' or 'NONE'); applied to "
+                         "the cloud, so clustering and recon chapter-assignment share the same space.")
+    ap.add_argument("--drop-k", type=int, default=None,
+                    help="dims to drop for the denoiser (PCA keeps 384-drop_k; e.g. 334 => PCA-50).")
+    ap.add_argument("--ranking-top-k", type=int, default=None,
+                    help="top-k works by relevance to cluster (rank_before_clustering); default 5000.")
     args = ap.parse_args()
     out = build_curriculum_from_book_gap(
         args.gap_json, output_dir=args.output_dir, subfield=args.subfield, field=args.field,
@@ -202,6 +232,8 @@ def main() -> None:
         pagerank_alpha=args.pagerank_alpha, decouple_selection=args.decouple_selection,
         paratext_weights=args.paratext_weights,
         plot_enabled=not args.no_plot,
+        linkage_method=args.linkage_method, denoiser=args.denoiser, drop_k=args.drop_k,
+        ranking_top_k=args.ranking_top_k,
     )
     print(f"DONE -> {out}")
 

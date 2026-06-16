@@ -253,6 +253,13 @@ def main() -> None:
     ap.add_argument("--curriculum-dir", required=True, type=Path)
     ap.add_argument("--mean-center", action="store_true",
                     help="domain-adaptation step 2: subtract per-genre means before cosine")
+    ap.add_argument("--denoiser", default=None,
+                    help="cloud denoiser (WorkDenoisers name, e.g. 'PCA'); MUST match the curriculum "
+                         "build so the gap-article embeddings and the projected gold chapters share one "
+                         "space. Default None => raw GIST-small (denoiser=NONE).")
+    ap.add_argument("--drop-k", type=int, default=None,
+                    help="dims to drop for the denoiser (PCA keeps 384-drop_k; 334 => PCA-50). "
+                         "Must match the curriculum build's drop_k.")
     ap.add_argument("--materialize-dir", type=Path, default=None,
                     help="also write Track B as a renderable curriculum run-dir (summary.md) "
                          "for the pairwise LLM eval (eval_pairwise_judge).")
@@ -295,6 +302,14 @@ def main() -> None:
         cfg.experiment.cloud.filter_pair.pre.subfield = str(subfield)
     if field:
         cfg.experiment.cloud.filter_pair.pre.field = str(field)
+    if args.denoiser is not None:
+        # Match the curriculum's embedding SPACE: the gap-article vectors come from
+        # articles.embeddings() (SubCloud applies the parent cloud's denoiser), and the
+        # gold chapters are projected through the SAME cloud.denoiser_projection() below,
+        # so the chapter-assignment cosine and Track-A clustering share one space.
+        cfg.experiment.cloud.denoiser = args.denoiser
+    if args.drop_k is not None:
+        cfg.experiment.cloud.drop_k = int(args.drop_k)
     cloud = instantiate(cfg.experiment.cloud)
     articles = SubCloud(parent=cloud, post_filter=Filter(work_types=("article",)))
     art_ids = articles.work_ids()
@@ -312,6 +327,17 @@ def main() -> None:
     with embedder as emb:
         chap_emb = np.asarray(emb.embed_texts([(c["title"], c.get("description", "")) for c in chapters]),
                               dtype=np.float32)
+    if args.denoiser is not None:
+        # Project the raw (384d) chapter embeddings through the SAME affine denoiser
+        # the cloud applied to the articles (subtract fit_mean, multiply by the cached
+        # projection matrix), landing them in the (384-drop_k)-dim denoised space. The
+        # subsequent _l2 below provides the per-row normalization that articles.embeddings()
+        # already had (normalize_embeddings=True), so chapter and article vectors are
+        # unit-norm in one shared space and the argmax-cosine assignment is well-defined.
+        proj = cloud.denoiser_projection()
+        chap_emb = np.asarray(proj.apply(chap_emb), dtype=np.float32)
+        LOGGER.info("Projected chapters through %s denoiser (drop_k=%s) -> chap_emb dim=%d",
+                    args.denoiser, args.drop_k, chap_emb.shape[1])
     if args.mean_center:
         g_emb = _l2(g_emb - g_emb.mean(0))
         chap_emb = chap_emb - chap_emb.mean(0)
