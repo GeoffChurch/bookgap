@@ -577,14 +577,27 @@ class CurriculumConfig:
     circuitrank: CircuitRankConfig = field(default_factory=CircuitRankConfig)
     """Configuration for CircuitRank."""
     
-    linkage_method: str = "weighted_bisecting_kmeans"
+    linkage_method: str = "average"
     """Clustering method for the curriculum.
+
+    Default: 'average' (scipy average-linkage). Validated as the per-book
+    curriculum default — on the close-loop ToC-reconstruction holdout it beats
+    'weighted_bisecting_kmeans' on the real recon ARI by +0.18 mean (3/3 books,
+    largest on the hardest book), because average-linkage preserves the
+    embedding's pairwise-distance structure best (~2.4x the cophenetic fidelity
+    of the bisecting default). It is O(n²), so it runs on the top-k subset
+    (``rank_before_clustering=True``, default; ``ranking_top_k=5000``). For
+    full-corpus clustering (``rank_before_clustering=False``) use
+    'weighted_bisecting_kmeans'/'bisecting_kmeans' (O(n)) instead — scipy
+    agglomerative methods raise if paired with full-corpus mode. Details:
+    docs/curriculum-dendrogram-quality.md.
 
     Options:
     - 'ward', 'average', 'complete', 'single': scipy agglomerative clustering
-      (requires O(n²) memory, suitable for n < 100k)
+      (O(n²) memory; require ``rank_before_clustering=True`` / the top-k subset).
+      'average' is the validated default (see above).
     - 'bisecting_kmeans': recursive bisecting K-Means
-      (O(n) memory, suitable for n > 100k)
+      (O(n) memory, suitable for n > 100k / full-corpus)
     - 'weighted_bisecting_kmeans': bisecting_kmeans with sample_weight from
       the post-PageRank relevance vector. High-relevance works anchor
       cluster centers; the bisection criterion respects relevance mass.

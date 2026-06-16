@@ -1536,6 +1536,13 @@ def run_curriculum_building(
                 max_depth=cfg.max_cluster_depth,
             )
         else:
+            if cfg.linkage_method in SCIPY_LINKAGE_METHODS and not cfg.rank_before_clustering:
+                raise ValueError(
+                    f"{cfg.linkage_method!r} (scipy agglomerative linkage) is O(n²); it "
+                    "requires rank_before_clustering=True so it clusters the top-k subset, "
+                    "not the full corpus. For full-corpus clustering use "
+                    "'weighted_bisecting_kmeans' or 'bisecting_kmeans' (O(n))."
+                )
             if weighted and not cfg.rank_before_clustering:
                 raise ValueError(
                     "weighted_bisecting_kmeans requires rank_before_clustering=True "
