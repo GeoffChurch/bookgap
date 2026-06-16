@@ -87,7 +87,81 @@ and degrades as the book outgrows its gap.
 - **Ordering half: the sequence closes, the direction is open.** Good-edge recovers the human
   chapter chain up to reversal (beats the citation-frontier order 4/4); orienting it needs a
   *non-citation* anchor (publication-year foundational→recent, or general→specific), because the
-  human's choice of starting end is not prereq-consistent. Untested — the clear next step.
+  human's choice of starting end is not prereq-consistent. The general→specific anchor is now
+  tested (next section): **the raw "intro is more general than the conclusion" bit is real and
+  significant (≈77–79% over 29 ToCs, p<0.01), but it does not reliably orient the good-edge
+  chain** — partial, not a clean close.
+
+## Ordering — the general→specific anchor (orientation, no year/size)
+
+Tested whether a **generality/centrality anchor**, from chapter/cluster *embeddings only* (NO
+publication year, NO cluster size), supplies the missing 1-bit orientation: orient the
+good-edge chain general→specific (Chapter 1 = most general). Two embedding-only generality
+measures: **eigen-centrality** (|principal eigenvector| of the chapter-cosine affinity S) and
+**transport-entropy** (row-normalize S→P, Hᵢ = −Σ Pᵢⱼ log Pᵢⱼ — a UOT proxy). Script:
+`artifacts_scripts/curriculum/intro_orientation.py`; results `artifacts/book_gaps/intro_orientation.json`.
+
+The pre-registered risk — *conclusions are also general (summary) and last*, so generality
+could be U-shaped over chapter order and fail to orient — is measured, not assumed.
+
+**Experiment A (n=29 harvested ToCs, k≥5 — the well-powered arm).**
+- *Shape on the true human order.* The conclusion confound is **real but minority**, not
+  dominant: for eigen-centrality only **3/29 ToCs are U-shaped** (10 monotone-decreasing,
+  14 flat, 2 increasing); the last chapter sits in the top generality quartile only **10%** of
+  the time, vs Chapter 1 at **62%**. Mean Spearman(chapter#, generality) = −0.19 (weakly
+  decreasing). Transport-entropy is flatter/noisier (22/29 flat; last-in-top-quartile 38% — it
+  picks up the conclusion more).
+- *The pure 1-bit test (chain-free): is Chapter 1 more general than the LAST chapter?* **Yes,
+  significantly** — eigen **22/29 = 76%** (binom p=0.008), entropy **23/29 = 79%** (p=0.002).
+  So the *signal* exists: intros really are more general than conclusions, the U-shape does not
+  erase it.
+- *But orienting the good-edge CHAIN is only partial.* Pooled, the gradient/endpoint rules hit
+  **18/29 = 62%** (eigen, n.s. p=0.27) and 52% (entropy). The dilution is a **chain-quality
+  confound**: when the undirected chain is itself noise (|τ|<0.10, 6 ToCs) orientation is a coin
+  flip *by construction* (1/6, dir-τ≈0). Stratifying on chain quality is decisive:
+
+  ```
+  eigen, gradient rule        n   correct   mean directed-τ
+  chain good   |τ|≥0.25        9    8/9=89%      +0.272
+  chain mid    0.10–0.25      14    9/14=64%     +0.058
+  chain noise  |τ|<0.10        6    1/6=17%      −0.021
+  ```
+  So **in the regime where the chain actually recovered the sequence, the eigen anchor orients
+  it correctly ~89%** (directed-τ goes solidly positive). Eigen-centrality clearly beats
+  transport-entropy (66% vs 67% on good chains, but 80% vs 45% conditioned on a clean monotone
+  shape; entropy's interior is too noisy for the gradient). Gradient and endpoint rules tie for
+  eigen because the good-edge chain already *seeds at the broadest node*, which is ~the
+  eigen-most-central end — the anchor rarely overrides the chain's built-in start.
+
+**Experiment B (4 close-loop books, our generated clusters; tree = `weighted_bisecting_kmeans`,
+the on-disk cl_A1_* runs — NOT the new average-linkage default).**
+
+  ```
+  book           undir |τ|   eigen-orient τ   entropy-orient τ   random
+  cyberbullying     0.476       +0.476            −0.476          ~0
+  mcs               0.617       +0.617            −0.617          ~0
+  neuromorphic      0.593       −0.593            −0.593          ~0
+  color_image       0.231       −0.231            +0.231          ~0
+  ```
+  Eigen recovers the human direction on 2/4 (cyberbullying, mcs) and fails on 2/4 (neuromorphic,
+  color_image) — it hits the undirected ceiling when right and the floor when wrong (the chain is
+  near-perfectly directed up to a sign, so orientation is all-or-nothing here). On neuromorphic
+  the failure is genuine, not a bug: both measures rank the chain's broad-node start (cluster 11)
+  marginally above the other end (eigen 0.287 vs 0.260), but the *human* Chapter 1 maps to the
+  opposite end — **this author ordered against the generality gradient**, the same way they
+  ordered against the citation DAG.
+
+**Verdict (orientation).** A generality anchor recovers the 1-bit orientation **partially, not
+cleanly**. The underlying signal is real and significant (intro > conclusion in generality,
+≈77–79%, embeddings only, no year/size), and **eigen-centrality** (not transport-entropy) is the
+right measure; the **gradient ≡ endpoint** rule is moot because the good-edge seed already
+encodes it. *Conditional on a good undirected chain it reaches ~89%/the undirected ceiling* — but
+unconditionally it is ~62% (n.s.), because (a) when the chain is noise there is nothing to orient,
+and (b) a real minority of authors order general→specific in reverse (against generality, as they
+do against citations). **We cannot yet emit a reliably fully-directed ToC**; we can orient
+*correctly most of the time when the sequence itself was well-recovered*. Orientation is narrowed,
+not closed. The conclusion-confound (U-shape) was the stated risk and is **not** the main
+blocker — chain quality and genuine reverse-ordered authors are.
 
 ## Caveats
 
@@ -103,6 +177,7 @@ bash artifacts_scripts/curriculum/run_close_loop_field17.sh          # the 3 fie
 python -m artifacts_scripts.curriculum.close_loop_summary            # panel table + sign test
 python -m artifacts_scripts.curriculum.close_loop_order_diag --gap-json ... --toc-json ... \
     --run-a1 ... --run-b ...                                          # orientation diagnostic
+CUDA_VISIBLE_DEVICES="" python -m artifacts_scripts.curriculum.intro_orientation  # general→specific anchor (Exp A+B)
 ```
 Artifacts: `artifacts/book_gaps/cl_<slug>_metrics.json`, `cl_<slug>_recon.json`, `cl_summary.json`.
 Connects to [curriculum-toc-dendrogram-matching](curriculum-toc-dendrogram-matching.md) (good-edge
