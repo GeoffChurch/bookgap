@@ -191,7 +191,7 @@ def cluster_with_multi_view_spectral_views(
     n = views[0].shape[0]
     for i, W in enumerate(views):
         if W.shape != (n, n):
-            raise ValueError(f"view {i} shape {W.shape} != ({n}, {n})")
+            raise ValueError(f"view {i} shape {W.shape} must match view 0 shape ({n}, {n})")
     if n_clusters >= n:
         return np.arange(n, dtype=np.intp)
 
