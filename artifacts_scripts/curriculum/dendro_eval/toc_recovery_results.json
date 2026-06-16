@@ -1,0 +1,1884 @@
+{
+  "books": [
+    {
+      "slug": "cyberbullying",
+      "book_id": "W2898513995",
+      "scope": {
+        "subfield": "1702",
+        "field": null
+      },
+      "n_chapters": 8,
+      "n_article_pool": 1554546,
+      "n_labeled_points": 341,
+      "top_n": 341,
+      "top_n_mode": "n_gap_articles",
+      "chapter_label_sizes": {
+        "Introduction": 25,
+        "Background": 114,
+        "Description and Initial Analysis of Cyberbullying Dataset": 12,
+        "Web Mining-Based Method for Cyberbullying Detection": 11,
+        "Brute Force Search Method for Cyberbullying Detection": 1,
+        "Traditional Classifiers vs. Deep Learning for Cyberbullying Detection": 110,
+        "Cyberbullying Blocker Test Application for Android Devices": 0,
+        "Conclusion and Future Directions": 68
+      },
+      "ari_recon_baseline": 0.07947546472291006,
+      "constructions": [
+        {
+          "construction": "weighted_bisecting_kmeans",
+          "dendrogram_purity": 0.5181332733352828,
+          "dp_above_random": 0.20454130095384404,
+          "dp_random_baseline": 0.31359197238143877,
+          "cophenetic_corr": 0.4160578530120017,
+          "ari_at_k": 0.2060129419673461,
+          "nmi_at_k": 0.27138760020648095,
+          "flat_k_requested": 8,
+          "flat_k_effective": 3,
+          "ari_recon_baseline": 0.07947546472291006
+        },
+        {
+          "construction": "scipy_ward",
+          "dendrogram_purity": 0.4823719181479574,
+          "dp_above_random": 0.17054015571360387,
+          "dp_random_baseline": 0.3118317624343535,
+          "cophenetic_corr": 0.4076287445028468,
+          "ari_at_k": 0.2510407943284386,
+          "nmi_at_k": 0.34637540895576946,
+          "flat_k_requested": 8,
+          "flat_k_effective": 8,
+          "ari_recon_baseline": 0.07947546472291006
+        },
+        {
+          "construction": "scipy_average_cosine",
+          "dendrogram_purity": 0.4568132692069888,
+          "dp_above_random": 0.14644215132773747,
+          "dp_random_baseline": 0.3103711178792513,
+          "cophenetic_corr": 0.6930791773680337,
+          "ari_at_k": 0.10984172096023109,
+          "nmi_at_k": 0.28804389593247537,
+          "flat_k_requested": 8,
+          "flat_k_effective": 8,
+          "ari_recon_baseline": 0.07947546472291006
+        }
+      ],
+      "height_test": {
+        "weighted_bisecting_kmeans": {
+          "per_chapter": [
+            {
+              "chapter_n": 2,
+              "chapter": "Background",
+              "n_works": 114,
+              "flagged": true,
+              "generality": 0.6304985337243402,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Conclusion and Future Directions",
+              "n_works": 68,
+              "flagged": true,
+              "generality": 0.6304985337243402,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Web Mining-Based Method for Cyberbullying Detection",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.2375366568914956,
+              "generality_rank": 3,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Traditional Classifiers vs. Deep Learning for Cyberbullying Detection",
+              "n_works": 110,
+              "flagged": false,
+              "generality": 0.21114369501466276,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Description and Initial Analysis of Cyberbullying Dataset",
+              "n_works": 12,
+              "flagged": false,
+              "generality": 0.08504398826979472,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Introduction",
+              "n_works": 25,
+              "flagged": true,
+              "generality": 0.05278592375366569,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Brute Force Search Method for Cyberbullying Detection",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002932551319648094,
+              "generality_rank": 7,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 3,
+          "n_body": 4,
+          "mean_generality_flagged": 0.43792766373411535,
+          "mean_generality_body": 0.1341642228739003,
+          "flagged_in_top_third_frac": 0.6666666666666666
+        },
+        "scipy_ward": {
+          "per_chapter": [
+            {
+              "chapter_n": 8,
+              "chapter": "Conclusion and Future Directions",
+              "n_works": 68,
+              "flagged": true,
+              "generality": 0.6392961876832844,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Background",
+              "n_works": 114,
+              "flagged": true,
+              "generality": 0.45161290322580644,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Traditional Classifiers vs. Deep Learning for Cyberbullying Detection",
+              "n_works": 110,
+              "flagged": false,
+              "generality": 0.22287390029325513,
+              "generality_rank": 3,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Web Mining-Based Method for Cyberbullying Detection",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.10557184750733138,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Description and Initial Analysis of Cyberbullying Dataset",
+              "n_works": 12,
+              "flagged": false,
+              "generality": 0.0469208211143695,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Introduction",
+              "n_works": 25,
+              "flagged": true,
+              "generality": 0.04398826979472141,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Brute Force Search Method for Cyberbullying Detection",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002932551319648094,
+              "generality_rank": 7,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 3,
+          "n_body": 4,
+          "mean_generality_flagged": 0.37829912023460405,
+          "mean_generality_body": 0.09457478005865103,
+          "flagged_in_top_third_frac": 0.6666666666666666
+        },
+        "scipy_average_cosine": {
+          "per_chapter": [
+            {
+              "chapter_n": 3,
+              "chapter": "Description and Initial Analysis of Cyberbullying Dataset",
+              "n_works": 12,
+              "flagged": false,
+              "generality": 0.8475073313782991,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Background",
+              "n_works": 114,
+              "flagged": true,
+              "generality": 0.7624633431085044,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Web Mining-Based Method for Cyberbullying Detection",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.41642228739002934,
+              "generality_rank": 3,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Conclusion and Future Directions",
+              "n_works": 68,
+              "flagged": true,
+              "generality": 0.41642228739002934,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Traditional Classifiers vs. Deep Learning for Cyberbullying Detection",
+              "n_works": 110,
+              "flagged": false,
+              "generality": 0.26099706744868034,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Introduction",
+              "n_works": 25,
+              "flagged": true,
+              "generality": 0.0469208211143695,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Brute Force Search Method for Cyberbullying Detection",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002932551319648094,
+              "generality_rank": 7,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 3,
+          "n_body": 4,
+          "mean_generality_flagged": 0.40860215053763443,
+          "mean_generality_body": 0.3819648093841642,
+          "flagged_in_top_third_frac": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "slug": "mcs",
+      "book_id": "W4235013513",
+      "scope": {
+        "subfield": null,
+        "field": "17"
+      },
+      "n_chapters": 10,
+      "n_article_pool": 5997997,
+      "n_labeled_points": 363,
+      "top_n": 363,
+      "top_n_mode": "n_gap_articles",
+      "chapter_label_sizes": {
+        "Introduction": 21,
+        "Mobile Sensing": 38,
+        "Mobile Crowdsourcing": 55,
+        "What is Mobile Crowdsensing?": 48,
+        "Applications": 11,
+        "Systems and Platforms": 3,
+        "Incentive Mechanisms for Participants": 0,
+        "Security and Privacy": 107,
+        "Future Directions": 17,
+        "Conclusions": 63
+      },
+      "ari_recon_baseline": 0.29936207447953633,
+      "constructions": [
+        {
+          "construction": "weighted_bisecting_kmeans",
+          "dendrogram_purity": 0.7186151636271265,
+          "dp_above_random": 0.48514759727441664,
+          "dp_random_baseline": 0.23346756635270988,
+          "cophenetic_corr": 0.614793857582132,
+          "ari_at_k": 0.552596803054354,
+          "nmi_at_k": 0.6483679287895675,
+          "flat_k_requested": 10,
+          "flat_k_effective": 4,
+          "ari_recon_baseline": 0.29936207447953633
+        },
+        {
+          "construction": "scipy_ward",
+          "dendrogram_purity": 0.7408509201695437,
+          "dp_above_random": 0.5079950350420558,
+          "dp_random_baseline": 0.23285588512748787,
+          "cophenetic_corr": 0.6042183222890242,
+          "ari_at_k": 0.37101742635829915,
+          "nmi_at_k": 0.6206890406239597,
+          "flat_k_requested": 10,
+          "flat_k_effective": 10,
+          "ari_recon_baseline": 0.29936207447953633
+        },
+        {
+          "construction": "scipy_average_cosine",
+          "dendrogram_purity": 0.7349900845820212,
+          "dp_above_random": 0.5041720916409445,
+          "dp_random_baseline": 0.23081799294107674,
+          "cophenetic_corr": 0.6818121084131509,
+          "ari_at_k": 0.616083373377153,
+          "nmi_at_k": 0.6877305008663998,
+          "flat_k_requested": 10,
+          "flat_k_effective": 10,
+          "ari_recon_baseline": 0.29936207447953633
+        }
+      ],
+      "height_test": {
+        "weighted_bisecting_kmeans": {
+          "per_chapter": [
+            {
+              "chapter_n": 10,
+              "chapter": "Conclusions",
+              "n_works": 63,
+              "flagged": true,
+              "generality": 1.0,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Security and Privacy",
+              "n_works": 107,
+              "flagged": false,
+              "generality": 0.2699724517906336,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Introduction",
+              "n_works": 21,
+              "flagged": true,
+              "generality": 0.2066115702479339,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "What is Mobile Crowdsensing?",
+              "n_works": 48,
+              "flagged": false,
+              "generality": 0.2066115702479339,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Future Directions",
+              "n_works": 17,
+              "flagged": true,
+              "generality": 0.2066115702479339,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Mobile Crowdsourcing",
+              "n_works": 55,
+              "flagged": false,
+              "generality": 0.12121212121212122,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Mobile Sensing",
+              "n_works": 38,
+              "flagged": false,
+              "generality": 0.06336088154269973,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Applications",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.0440771349862259,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Systems and Platforms",
+              "n_works": 3,
+              "flagged": false,
+              "generality": 0.008264462809917356,
+              "generality_rank": 9,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 3,
+          "n_body": 6,
+          "mean_generality_flagged": 0.47107438016528924,
+          "mean_generality_body": 0.11891643709825528,
+          "flagged_in_top_third_frac": 0.6666666666666666
+        },
+        "scipy_ward": {
+          "per_chapter": [
+            {
+              "chapter_n": 8,
+              "chapter": "Security and Privacy",
+              "n_works": 107,
+              "flagged": false,
+              "generality": 0.33608815426997246,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Introduction",
+              "n_works": 21,
+              "flagged": true,
+              "generality": 0.21487603305785125,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "What is Mobile Crowdsensing?",
+              "n_works": 48,
+              "flagged": false,
+              "generality": 0.21487603305785125,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Mobile Crowdsourcing",
+              "n_works": 55,
+              "flagged": false,
+              "generality": 0.1349862258953168,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Systems and Platforms",
+              "n_works": 3,
+              "flagged": false,
+              "generality": 0.12947658402203857,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Future Directions",
+              "n_works": 17,
+              "flagged": true,
+              "generality": 0.12947658402203857,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "Conclusions",
+              "n_works": 63,
+              "flagged": true,
+              "generality": 0.11570247933884298,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Mobile Sensing",
+              "n_works": 38,
+              "flagged": false,
+              "generality": 0.10743801652892562,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Applications",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.05785123966942149,
+              "generality_rank": 9,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 3,
+          "n_body": 6,
+          "mean_generality_flagged": 0.15335169880624427,
+          "mean_generality_body": 0.16345270890725436,
+          "flagged_in_top_third_frac": 0.3333333333333333
+        },
+        "scipy_average_cosine": {
+          "per_chapter": [
+            {
+              "chapter_n": 5,
+              "chapter": "Applications",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.3691460055096419,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "Conclusions",
+              "n_works": 63,
+              "flagged": true,
+              "generality": 0.33884297520661155,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Security and Privacy",
+              "n_works": 107,
+              "flagged": false,
+              "generality": 0.22865013774104684,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Systems and Platforms",
+              "n_works": 3,
+              "flagged": false,
+              "generality": 0.22038567493112948,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "What is Mobile Crowdsensing?",
+              "n_works": 48,
+              "flagged": false,
+              "generality": 0.19559228650137742,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Introduction",
+              "n_works": 21,
+              "flagged": true,
+              "generality": 0.1763085399449036,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Future Directions",
+              "n_works": 17,
+              "flagged": true,
+              "generality": 0.15702479338842976,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Mobile Crowdsourcing",
+              "n_works": 55,
+              "flagged": false,
+              "generality": 0.13774104683195593,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Mobile Sensing",
+              "n_works": 38,
+              "flagged": false,
+              "generality": 0.1184573002754821,
+              "generality_rank": 9,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 3,
+          "n_body": 6,
+          "mean_generality_flagged": 0.22405876951331496,
+          "mean_generality_body": 0.21166207529843895,
+          "flagged_in_top_third_frac": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "slug": "neuromorphic",
+      "book_id": "W4247813589",
+      "scope": {
+        "subfield": null,
+        "field": "17"
+      },
+      "n_chapters": 13,
+      "n_article_pool": 5997997,
+      "n_labeled_points": 288,
+      "top_n": 288,
+      "top_n_mode": "n_gap_articles",
+      "chapter_label_sizes": {
+        "Neuromorphic Engineering": 36,
+        "Primer on Spike Processing and Excitability": 0,
+        "Primer on Photonics": 0,
+        "Spike Processing with SOA Dynamics": 2,
+        "Excitable Laser for Unified Spike Processing": 10,
+        "Semiconductor Photonic Devices as Excitable Processors": 0,
+        "Silicon Photonics": 57,
+        "Photonic Weight Banks": 1,
+        "Processing Network Node": 1,
+        "System Architecture": 26,
+        "Principles of Neural Network Learning": 23,
+        "Photonic Reservoir Computing": 132,
+        "Neuromorphic Platforms Comparison": 0
+      },
+      "ari_recon_baseline": 0.16624918208573183,
+      "constructions": [
+        {
+          "construction": "weighted_bisecting_kmeans",
+          "dendrogram_purity": 0.8712549489598087,
+          "dp_above_random": 0.47627585329401045,
+          "dp_random_baseline": 0.39497909566579825,
+          "cophenetic_corr": 0.6644167119149542,
+          "ari_at_k": 0.3983700343397189,
+          "nmi_at_k": 0.6278753618023877,
+          "flat_k_requested": 13,
+          "flat_k_effective": 8,
+          "ari_recon_baseline": 0.16624918208573183
+        },
+        {
+          "construction": "scipy_ward",
+          "dendrogram_purity": 0.8567674274239784,
+          "dp_above_random": 0.45973871714030595,
+          "dp_random_baseline": 0.3970287102836724,
+          "cophenetic_corr": 0.6306088371172773,
+          "ari_at_k": 0.2469448087993748,
+          "nmi_at_k": 0.5590183643885024,
+          "flat_k_requested": 13,
+          "flat_k_effective": 13,
+          "ari_recon_baseline": 0.16624918208573183
+        },
+        {
+          "construction": "scipy_average_cosine",
+          "dendrogram_purity": 0.8671744337348058,
+          "dp_above_random": 0.4706506351241996,
+          "dp_random_baseline": 0.39652379861060627,
+          "cophenetic_corr": 0.760010526328176,
+          "ari_at_k": 0.6029660035395606,
+          "nmi_at_k": 0.6589417914838206,
+          "flat_k_requested": 13,
+          "flat_k_effective": 13,
+          "ari_recon_baseline": 0.16624918208573183
+        }
+      ],
+      "height_test": {
+        "weighted_bisecting_kmeans": {
+          "per_chapter": [
+            {
+              "chapter_n": 12,
+              "chapter": "Photonic Reservoir Computing",
+              "n_works": 132,
+              "flagged": false,
+              "generality": 0.4444444444444444,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 7,
+              "chapter": "Silicon Photonics",
+              "n_works": 57,
+              "flagged": false,
+              "generality": 0.3263888888888889,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 11,
+              "chapter": "Principles of Neural Network Learning",
+              "n_works": 23,
+              "flagged": false,
+              "generality": 0.22916666666666666,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "System Architecture",
+              "n_works": 26,
+              "flagged": false,
+              "generality": 0.13194444444444445,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Neuromorphic Engineering",
+              "n_works": 36,
+              "flagged": true,
+              "generality": 0.12152777777777778,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Spike Processing with SOA Dynamics",
+              "n_works": 2,
+              "flagged": false,
+              "generality": 0.09722222222222222,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Excitable Laser for Unified Spike Processing",
+              "n_works": 10,
+              "flagged": false,
+              "generality": 0.024305555555555556,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Photonic Weight Banks",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.003472222222222222,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Processing Network Node",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.003472222222222222,
+              "generality_rank": 9,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 1,
+          "n_body": 8,
+          "mean_generality_flagged": 0.12152777777777778,
+          "mean_generality_body": 0.15755208333333331,
+          "flagged_in_top_third_frac": 0.0
+        },
+        "scipy_ward": {
+          "per_chapter": [
+            {
+              "chapter_n": 11,
+              "chapter": "Principles of Neural Network Learning",
+              "n_works": 23,
+              "flagged": false,
+              "generality": 0.5208333333333334,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 12,
+              "chapter": "Photonic Reservoir Computing",
+              "n_works": 132,
+              "flagged": false,
+              "generality": 0.4791666666666667,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 7,
+              "chapter": "Silicon Photonics",
+              "n_works": 57,
+              "flagged": false,
+              "generality": 0.2569444444444444,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Neuromorphic Engineering",
+              "n_works": 36,
+              "flagged": true,
+              "generality": 0.125,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "System Architecture",
+              "n_works": 26,
+              "flagged": false,
+              "generality": 0.06944444444444445,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Spike Processing with SOA Dynamics",
+              "n_works": 2,
+              "flagged": false,
+              "generality": 0.034722222222222224,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Excitable Laser for Unified Spike Processing",
+              "n_works": 10,
+              "flagged": false,
+              "generality": 0.03125,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Photonic Weight Banks",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.003472222222222222,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Processing Network Node",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.003472222222222222,
+              "generality_rank": 9,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 1,
+          "n_body": 8,
+          "mean_generality_flagged": 0.125,
+          "mean_generality_body": 0.17491319444444445,
+          "flagged_in_top_third_frac": 0.0
+        },
+        "scipy_average_cosine": {
+          "per_chapter": [
+            {
+              "chapter_n": 11,
+              "chapter": "Principles of Neural Network Learning",
+              "n_works": 23,
+              "flagged": false,
+              "generality": 0.4513888888888889,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 12,
+              "chapter": "Photonic Reservoir Computing",
+              "n_works": 132,
+              "flagged": false,
+              "generality": 0.2951388888888889,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 7,
+              "chapter": "Silicon Photonics",
+              "n_works": 57,
+              "flagged": false,
+              "generality": 0.2604166666666667,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 1,
+              "chapter": "Neuromorphic Engineering",
+              "n_works": 36,
+              "flagged": true,
+              "generality": 0.1527777777777778,
+              "generality_rank": 4,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "System Architecture",
+              "n_works": 26,
+              "flagged": false,
+              "generality": 0.0763888888888889,
+              "generality_rank": 5,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Spike Processing with SOA Dynamics",
+              "n_works": 2,
+              "flagged": false,
+              "generality": 0.041666666666666664,
+              "generality_rank": 6,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Excitable Laser for Unified Spike Processing",
+              "n_works": 10,
+              "flagged": false,
+              "generality": 0.03125,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Photonic Weight Banks",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.003472222222222222,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Processing Network Node",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.003472222222222222,
+              "generality_rank": 9,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 1,
+          "n_body": 8,
+          "mean_generality_flagged": 0.1527777777777778,
+          "mean_generality_body": 0.14539930555555558,
+          "flagged_in_top_third_frac": 0.0
+        }
+      }
+    },
+    {
+      "slug": "color_image",
+      "book_id": "W4211017872",
+      "scope": {
+        "subfield": null,
+        "field": "17"
+      },
+      "n_chapters": 24,
+      "n_article_pool": 5997997,
+      "n_labeled_points": 457,
+      "top_n": 457,
+      "top_n_mode": "n_gap_articles",
+      "chapter_label_sizes": {
+        "Color Fundamentals": 0,
+        "Gamut Mapping": 1,
+        "Color Constancy": 1,
+        "Noise Reduction and Edge Detection in Color Images": 22,
+        "Selected Color Image Processing Techniques": 5,
+        "Resizing Color Images in the Compressed Domain": 4,
+        "Color Image Halftoning": 0,
+        "Secure Color Imaging": 119,
+        "Color Feature Detection": 3,
+        "Color Spatial Arrangement for Image Retrieval": 112,
+        "Semantic Processing of Color Images": 6,
+        "Color Cue in Facial Image Analysis": 10,
+        "Using Colors for Eye Tracking": 1,
+        "Identification of Diabetic Retinal Exudates": 1,
+        "Real-Time Color Imaging Systems": 4,
+        "Single-Sensor Camera Image Processing": 20,
+        "Spectral Imaging and Applications": 0,
+        "Image Enhancement for Plasma Display Panels": 0,
+        "Image Processing for Virtual Artwork Restoration": 9,
+        "Image and Video Colorization": 11,
+        "Superresolution Color Image Reconstruction": 12,
+        "Coding of Color Image Sequences": 22,
+        "Color-Based Video Shot Boundary Detection": 85,
+        "Color Features in Video Surveillance": 9
+      },
+      "ari_recon_baseline": 0.007352599781659124,
+      "constructions": [
+        {
+          "construction": "weighted_bisecting_kmeans",
+          "dendrogram_purity": 0.9900954234146528,
+          "dp_above_random": 0.7504937926612658,
+          "dp_random_baseline": 0.23960163075338703,
+          "cophenetic_corr": 0.8167673231610362,
+          "ari_at_k": 0.9265757947870493,
+          "nmi_at_k": 0.8895649080559753,
+          "flat_k_requested": 24,
+          "flat_k_effective": 7,
+          "ari_recon_baseline": 0.007352599781659124
+        },
+        {
+          "construction": "scipy_ward",
+          "dendrogram_purity": 0.9992945190609654,
+          "dp_above_random": 0.7594614581342056,
+          "dp_random_baseline": 0.23983306092675982,
+          "cophenetic_corr": 0.8226772523781889,
+          "ari_at_k": 0.5625832746818941,
+          "nmi_at_k": 0.8460405480281683,
+          "flat_k_requested": 24,
+          "flat_k_effective": 24,
+          "ari_recon_baseline": 0.007352599781659124
+        },
+        {
+          "construction": "scipy_average_cosine",
+          "dendrogram_purity": 0.9979084989682868,
+          "dp_above_random": 0.7606833045847328,
+          "dp_random_baseline": 0.2372251943835541,
+          "cophenetic_corr": 0.9240794285666968,
+          "ari_at_k": 0.9827497563822921,
+          "nmi_at_k": 0.9738177249563181,
+          "flat_k_requested": 24,
+          "flat_k_effective": 24,
+          "ari_recon_baseline": 0.007352599781659124
+        }
+      ],
+      "height_test": {
+        "weighted_bisecting_kmeans": {
+          "per_chapter": [
+            {
+              "chapter_n": 6,
+              "chapter": "Resizing Color Images in the Compressed Domain",
+              "n_works": 4,
+              "flagged": false,
+              "generality": 0.24288840262582057,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 23,
+              "chapter": "Color-Based Video Shot Boundary Detection",
+              "n_works": 85,
+              "flagged": false,
+              "generality": 0.18599562363238512,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Secure Color Imaging",
+              "n_works": 119,
+              "flagged": false,
+              "generality": 0.16192560175054704,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "Color Spatial Arrangement for Image Retrieval",
+              "n_works": 112,
+              "flagged": false,
+              "generality": 0.1487964989059081,
+              "generality_rank": 4,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 15,
+              "chapter": "Real-Time Color Imaging Systems",
+              "n_works": 4,
+              "flagged": false,
+              "generality": 0.08971553610503283,
+              "generality_rank": 5,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Noise Reduction and Edge Detection in Color Images",
+              "n_works": 22,
+              "flagged": false,
+              "generality": 0.05908096280087528,
+              "generality_rank": 6,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 22,
+              "chapter": "Coding of Color Image Sequences",
+              "n_works": 22,
+              "flagged": false,
+              "generality": 0.03938730853391685,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 16,
+              "chapter": "Single-Sensor Camera Image Processing",
+              "n_works": 20,
+              "flagged": false,
+              "generality": 0.0262582056892779,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 20,
+              "chapter": "Image and Video Colorization",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.024070021881838075,
+              "generality_rank": 9,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Color Feature Detection",
+              "n_works": 3,
+              "flagged": false,
+              "generality": 0.02188183807439825,
+              "generality_rank": 10,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 19,
+              "chapter": "Image Processing for Virtual Artwork Restoration",
+              "n_works": 9,
+              "flagged": false,
+              "generality": 0.019693654266958426,
+              "generality_rank": 11,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 21,
+              "chapter": "Superresolution Color Image Reconstruction",
+              "n_works": 12,
+              "flagged": false,
+              "generality": 0.0175054704595186,
+              "generality_rank": 12,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 12,
+              "chapter": "Color Cue in Facial Image Analysis",
+              "n_works": 10,
+              "flagged": false,
+              "generality": 0.015317286652078774,
+              "generality_rank": 13,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 24,
+              "chapter": "Color Features in Video Surveillance",
+              "n_works": 9,
+              "flagged": true,
+              "generality": 0.015317286652078774,
+              "generality_rank": 14,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 11,
+              "chapter": "Semantic Processing of Color Images",
+              "n_works": 6,
+              "flagged": false,
+              "generality": 0.0087527352297593,
+              "generality_rank": 15,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Selected Color Image Processing Techniques",
+              "n_works": 5,
+              "flagged": false,
+              "generality": 0.006564551422319475,
+              "generality_rank": 16,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Gamut Mapping",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 17,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Color Constancy",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 18,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 13,
+              "chapter": "Using Colors for Eye Tracking",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 19,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 14,
+              "chapter": "Identification of Diabetic Retinal Exudates",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 20,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 1,
+          "n_body": 19,
+          "mean_generality_flagged": 0.015317286652078774,
+          "mean_generality_body": 0.0566624438558102,
+          "flagged_in_top_third_frac": 0.0
+        },
+        "scipy_ward": {
+          "per_chapter": [
+            {
+              "chapter_n": 10,
+              "chapter": "Color Spatial Arrangement for Image Retrieval",
+              "n_works": 112,
+              "flagged": false,
+              "generality": 0.1838074398249453,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 8,
+              "chapter": "Secure Color Imaging",
+              "n_works": 119,
+              "flagged": false,
+              "generality": 0.18161925601750548,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 23,
+              "chapter": "Color-Based Video Shot Boundary Detection",
+              "n_works": 85,
+              "flagged": false,
+              "generality": 0.12035010940919037,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 22,
+              "chapter": "Coding of Color Image Sequences",
+              "n_works": 22,
+              "flagged": false,
+              "generality": 0.04814004376367615,
+              "generality_rank": 4,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 16,
+              "chapter": "Single-Sensor Camera Image Processing",
+              "n_works": 20,
+              "flagged": false,
+              "generality": 0.037199124726477024,
+              "generality_rank": 5,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Noise Reduction and Edge Detection in Color Images",
+              "n_works": 22,
+              "flagged": false,
+              "generality": 0.03282275711159737,
+              "generality_rank": 6,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 20,
+              "chapter": "Image and Video Colorization",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.0262582056892779,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 21,
+              "chapter": "Superresolution Color Image Reconstruction",
+              "n_works": 12,
+              "flagged": false,
+              "generality": 0.0175054704595186,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 11,
+              "chapter": "Semantic Processing of Color Images",
+              "n_works": 6,
+              "flagged": false,
+              "generality": 0.015317286652078774,
+              "generality_rank": 9,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 12,
+              "chapter": "Color Cue in Facial Image Analysis",
+              "n_works": 10,
+              "flagged": false,
+              "generality": 0.015317286652078774,
+              "generality_rank": 10,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 19,
+              "chapter": "Image Processing for Virtual Artwork Restoration",
+              "n_works": 9,
+              "flagged": false,
+              "generality": 0.01312910284463895,
+              "generality_rank": 11,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 24,
+              "chapter": "Color Features in Video Surveillance",
+              "n_works": 9,
+              "flagged": true,
+              "generality": 0.01312910284463895,
+              "generality_rank": 12,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Selected Color Image Processing Techniques",
+              "n_works": 5,
+              "flagged": false,
+              "generality": 0.0087527352297593,
+              "generality_rank": 13,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Resizing Color Images in the Compressed Domain",
+              "n_works": 4,
+              "flagged": false,
+              "generality": 0.006564551422319475,
+              "generality_rank": 14,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 15,
+              "chapter": "Real-Time Color Imaging Systems",
+              "n_works": 4,
+              "flagged": false,
+              "generality": 0.006564551422319475,
+              "generality_rank": 15,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Color Feature Detection",
+              "n_works": 3,
+              "flagged": false,
+              "generality": 0.00437636761487965,
+              "generality_rank": 16,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Gamut Mapping",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 17,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Color Constancy",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 18,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 13,
+              "chapter": "Using Colors for Eye Tracking",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 19,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 14,
+              "chapter": "Identification of Diabetic Retinal Exudates",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 20,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 1,
+          "n_body": 19,
+          "mean_generality_flagged": 0.01312910284463895,
+          "mean_generality_body": 0.038235632845790624,
+          "flagged_in_top_third_frac": 0.0
+        },
+        "scipy_average_cosine": {
+          "per_chapter": [
+            {
+              "chapter_n": 8,
+              "chapter": "Secure Color Imaging",
+              "n_works": 119,
+              "flagged": false,
+              "generality": 0.1575492341356674,
+              "generality_rank": 1,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 10,
+              "chapter": "Color Spatial Arrangement for Image Retrieval",
+              "n_works": 112,
+              "flagged": false,
+              "generality": 0.15098468271334792,
+              "generality_rank": 2,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 23,
+              "chapter": "Color-Based Video Shot Boundary Detection",
+              "n_works": 85,
+              "flagged": false,
+              "generality": 0.14442013129102846,
+              "generality_rank": 3,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 4,
+              "chapter": "Noise Reduction and Edge Detection in Color Images",
+              "n_works": 22,
+              "flagged": false,
+              "generality": 0.0350109409190372,
+              "generality_rank": 4,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 22,
+              "chapter": "Coding of Color Image Sequences",
+              "n_works": 22,
+              "flagged": false,
+              "generality": 0.0350109409190372,
+              "generality_rank": 5,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 16,
+              "chapter": "Single-Sensor Camera Image Processing",
+              "n_works": 20,
+              "flagged": false,
+              "generality": 0.0262582056892779,
+              "generality_rank": 6,
+              "in_top_third": true
+            },
+            {
+              "chapter_n": 21,
+              "chapter": "Superresolution Color Image Reconstruction",
+              "n_works": 12,
+              "flagged": false,
+              "generality": 0.02188183807439825,
+              "generality_rank": 7,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 20,
+              "chapter": "Image and Video Colorization",
+              "n_works": 11,
+              "flagged": false,
+              "generality": 0.019693654266958426,
+              "generality_rank": 8,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 11,
+              "chapter": "Semantic Processing of Color Images",
+              "n_works": 6,
+              "flagged": false,
+              "generality": 0.015317286652078774,
+              "generality_rank": 9,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 12,
+              "chapter": "Color Cue in Facial Image Analysis",
+              "n_works": 10,
+              "flagged": false,
+              "generality": 0.015317286652078774,
+              "generality_rank": 10,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 5,
+              "chapter": "Selected Color Image Processing Techniques",
+              "n_works": 5,
+              "flagged": false,
+              "generality": 0.01312910284463895,
+              "generality_rank": 11,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 19,
+              "chapter": "Image Processing for Virtual Artwork Restoration",
+              "n_works": 9,
+              "flagged": false,
+              "generality": 0.01312910284463895,
+              "generality_rank": 12,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 24,
+              "chapter": "Color Features in Video Surveillance",
+              "n_works": 9,
+              "flagged": true,
+              "generality": 0.01312910284463895,
+              "generality_rank": 13,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 6,
+              "chapter": "Resizing Color Images in the Compressed Domain",
+              "n_works": 4,
+              "flagged": false,
+              "generality": 0.006564551422319475,
+              "generality_rank": 14,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 15,
+              "chapter": "Real-Time Color Imaging Systems",
+              "n_works": 4,
+              "flagged": false,
+              "generality": 0.006564551422319475,
+              "generality_rank": 15,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 9,
+              "chapter": "Color Feature Detection",
+              "n_works": 3,
+              "flagged": false,
+              "generality": 0.00437636761487965,
+              "generality_rank": 16,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 2,
+              "chapter": "Gamut Mapping",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 17,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 3,
+              "chapter": "Color Constancy",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 18,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 13,
+              "chapter": "Using Colors for Eye Tracking",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 19,
+              "in_top_third": false
+            },
+            {
+              "chapter_n": 14,
+              "chapter": "Identification of Diabetic Retinal Exudates",
+              "n_works": 1,
+              "flagged": false,
+              "generality": 0.002188183807439825,
+              "generality_rank": 20,
+              "in_top_third": false
+            }
+          ],
+          "n_flagged": 1,
+          "n_body": 19,
+          "mean_generality_flagged": 0.01312910284463895,
+          "mean_generality_body": 0.035471611194287676,
+          "flagged_in_top_third_frac": 0.0
+        }
+      }
+    }
+  ],
+  "join_B": {
+    "n_points": 12,
+    "coph_vs_dp": {
+      "pearson_r": 0.7971627881558194,
+      "pearson_p": 0.0019021057144241091,
+      "spearman_r": 0.7202797202797203,
+      "spearman_p": 0.008239768712338441
+    },
+    "coph_vs_dp_above_random": {
+      "pearson_r": 0.8065086790110857,
+      "pearson_p": 0.0015279688639581496,
+      "spearman_r": 0.6013986013986015,
+      "spearman_p": 0.03858845292201944
+    },
+    "coph_vs_ari": {
+      "pearson_r": 0.7558827720946509,
+      "pearson_p": 0.004455192489427771,
+      "spearman_r": 0.6713286713286714,
+      "spearman_p": 0.016831456186893395
+    },
+    "points": [
+      {
+        "slug": "cyberbullying",
+        "construction": "weighted_bisecting_kmeans",
+        "cophenetic": 0.4160578530120017,
+        "dp": 0.5181332733352828,
+        "ari": 0.2060129419673461
+      },
+      {
+        "slug": "cyberbullying",
+        "construction": "scipy_ward",
+        "cophenetic": 0.4076287445028468,
+        "dp": 0.4823719181479574,
+        "ari": 0.2510407943284386
+      },
+      {
+        "slug": "cyberbullying",
+        "construction": "scipy_average_cosine",
+        "cophenetic": 0.6930791773680337,
+        "dp": 0.4568132692069888,
+        "ari": 0.10984172096023109
+      },
+      {
+        "slug": "mcs",
+        "construction": "weighted_bisecting_kmeans",
+        "cophenetic": 0.614793857582132,
+        "dp": 0.7186151636271265,
+        "ari": 0.552596803054354
+      },
+      {
+        "slug": "mcs",
+        "construction": "scipy_ward",
+        "cophenetic": 0.6042183222890242,
+        "dp": 0.7408509201695437,
+        "ari": 0.37101742635829915
+      },
+      {
+        "slug": "mcs",
+        "construction": "scipy_average_cosine",
+        "cophenetic": 0.6818121084131509,
+        "dp": 0.7349900845820212,
+        "ari": 0.616083373377153
+      },
+      {
+        "slug": "neuromorphic",
+        "construction": "weighted_bisecting_kmeans",
+        "cophenetic": 0.6644167119149542,
+        "dp": 0.8712549489598087,
+        "ari": 0.3983700343397189
+      },
+      {
+        "slug": "neuromorphic",
+        "construction": "scipy_ward",
+        "cophenetic": 0.6306088371172773,
+        "dp": 0.8567674274239784,
+        "ari": 0.2469448087993748
+      },
+      {
+        "slug": "neuromorphic",
+        "construction": "scipy_average_cosine",
+        "cophenetic": 0.760010526328176,
+        "dp": 0.8671744337348058,
+        "ari": 0.6029660035395606
+      },
+      {
+        "slug": "color_image",
+        "construction": "weighted_bisecting_kmeans",
+        "cophenetic": 0.8167673231610362,
+        "dp": 0.9900954234146528,
+        "ari": 0.9265757947870493
+      },
+      {
+        "slug": "color_image",
+        "construction": "scipy_ward",
+        "cophenetic": 0.8226772523781889,
+        "dp": 0.9992945190609654,
+        "ari": 0.5625832746818941
+      },
+      {
+        "slug": "color_image",
+        "construction": "scipy_average_cosine",
+        "cophenetic": 0.9240794285666968,
+        "dp": 0.9979084989682868,
+        "ari": 0.9827497563822921
+      }
+    ],
+    "within_book": {
+      "note": "Pooled (B) corr is dominated by BETWEEN-book geometry (a tight corpus like color_image yields high coph AND high DP/ARI for all constructions). The fair, geometry-controlled test demeans each book (centers the 3 constructions) so only WHICH-algorithm signal remains.",
+      "avg_linkage_is_coph_winner_books": 4,
+      "avg_linkage_is_dp_winner_books": 0,
+      "avg_linkage_is_ari_winner_books": 3,
+      "dp_winner_per_book": {
+        "cyberbullying": "weighted_bisecting_kmeans",
+        "mcs": "scipy_ward",
+        "neuromorphic": "weighted_bisecting_kmeans",
+        "color_image": "scipy_ward"
+      },
+      "ari_winner_per_book": {
+        "cyberbullying": "scipy_ward",
+        "mcs": "scipy_average_cosine",
+        "neuromorphic": "scipy_average_cosine",
+        "color_image": "scipy_average_cosine"
+      },
+      "demeaned_coph_vs_dp": {
+        "pearson_r": -0.5485737916169424,
+        "pearson_p": 0.06476061547289882
+      },
+      "demeaned_coph_vs_ari": {
+        "pearson_r": 0.2024150147575232,
+        "pearson_p": 0.528097712615207
+      }
+    },
+    "ari_vs_recon_baseline_caveat": "ARI@k lift over cl_<slug>_recon.json is NOT a pure algorithm win: the recon labels a DIFFERENT point set (the book gap_article_ids, not top-N-by-max-cosine) and cuts the PRODUCTION tree at n_our_clusters (5/5/10/17) not at k=n_chapters. The cleaner labeled set + matched-k cut account for much of the lift; treat it as directional, not attributable to the linkage method alone."
+  },
+  "height_C": {
+    "weighted_bisecting_kmeans": {
+      "n_books": 4,
+      "mean_diff_flagged_minus_body": 0.1446379802919905,
+      "n_books_flagged_more_general": 2,
+      "sign_test_p": 1.0,
+      "wilcoxon_p": 0.625,
+      "mean_flagged_in_top_third_frac": 0.3333333333333333,
+      "per_book": [
+        {
+          "slug": "cyberbullying",
+          "gen_flagged": 0.43792766373411535,
+          "gen_body": 0.1341642228739003,
+          "top_third_frac": 0.6666666666666666
+        },
+        {
+          "slug": "mcs",
+          "gen_flagged": 0.47107438016528924,
+          "gen_body": 0.11891643709825528,
+          "top_third_frac": 0.6666666666666666
+        },
+        {
+          "slug": "neuromorphic",
+          "gen_flagged": 0.12152777777777778,
+          "gen_body": 0.15755208333333331,
+          "top_third_frac": 0.0
+        },
+        {
+          "slug": "color_image",
+          "gen_flagged": 0.015317286652078774,
+          "gen_body": 0.0566624438558102,
+          "top_third_frac": 0.0
+        }
+      ]
+    },
+    "scipy_ward": {
+      "n_books": 4,
+      "mean_diff_flagged_minus_body": 0.04965090140733672,
+      "n_books_flagged_more_general": 1,
+      "sign_test_p": 0.625,
+      "wilcoxon_p": 0.875,
+      "mean_flagged_in_top_third_frac": 0.25,
+      "per_book": [
+        {
+          "slug": "cyberbullying",
+          "gen_flagged": 0.37829912023460405,
+          "gen_body": 0.09457478005865103,
+          "top_third_frac": 0.6666666666666666
+        },
+        {
+          "slug": "mcs",
+          "gen_flagged": 0.15335169880624427,
+          "gen_body": 0.16345270890725436,
+          "top_third_frac": 0.3333333333333333
+        },
+        {
+          "slug": "neuromorphic",
+          "gen_flagged": 0.125,
+          "gen_body": 0.17491319444444445,
+          "top_third_frac": 0.0
+        },
+        {
+          "slug": "color_image",
+          "gen_flagged": 0.01312910284463895,
+          "gen_body": 0.038235632845790624,
+          "top_third_frac": 0.0
+        }
+      ]
+    },
+    "scipy_average_cosine": {
+      "n_books": 4,
+      "mean_diff_flagged_minus_body": 0.00601749981022993,
+      "n_books_flagged_more_general": 3,
+      "sign_test_p": 0.625,
+      "wilcoxon_p": 0.625,
+      "mean_flagged_in_top_third_frac": 0.16666666666666666,
+      "per_book": [
+        {
+          "slug": "cyberbullying",
+          "gen_flagged": 0.40860215053763443,
+          "gen_body": 0.3819648093841642,
+          "top_third_frac": 0.3333333333333333
+        },
+        {
+          "slug": "mcs",
+          "gen_flagged": 0.22405876951331496,
+          "gen_body": 0.21166207529843895,
+          "top_third_frac": 0.3333333333333333
+        },
+        {
+          "slug": "neuromorphic",
+          "gen_flagged": 0.1527777777777778,
+          "gen_body": 0.14539930555555558,
+          "top_third_frac": 0.0
+        },
+        {
+          "slug": "color_image",
+          "gen_flagged": 0.01312910284463895,
+          "gen_body": 0.035471611194287676,
+          "top_third_frac": 0.0
+        }
+      ]
+    }
+  },
+  "verdict_D": {
+    "lines": [
+      "Books evaluated: ['cyberbullying', 'mcs', 'neuromorphic', 'color_image'] (4/4).",
+      "(i) DP winner per book: {'cyberbullying': 'weighted_bisecting_kmeans', 'mcs': 'scipy_ward', 'neuromorphic': 'weighted_bisecting_kmeans', 'color_image': 'scipy_ward'}. DP-win tally across books: {'weighted_bisecting_kmeans': 2, 'scipy_ward': 2, 'scipy_average_cosine': 0}; ARI-win tally: {'weighted_bisecting_kmeans': 0, 'scipy_ward': 1, 'scipy_average_cosine': 3}.",
+      "    JOIN: corr(cophenetic, DP) Pearson r=+0.797 (p=0.002); corr(cophenetic, ARI) r=+0.756 (p=0.004).",
+      "(ii) DP-above-random across all (book x construction): min=+0.1464 mean=+0.4747 max=+0.7607.  ARI@k: min=+0.110 mean=+0.486 max=+0.983.",
+      "(iii) intro/conclusion-near-top (avg-linkage tree): flagged-more-general in 3/4 books (sign p=0.625); mean(flagged-body)=+0.0060; flagged-in-top-third frac=0.167."
+    ],
+    "dp_win_tally": {
+      "weighted_bisecting_kmeans": 2,
+      "scipy_ward": 2,
+      "scipy_average_cosine": 0
+    },
+    "ari_win_tally": {
+      "weighted_bisecting_kmeans": 0,
+      "scipy_ward": 1,
+      "scipy_average_cosine": 3
+    },
+    "dp_above_random_minmeanmax": [
+      0.14644215132773747,
+      0.4746785077409436,
+      0.7606833045847328
+    ],
+    "ari_minmeanmax": [
+      0.10984172096023109,
+      0.48556522771464267,
+      0.9827497563822921
+    ]
+  },
+  "params": {
+    "top_n_mode": "n_gap_articles",
+    "n_shuffle": 5,
+    "seed": 42
+  },
+  "caveats": {
+    "scope": "cyberbullying loaded at subfield 1702; mcs/neuromorphic/color_image at FIELD 17 \u2014 each at the scope its own gap JSON declares, matching the cl_<slug>_recon.json corpus. Default cloud denoiser=NONE (raw GIST-small).",
+    "circularity": "work labels = argmax-cosine to same-space chapter embeddings, so ABSOLUTE DP is inflated; the cross-construction COMPARISON and the JOIN correlation (B) are fair (identical labeled points; coph on same X)."
+  },
+  "elapsed_s": 317.6,
+  "provenance": "Generated by `python -m artifacts_scripts.curriculum.dendro_eval.toc_recovery `. Regenerate with the command above; do not edit by hand."
+}

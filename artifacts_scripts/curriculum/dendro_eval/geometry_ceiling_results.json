@@ -1,0 +1,596 @@
+{
+  "books": [
+    {
+      "slug": "cyberbullying",
+      "n_chapters": 8,
+      "scope": {
+        "subfield": "1702",
+        "field": null
+      },
+      "n_article_pool": 1554546,
+      "n_labeled_points": 341,
+      "top_n": 341,
+      "ari_recon_baseline": 0.07947546472291006,
+      "chapter_titles": [
+        "Introduction",
+        "Background",
+        "Description and Initial Analysis of Cyberbullying Dataset",
+        "Web Mining-Based Method for Cyberbullying Detection",
+        "Brute Force Search Method for Cyberbullying Detection",
+        "Traditional Classifiers vs. Deep Learning for Cyberbullying Detection",
+        "Cyberbullying Blocker Test Application for Android Devices",
+        "Conclusion and Future Directions"
+      ],
+      "chapter_label_sizes": [
+        25,
+        114,
+        12,
+        11,
+        1,
+        110,
+        0,
+        68
+      ],
+      "n_train": 238,
+      "n_test": 102,
+      "n_classes_present": 7,
+      "train_class_sizes": [
+        17,
+        80,
+        8,
+        8,
+        0,
+        77,
+        0,
+        48
+      ],
+      "test_class_sizes": [
+        8,
+        34,
+        4,
+        3,
+        0,
+        33,
+        0,
+        20
+      ],
+      "unstable_classes_lt5": [
+        4
+      ],
+      "dropped_singleton_classes": [
+        4
+      ],
+      "flat_k": 8,
+      "spaces": [
+        {
+          "space": "raw",
+          "dim": 384,
+          "knn_macro_f1": 0.5003484779987944,
+          "knn_acc": 0.7647058823529411,
+          "knn_k": 10,
+          "unsup_ari": 0.12133596257324882,
+          "unsup_ari_random": -0.00875017962924524,
+          "unsup_ari_above_random": 0.13008614220249407,
+          "flat_k_requested": 8,
+          "flat_k_effective": 8
+        },
+        {
+          "space": "pca50",
+          "dim": 50,
+          "knn_macro_f1": 0.7281265031265032,
+          "knn_acc": 0.7745098039215687,
+          "knn_k": 10,
+          "unsup_ari": 0.3682232912735087,
+          "unsup_ari_random": 0.004049976666894049,
+          "unsup_ari_above_random": 0.3641733146066147,
+          "flat_k_requested": 8,
+          "flat_k_effective": 8
+        },
+        {
+          "space": "lda_oracle",
+          "dim": 5,
+          "pca_dim": 50,
+          "n_classes": 6,
+          "knn_macro_f1": 0.6444796471112261,
+          "knn_acc": 0.7549019607843137,
+          "knn_k": 10,
+          "unsup_ari": 0.34087543067867054,
+          "unsup_ari_random": 0.004029341900505606,
+          "unsup_ari_above_random": 0.3368460887781649,
+          "flat_k_requested": 8,
+          "flat_k_effective": 8
+        }
+      ],
+      "deltas": {
+        "lda_minus_raw_knn_f1": 0.14413116911243162,
+        "lda_minus_raw_unsup_ari": 0.21953946810542174,
+        "pca_minus_raw_knn_f1": 0.22777802512770873,
+        "pca_minus_raw_unsup_ari": 0.24688732870025992
+      },
+      "verdict": "LEVER",
+      "verdict_note": "supervised oracle separates chapters AND unsupervised methods already pick some of it up -> better geometry is a real lever (Stage 2 worth it)."
+    },
+    {
+      "slug": "mcs",
+      "n_chapters": 10,
+      "scope": {
+        "subfield": null,
+        "field": "17"
+      },
+      "n_article_pool": 5997997,
+      "n_labeled_points": 363,
+      "top_n": 363,
+      "ari_recon_baseline": 0.29936207447953633,
+      "chapter_titles": [
+        "Introduction",
+        "Mobile Sensing",
+        "Mobile Crowdsourcing",
+        "What is Mobile Crowdsensing?",
+        "Applications",
+        "Systems and Platforms",
+        "Incentive Mechanisms for Participants",
+        "Security and Privacy",
+        "Future Directions",
+        "Conclusions"
+      ],
+      "chapter_label_sizes": [
+        21,
+        38,
+        55,
+        48,
+        11,
+        3,
+        0,
+        107,
+        17,
+        63
+      ],
+      "n_train": 254,
+      "n_test": 109,
+      "n_classes_present": 9,
+      "train_class_sizes": [
+        15,
+        27,
+        38,
+        33,
+        8,
+        2,
+        0,
+        75,
+        12,
+        44
+      ],
+      "test_class_sizes": [
+        6,
+        11,
+        17,
+        15,
+        3,
+        1,
+        0,
+        32,
+        5,
+        19
+      ],
+      "unstable_classes_lt5": [
+        5
+      ],
+      "dropped_singleton_classes": [],
+      "flat_k": 10,
+      "spaces": [
+        {
+          "space": "raw",
+          "dim": 384,
+          "knn_macro_f1": 0.5376728091479145,
+          "knn_acc": 0.7798165137614679,
+          "knn_k": 10,
+          "unsup_ari": 0.7141540272529504,
+          "unsup_ari_random": 0.0006589043507272843,
+          "unsup_ari_above_random": 0.7134951229022232,
+          "flat_k_requested": 10,
+          "flat_k_effective": 10
+        },
+        {
+          "space": "pca50",
+          "dim": 50,
+          "knn_macro_f1": 0.5862904312179675,
+          "knn_acc": 0.7614678899082569,
+          "knn_k": 10,
+          "unsup_ari": 0.677407116108126,
+          "unsup_ari_random": 0.000259654846529809,
+          "unsup_ari_above_random": 0.6771474612615962,
+          "flat_k_requested": 10,
+          "flat_k_effective": 10
+        },
+        {
+          "space": "lda_oracle",
+          "dim": 8,
+          "pca_dim": 50,
+          "n_classes": 9,
+          "knn_macro_f1": 0.6053593923159141,
+          "knn_acc": 0.7706422018348624,
+          "knn_k": 10,
+          "unsup_ari": 0.7106034280078217,
+          "unsup_ari_random": 0.002113116229994208,
+          "unsup_ari_above_random": 0.7084903117778275,
+          "flat_k_requested": 10,
+          "flat_k_effective": 10
+        }
+      ],
+      "deltas": {
+        "lda_minus_raw_knn_f1": 0.06768658316799958,
+        "lda_minus_raw_unsup_ari": -0.0035505992451286827,
+        "pca_minus_raw_knn_f1": 0.048617622070053046,
+        "pca_minus_raw_unsup_ari": -0.03674691114482442
+      },
+      "verdict": "ALREADY_SEPARABLE",
+      "verdict_note": "chapters are ALREADY well-separated in raw GIST-small (raw unsupARI >= 0.40, oracle kNN-F1 high but lift small) -> the oracle confirms separability the raw space already realizes; better geometry has little to add here (geometry already works, not a wall)."
+    },
+    {
+      "slug": "neuromorphic",
+      "n_chapters": 13,
+      "scope": {
+        "subfield": null,
+        "field": "17"
+      },
+      "n_article_pool": 5997997,
+      "n_labeled_points": 288,
+      "top_n": 288,
+      "ari_recon_baseline": 0.16624918208573183,
+      "chapter_titles": [
+        "Neuromorphic Engineering",
+        "Primer on Spike Processing and Excitability",
+        "Primer on Photonics",
+        "Spike Processing with SOA Dynamics",
+        "Excitable Laser for Unified Spike Processing",
+        "Semiconductor Photonic Devices as Excitable Processors",
+        "Silicon Photonics",
+        "Photonic Weight Banks",
+        "Processing Network Node",
+        "System Architecture",
+        "Principles of Neural Network Learning",
+        "Photonic Reservoir Computing",
+        "Neuromorphic Platforms Comparison"
+      ],
+      "chapter_label_sizes": [
+        36,
+        0,
+        0,
+        2,
+        10,
+        0,
+        57,
+        1,
+        1,
+        26,
+        23,
+        132,
+        0
+      ],
+      "n_train": 200,
+      "n_test": 86,
+      "n_classes_present": 9,
+      "train_class_sizes": [
+        25,
+        0,
+        0,
+        2,
+        7,
+        0,
+        40,
+        0,
+        0,
+        18,
+        16,
+        92,
+        0
+      ],
+      "test_class_sizes": [
+        11,
+        0,
+        0,
+        0,
+        3,
+        0,
+        17,
+        0,
+        0,
+        8,
+        7,
+        40,
+        0
+      ],
+      "unstable_classes_lt5": [
+        3,
+        7,
+        8
+      ],
+      "dropped_singleton_classes": [
+        7,
+        8
+      ],
+      "flat_k": 13,
+      "spaces": [
+        {
+          "space": "raw",
+          "dim": 384,
+          "knn_macro_f1": 0.6156513887606325,
+          "knn_acc": 0.7906976744186046,
+          "knn_k": 10,
+          "unsup_ari": 0.41531946923087154,
+          "unsup_ari_random": -0.001836098377077208,
+          "unsup_ari_above_random": 0.41715556760794875,
+          "flat_k_requested": 13,
+          "flat_k_effective": 13
+        },
+        {
+          "space": "pca50",
+          "dim": 50,
+          "knn_macro_f1": 0.6709704274220404,
+          "knn_acc": 0.813953488372093,
+          "knn_k": 10,
+          "unsup_ari": 0.4316872960779183,
+          "unsup_ari_random": -0.0027919843159538754,
+          "unsup_ari_above_random": 0.4344792803938722,
+          "flat_k_requested": 13,
+          "flat_k_effective": 13
+        },
+        {
+          "space": "lda_oracle",
+          "dim": 6,
+          "pca_dim": 50,
+          "n_classes": 7,
+          "knn_macro_f1": 0.6898266962922135,
+          "knn_acc": 0.8372093023255814,
+          "knn_k": 10,
+          "unsup_ari": 0.26164818415533714,
+          "unsup_ari_random": -0.002400880131714156,
+          "unsup_ari_above_random": 0.26404906428705127,
+          "flat_k_requested": 13,
+          "flat_k_effective": 13
+        }
+      ],
+      "deltas": {
+        "lda_minus_raw_knn_f1": 0.07417530753158097,
+        "lda_minus_raw_unsup_ari": -0.1536712850755344,
+        "pca_minus_raw_knn_f1": 0.05531903866140786,
+        "pca_minus_raw_unsup_ari": 0.01636782684704674
+      },
+      "verdict": "ALREADY_SEPARABLE",
+      "verdict_note": "chapters are ALREADY well-separated in raw GIST-small (raw unsupARI >= 0.40, oracle kNN-F1 high but lift small) -> the oracle confirms separability the raw space already realizes; better geometry has little to add here (geometry already works, not a wall)."
+    },
+    {
+      "slug": "color_image",
+      "n_chapters": 24,
+      "scope": {
+        "subfield": null,
+        "field": "17"
+      },
+      "n_article_pool": 5997997,
+      "n_labeled_points": 457,
+      "top_n": 457,
+      "ari_recon_baseline": 0.007352599781659124,
+      "chapter_titles": [
+        "Color Fundamentals",
+        "Gamut Mapping",
+        "Color Constancy",
+        "Noise Reduction and Edge Detection in Color Images",
+        "Selected Color Image Processing Techniques",
+        "Resizing Color Images in the Compressed Domain",
+        "Color Image Halftoning",
+        "Secure Color Imaging",
+        "Color Feature Detection",
+        "Color Spatial Arrangement for Image Retrieval",
+        "Semantic Processing of Color Images",
+        "Color Cue in Facial Image Analysis",
+        "Using Colors for Eye Tracking",
+        "Identification of Diabetic Retinal Exudates",
+        "Real-Time Color Imaging Systems",
+        "Single-Sensor Camera Image Processing",
+        "Spectral Imaging and Applications",
+        "Image Enhancement for Plasma Display Panels",
+        "Image Processing for Virtual Artwork Restoration",
+        "Image and Video Colorization",
+        "Superresolution Color Image Reconstruction",
+        "Coding of Color Image Sequences",
+        "Color-Based Video Shot Boundary Detection",
+        "Color Features in Video Surveillance"
+      ],
+      "chapter_label_sizes": [
+        0,
+        1,
+        1,
+        22,
+        5,
+        4,
+        0,
+        119,
+        3,
+        112,
+        6,
+        10,
+        1,
+        1,
+        4,
+        20,
+        0,
+        0,
+        9,
+        11,
+        12,
+        22,
+        85,
+        9
+      ],
+      "n_train": 317,
+      "n_test": 136,
+      "n_classes_present": 20,
+      "train_class_sizes": [
+        0,
+        0,
+        0,
+        15,
+        4,
+        3,
+        0,
+        83,
+        2,
+        78,
+        4,
+        7,
+        0,
+        0,
+        3,
+        14,
+        0,
+        0,
+        6,
+        8,
+        9,
+        15,
+        60,
+        6
+      ],
+      "test_class_sizes": [
+        0,
+        0,
+        0,
+        7,
+        1,
+        1,
+        0,
+        36,
+        1,
+        34,
+        2,
+        3,
+        0,
+        0,
+        1,
+        6,
+        0,
+        0,
+        3,
+        3,
+        3,
+        7,
+        25,
+        3
+      ],
+      "unstable_classes_lt5": [
+        1,
+        2,
+        5,
+        8,
+        12,
+        13,
+        14
+      ],
+      "dropped_singleton_classes": [
+        1,
+        2,
+        12,
+        13
+      ],
+      "flat_k": 24,
+      "spaces": [
+        {
+          "space": "raw",
+          "dim": 384,
+          "knn_macro_f1": 0.6725096288515406,
+          "knn_acc": 0.9558823529411765,
+          "knn_k": 10,
+          "unsup_ari": 0.8874061718098415,
+          "unsup_ari_random": 0.0002744321248098902,
+          "unsup_ari_above_random": 0.8871317396850316,
+          "flat_k_requested": 24,
+          "flat_k_effective": 24
+        },
+        {
+          "space": "pca50",
+          "dim": 50,
+          "knn_macro_f1": 0.6547619047619048,
+          "knn_acc": 0.9558823529411765,
+          "knn_k": 10,
+          "unsup_ari": 0.6798625562599816,
+          "unsup_ari_random": -0.0008728507131449591,
+          "unsup_ari_above_random": 0.6807354069731265,
+          "flat_k_requested": 24,
+          "flat_k_effective": 24
+        },
+        {
+          "space": "lda_oracle",
+          "dim": 15,
+          "pca_dim": 50,
+          "n_classes": 16,
+          "knn_macro_f1": 0.6713935574229692,
+          "knn_acc": 0.9558823529411765,
+          "knn_k": 10,
+          "unsup_ari": 0.8791122900197248,
+          "unsup_ari_random": -0.0018309326062941004,
+          "unsup_ari_above_random": 0.8809432226260189,
+          "flat_k_requested": 24,
+          "flat_k_effective": 24
+        }
+      ],
+      "deltas": {
+        "lda_minus_raw_knn_f1": -0.0011160714285713969,
+        "lda_minus_raw_unsup_ari": -0.008293881790116697,
+        "pca_minus_raw_knn_f1": -0.017747724089635875,
+        "pca_minus_raw_unsup_ari": -0.2075436155498599
+      },
+      "verdict": "ALREADY_SEPARABLE",
+      "verdict_note": "chapters are ALREADY well-separated in raw GIST-small (raw unsupARI >= 0.40, oracle kNN-F1 high but lift small) -> the oracle confirms separability the raw space already realizes; better geometry has little to add here (geometry already works, not a wall)."
+    }
+  ],
+  "overall": {
+    "verdict_tally": {
+      "LEVER": [
+        "cyberbullying"
+      ],
+      "ALREADY_SEPARABLE": [
+        "mcs",
+        "neuromorphic",
+        "color_image"
+      ]
+    },
+    "lever_books": [
+      "cyberbullying"
+    ],
+    "already_separable_books": [
+      "mcs",
+      "neuromorphic",
+      "color_image"
+    ],
+    "weak_books": [],
+    "wall_books": [],
+    "pca_helps_books": [
+      "cyberbullying",
+      "mcs",
+      "neuromorphic"
+    ],
+    "summary": "GEOMETRY IS NOT A HARD WALL on any evaluated book. better geometry is a demonstrated LEVER on ['cyberbullying'] (supervised oracle separates chapters AND a cheap unsupervised projection already recovers much of the lift); chapters are ALREADY well-separated in raw space on ['mcs', 'neuromorphic', 'color_image'] (oracle confirms separability raw already realizes -> geometry already works there, no wall and no headroom). No book has chapters overlapping under supervision -> a better curriculum space is a real (book-dependent) lever, most valuable exactly where raw is weakest (cyberbullying)."
+  },
+  "params": {
+    "test_frac": 0.3,
+    "n_rand": 20,
+    "seed": 42,
+    "knn_k": 10,
+    "pca_dim": 50,
+    "min_per_chap_stable": 5
+  },
+  "interpretation_guide": {
+    "LEVER": "oracle separates chapters AND unsupervised picks some up -> Stage 2 worth it.",
+    "LEVER_HARD": "oracle separates (kNN-F1 high & >>raw) but unsup ARI on floor -> structure present, not dominant variance; label-aware space needed.",
+    "ALREADY_SEPARABLE": "oracle confirms separability (kNN-F1 high) but raw ALREADY achieves it (small lift, raw unsupARI>=0.40) -> geometry already works for this book; no better space needed.",
+    "WALL": "oracle cannot separate (kNN-F1 low & ~raw) -> chapters overlap under supervision; geometry is a hard wall -> pivot.",
+    "MIXED": "oracle lifts but not past separable/substantial bars; weak lever."
+  },
+  "caveats": {
+    "scope": "cyberbullying loaded at subfield 1702; mcs/neuromorphic/color_image at FIELD 17 \u2014 each at the scope its own gap JSON declares, matching the cl_<slug>_recon.json corpus. Default cloud denoiser=NONE (raw GIST-small 384d).",
+    "circularity": "work labels = argmax-cosine to same-space (raw GIST-small) chapter embeddings, so ABSOLUTE numbers are inflated and consistent with the prior toc_recovery run. The cross-SPACE comparison is fair: identical works and identical train/test split; only the projection differs; the LDA oracle is fit on TRAIN only and never sees test labels.",
+    "split": "stratified train/test (test_frac=0.3, seed=42); the SAME split feeds all three spaces; singleton chapters dropped; chapters with <5 works flagged unstable."
+  },
+  "elapsed_s": 362.7,
+  "provenance": "Generated by `python -m artifacts_scripts.curriculum.dendro_eval.geometry_ceiling `. Regenerate with the command above; do not edit by hand."
+}
