@@ -156,16 +156,16 @@ Real-recon ARI (4 arms; published == NONE_bisecting):
 | cyberbullying (sf 1702) | 0.0795 | **0.2890** | 0.1349 | 0.1327 | +0.055 | **+0.210** | +0.053 |
 | mcs (fld 17) | 0.2994 | 0.4209 | 0.3147 | **0.6173** | +0.015 | +0.122 | **+0.318** |
 | neuromorphic (fld 17) | 0.1662 | **0.3738** | 0.1744 | 0.1482 | +0.008 | **+0.208** | −0.018 |
-| color_image (fld 17) | *(run in progress — append)* | | | | | | |
+| color_image (fld 17) | 0.0074 | 0.0148 | 0.0217 | **0.0421** | +0.014 | +0.007 | +0.035 |
 
-**Verdict (n=3 so far; color_image pending):**
+**Verdict (n=4, complete):**
 1. **TREE (average-linkage) SURVIVES to the real metric — it's the bankable lever.** `avg_at_none` = +0.210, +0.122,
-   +0.208 → mean **+0.18, positive 3/3**, biggest single effect, and largest exactly on the hard book the in-space
+   +0.208 → mean **+0.137, positive 4/4** (adding color_image +0.007 — floor-bound on its 24-chapter ToC, but still positive), biggest single effect, and largest exactly on the hard book the in-space
    probe flagged (cyberbullying 0.079→0.289, purity 0.38→0.66). This is NOT the color_image-style evaporation: the
    tree win is real on the real metric.
-2. **SPACE (PCA-50) does NOT survive as a clean lever.** At fixed tree, `pca_at_bisecting` = +0.055, +0.015, +0.008
-   (mean **+0.026**, positive but small and fading). And PCA **ERODES the average-linkage win**: `pca_at_average` =
-   −0.156, +0.196, −0.226 → negative on 2/3. The best corner is usually **NONE+average**, NOT PCA+average. The lone
+2. **SPACE (PCA-50) does NOT survive as a clean lever.** At fixed tree, `pca_at_bisecting` = +0.055, +0.015, +0.008, +0.014
+   (mean **+0.023**, positive 4/4 but small). And PCA **ERODES the average-linkage win**: `pca_at_average` =
+   −0.156, +0.196, −0.226, +0.027 → negative on 2/4. The best corner is usually **NONE+average**, NOT PCA+average. The lone
    exception is mcs, where PCA+average compounds (0.42→0.62) — so PCA is **book-dependent and unreliable**, the
    opposite of a shippable default. The in-space probe's "PCA nearly triples cyberbullying (0.121→0.368)" did NOT
    carry to the real recon (PCA@bisecting only +0.055; PCA@average −0.156). **The color_image worry is confirmed
@@ -182,7 +182,7 @@ SPACE lever does not.
 
 **Decision (Stage-2 closes the lever question):** **adopt average-linkage** for the per-book (top-k subset)
 dendrogram — it is the cheap, consistent, real-metric win, concentrated where it matters. **Do NOT adopt PCA-denoise**
-as a default — it's neutral-to-negative on the real recon, erodes the average-linkage gain on 2/3 books, and only
+as a default — it's neutral-to-negative on the real recon, erodes the average-linkage gain on 2/4 books, and only
 helps one (mcs). This is the project's recurring lesson again: the in-space/intermediate probe over-promised the
 SPACE lever (cyberbullying 0.121→0.368 in-space vs PCA@bisecting +0.055 real; color_image was 0.887 in-space vs
 0.007 real), while the TREE lever — which the cophenetic intrinsic metric flagged as a *corpus-screening* (not
