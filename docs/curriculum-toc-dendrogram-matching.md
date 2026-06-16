@@ -83,7 +83,7 @@ by corpus-fit (distinct-coverage):
 | Neuromorphic Photonics (subfield) | 13 | 32 | 0.206 / 0.192 / 0.198 | 2–3/13 ≈ .19 | 0–31% |
 
 **Replicates across all five:** (a) **UOT ties the cut methods** — effN_sil ≈ adaptive ≈ kmeans
-within ~0.01–0.02 on every book, so clustering choice is second-order; (b) the ToC is **never a
+within ~0.01–0.02 on every book, so clustering choice is second-order *under UOT* (the *linkage* does matter on the real recon metric — see `docs/curriculum-dendrogram-quality.md`); (b) the ToC is **never a
 global path** — chapter# vs leaf-order Spearman is null on all five (largest |ρ|=0.51 at n=8,
 p=0.19).
 
@@ -151,7 +151,7 @@ centroids) and re-running Koehn on an **MT-tight** corpus (the NLP corpus filter
 ## What's settled / what's next
 
 - **Matching:** use UOT, not Hungarian — it dissolves the spurious cut-method ranking and reads
-  generality off the transport plan. The cut method (effN_sil vs flat KMeans) is second-order.
+  generality off the transport plan. The cut method (effN_sil vs flat KMeans) is second-order *under UOT*. **Refined (2026-06-15):** that verdict is **metric-specific** — soft OT flat-matching is blind to tree shape; on the **real close-loop recon metric** the *linkage* (tree construction) is NOT second-order: **average-linkage beats the bisecting default by +0.137 ARI (positive 4/4 books)**, tops Ward/bisecting on cophenetic fidelity, and is now the curriculum default. See `docs/curriculum-dendrogram-quality.md`.
 - **Generality / intro chapters:** both UOT entropy and general-node recovery identify overview
   chapters a flat partition can't represent — the diagnostic half of the cycle idea, without the
   cycle machinery. The *generative* half (emit a ToC with a real intro node + Euler-tour order)
