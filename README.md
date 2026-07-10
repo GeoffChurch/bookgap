@@ -1,200 +1,129 @@
 # BookGap
 
-BookGap is a research tool that identifies knowledge gaps in academic literature and generates AI-powered textbook proposals to fill those gaps. It uses embedding-based analysis to find underexplored areas between research articles and existing books, then leverages large language models to create detailed textbook proposals.
+Research tool for finding knowledge gaps in academic literature and generating
+AI textbook proposals to fill them. It analyzes embeddings of articles and
+books (OpenAlex) to identify underexplored regions via geometric algorithms
+(K-ball or Voronoi tessellation), samples the surrounding works as context,
+generates structured textbook proposals with LLMs, and produces plots and
+statistics about the gaps and proposals.
 
-## Overview
+## Ecosystem
 
-BookGap works by:
-1. **Gap Detection**: Analyzing embeddings of academic articles and books to identify knowledge gaps using geometric algorithms (K-ball or Voronoi tessellation)
-2. **Context Building**: Sampling relevant articles and books that surround each identified gap
-3. **Proposal Generation**: Using LLMs (OpenAI GPT models) to generate detailed textbook proposals that could fill the gaps
-4. **Analysis & Visualization**: Creating plots, statistics, and structured data about the gaps and proposals
+This repo is one of three related projects:
 
-## Quick Start
+- **bookgap** (this repo) — gap detection, proposal generation, and the
+  post-hoc research scripts under `artifacts_scripts/`.
+- **[curriculum](https://github.com/GeoffChurch/curriculum)** — the standalone
+  curriculum engine and evaluation layer, extracted from this repo on
+  2026-07-10. bookgap consumes it as an editable path dependency at
+  `../curriculum` (see Setup).
+- **[learn-and-teach](https://github.com/GeoffChurch/learn-and-teach)** — the
+  judgment-first textbook *generation* successor (prose-orchestrated book
+  builds). This repo remains the home of gap detection and the algorithmic
+  research corpus.
 
-### Prerequisites
-- Python 3.11+
-- OpenAI API key (set as `OPENAI_API_KEY` environment variable)
-- Conda environment (recommended)
+## Setup
 
-### Installation
+Requires Python ≥ 3.11 and [uv](https://docs.astral.sh/uv/). The environment
+is fully specified by `pyproject.toml` + `uv.lock`.
+
 ```bash
-# Clone the repository
-git clone <repository-url>
+git clone git@github.com:GeoffChurch/bookgap.git
+git clone git@github.com:GeoffChurch/curriculum.git  # required sibling: editable dep at ../curriculum
 cd bookgap
-
-# Create and activate conda environment
-conda env create -f environment.yml  # if available
-# OR manually install dependencies
-pip install -r requirements.txt
+uv sync --extra dev
 ```
 
-### Basic Usage
+If the sibling curriculum repo's `pyproject.toml` changes, re-run `uv sync`
+here to re-lock.
 
-The main entry point is `batch_generator.py`, which uses Hydra for configuration management:
+Set `OPENAI_API_KEY` for proposal generation; local-LLM paths use Ollama.
+
+## Usage
+
+The proposal-generation entry point is Hydra-configured and resumable:
 
 ```bash
-# Default configuration (production settings)
-python batch_generator.py
-
-# Switch to the anti-LDA preset
-python batch_generator.py --config-name anti_lda_drop1
-
-# Override specific parameters
-python batch_generator.py --config-name standard batch.num_gaps=5 gap.radius_fraction=0.3
-
-# Override nested component values directly
-python batch_generator.py llm.temperature=0.35 gap.cell_type=VORONOI
+uv run python bookgap/batch_generator.py                          # default preset
+uv run python bookgap/batch_generator.py --config-name standard batch.num_gaps=5
+uv run python bookgap/batch_generator.py llm.temperature=0.35 gap.cell_type=VORONOI
+uv run python bookgap/batch_generator.py --resume-output-dir outputs/<date>/<time>
 ```
 
-#### Configuration System
+Key config groups — `gap.*` (detection algorithm, radius, preprocessing),
+`llm.*` (model, implementation, context size), `batch.*` (gaps per topic,
+output paths), `data.*` (subclouds, filtering). Presets are registered in
+`bookgap/configs/config_store.py`; compose them programmatically via:
 
-BookGap uses Hydra's structured configuration system with registered presets:
+```python
+from hydra import initialize, compose
+from bookgap.configs.config_store import register_configs
 
-- `--config-name standard`: Default pipeline configuration (used when no flag is provided)
-- `--config-name anti_lda_drop1`: Uses Anti-LDA denoiser with `drop_k=1`
+register_configs()
+with initialize(config_path=None, version_base=None):
+    cfg = compose(config_name="standard", overrides=["batch.num_gaps=5"])
+```
 
-Component-level overrides are applied by assigning dotted paths, for example `gap.radius_fraction=0.6` or `llm.num_articles=5`.
+The OpenAlex scope/topic manager ships as a console script:
 
-#### Key Configuration Groups
+```bash
+uv run scope-manager --help
+```
 
-- `gap.*`: Gap detection settings (algorithm, radius, preprocessing)
-- `llm.*`: LLM settings (model, implementation, context size)
-- `batch.*`: Batch processing settings (gaps per topic, output paths)
-- `data.*`: Data source configuration (subclouds, filtering)
-- `--work_types`: Types of works to analyze (`book`, `article`, or both)
-- `--cell_type`: Gap detection algorithm (`kball` or `voronoi`)
-- `--radius_fraction`: Sensitivity of gap detection (0.1-1.0)
-- `--num_gaps`: Number of gaps to analyze **per topic** (e.g., 10 gaps from each AI topic)
-- `--implementation`: LLM approach (`structured` for OpenAI Structured Outputs, `prompt` for JSON prompting)
+Long-running jobs go through `bookgap.jobs` (systemd-run cgroups + JSON
+manifests under `cache/.jobs/`) — conventions in `CLAUDE.md`.
 
-## Generated Files
+## Generated files
 
-BookGap creates a structured output directory under `artifacts/` with the following organization:
+Outputs land in a structured directory under `artifacts/`:
 
 ```
 artifacts/
 └── subfield=1702, work_types=[book,article]/
-    ├── gaps_analysis_results.csv           # Main results with gap statistics
-    ├── openai_structured_proposals/        # LLM-generated proposals
-    │   ├── gap_0_proposal.json
-    │   ├── gap_1_proposal.json
-    │   └── ...
-    ├── plots/                             # Visualizations
-    │   ├── gap_0_pca_plot.png
-    │   ├── gap_1_pca_plot.png
-    │   ├── book_gap_sizes_histogram.png
-    │   └── book_gap_sizes_qqplot.png
-    └── contexts/                          # Context data for each gap
-        ├── gap_0_context.json
-        ├── gap_1_context.json
-        └── ...
+    ├── gaps_analysis_results.csv           # main results with gap statistics
+    ├── openai_structured_proposals/        # LLM-generated proposals (gap_N_proposal.json)
+    ├── plots/                              # PCA plots per gap, gap-size histograms/QQ plots
+    └── contexts/                           # context data per gap (gap_N_context.json)
 ```
 
-### Key Output Files
-
-- **`gaps_analysis_results.csv`**: Main results table with gap statistics, proposal metadata, and analysis metrics
-- **`gap_N_proposal.json`**: Detailed textbook proposals generated by the LLM for each gap
-- **`gap_N_context.json`**: Context data (articles, books) used to generate each proposal  
-- **`gap_N_pca_plot.png`**: PCA visualization showing the gap location relative to articles and books
-- **Gap statistics plots**: Histograms and Q-Q plots for statistical analysis
+Every generated artifact embeds the exact command that produced it (see the
+provenance convention in `CLAUDE.md`).
 
 ## Development
 
-### Testing and Type Checking
+### Testing
 
-BookGap includes comprehensive test coverage for all major components. See [`TESTING.md`](TESTING.md) for detailed testing instructions, including how to run unit tests, integration tests, and type checking with mypy.
-
-### Architecture Overview
-
-BookGap follows a modular architecture with structured configuration:
-
-- **`bookgap/configs/`**: Hydra-based structured configuration system
-  - `config.py`: Core ExperimentConfig dataclass definition
-  - `config_store.py`: Configuration presets and registration
-  - Component configs: `gap/`, `llm/`, `batch/`, `data/`
-- **`bookgap/llm/`**: LLM integration and proposal generation
-  - `protocols.py`: Static Pydantic models (Chapter, Proposal, ParsedProposal)
-  - `generators/`: OpenAI Batch API implementation with structured outputs
-  - `workflow_functions.py`: MetadataUtils and BatchResults for typed workflows
-- **`bookgap/gap_finder.py`**: Main gap analysis workflow
-- **`bookgap/cloud.py`**: Embedding and data management
-- **`tests/`**: Comprehensive test suite
-
-### Configuration
-
-BookGap uses Hydra's structured configuration system with dataclasses:
-
-```python
-from hydra import initialize, compose
-from bookgap.configs.config import ExperimentConfig
-from bookgap.configs.config_store import register_configs
-
-register_configs()
-
-# Load the default preset
-with initialize(config_path=None, version_base=None):
-    cfg: ExperimentConfig = compose(config_name="standard")
-
-# Load another preset and override specific fields
-with initialize(config_path=None, version_base=None):
-    cfg: ExperimentConfig = compose(
-        config_name="anti_lda_drop1",
-        overrides=["batch.num_gaps=5", "llm.temperature=0.3"],
-    )
+```bash
+uv run pytest                  # unit tests; integration tests deselected by default
+uv run pytest -m integration   # may incur API costs
 ```
 
-### Proposal Generation
+See `TESTING.md`. Note: pytest's `addopts` ignore the (huge, gitignored)
+`cache/` directory during collection — don't remove that flag.
 
-BookGap uses static Pydantic models for type-safe proposal generation:
+### Architecture
 
-```python
-from bookgap.llm.protocols import Chapter, Proposal, ParsedProposal
+- `bookgap/cloud.py` — the central `Cloud` frozen dataclass: works,
+  embeddings, and citation graph, Parquet-backed. The denoiser's projection
+  matrix is cached once and reapplied to proposal embeddings
+  (`Cloud.denoiser_projection()`), keeping proposals in the same vector space
+  as the cloud analysis.
+- `bookgap/llm/gap_algorithms/` — K-ball and Voronoi gap detection.
+- `bookgap/llm/generators/` — the OpenAI Batch API proposal workflow
+  (`workflow_functions.py`); `bookgap/llm/protocols.py` holds the static
+  Pydantic models (`Chapter`, `Proposal`, `ParsedProposal`).
+- `bookgap/denoisers.py`, `bookgap/embedder.py` — embedding and denoising
+  (PCA, Anti-LDA, RNOJD).
+- `bookgap/configs/` — Hydra structured configs (`ExperimentConfig` +
+  component groups, presets in `config_store.py`).
+- `artifacts_scripts/` — post-hoc research/eval/sweep scripts that produce
+  `artifacts/` (gap-detection evaluation harness, denoiser studies, paper
+  assets, the legacy curriculum pipeline slated for replacement by the
+  curriculum repo's generate app).
+- `curriculum_lean/` — Lean/mathlib4 proof-decomposition experiments built on
+  the extracted curriculum engine.
 
-# Static validation with hardcoded constraints
-proposal = Proposal(
-    title="AI Safety Handbook",
-    author="Generated Author",
-    abstract="Comprehensive guide to AI safety principles...",
-    chapters=[
-        Chapter(
-            chapter_title="Introduction to AI Safety",
-            chapter_topics=["AI alignment", "Safety principles"],
-            abstract="Overview of fundamental safety concepts..."
-        )
-        # Requires 10-15 chapters (hardcoded validation)
-    ]
-)
-```
+### Conventions
 
-#### Projection Consistency
-
-- Proposal embeddings share the exact same vector space as the cloud analysis. The projection matrix (and optional mean) produced by the configured denoiser is cached once and reapplied inside `_compute_proposal_embeddings`.
-- The helper `Cloud.denoiser_projection()` exposes the cached artifact without recomputation, allowing downstream workflows (proposal generation, visualization) to stay aligned.
-- Regression coverage: see `TestComputeProposalEmbeddings::test_projection_and_normalization_applied` (unit-level) and `TestMonitorAndDownloadResults::test_projection_applied_via_monitoring` (workflow-level) for examples of the reuse pattern.
-
-## Contributing
-
-### Code Style
-- Follow PEP 8 guidelines
-- Use type hints throughout
-- Write comprehensive tests for new features
-- Update documentation for API changes
-
-### Testing Guidelines
-- Unit tests should not require external APIs
-- Mark integration tests with `@pytest.mark.integration`
-- Maintain high test coverage for core functionality
-- Use meaningful test names and docstrings
-
-## TODOs and Future Work
-
-See [`TODO.md`](TODO.md) for current development priorities, architecture improvements, and known issues.
-
-## License
-
-[Add license information here]
-
-## Citation
-
-[Add citation information for academic use]
+Idea-state discipline (`docs/backlog/`, `docs/dead_ends/`, each with an
+index), artifact provenance, and job management are documented in `CLAUDE.md`.

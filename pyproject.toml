@@ -81,7 +81,7 @@ py-modules = ["scope_manager"]
 markers = [
     "integration: marks tests as integration tests that may incur costs (run with '--integration')",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration' --ignore=cache"
 
 [tool.uv.sources]
 curriculum = { path = "../curriculum", editable = true }

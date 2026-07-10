@@ -37,8 +37,8 @@ uv run pytest tests/ -m integration
 uv run python -m mypy bookgap/ tests/ --exclude 'bookgap/batch_utils_OLD' --ignore-missing-imports
 
 # Run the main pipeline
-uv run python batch_generator.py
-uv run python batch_generator.py --config-name standard batch.num_gaps=5
+uv run python bookgap/batch_generator.py
+uv run python bookgap/batch_generator.py --config-name standard batch.num_gaps=5
 ```
 
 ## Long-Running Jobs
@@ -116,7 +116,7 @@ can be deleted.
 
 ### Pipeline Flow
 
-`batch_generator.py` (entry point) -> Hydra config resolution -> `Cloud` construction (data loading + embedding + denoising) -> gap detection per topic -> LLM proposal generation via OpenAI Batch API -> artifact export
+`bookgap/batch_generator.py` (entry point) -> Hydra config resolution -> `Cloud` construction (data loading + embedding + denoising) -> gap detection per topic -> LLM proposal generation via OpenAI Batch API -> artifact export
 
 ### Core Data Model
 
@@ -165,7 +165,7 @@ Gap computation is cached per-topic via `@MEMORY.cache` in `gaps.py`.
 Hydra structured configs using dataclasses:
 - **`ExperimentConfig`** (`configs/config.py`): Top-level config composing `GapConfig`, `LLMConfig`, `BatchConfig`, `OutputConfig`, `CloudConfig`
 - **`config_store.py`** (`configs/config_store.py`): Registers presets (e.g., `standard`)
-- Override via CLI: `python batch_generator.py gap.radius_fraction=0.3 llm.temperature=0.35`
+- Override via CLI: `python bookgap/batch_generator.py gap.radius_fraction=0.3 llm.temperature=0.35`
 
 ### Data Ingestion
 
