@@ -767,7 +767,7 @@ def _cmd_status(args: Any) -> int:
                 for ln in tail:
                     print(f"  {ln[:160]}")
             else:
-                print("  (empty — likely buffered by `conda run`; see auto-discovered logs below)")
+                print("  (empty — likely Python block-buffering; see auto-discovered logs below)")
             print(f"  mtime: {_fmt_age_seconds(age_log)} ago")
         except OSError as exc:
             print(f"  (read error: {exc})")

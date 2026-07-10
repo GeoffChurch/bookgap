@@ -13,6 +13,14 @@ Run everything through uv: `uv run python ...` (env defined by `pyproject.toml` 
 
 Required environment variables: `OPENAI_API_KEY`, `OPENALEX_API_KEY` (loaded from `.env`).
 
+bookgap consumes the `curriculum` package as an editable path dependency
+(`[tool.uv.sources]` in `pyproject.toml` points at `../curriculum`), so a
+bookgap clone requires a sibling clone of the `curriculum` repo at that
+relative path (i.e. `bookgap/` and `curriculum/` must share a parent
+directory). Any change to curriculum's `pyproject.toml` requires re-locking
+bookgap (`uv sync`) to pick it up. Note: the `curriculum` repo currently has
+no git remote (decision on where it lives is pending).
+
 ## Common Commands
 
 ```bash
@@ -70,13 +78,16 @@ so partial state on disk stays consistent.
 
 **Where logs actually land.**
 
-- `cache/.jobs/<job_id>.log` — the subprocess's raw stdout/stderr. Note
-  that `uv run` buffers stdout, so this file may stay empty until the
-  child exits or crashes.
+- `cache/.jobs/<job_id>.log` — the subprocess's raw stdout/stderr. Python
+  block-buffers stdout when it isn't attached to a tty, so this file can lag
+  behind real output until a buffer flushes, the child exits, or crashes.
+  `bookgap.jobs` already sets `PYTHONUNBUFFERED=1` for the launched process to
+  mitigate this; if a command run outside `bookgap.jobs` shows stale/empty
+  logs, add `python -u` or set `PYTHONUNBUFFERED=1` yourself.
 - `outputs/<YYYY-MM-DD>/<HH-MM-SS>/main.log` — Hydra's own log; this is
   the live source of truth for any Hydra-driven pipeline (curriculum,
-  batch_generator, etc.). Writes flush directly and bypass `uv run`'s
-  stdout buffer.
+  batch_generator, etc.). Hydra flushes its handler on every write, so it
+  isn't subject to Python's stdout buffering.
 - `artifacts/curriculum/<run_name>/pipeline.log` — the curriculum
   pipeline's own LOGGER output, mirrored alongside its artifacts.
 

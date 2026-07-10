@@ -40,9 +40,9 @@ from scipy.sparse.linalg import gmres
 from scipy.sparse.linalg._interface import LinearOperator
 from tqdm import tqdm
 
-from curriculum._logging import get_logger
+import logging
 
-LOGGER = get_logger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class _NoopTimer:

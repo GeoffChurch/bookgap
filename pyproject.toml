@@ -52,6 +52,7 @@ dependencies = [
     "textual",
     "psutil",
     "typer",
+    "tqdm",
     "curriculum",
     # Lazily imported by artifacts_scripts/hdbscan_gap_probe.py:536; the old
     # .conda env had it installed ad hoc but undeclared.
