@@ -387,7 +387,9 @@ dependencies = [
     { name = "boto3" },
     { name = "cdopt" },
     { name = "coroica" },
+    { name = "curriculum" },
     { name = "faiss-cpu" },
+    { name = "fast-hdbscan" },
     { name = "graphviz" },
     { name = "hydra-core" },
     { name = "leidenalg" },
@@ -436,7 +438,9 @@ requires-dist = [
     { name = "boto3" },
     { name = "cdopt" },
     { name = "coroica" },
+    { name = "curriculum", editable = "../curriculum" },
     { name = "faiss-cpu" },
+    { name = "fast-hdbscan" },
     { name = "graphviz" },
     { name = "hydra-core" },
     { name = "leidenalg" },
@@ -1060,6 +1064,32 @@ nvtx = [
 ]
 
 [[package]]
+name = "curriculum"
+version = "0.1.0"
+source = { editable = "../curriculum" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "hydra-core", marker = "extra == 'apps'" },
+    { name = "hydra-submitit-launcher", marker = "extra == 'slurm'" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
+    { name = "numpy" },
+    { name = "ollama", marker = "extra == 'judge'" },
+    { name = "omegaconf", marker = "extra == 'apps'" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "sentence-transformers", marker = "extra == 'embed'" },
+]
+provides-extras = ["apps", "slurm", "judge", "embed", "render", "dev"]
+
+[[package]]
 name = "cycler"
 version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1152,6 +1182,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/59/aa/bfa53255a6aa6e79b2471bb5af895f662feb02b612e1e0f9efc3d893286e/faiss_cpu-1.14.3-cp312-cp312-win_amd64.whl", hash = "sha256:0a5eb27184123c7ac1060c6b862978eabf0e30c1369ccf8bdb1497d35c06ad3d", size = 16164699, upload-time = "2026-06-13T02:19:22.969Z" },
     { url = "https://files.pythonhosted.org/packages/1d/c1/2fb14f58ff74d7a7d6fd13084c016d9b144ce0bcdf77f6526cc2e4828278/faiss_cpu-1.14.3-cp313-cp313-win_amd64.whl", hash = "sha256:ea2340f675db59af8db6da4535b541ce6948d68a008989c656c292c7b0c77127", size = 16162836, upload-time = "2026-06-13T02:19:25.529Z" },
     { url = "https://files.pythonhosted.org/packages/fd/aa/100d3b706b8e2aa561e2673ed7d07c4c7c26f92d938a88d193dd54f90c45/faiss_cpu-1.14.3-cp314-cp314-win_amd64.whl", hash = "sha256:54b0ea832be5bce75ef9abf1297fe4613d760bf7cfe7a963da040cb0314e8f58", size = 16444608, upload-time = "2026-06-13T02:19:27.992Z" },
+]
+
+[[package]]
+name = "fast-hdbscan"
+version = "0.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2b/3b/235c47dd8282610522f9fa6869ad8b896c2d5927f82039f66d547229fc07/fast_hdbscan-0.3.2.tar.gz", hash = "sha256:248e09202eda04da4b84dd819de3cc714469912205bb447ad4c7136db580f205", size = 59800, upload-time = "2026-04-07T16:43:33.12Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/92/34dac2dff0877d637535bd8852bc68323f155799521c9ee94c27c548426f/fast_hdbscan-0.3.2-py3-none-any.whl", hash = "sha256:619b42963935e6c3ab1e51de7895dd35260f3ef9ebe4627ff4317073fe51a667", size = 62642, upload-time = "2026-04-07T16:43:31.918Z" },
 ]
 
 [[package]]

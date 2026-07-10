@@ -52,6 +52,10 @@ dependencies = [
     "textual",
     "psutil",
     "typer",
+    "curriculum",
+    # Lazily imported by artifacts_scripts/hdbscan_gap_probe.py:536; the old
+    # .conda env had it installed ad hoc but undeclared.
+    "fast_hdbscan",
 ]
 
 [project.scripts]
@@ -69,7 +73,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["bookgap", "artifacts_scripts", "curriculum", "curriculum_lean"]
+packages = ["bookgap", "artifacts_scripts", "curriculum_lean"]
 py-modules = ["scope_manager"]
 
 [tool.pytest.ini_options]
@@ -77,3 +81,6 @@ markers = [
     "integration: marks tests as integration tests that may incur costs (run with '--integration')",
 ]
 addopts = "-m 'not integration'"
+
+[tool.uv.sources]
+curriculum = { path = "../curriculum", editable = true }
