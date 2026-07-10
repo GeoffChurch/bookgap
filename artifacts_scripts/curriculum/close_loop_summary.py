@@ -11,7 +11,7 @@ absolute reconstruction: ARI/NMI/purity) and prints a per-book + pooled summary:
 Pooled deltas use a simple sign test across books (the panel is small and the eval
 is the weak link — we report direction + per-book spread, not a t-test).
 
-  .conda/bin/python -m artifacts_scripts.curriculum.close_loop_summary \
+  uv run python -m artifacts_scripts.curriculum.close_loop_summary \
       --glob 'artifacts/book_gaps/cl_*_metrics.json' --out artifacts/book_gaps/cl_summary.json
 """
 from __future__ import annotations

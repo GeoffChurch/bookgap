@@ -43,7 +43,7 @@ Results are written incrementally so a crash mid-sweep keeps completed arms.
 
 Regenerate (do not edit the generated JSON by hand):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.space_tree_recon_ab
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.space_tree_recon_ab
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ _HERE = Path(__file__).resolve().parent
 _REPO = Path(__file__).resolve().parents[3]
 _BOOK_GAPS = _REPO / "artifacts" / "book_gaps"
 _CURR = _REPO / "artifacts" / "curriculum"
-_PY = str(_REPO / ".conda" / "bin" / "python")
+_PY = str(_REPO / ".venv" / "bin" / "python")
 
 # (slug, book_id, n_chap, toc_json, gap_json, published_recon_json). Mirrors
 # toc_recovery._BOOKS so the book set + scopes tie to the prior experiments.

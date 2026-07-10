@@ -6,7 +6,7 @@ similarity of CONSECUTIVE chapters higher than under random chapter orderings? (
 splits by genre (single-author textbook vs edited/niche volume) to firm the n≈4 claim that
 textbooks order by good edges and edited volumes don't.
 
-    CUDA_VISIBLE_DEVICES="" .conda/bin/python -m artifacts_scripts.curriculum.ordering_genre_firmup
+    CUDA_VISIBLE_DEVICES="" uv run python -m artifacts_scripts.curriculum.ordering_genre_firmup
 """
 from __future__ import annotations
 

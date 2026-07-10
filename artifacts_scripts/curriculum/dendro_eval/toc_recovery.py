@@ -65,7 +65,7 @@ all three see identical labeled points, and cophenetic is computed on the same X
 
 Regenerate (do not edit generated JSON by hand):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.toc_recovery
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.toc_recovery
 """
 from __future__ import annotations
 

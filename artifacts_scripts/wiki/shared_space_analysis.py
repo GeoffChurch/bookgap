@@ -22,7 +22,7 @@ each conflation we RE-NORMALIZE to the unit sphere before measuring NN / AUC, so
 the geometry stays comparable to raw.
 
 Usage:
-    conda run -p .conda python -m artifacts_scripts.wiki.shared_space_analysis \
+    uv run python -m artifacts_scripts.wiki.shared_space_analysis \
         --wiki-store cache/wiki/store/wiki_400k \
         --n-classifier 8000 --n-nn-examples 20 --seed 0
 """

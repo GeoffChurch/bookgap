@@ -7,7 +7,7 @@
 #        artifacts/book_gaps/W2898513995_toc.json 8
 set -uo pipefail
 cd /home/gchurchill/src/bookgap
-PY=".conda/bin/python"
+PY="uv run python"
 export CUDA_VISIBLE_DEVICES=""        # never contend for the GPU
 export TOKENIZERS_PARALLELISM=false
 

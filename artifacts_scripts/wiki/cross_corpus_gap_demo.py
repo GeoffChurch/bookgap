@@ -22,7 +22,7 @@ byte-comparable to the Wikipedia store.
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo \
+    uv run python -m artifacts_scripts.wiki.cross_corpus_gap_demo \
         --wiki-store cache/wiki/store/wiki_400k \
         --num-gaps 3 --radius-fraction 0.75 --seed 0
 
@@ -35,7 +35,7 @@ articles co-occupy a book-free region) rather than generic encyclopedic stubs.
 No re-embedding: it reuses the already-embedded ``wiki_400k`` store and only
 changes which rows enter the union::
 
-    conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_gap_demo \
+    uv run python -m artifacts_scripts.wiki.cross_corpus_gap_demo \
         --wiki-store cache/wiki/store/wiki_400k --topic-filter --wiki-topk 3000 \
         --oa-limit 4000 --num-gaps 5 --radius-fraction 0.75 --seed 0
 """

@@ -2,11 +2,11 @@
 # Generality sweep for keyword-concept seeding + clustering (de-incant experimentation, 2026-06-03).
 # Per field-17 book w/ a ToC: concept-seed -> cluster via CCA-hybrid AND keyword-TF-IDF.
 # Then score genericness (specificity) + foreign-fragments to see if CCA's advantage generalizes.
-# Launch: .conda/bin/python -m bookgap.jobs run --prefix concept_generality -- bash artifacts_scripts/curriculum/experiment_concept_generality.sh
+# Launch: uv run python -m bookgap.jobs run --prefix concept_generality -- bash artifacts_scripts/curriculum/experiment_concept_generality.sh
 set -u
 cd /home/gchurchill/src/bookgap
 export PYTHONPATH=/home/gchurchill/src/bookgap OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
-PY=.conda/bin/python
+PY="uv run python"
 
 # name  toc-stem  n_chapters
 BOOKS=( "neuromorphic W4247813589 13" "color_image W4211017872 24" "mcs W4235013513 10" )

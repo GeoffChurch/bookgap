@@ -19,7 +19,7 @@ This script answers:
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.gap_static_seed_diagnostic \
+    uv run python -m artifacts_scripts.gap_static_seed_diagnostic \
         --scope 17/1702/T11303 \
         --out cache/static_seed_diagnostic/T11303
 """

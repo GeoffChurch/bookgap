@@ -17,7 +17,7 @@ matched article count. We exclude any article that is in the real gap (negligibl
 practice) and record the overlap as a diagnostic.
 
 Usage:
-  .conda/bin/python -m artifacts_scripts.curriculum.random_region_gap \
+  uv run python -m artifacts_scripts.curriculum.random_region_gap \
       --like-gap artifacts/book_gaps/mcs_gap.json --n-seeds 3 \
       --out-prefix artifacts/book_gaps/cl_A0/mcs_rand
 """

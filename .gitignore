@@ -1,5 +1,4 @@
 /.venv
-/.conda
 /.worktrees
 /bookgap.egg-info
 /cache
@@ -27,3 +26,5 @@ __pycache__/
 # paper repo itself. The explicit ignore line prevents an accidental
 # `git add` from registering it as a stray gitlink.
 /paper/
+
+.venv/

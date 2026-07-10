@@ -94,18 +94,18 @@ expansion: OA 644→874 into the curriculum (19.8%→27.0%), pedagogy preserved.
 Usage::
 
     # v2 default (OA expansion + per-corpus pool selection on):
-    conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
+    uv run python -m artifacts_scripts.wiki.joint_graph_curriculum \
         --n-wiki 12000 --n-oa 12000 --tau 0.5 0.6 0.7 \
         --bridge-scorer csls --lpp-k 64 --desired-n-topics 14
 
     # v3 smooth diffusion densification (heat kernel, held-out-link T-selection):
-    conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
+    uv run python -m artifacts_scripts.wiki.joint_graph_curriculum \
         --n-wiki 12000 --n-oa 12000 --tau 0.5 --bridge-scorer csls \
         --lpp-k 64 --desired-n-topics 14 \
         --oa-densify diffuse --diffusion-kernel heat --select-t heldout-link
 
     # reproduce v1 exactly (no expansion, no rebalancing):
-    conda run -p .conda python -m artifacts_scripts.wiki.joint_graph_curriculum \
+    uv run python -m artifacts_scripts.wiki.joint_graph_curriculum \
         --no-oa-expand --mass-rebalance none --teleport-split -1 \
         --no-per-corpus-select --bridge-scorer csls
 """

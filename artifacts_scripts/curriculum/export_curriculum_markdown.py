@@ -10,7 +10,7 @@ markdown matches exactly what was evaluated. The book's abstract is fetched from
 OpenAlex API (falls back to the ToC json's description for external books).
 
 Example:
-  .conda/bin/python -m artifacts_scripts.curriculum.export_curriculum_markdown \
+  uv run python -m artifacts_scripts.curriculum.export_curriculum_markdown \
       --track-a artifacts/curriculum/mcs_trackA \
       --track-b artifacts/curriculum/mcs_trackB \
       --toc-json artifacts/book_gaps/W4235013513_toc.json \

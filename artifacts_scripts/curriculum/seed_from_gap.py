@@ -16,7 +16,7 @@ loop, not in-process.
 
 Example::
 
-    conda run -p .conda python -m artifacts_scripts.curriculum.seed_from_gap \\
+    uv run python -m artifacts_scripts.curriculum.seed_from_gap \\
         --topic-id T11273
 """
 from __future__ import annotations

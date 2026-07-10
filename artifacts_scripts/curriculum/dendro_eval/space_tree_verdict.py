@@ -21,7 +21,7 @@ Reports, per book and pooled:
 
 Regenerate (reads only; safe to re-run):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.space_tree_verdict
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.space_tree_verdict
 """
 from __future__ import annotations
 

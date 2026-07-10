@@ -4,7 +4,7 @@ Used for the corpus-fit causal test: instead of a broad subfield slice, cluster
 each book's own neighborhood (its gap-ball / referenced works). Writes gz pages
 in the format `toc_dendrogram_cut.load_corpus` reads.
 
-    PYTHONPATH=. .conda/bin/python -m artifacts_scripts.curriculum.fetch_ids_corpus \
+    PYTHONPATH=. uv run python -m artifacts_scripts.curriculum.fetch_ids_corpus \
         --gap-json artifacts/book_gaps/color_image_gap.json \
         --ids-path book.gap_article_ids --out cache/oa/tight_colorimage
 """

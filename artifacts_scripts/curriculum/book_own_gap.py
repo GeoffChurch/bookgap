@@ -16,7 +16,7 @@ in one pass, so we also get the gap-size distribution (the percentile) for free
 — the basis for the two-stage "pick a percentile spread of books" plan.
 
 Usage:
-  .conda/bin/python -m artifacts_scripts.curriculum.book_own_gap \
+  uv run python -m artifacts_scripts.curriculum.book_own_gap \
       --book-id https://openalex.org/W3160730739 --subfield 1702 \
       --out artifacts/book_gaps/W3160730739_ai.json
 """

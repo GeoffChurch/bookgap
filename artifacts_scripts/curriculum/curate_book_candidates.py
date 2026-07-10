@@ -12,7 +12,7 @@ English, coherent-gap books and re-ranks by gap size -- the ordered list to
 ToC-check (via Google Books) and feed to the panel.
 
 Usage:
-  .conda/bin/python -m artifacts_scripts.curriculum.curate_book_candidates \
+  uv run python -m artifacts_scripts.curriculum.curate_book_candidates \
       artifacts/book_gaps/csfield_ranked.json artifacts/book_gaps/ai_subfield_ranked.json
 """
 import json

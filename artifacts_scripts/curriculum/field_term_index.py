@@ -12,7 +12,7 @@ doc count]). W2K = column-sums over a work-set / |set| vs field_df; K2W = weight
 
 Build (memory-heavy ~ tens of GB on a 6M-work field; run as a tracked job):
   python -m bookgap.jobs run --prefix field_index -- \\
-    .conda/bin/python -m artifacts_scripts.curriculum.field_term_index --field 17 --build
+    uv run python -m artifacts_scripts.curriculum.field_term_index --field 17 --build
 """
 from __future__ import annotations
 

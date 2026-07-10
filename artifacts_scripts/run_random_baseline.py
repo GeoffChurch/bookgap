@@ -15,9 +15,9 @@ Output:
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.run_random_baseline
+    uv run python -m artifacts_scripts.run_random_baseline
     # optional overrides:
-    conda run -p .conda python -m artifacts_scripts.run_random_baseline \\
+    uv run python -m artifacts_scripts.run_random_baseline \\
         --run-dir outputs/gemma4_sweep/2026-05-22_11-11-43_gist_a10_b5_dropk10 \\
         --output-dir outputs/random_baseline
 """

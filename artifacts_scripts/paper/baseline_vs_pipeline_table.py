@@ -9,7 +9,7 @@ block to ``paper/baseline_vs_pipeline_table.tex``.
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.paper.baseline_vs_pipeline_table
+    uv run python -m artifacts_scripts.paper.baseline_vs_pipeline_table
 """
 from __future__ import annotations
 

@@ -57,7 +57,7 @@ Experiments
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.wiki.wiki_pedagogical_lpp \
+    uv run python -m artifacts_scripts.wiki.wiki_pedagogical_lpp \
         --wiki-store cache/wiki/store/enwiki_full \
         --ranking-top-k 4000 --desired-n-topics 12 --use-abstracts
 

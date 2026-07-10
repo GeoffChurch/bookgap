@@ -49,7 +49,7 @@ the pipelines' own ordering rather than re-deriving it.
 
 Usage
 =====
-    conda run -p .conda python -m artifacts_scripts.curriculum.curriculum_llm_judge \
+    uv run python -m artifacts_scripts.curriculum.curriculum_llm_judge \
         --model gpt-oss:20b --repeats 3 \
         --json-out cache/.curriculum_quality/llm_judge.json
 

@@ -50,7 +50,7 @@ prints are invisible mid-run; the sidecar handle is flushed per phase).
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.wiki.wiki_curriculum_demo \
+    uv run python -m artifacts_scripts.wiki.wiki_curriculum_demo \
         --wiki-store cache/wiki/store/enwiki_full \
         --n-select 40000 --ranking-top-k 4000 --desired-n-topics 12 \
         --use-abstracts

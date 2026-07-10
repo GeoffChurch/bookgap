@@ -20,7 +20,7 @@ Cloud is loaded ONCE at the gap's scope; citation_graph.npz rows map to the scop
 cloud's work_ids (compare_clusterings convention). CPU-only.
 
 Usage:
-  .conda/bin/python -m artifacts_scripts.curriculum.close_loop_metrics \
+  uv run python -m artifacts_scripts.curriculum.close_loop_metrics \
       --gap-json artifacts/book_gaps/mcs_gap.json \
       --toc-json artifacts/book_gaps/W4235013513_toc.json \
       --run-a1 artifacts/curriculum/cl_A1_mcs --run-b artifacts/curriculum/cl_B_mcs \

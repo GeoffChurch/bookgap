@@ -7,7 +7,7 @@ the results into a single table.
 
 Usage (run from the bookgap project root)::
 
-    conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.coverage_oracle_multi \\
+    uv run python -m artifacts_scripts.curriculum.gap_recover.coverage_oracle_multi \\
         [--packages "attrs:attr,jinja2:jinja2,rich:rich,flask:flask,typer:typer,black:black"] \\
         [--repos-root cache/code_gap/python/repos] \\
         [--out artifacts/code_gap/python/coverage_oracle_multi.json]
@@ -23,7 +23,7 @@ Output
 
 REPRODUCE
 ---------
-    conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.coverage_oracle_multi
+    uv run python -m artifacts_scripts.curriculum.gap_recover.coverage_oracle_multi
 
 (regenerate rather than edit by hand; this file is the authoritative producer)
 """
@@ -212,15 +212,13 @@ def _run_coverage_permissive(
 def _run_oracle(
     repo: Path, import_name: str, cov_json: str, oracle_out: str,
     exclude_substrs: list[str],
-    conda_prefix: str,
 ) -> tuple[bool, str, Optional[dict]]:
-    """Call coverage_oracle as a subprocess via conda run.
+    """Call coverage_oracle as a subprocess via uv run.
 
     Returns (success, error_message, result_dict_or_None).
     """
     cmd = [
-        "conda", "run", "-p", conda_prefix, "--no-capture-output",
-        "python", "-m",
+        "uv", "run", "python", "-m",
         "artifacts_scripts.curriculum.gap_recover.coverage_oracle",
         "--repo", str(repo),
         "--import-name", import_name,
@@ -247,15 +245,14 @@ def _run_oracle(
 
 
 def _run_size_control(
-    repo: Path, import_name: str, oracle_out: str, conda_prefix: str,
+    repo: Path, import_name: str, oracle_out: str,
 ) -> tuple[bool, str, str]:
-    """Call gap_size_control as a subprocess via conda run.
+    """Call gap_size_control as a subprocess via uv run.
 
     Returns (success, error_message, stdout_text).
     """
     cmd = [
-        "conda", "run", "-p", conda_prefix, "--no-capture-output",
-        "python", "-m",
+        "uv", "run", "python", "-m",
         "artifacts_scripts.curriculum.gap_recover.gap_size_control",
         "--repo", str(repo),
         "--import-name", import_name,
@@ -293,7 +290,6 @@ def process_package(
     import_name: str,
     exclude_substrs: list[str],
     repos_root: Path,
-    conda_prefix: str,
     out_dir: Path,
 ) -> PackageResult:
     """Full pipeline for one package. Returns a PackageResult (may be skipped)."""
@@ -364,7 +360,7 @@ def process_package(
         oracle_out = str(out_dir / f"coverage_oracle_{repo_name}.json")
         print(f"[{repo_name}] running coverage_oracle ...", flush=True)
         ok, err, data = _run_oracle(
-            repo, import_name, cov_json, oracle_out, exclude_substrs, conda_prefix,
+            repo, import_name, cov_json, oracle_out, exclude_substrs,
         )
         if not ok:
             return PackageResult(
@@ -377,7 +373,7 @@ def process_package(
 
         result = data["result"]
         print(f"[{repo_name}] running gap_size_control ...", flush=True)
-        ok, err, sc_out = _run_size_control(repo, import_name, oracle_out, conda_prefix)
+        ok, err, sc_out = _run_size_control(repo, import_name, oracle_out)
         if not ok:
             print(f"[{repo_name}] WARNING: gap_size_control failed: {err[:120]}", flush=True)
             sc_out = ""
@@ -495,11 +491,6 @@ def main() -> None:
         help="path to write the aggregate JSON result",
     )
     ap.add_argument(
-        "--conda-prefix",
-        default=str(bookgap_root / ".conda"),
-        help="conda environment prefix to use for analysis modules",
-    )
-    ap.add_argument(
         "--click-ref",
         default=str(bookgap_root / "artifacts/code_gap/python/coverage_oracle_click.json"),
         help="pre-computed click oracle JSON to include as reference row",
@@ -532,7 +523,6 @@ def main() -> None:
             pass
 
     print(f"Processing {len(pkg_list)} packages from {repos_root}")
-    print(f"conda prefix: {args.conda_prefix}")
 
     results: list[PackageResult] = []
     for repo_name, import_name, excludes in pkg_list:
@@ -545,7 +535,6 @@ def main() -> None:
                 import_name=import_name,
                 exclude_substrs=excludes,
                 repos_root=repos_root,
-                conda_prefix=args.conda_prefix,
                 out_dir=out_path.parent,
             )
         except Exception as e:

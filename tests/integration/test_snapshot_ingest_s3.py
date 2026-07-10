@@ -6,7 +6,7 @@ to verify that our unsigned client, list_shards, and _partition_date_from_key
 actually work against production infrastructure.
 
 Run with:
-    conda run -p /home/gchurchill/src/bookgap/.conda \
+    uv run \
         pytest tests/integration/test_snapshot_ingest_s3.py -m integration -v
 
 The expensive download test (test 4) additionally requires:

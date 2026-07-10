@@ -32,7 +32,7 @@ Battery (imported verbatim from ``shift_characterization``):
   4. local kNN same-corpus purity (k=10) vs mixing-ratio baseline
 
 Usage:
-    conda run -p .conda python -m artifacts_scripts.wiki.shift_characterization_topicmatched \
+    uv run python -m artifacts_scripts.wiki.shift_characterization_topicmatched \
         --wiki-store cache/wiki/store/enwiki_full --n-select 40000 --seed 0 --append
 """
 from __future__ import annotations
@@ -390,7 +390,7 @@ def render_report(R: dict, args) -> str:
     L.append(R["verdict"])
     L.append("")
     L.append(
-        f"*(Reproduce: `conda run -p .conda python -m "
+        f"*(Reproduce: `uv run python -m "
         f"artifacts_scripts.wiki.shift_characterization_topicmatched --wiki-store "
         f"{args.wiki_store} --n-select {args.n_select} --seed {args.seed}`.)*\n"
     )

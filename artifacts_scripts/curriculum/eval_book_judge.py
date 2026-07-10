@@ -44,11 +44,11 @@ name, used as the blind book title).
 
 Usage
 =====
-    conda run -p .conda python -m artifacts_scripts.curriculum.eval_book_judge \
+    uv run python -m artifacts_scripts.curriculum.eval_book_judge \
         --run-dir artifacts/curriculum/gap_curriculum_T10181_base
 
     # custom model / repeats / output path:
-    conda run -p .conda python -m artifacts_scripts.curriculum.eval_book_judge \
+    uv run python -m artifacts_scripts.curriculum.eval_book_judge \
         --run-dir artifacts/curriculum/gap_curriculum_T11902 \
         --model gemma4:31b --repeats 3 \
         --out artifacts/curriculum_eval/gap_curriculum_T11902.json

@@ -12,7 +12,7 @@ distribution).
 
 Usage::
 
-    .conda/bin/python -u -m artifacts_scripts.gap_logit_distribution \\
+    uv run python -u -m artifacts_scripts.gap_logit_distribution \\
         --scope 17/1702/T11303 \\
         --refined-csv artifacts/gap_kball_llr_refine/T11303_n1000__llr_refined.csv \\
         --gap-ids 327,311,588,341,18 \\

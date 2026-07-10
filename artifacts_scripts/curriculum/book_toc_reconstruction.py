@@ -16,7 +16,7 @@ applies the cheap per-genre offset removal (step 2).
 
 Example::
 
-    .conda/bin/python -m artifacts_scripts.curriculum.book_toc_reconstruction \\
+    uv run python -m artifacts_scripts.curriculum.book_toc_reconstruction \\
         --gap-json artifacts/book_gaps/W2898513995_cyberbullying_ai.json \\
         --toc-json artifacts/book_gaps/W2898513995_toc.json \\
         --curriculum-dir artifacts/curriculum/book_curriculum_W2898513995_cyberbullying \\

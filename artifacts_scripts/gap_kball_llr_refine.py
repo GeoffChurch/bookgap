@@ -15,7 +15,7 @@ balanced posterior inline.
 
 Usage::
 
-    .conda/bin/python -u -m artifacts_scripts.gap_kball_llr_refine \\
+    uv run python -u -m artifacts_scripts.gap_kball_llr_refine \\
         --scope 17/1702/T11303 \\
         --kball-csv artifacts/kball_gap_probe/17-1702-T11303__pca__drop0.csv \\
         --out artifacts/gap_kball_llr_refine/T11303__llr_refined.csv

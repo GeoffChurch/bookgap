@@ -35,7 +35,7 @@ REPRODUCE
 Requires the same isolated venv and baseline ``.coverage`` as Phase A (see
 ``coverage_oracle.py``'s REPRODUCE block) and a running ollama with the chosen model::
 
-    conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.gap_test_generation \
+    uv run python -m artifacts_scripts.curriculum.gap_recover.gap_test_generation \
         --repo cache/code_gap/python/repos/click --import-name click \
         --coverage-json /tmp/coverage.json \
         --baseline-coverage /tmp/.coverage \

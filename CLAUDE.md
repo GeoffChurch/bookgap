@@ -8,11 +8,8 @@ BookGap is a research tool that identifies knowledge gaps in academic literature
 
 ## Environment Setup
 
-All commands must be run inside the local conda environment:
-
-```bash
-conda run -p /home/gchurchill/src/bookgap/.conda <command>
-```
+Run everything through uv: `uv run python ...` (env defined by `pyproject.toml` +
+`uv.lock`; `uv sync --extra dev` to materialize).
 
 Required environment variables: `OPENAI_API_KEY`, `OPENALEX_API_KEY` (loaded from `.env`).
 
@@ -20,20 +17,20 @@ Required environment variables: `OPENAI_API_KEY`, `OPENALEX_API_KEY` (loaded fro
 
 ```bash
 # Run unit tests (excludes integration tests by default)
-conda run -p .conda pytest tests/
+uv run pytest tests/
 
 # Run a single test
-conda run -p .conda pytest tests/path/to/test_file.py::TestClass::test_method
+uv run pytest tests/path/to/test_file.py::TestClass::test_method
 
 # Run integration tests (makes real API calls, costs money)
-conda run -p .conda pytest tests/ -m integration
+uv run pytest tests/ -m integration
 
 # Type checking
-conda run -p .conda python -m mypy bookgap/ tests/ --exclude 'bookgap/batch_utils_OLD' --ignore-missing-imports
+uv run python -m mypy bookgap/ tests/ --exclude 'bookgap/batch_utils_OLD' --ignore-missing-imports
 
 # Run the main pipeline
-conda run -p .conda python batch_generator.py
-conda run -p .conda python batch_generator.py --config-name standard batch.num_gaps=5
+uv run python batch_generator.py
+uv run python batch_generator.py --config-name standard batch.num_gaps=5
 ```
 
 ## Long-Running Jobs
@@ -43,22 +40,22 @@ sweeps) go through `bookgap.jobs`, which launches the command in a named
 `systemd-run --user --scope` cgroup, writes a JSON manifest at
 `cache/.jobs/<job_id>.json`, and redirects stdout/stderr to
 `cache/.jobs/<job_id>.log`. The cgroup wrapping is what matters: a plain
-`kill <pid>` on a `conda run` wrapper leaves the inner Python process
+`kill <pid>` on a `uv run` wrapper leaves the inner Python process
 orphaned, but `systemctl --user stop` tears down the whole tree at once.
 
 ```bash
 # Launch any command as a tracked job
-conda run -p .conda python -m bookgap.jobs run --prefix curriculum_qc -- \
-    conda run -p .conda python -m artifacts_scripts.curriculum.main ...
+uv run python -m bookgap.jobs run --prefix curriculum_qc -- \
+    uv run python -m artifacts_scripts.curriculum.main ...
 
 # List jobs (running, complete, failed, crashed, interrupted)
-conda run -p .conda python -m bookgap.jobs list
+uv run python -m bookgap.jobs list
 
 # Gracefully stop (SIGTERM → worker_lifecycle → 'interrupted' status)
-conda run -p .conda python -m bookgap.jobs stop <job_id>
+uv run python -m bookgap.jobs stop <job_id>
 
 # Tail a job's log
-conda run -p .conda python -m bookgap.jobs log <job_id> --follow
+uv run python -m bookgap.jobs log <job_id> --follow
 ```
 
 A single CLI invocation is wrapped by `bookgap.jobs._exec`, which in turn
@@ -74,11 +71,11 @@ so partial state on disk stays consistent.
 **Where logs actually land.**
 
 - `cache/.jobs/<job_id>.log` — the subprocess's raw stdout/stderr. Note
-  that `conda run` buffers stdout, so this file may stay empty until the
+  that `uv run` buffers stdout, so this file may stay empty until the
   child exits or crashes.
 - `outputs/<YYYY-MM-DD>/<HH-MM-SS>/main.log` — Hydra's own log; this is
   the live source of truth for any Hydra-driven pipeline (curriculum,
-  batch_generator, etc.). Writes flush directly and bypass `conda run`'s
+  batch_generator, etc.). Writes flush directly and bypass `uv run`'s
   stdout buffer.
 - `artifacts/curriculum/<run_name>/pipeline.log` — the curriculum
   pipeline's own LOGGER output, mirrored alongside its artifacts.

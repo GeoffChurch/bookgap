@@ -16,7 +16,7 @@ the gap-analysis pipeline.
 
 Usage::
 
-    .conda/bin/python -m artifacts_scripts.paper.generate_proposal_appendix \\
+    uv run python -m artifacts_scripts.paper.generate_proposal_appendix \\
         --run-dir outputs/gemma4_sweep/2026-05-22_11-11-43_gist_a10_b5_dropk10 \\
         --output  paper/proposal_appendix.tex
 """

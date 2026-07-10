@@ -35,7 +35,7 @@ CAVEATS (same circularity as the prior probes, plus a scope caveat)
 
 Regenerate (do not edit the generated JSON by hand):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.hard_book_screen
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.hard_book_screen
 """
 from __future__ import annotations
 

@@ -22,9 +22,9 @@ Categories printed at the end:
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.joblib_cache_audit
-    conda run -p .conda python -m artifacts_scripts.joblib_cache_audit --prune-dead
-    conda run -p .conda python -m artifacts_scripts.joblib_cache_audit --prune-source-mismatch
+    uv run python -m artifacts_scripts.joblib_cache_audit
+    uv run python -m artifacts_scripts.joblib_cache_audit --prune-dead
+    uv run python -m artifacts_scripts.joblib_cache_audit --prune-source-mismatch
 
 ``--prune-*`` modes delete the corresponding dirs in place; without a
 flag the script is read-only.

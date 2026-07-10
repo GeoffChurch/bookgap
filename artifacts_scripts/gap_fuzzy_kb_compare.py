@@ -26,7 +26,7 @@ combinations:
 
 Usage::
 
-    .conda/bin/python -u -m artifacts_scripts.gap_fuzzy_kb_compare \\
+    uv run python -u -m artifacts_scripts.gap_fuzzy_kb_compare \\
         --scope 17/1702/T11303 \\
         --refined-csv artifacts/gap_kball_llr_refine/T11303_n1000__llr_refined.csv \\
         --out cache/gap_fuzzy_kb_compare/T11303_top25.csv \\

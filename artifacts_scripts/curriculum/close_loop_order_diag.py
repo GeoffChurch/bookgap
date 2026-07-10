@@ -5,7 +5,7 @@ scrambled? Prints frontier / good-edge / reversed orders, the matched
 book-chapter -> cluster pairs with each order's position, tau for each, and the
 consecutive-cosine smoothness of each order (good-edge should be smoothest).
 
-  .conda/bin/python -m artifacts_scripts.curriculum.close_loop_order_diag \
+  uv run python -m artifacts_scripts.curriculum.close_loop_order_diag \
       --gap-json artifacts/book_gaps/neuromorphic_gap.json \
       --toc-json artifacts/book_gaps/W4247813589_toc.json \
       --run-a1 artifacts/curriculum/cl_A1_neuromorphic --run-b artifacts/curriculum/cl_B_neuromorphic

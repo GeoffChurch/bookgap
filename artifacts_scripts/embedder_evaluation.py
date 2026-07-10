@@ -2,11 +2,11 @@
 
 Usage (Hydra entry point):
 
-    conda run -p .conda python -m artifacts_scripts.embedder_evaluation \\
+    uv run python -m artifacts_scripts.embedder_evaluation \\
         embedders='[{_target_: bookgap.embedder.SentenceTransformerEmbedder, model_name: "avsolatorio/GIST-small-Embedding-v0"}]' \\
         denoisers='[NONE]'
 
-    conda run -p .conda python -m artifacts_scripts.embedder_evaluation --help
+    uv run python -m artifacts_scripts.embedder_evaluation --help
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@ flavors. (See docstring discussion for K_B fuzzification options.)
 
 Usage::
 
-    .conda/bin/python -u -m artifacts_scripts.gap_fuzzy_posterior_compare \\
+    uv run python -u -m artifacts_scripts.gap_fuzzy_posterior_compare \\
         --scope 17/1702/T11303 \\
         --refined-csv artifacts/gap_kball_llr_refine/T11303_n1000__llr_refined.csv \\
         --out cache/gap_fuzzy_posterior_compare/T11303.csv \\

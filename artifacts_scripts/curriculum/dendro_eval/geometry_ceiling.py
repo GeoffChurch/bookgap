@@ -62,7 +62,7 @@ are therefore a fair read on "does a better subspace help".
 
 Regenerate (do not edit generated JSON by hand):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.geometry_ceiling
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.geometry_ceiling
 """
 from __future__ import annotations
 

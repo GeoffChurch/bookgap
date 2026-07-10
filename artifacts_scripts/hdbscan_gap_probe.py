@@ -8,7 +8,7 @@ titles from the top-N populous book-free clusters.
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.hdbscan_gap_probe \\
+    uv run python -m artifacts_scripts.hdbscan_gap_probe \\
         --scope 17/1702/T10181 \\
         --min-cluster-size 50 --min-samples 15
 

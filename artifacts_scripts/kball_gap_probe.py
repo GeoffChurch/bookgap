@@ -9,14 +9,14 @@ output. Skips the LLM proposal-generation pipeline that
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.kball_gap_probe \\
+    uv run python -m artifacts_scripts.kball_gap_probe \\
         --scope 17/1702/T10181 \\
         --algorithm kball \\
         --radius-fraction 0.75 \\
         --num-gaps 5
 
     # With denoiser bypass (scope-restricted, no full-corpus load):
-    conda run -p .conda python -m artifacts_scripts.kball_gap_probe \\
+    uv run python -m artifacts_scripts.kball_gap_probe \\
         --scope 17/1702/T10181 \\
         --denoiser pca --drop-k 5 \\
         --radius-fraction 0.75 --num-gaps 5

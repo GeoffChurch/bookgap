@@ -18,7 +18,7 @@ Attributes are pruned to support >= --min-supp among the concept works (keeps th
 closures clean). Candidate concepts are the ATTRIBUTE concepts mu(a) (closed by construction).
 
 Example:
-  .conda/bin/python -m artifacts_scripts.curriculum.fca_lattice_probe \
+  uv run python -m artifacts_scripts.curriculum.fca_lattice_probe \
       --concept-gap artifacts/book_gaps/neuromorphic_concept/concept_gap.json --field 17 \
       --n 11 --context concat
 """

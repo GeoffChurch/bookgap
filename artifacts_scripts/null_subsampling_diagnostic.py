@@ -19,7 +19,7 @@ so callers can pick m for a target precision.
 
 Usage::
 
-    .conda/bin/python -u -m artifacts_scripts.null_subsampling_diagnostic \\
+    uv run python -u -m artifacts_scripts.null_subsampling_diagnostic \\
         --scope 17/1702/T11303 \\
         --out cache/null_subsampling_diagnostic/T11303.csv
 """

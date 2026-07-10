@@ -16,7 +16,7 @@ leakage is minor for validation; flagged for the clean run.
 
 Example::
 
-    .conda/bin/python -m artifacts_scripts.curriculum.book_curriculum \\
+    uv run python -m artifacts_scripts.curriculum.book_curriculum \\
         --gap-json artifacts/book_gaps/W2898513995_cyberbullying_ai.json
 """
 from __future__ import annotations

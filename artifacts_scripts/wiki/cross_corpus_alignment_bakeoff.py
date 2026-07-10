@@ -43,7 +43,7 @@ slice is non-representative; full-store centering leaves a residual mean ~0.39).
 Seed 0. CPU-only, reuses cached embeddings.
 
 Usage:
-    conda run -p .conda python -m artifacts_scripts.wiki.cross_corpus_alignment_bakeoff \
+    uv run python -m artifacts_scripts.wiki.cross_corpus_alignment_bakeoff \
         --wiki-store cache/wiki/store/wiki_400k --n 3000 --seed 0 --append
 """
 from __future__ import annotations
@@ -551,7 +551,7 @@ def render_report(R: dict, args) -> str:
     L.append("### Verdict\n")
     L.append("__OVERALL_VERDICT__\n")
     L.append(
-        f"*(Reproduce: `conda run -p .conda python -m "
+        f"*(Reproduce: `uv run python -m "
         f"artifacts_scripts.wiki.cross_corpus_alignment_bakeoff --wiki-store "
         f"{R['wiki_store']} --n {R['n']} --csls-k {R['csls_k']} --seed {R['seed']}`.)*\n"
     )

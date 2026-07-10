@@ -62,7 +62,7 @@ then point this script at the resulting ``coverage.json``::
         --source=cache/code_gap/python/repos/click/src/click -m pytest tests -q -p no:randomly
     COVERAGE_FILE=/tmp/.coverage /tmp/covenv/bin/coverage json -o /tmp/coverage.json
 
-    conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.coverage_oracle \
+    uv run python -m artifacts_scripts.curriculum.gap_recover.coverage_oracle \
         --repo cache/code_gap/python/repos/click --import-name click \
         --coverage-json /tmp/coverage.json \
         --out artifacts/code_gap/python/coverage_oracle_click.json

@@ -38,7 +38,7 @@ centroid over the FULL store) then re-normalized before the NN check.
 
 Usage::
 
-    conda run -p .conda python -m artifacts_scripts.wiki.csls_nn_check \
+    uv run python -m artifacts_scripts.wiki.csls_nn_check \
         --wiki-store cache/wiki/store/wiki_400k --wiki-topk 3000 \
         --csls-k 10 --n-nn-examples 200 --seed 0
 """

@@ -32,7 +32,7 @@ CAVEATS
 
 Regenerate (do not edit the generated JSON by hand):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.hard_book_4arm_proxy
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.hard_book_4arm_proxy
 """
 from __future__ import annotations
 

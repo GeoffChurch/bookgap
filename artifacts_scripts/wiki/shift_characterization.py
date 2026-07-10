@@ -38,7 +38,7 @@ Battery:
      to the global linear test.
 
 Usage:
-    conda run -p .conda python -m artifacts_scripts.wiki.shift_characterization \
+    uv run python -m artifacts_scripts.wiki.shift_characterization \
         --wiki-store cache/wiki/store/enwiki_full --n-each 50000 --seed 0
 """
 from __future__ import annotations
@@ -509,7 +509,7 @@ def render_report(R: dict, args) -> str:
     L.append(R["verdict"])
     L.append("")
     L.append(
-        f"*(Reproduce: `conda run -p .conda python -m "
+        f"*(Reproduce: `uv run python -m "
         f"artifacts_scripts.wiki.shift_characterization --wiki-store "
         f"{args.wiki_store} --n-each {args.n_each} --seed {args.seed}`.)*\n"
     )

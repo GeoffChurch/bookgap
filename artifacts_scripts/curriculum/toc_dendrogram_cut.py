@@ -24,7 +24,7 @@ side by side with the human ToC's chapters, for eyeballing granularity/joints.
 
 Self-contained (numpy/scipy/sklearn). Run with the repo interpreter:
 
-    PYTHONPATH=. .conda/bin/python -m artifacts_scripts.curriculum.toc_dendrogram_cut \
+    PYTHONPATH=. uv run python -m artifacts_scripts.curriculum.toc_dendrogram_cut \
         --corpus cache/oa/nlp_t10181/T10181_dd55aae2 \
         --toc artifacts/book_gaps/jurafsky_toc.json --top-k 4000 --keys height effN_sil
 """

@@ -11,7 +11,7 @@ keyword count via the SAME phrase-mining path the live pipeline uses.
 
 Usage::
 
-    PYTHONPATH=. .conda/bin/python -m artifacts_scripts.curriculum.reextract_keywords_topk \\
+    PYTHONPATH=. uv run python -m artifacts_scripts.curriculum.reextract_keywords_topk \\
         --run-dir artifacts/curriculum/book_curriculum_W4235013513_mcs --top-k 30
 """
 from __future__ import annotations

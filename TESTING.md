@@ -4,19 +4,19 @@
 
 ### Default (Safe) Tests
 ```bash
-pytest tests/
+uv run pytest tests/
 ```
 **Result**: Runs all tests except integration tests that incur API costs. This is the default behavior.
 
 ### Integration Tests Only  
 ```bash
-pytest tests/ -m integration
+uv run pytest tests/ -m integration
 ```
 **Result**: Runs only the integration tests that make real API calls (requires `OPENAI_API_KEY`).
 
 ### All Tests Including Integration
 ```bash
-pytest tests/ -m ""
+uv run pytest tests/ -m ""
 ```
 **Result**: Runs all tests including integration tests that may incur costs.
 
@@ -30,13 +30,13 @@ pytest tests/ -m ""
 - **Projection Reuse Sanity Test**: Ensures proposal embeddings reuse the cached denoiser projection and stay normalized.
 
 ```bash
-conda run -p /home/gchurchill/src/bookgap/.conda pytest tests/llm/test_workflow_functions.py::TestMonitorAndDownloadResults::test_projection_applied_via_monitoring
+uv run pytest tests/llm/test_workflow_functions.py::TestMonitorAndDownloadResults::test_projection_applied_via_monitoring
 ```
 
 - **Embedding Projection Unit Test**: Exercises `_compute_proposal_embeddings` directly with a mocked embedder.
 
 ```bash
-conda run -p /home/gchurchill/src/bookgap/.conda pytest tests/llm/test_workflow_functions.py::TestComputeProposalEmbeddings::test_projection_and_normalization_applied
+uv run pytest tests/llm/test_workflow_functions.py::TestComputeProposalEmbeddings::test_projection_and_normalization_applied
 ```
 
 ## Environment Variables
@@ -53,21 +53,21 @@ BookGap uses mypy for static type checking:
 
 ```bash
 # Check all Python files
-python -m mypy .
+uv run python -m mypy .
 
 # Check specific modules
-python -m mypy bookgap/
+uv run python -m mypy bookgap/
 
 # Check with missing import stubs ignored
-python -m mypy bookgap/ --ignore-missing-imports
+uv run python -m mypy bookgap/ --ignore-missing-imports
 
 # Check bookgap/ and tests/ while excluding OLD directories
-python -m mypy bookgap/ tests/ --exclude 'bookgap/batch_utils_OLD' --ignore-missing-imports
+uv run python -m mypy bookgap/ tests/ --exclude 'bookgap/batch_utils_OLD' --ignore-missing-imports
 
 # Check specific files
-python -m mypy bookgap/config_manager.py bookgap/llm/llm_implementation.py
+uv run python -m mypy bookgap/config_manager.py bookgap/llm/llm_implementation.py
 ```
 
 **Notes**: 
-- Prefix commands with: `conda run -p /home/gchurchill/src/bookgap/.conda` (AI agents: use #configurePythonEnvironment).
+- Prefix commands with: `uv run` (env defined by `pyproject.toml` + `uv.lock`).
 - Some mypy warnings related to third-party libraries (faiss, sklearn, tqdm) are expected and can be ignored.

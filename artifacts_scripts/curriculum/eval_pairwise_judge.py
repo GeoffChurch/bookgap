@@ -57,13 +57,13 @@ The four dimensions (same definitions as ``eval_book_judge.py``)
 
 Usage
 =====
-    conda run -p .conda python -m artifacts_scripts.curriculum.eval_pairwise_judge \
+    uv run python -m artifacts_scripts.curriculum.eval_pairwise_judge \
         --run-dir-a artifacts/curriculum/gap_curriculum_T10181_base \
         --run-dir-b artifacts/curriculum/gap_curriculum_T10181_boundary \
         --label-a base --label-b boundary
 
     # custom model / repeats / output path:
-    conda run -p .conda python -m artifacts_scripts.curriculum.eval_pairwise_judge \
+    uv run python -m artifacts_scripts.curriculum.eval_pairwise_judge \
         --run-dir-a ... --run-dir-b ... --label-a base --label-b boundary \
         --model gemma4:31b --repeats 1 \
         --out artifacts/curriculum_eval_pairwise/T10181.json

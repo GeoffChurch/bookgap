@@ -55,7 +55,7 @@ CLUSTERED BOOTSTRAP (spec critical note #3): positives are grouped by location
 near-duplication (t2_outcomes.greedy_location_groups); the bootstrap resamples
 whole groups (>=1000 resamples), so point near-duplication does not inflate the CI.
 
-    PYTHONPATH=. .conda/bin/python -m artifacts_scripts.curriculum.book_surprise_bakeoff \
+    PYTHONPATH=. uv run python -m artifacts_scripts.curriculum.book_surprise_bakeoff \
         --subfield 1702 \
         --toc artifacts/book_gaps/jurafsky_toc.json artifacts/book_gaps/koehn_toc.json \
               artifacts/book_gaps/W2898513995_toc.json artifacts/book_gaps/W4247813589_toc.json \

@@ -24,11 +24,11 @@
 #
 # Usage:   MAX_PARALLEL=8 SEL=--boundary bash artifacts_scripts/curriculum/run_toc_panel.sh
 # Launch as a tracked job for long runs:
-#   .conda/bin/python -m bookgap.jobs run --prefix toc_panel -- bash artifacts_scripts/curriculum/run_toc_panel.sh
+#   uv run python -m bookgap.jobs run --prefix toc_panel -- bash artifacts_scripts/curriculum/run_toc_panel.sh
 set -u
 cd /home/gchurchill/src/bookgap
 export PYTHONPATH=/home/gchurchill/src/bookgap
-PY=/home/gchurchill/src/bookgap/.conda/bin/python
+PY="uv run python"
 LOG=/tmp/toc_panel_master.log
 MAX_PARALLEL=${MAX_PARALLEL:-8}     # memory cap; ~15GB/book CS-field, set 2 for domain
 SEL=${SEL:---boundary}             # Track A selector (our best); "" for base

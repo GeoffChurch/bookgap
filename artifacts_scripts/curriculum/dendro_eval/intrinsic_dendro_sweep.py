@@ -48,7 +48,7 @@ Metrics
 
 Regenerate (do not edit generated JSON by hand):
 
-  .conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.intrinsic_dendro_sweep
+  uv run python -m artifacts_scripts.curriculum.dendro_eval.intrinsic_dendro_sweep
 """
 from __future__ import annotations
 

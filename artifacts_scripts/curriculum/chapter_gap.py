@@ -15,7 +15,7 @@ sits in under three definitions:
 
 Loads the cloud ONCE and scores every chapter of every --toc passed.
 
-    PYTHONPATH=. .conda/bin/python -m artifacts_scripts.curriculum.chapter_gap \
+    PYTHONPATH=. uv run python -m artifacts_scripts.curriculum.chapter_gap \
         --toc artifacts/book_gaps/jurafsky_toc.json artifacts/book_gaps/koehn_toc.json \
         --subfield 1702 --out artifacts/book_gaps/chapter_gaps.json
 """

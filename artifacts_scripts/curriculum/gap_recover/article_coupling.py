@@ -35,7 +35,7 @@ CPU only.
 
 Regenerate (do not edit the printed numbers by hand):
 
-    conda run -p /home/gchurchill/src/bookgap/.conda python -m \
+    uv run python -m \
         artifacts_scripts.curriculum.gap_recover.article_coupling \
         --subfield 1702 --n-works 1500 --min-oper 5 --cap 50 --seed 0
 """

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "bookgap"
 version = "0.1"
 description = "Finding the next textbook to write"
+requires-python = ">=3.11"
 dependencies = [
     "accelerate",
     "adalflow",
@@ -17,20 +18,31 @@ dependencies = [
     "graphviz", # for adalflow
     "hydra-core",
     "omegaconf",
+    "leidenalg", # for artifacts_scripts/curriculum/build_curriculum.py Leiden clustering
     "matplotlib",
     "mlflow", # for adalflow
     "numpy",
+    "ollama",
     "openai",
     "pandas",
     "pyarrow",
     "plotly",
     "pyalex",
     "pylatexenc",
+    "python-igraph", # for artifacts_scripts/curriculum/build_curriculum.py Leiden clustering
     "pyvis", # for adalflow
     "seaborn",
     "sentence-transformers",
     "transformers",
+    "tree-sitter", # for artifacts_scripts/curriculum/gap_recover rust adapter
+    "tree-sitter-rust",
     "umap-learn",
+    # Transitive via umap-learn -> pynndescent; pinned because uv's fresh
+    # resolution otherwise lands on numba 0.53.1 / llvmlite 0.36.0 (both
+    # requires-python <3.10, fail to build on 3.11). Pinned to the versions
+    # the old .conda env actually had installed and tested against.
+    "numba==0.63.1",
+    "llvmlite==0.46.0",
     # For rnojd
     "cdopt",
     "coroica",
@@ -48,7 +60,11 @@ scope-manager = "scope_manager:main"
 [project.optional-dependencies]
 dev = [
     "mypy>=1.8.0",
-    "pytest>=7.0.0",
+    # Pinned to the .conda baseline: pytest 9 removes the deprecated
+    # pytest_ignore_collect(path, config) hookimpl signature that
+    # tests/config_manager/conftest.py still uses, turning a deprecation
+    # warning into a hard collection error.
+    "pytest==8.4.2",
     "pytest-cov",
 ]
 

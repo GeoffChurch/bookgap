@@ -79,4 +79,4 @@ echo "=== Registered Goedel tags ==="
 ollama list | grep -iE "goedel" || true
 echo
 echo "Smoke test (loads model, checks it speaks Goedel's whole-proof format):"
-echo "  conda run -p .conda python -m curriculum_lean.goedel_prover --model $TAG_8B"
+echo "  uv run python -m curriculum_lean.goedel_prover --model $TAG_8B"

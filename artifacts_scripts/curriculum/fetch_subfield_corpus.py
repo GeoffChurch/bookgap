@@ -6,7 +6,7 @@ them as gz pages in the same `{results: [...]}` format `toc_dendrogram_cut`'s
 load_corpus reads — so a niche book gets a clean field corpus, matching how
 Jurafsky used the whole NLP topic.
 
-    PYTHONPATH=. .conda/bin/python -m artifacts_scripts.curriculum.fetch_subfield_corpus \
+    PYTHONPATH=. uv run python -m artifacts_scripts.curriculum.fetch_subfield_corpus \
         --book https://openalex.org/W4211017872 --out cache/oa/colorimage_cv --top-k 4000
 """
 
