@@ -1082,15 +1082,17 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'judge'" },
     { name = "hydra-core", marker = "extra == 'apps'" },
     { name = "hydra-submitit-launcher", marker = "extra == 'slurm'" },
+    { name = "leidenalg", marker = "extra == 'leiden'" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "numpy" },
     { name = "omegaconf", marker = "extra == 'apps'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "python-igraph", marker = "extra == 'leiden'" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "sentence-transformers", marker = "extra == 'embed'" },
 ]
-provides-extras = ["apps", "slurm", "judge", "embed", "render", "dev"]
+provides-extras = ["apps", "slurm", "judge", "embed", "render", "leiden", "dev"]
 
 [[package]]
 name = "cycler"

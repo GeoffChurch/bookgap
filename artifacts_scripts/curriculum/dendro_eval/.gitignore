@@ -1,5 +1,0 @@
-# Regenerable run artifacts — the scripts carry provenance footers to recreate these.
-__pycache__/
-*.log
-geometry_ceiling_npz/
-st_ab_logs/

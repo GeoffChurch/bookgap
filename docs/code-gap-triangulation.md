@@ -17,7 +17,7 @@ Lean, sharper than articles."
 ## The harness (infrastructure deliverable)
 
 The validated Lean plant-and-recover + temporal-holdout harness was refactored into a
-**substrate-generic core** (`artifacts_scripts/curriculum/gap_recover/core/`) reading a neutral
+**substrate-generic core** (`artifacts_scripts/gap_recover/core/`) reading a neutral
 `data.npz` contract, with thin per-substrate **adapters** (`adapters/lean/`, `adapters/python/`).
 Regression gate: rebuilding Lean through the new core reproduces the validated result **exactly** —
 M1 lift over the local null **+0.148** (orig +0.149), M_emb +0.065, level-set +0.000, temporal M1
@@ -451,14 +451,14 @@ a sound de-confounder, and (as requests shows) a *necessary* one to see the cove
 ## Reproduce
 
 ```bash
-conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.adapters.python.fetch_corpus
-conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.adapters.python.build_data --out cache/code_gap/python/data
-conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.adapters.python.build_births --data cache/code_gap/python/data
+conda run -p .conda python -m artifacts_scripts.gap_recover.adapters.python.fetch_corpus
+conda run -p .conda python -m artifacts_scripts.gap_recover.adapters.python.build_data --out cache/code_gap/python/data
+conda run -p .conda python -m artifacts_scripts.gap_recover.adapters.python.build_births --data cache/code_gap/python/data
 # static (graph region, the runnable code variant):
-conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.core.plant_recover \
+conda run -p .conda python -m artifacts_scripts.gap_recover.core.plant_recover \
     --data cache/code_gap/python/data --region graph --min-region 1 --seed 12345 --out artifacts/code_gap/python/plant_graph_s12345.json
 # temporal:
-conda run -p .conda python -m artifacts_scripts.curriculum.gap_recover.core.temporal_holdout \
+conda run -p .conda python -m artifacts_scripts.gap_recover.core.temporal_holdout \
     --data cache/code_gap/python/data --seed 12345 --out artifacts/code_gap/python/temporal_s12345.json
 ```
 

@@ -53,8 +53,8 @@ orphaned, but `systemctl --user stop` tears down the whole tree at once.
 
 ```bash
 # Launch any command as a tracked job
-uv run python -m bookgap.jobs run --prefix curriculum_qc -- \
-    uv run python -m artifacts_scripts.curriculum.main ...
+uv run python -m bookgap.jobs run --prefix batch_qc -- \
+    uv run python bookgap/batch_generator.py ...
 
 # List jobs (running, complete, failed, crashed, interrupted)
 uv run python -m bookgap.jobs list
@@ -204,4 +204,4 @@ Cross-pollination from `~/src/mycooc/docs/backlog/` is welcome: ideas borrowed f
 
 ## Generated artifacts: provenance
 
-Any file produced by a script (markdown reports, exported tables, summaries, derived JSON/CSV, plots) should **point back to the script that generated it, including the exact arguments used**, so a reader can rediscover and re-run the producer. Prefer a visible footer (or header) embedding the full command — e.g. `python -m <module> <args>` reconstructed from `sys.argv` — with a "regenerate rather than edit by hand" note. New generators should bake this in; `artifacts_scripts/curriculum/export_curriculum_markdown.py` (`_provenance()`) is the reference pattern.
+Any file produced by a script (markdown reports, exported tables, summaries, derived JSON/CSV, plots) should **point back to the script that generated it, including the exact arguments used**, so a reader can rediscover and re-run the producer. Prefer a visible footer (or header) embedding the full command — e.g. `python -m <module> <args>` reconstructed from `sys.argv` — with a "regenerate rather than edit by hand" note. New generators should bake this in; `artifacts_scripts/gap_recover/coverage_oracle.py` (`_provenance()`) is the reference pattern.

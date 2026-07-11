@@ -18,7 +18,7 @@ dependencies = [
     "graphviz", # for adalflow
     "hydra-core",
     "omegaconf",
-    "leidenalg", # for artifacts_scripts/curriculum/build_curriculum.py Leiden clustering
+    "leidenalg", # unused since the legacy curriculum pipeline's Leiden clustering was deleted (Phase-3 Task 10); the engine's port (curriculum.layers.clustering.cluster_leiden) declares its own leidenalg/python-igraph dep
     "matplotlib",
     "mlflow", # for adalflow
     "numpy",
@@ -29,12 +29,12 @@ dependencies = [
     "plotly",
     "pyalex",
     "pylatexenc",
-    "python-igraph", # for artifacts_scripts/curriculum/build_curriculum.py Leiden clustering
+    "python-igraph", # unused since the legacy curriculum pipeline's Leiden clustering was deleted (Phase-3 Task 10); see leidenalg above
     "pyvis", # for adalflow
     "seaborn",
     "sentence-transformers",
     "transformers",
-    "tree-sitter", # for artifacts_scripts/curriculum/gap_recover rust adapter
+    "tree-sitter", # for artifacts_scripts/gap_recover rust adapter
     "tree-sitter-rust",
     "umap-learn",
     # Transitive via umap-learn -> pynndescent; pinned because uv's fresh
