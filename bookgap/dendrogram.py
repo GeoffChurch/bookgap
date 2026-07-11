@@ -357,7 +357,7 @@ def _save_dendrogram(path: Path, dendrogram: DendrogramResult, cache_enabled: bo
 
 def _build_dendrogram(cloud: Any, min_cluster_size: int, max_depth: Optional[int]) -> DendrogramResult:
     """Build a new dendrogram from cloud embeddings."""
-    from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
+    from curriculum.core.dendrogram import bisecting_kmeans_linkage
 
     embeddings = cloud.embeddings()
     LOGGER.info(

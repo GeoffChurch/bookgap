@@ -4,8 +4,6 @@ seed vector as optional.
 
 Key properties under test:
 
-  - With both seeds populated, the result matches the prior
-    ``compute_bidirectional_pagerank`` output (relevance + components).
   - With only forward seeds, it matches ``compute_pagerank`` on the same
     adjacency.
   - With only reverse seeds, it matches reverse-direction
@@ -22,9 +20,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from artifacts_scripts.curriculum.pagerank import (
-    TwoDirectionPageRankResult,
-    compute_bidirectional_pagerank,
+from curriculum.core.pagerank import (
     compute_pagerank,
     two_direction_pagerank,
 )
@@ -36,29 +32,6 @@ def _line_adj(n: int = 6) -> sp.csr_matrix:
     rows = np.arange(n - 1)
     cols = np.arange(1, n)
     return sp.csr_matrix((np.ones(n - 1), (rows, cols)), shape=(n, n))
-
-
-class TestTwoDirectionPageRankReducesToBidirectional:
-    """Both seeds populated, combine='product' → matches the legacy
-    compute_bidirectional_pagerank output exactly (modulo namedtuple shape)."""
-
-    def test_matches_legacy_bidirectional(self):
-        adj = _line_adj(8)
-        n = adj.shape[0]
-        target_seeds = np.zeros(n); target_seeds[0] = 1.0
-        source_seeds = np.zeros(n); source_seeds[7] = 1.0
-
-        legacy = compute_bidirectional_pagerank(
-            adj, source_seeds=source_seeds, target_seeds=target_seeds,
-            alpha=0.85, return_components=True,
-        )
-        new = two_direction_pagerank(
-            adj, fwd_seeds=target_seeds, rev_seeds=source_seeds,
-            alpha=0.85, combine="product",
-        )
-        np.testing.assert_allclose(new.relevance, legacy.relevance, atol=1e-10)
-        np.testing.assert_allclose(new.forward_mass, legacy.forward_mass, atol=1e-10)
-        np.testing.assert_allclose(new.reverse_mass, legacy.reverse_mass, atol=1e-10)
 
 
 class TestSingleDirectionFallback:

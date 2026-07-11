@@ -14,7 +14,7 @@ from collections import Counter
 
 import numpy as np
 
-from artifacts_scripts.curriculum.keyword_extraction import (
+from curriculum.layers._keyword_extraction import (
     BackgroundMode,
     DocWeighting,
     KeywordMethod,

@@ -28,8 +28,8 @@ import numpy as np
 import scipy.sparse as sp
 import pytest
 
-from artifacts_scripts.curriculum.pagerank import compute_pagerank
-from artifacts_scripts.curriculum.circuitrank import (
+from curriculum.core.pagerank import compute_pagerank
+from artifacts_scripts.gap_detection.circuitrank import (
     compute_frontier_adjacency_potential,
     compute_current_flow,
     compute_graph_potential,

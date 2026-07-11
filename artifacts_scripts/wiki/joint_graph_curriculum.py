@@ -69,9 +69,9 @@ clustering. v2 adds two structural knobs:
 
 Reuses: ``wiki_curriculum_demo`` (subgraph load, cluster_embeddings,
 keywords_for_topics, bg-norm selection logic), ``wiki_pedagogical_lpp``
-(hub_suppressed_link_affinity, lpp_projection), ``curriculum.pagerank``
-(compute_pagerank, compute_frontier_adjacency),
-``curriculum.build_curriculum`` (_compute_linearization_order_from_adjacency).
+(hub_suppressed_link_affinity, lpp_projection), the ``curriculum`` engine's
+``curriculum.core.pagerank`` (compute_pagerank, compute_frontier_adjacency)
+and ``curriculum.core.order`` (linearization_order_from_adjacency).
 
 Prerequisite: run ``_prep_oa_nlp_cache`` once to materialize
 ``/tmp/oa_nlp_slice.npz`` + ``/tmp/oa_nlp_refs.json`` (the OA-NLP slice + refs).
@@ -121,10 +121,8 @@ import scipy.sparse as sp
 import torch
 from numpy.typing import NDArray
 
-from artifacts_scripts.curriculum.build_curriculum import (
-    _compute_linearization_order_from_adjacency,
-)
-from artifacts_scripts.curriculum.pagerank import (
+from curriculum.core.order import linearization_order_from_adjacency
+from curriculum.core.pagerank import (
     compute_frontier_adjacency,
     compute_pagerank,
 )
@@ -1214,7 +1212,7 @@ def main() -> None:
     inflow = np.array([adj_frontier[:, k].sum() for k in range(n_topics)])
     outflow = np.array([adj_frontier[k, :].sum() for k in range(n_topics)])
     frontier_in_out = inflow - outflow
-    order = _compute_linearization_order_from_adjacency(adj_frontier)
+    order = linearization_order_from_adjacency(adj_frontier)
 
     # --- Keywords ------------------------------------------------------------
     log("keywords")

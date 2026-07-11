@@ -4,15 +4,12 @@ import numpy as np
 import pytest
 from scipy.cluster.hierarchy import fcluster, leaves_list
 
-from artifacts_scripts.curriculum.scalable_clustering import (
+from curriculum.core.dendrogram import (
     bisecting_kmeans_linkage,
     BisectingKMeansResult,
-)
-from artifacts_scripts.curriculum.dendrogram_ops import (
     compute_dendrogram_masses,
     find_mass_threshold_for_n_topics,
     get_frontier_nodes,
-    gather_leaves,
     map_leaves_to_frontier_clusters,
 )
 
@@ -193,17 +190,6 @@ class TestBisectingKmeansWithDendrogramOps:
         # And we should have assigned a reasonable fraction of leaves
         # (not a hard requirement, but sanity check)
         assert assigned_mask.sum() > result.n_leaf_clusters // 4, "Very few leaves assigned to clusters"
-    
-    def test_gather_leaves(self, sample_data):
-        """Test leaf gathering on bisecting K-Means tree."""
-        embeddings, result, n = sample_data
-        
-        # Test gathering from root (should get all leaves)
-        root_node = 2 * result.n_leaf_clusters - 2
-        leaves = gather_leaves(root_node, result.linkage, result.n_leaf_clusters)
-        
-        assert len(leaves) == result.n_leaf_clusters
-        assert set(leaves) == set(range(result.n_leaf_clusters))
 
 
 class TestScalingBehavior:

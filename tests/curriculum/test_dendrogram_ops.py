@@ -4,11 +4,9 @@ import numpy as np
 import pytest
 from scipy.cluster.hierarchy import linkage
 
-from artifacts_scripts.curriculum.dendrogram_ops import (
+from curriculum.core.dendrogram import (
     compute_dendrogram_masses,
     find_mass_threshold_for_n_topics,
-    gather_leaves,
-    get_children,
     get_frontier_nodes,
     map_leaves_to_frontier_clusters,
 )
@@ -164,53 +162,6 @@ class TestFindMassThresholdForNTopics:
         frontier = get_frontier_nodes(simple_linkage, node_masses, threshold)
         
         assert len(frontier) == 1
-
-
-class TestGatherLeaves:
-    """Tests for gather_leaves."""
-    
-    def test_leaf_returns_itself(self, simple_linkage):
-        """Gathering leaves from a leaf returns just that leaf."""
-        leaves = gather_leaves(0, simple_linkage, n_samples=5)
-        assert leaves == [0]
-    
-    def test_internal_node_returns_subtree_leaves(self, simple_linkage):
-        """Internal node returns all leaves in subtree."""
-        # Node 5 contains leaves 3 and 4
-        leaves = gather_leaves(5, simple_linkage, n_samples=5)
-        assert set(leaves) == {3, 4}
-        
-        # Node 6 contains leaves 0 and 1
-        leaves = gather_leaves(6, simple_linkage, n_samples=5)
-        assert set(leaves) == {0, 1}
-        
-        # Node 7 contains leaves 2, 3, 4
-        leaves = gather_leaves(7, simple_linkage, n_samples=5)
-        assert set(leaves) == {2, 3, 4}
-    
-    def test_root_returns_all_leaves(self, simple_linkage):
-        """Root node returns all leaves."""
-        leaves = gather_leaves(8, simple_linkage, n_samples=5)
-        assert set(leaves) == {0, 1, 2, 3, 4}
-
-
-class TestGetChildren:
-    """Tests for get_children."""
-    
-    def test_internal_node_children(self, simple_linkage):
-        """Test getting children of internal nodes."""
-        # Node 5: children are 3, 4
-        c1, c2 = get_children(5, simple_linkage, n_samples=5)
-        assert set([c1, c2]) == {3, 4}
-        
-        # Node 8 (root): children are 6, 7
-        c1, c2 = get_children(8, simple_linkage, n_samples=5)
-        assert set([c1, c2]) == {6, 7}
-    
-    def test_leaf_raises_error(self, simple_linkage):
-        """Getting children of leaf should raise ValueError."""
-        with pytest.raises(ValueError):
-            get_children(0, simple_linkage, n_samples=5)
 
 
 class TestMapLeavesToFrontierClusters:

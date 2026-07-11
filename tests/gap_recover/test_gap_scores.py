@@ -1,6 +1,6 @@
 import numpy as np
 
-from artifacts_scripts.curriculum.gap_recover.core.gap_scores import (
+from artifacts_scripts.gap_recover.core.gap_scores import (
     method_count,
     raw_delta,
     size_controlled_delta,

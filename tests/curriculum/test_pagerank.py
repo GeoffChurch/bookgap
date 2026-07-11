@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from artifacts_scripts.curriculum.pagerank import (
+from curriculum.core.pagerank import (
     build_batched_pagerank_seeds,
     compute_frontier_adjacency,
     compute_pagerank,

@@ -78,13 +78,13 @@ from numpy.typing import NDArray
 from scipy.linalg import eigh
 from sklearn.metrics import silhouette_score
 
-from artifacts_scripts.curriculum.compare_clusterings import (
+from curriculum.layers.quality import (
     avg_pairwise_jaccard_distance,
     citation_flow_capture,
     keyword_distinctness,
     modularity_q,
 )
-from artifacts_scripts.curriculum.pagerank import compute_pagerank
+from curriculum.core.pagerank import compute_pagerank
 from artifacts_scripts.wiki.wiki_curriculum_demo import (
     SEED_TITLES,
     cluster_embeddings,
@@ -302,7 +302,7 @@ def bg_norm_selection(
 
 
 # ---------------------------------------------------------------------------
-# Cluster-quality scoring (reuses compare_clusterings)
+# Cluster-quality scoring (reuses the engine's curriculum.layers.quality)
 # ---------------------------------------------------------------------------
 
 def cluster_quality(

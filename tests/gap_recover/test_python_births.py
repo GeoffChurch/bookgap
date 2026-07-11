@@ -1,6 +1,6 @@
 """Pure-logic tests for build_births (no git, no filesystem)."""
 import numpy as np
-from artifacts_scripts.curriculum.gap_recover.adapters.python import build_births as bb
+from artifacts_scripts.gap_recover.adapters.python import build_births as bb
 
 
 def test_select_epoch_tags_fewer_than_E():

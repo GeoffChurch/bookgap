@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from artifacts_scripts.curriculum.build_curriculum import (
-    _citation_jaccard_distance_matrix,
+from curriculum.core.dendrogram import (
+    citation_jaccard_distance_matrix as _citation_jaccard_distance_matrix,
 )
 
 

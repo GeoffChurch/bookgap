@@ -1,5 +1,5 @@
 import numpy as np
-from artifacts_scripts.curriculum.gap_recover.adapters.rust import extract
+from artifacts_scripts.gap_recover.adapters.rust import extract
 
 CRATE = {
     "src/lib.rs": (

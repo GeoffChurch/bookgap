@@ -2,9 +2,8 @@
 """Materialize a bookgap Cloud as a GraphSource npz for the curriculum `generate` app.
 
 This is the bookgap-side half of the Cloud -> GraphSource bridge: it composes
-the same config surface the legacy curriculum pipeline uses to build a Cloud
-(see ``scripts/capture_gap_parity_golden.py::compose_ai_cfg`` and
-``artifacts_scripts/curriculum/build_curriculum.py::run_curriculum_building``),
+the same config surface the (now-retired) legacy curriculum pipeline used to
+build a Cloud (see ``scripts/capture_gap_parity_golden.py::compose_ai_cfg``),
 instantiates it, reads off the Cloud's public array-accessor surface
 (``work_ids`` / ``work_titles`` / ``work_abstracts`` / ``embeddings`` /
 ``citation_graph``), and writes the result via

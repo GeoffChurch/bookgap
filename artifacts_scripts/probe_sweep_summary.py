@@ -10,8 +10,8 @@ mode), groups by (scope, denoiser, drop_k), and emits two tables to stdout:
   - K-ball: gap-size summary (gaps found, mean/median gap_size, mean
     gap_size_percentile, mean |gap_zscore|).
 
-Used as the final step of a probe sweep — see
-`artifacts_scripts/curriculum/TODO.md` "Run the actual probe sweeps" entry.
+Used as the final step of a probe sweep — see the "Run the actual probe
+sweeps" backlog entry.
 """
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ import json
 import numpy as np
 import pytest
 
-from artifacts_scripts.curriculum.gap_recover import coverage_oracle as co
+from artifacts_scripts.gap_recover import coverage_oracle as co
 
 
 # --------------------------------------------------------------------------- #

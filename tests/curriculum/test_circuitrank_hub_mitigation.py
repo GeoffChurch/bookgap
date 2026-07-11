@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
 
-from artifacts_scripts.curriculum.circuitrank import build_conductance_adjacency, transform_node_masses
+from artifacts_scripts.gap_detection.circuitrank import build_conductance_adjacency, transform_node_masses
 
 
 def _make_graph_for_weight_tests() -> sp.csr_matrix:

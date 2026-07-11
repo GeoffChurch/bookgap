@@ -1,5 +1,5 @@
 import numpy as np
-from artifacts_scripts.curriculum.gap_recover.adapters.python import extract
+from artifacts_scripts.gap_recover.adapters.python import extract
 
 PKG = {
     "shapes/__init__.py": "",

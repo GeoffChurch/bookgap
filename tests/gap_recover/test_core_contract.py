@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
-from artifacts_scripts.curriculum.gap_recover.core import kernels
-from artifacts_scripts.curriculum.gap_recover.core.data import Data
+from artifacts_scripts.gap_recover.core import kernels
+from artifacts_scripts.gap_recover.core.data import Data
 
 
 def test_fg_neighbor_table_masked_rescore():
@@ -64,8 +64,8 @@ def test_data_loads_contract(tmp_path):
 
 def test_plant_recovers_known_region(tmp_path):
     import numpy as np
-    from artifacts_scripts.curriculum.gap_recover.core import plant_recover as pr
-    from artifacts_scripts.curriculum.gap_recover.core.kernels import knn_dists, FgNeighborTable
+    from artifacts_scripts.gap_recover.core import plant_recover as pr
+    from artifacts_scripts.gap_recover.core.kernels import knn_dists, FgNeighborTable
     _write_synthetic(tmp_path, n_concepts=8, thms_per=40, seed=1)
     data = pr.Data(tmp_path)
     r_B = knn_dists(data.Zb, data.Zb, min(pr.K_NN, data.B_idx.size), exclude_self=True)[:, -1].astype(np.float32)
@@ -83,7 +83,7 @@ def test_plant_recovers_known_region(tmp_path):
 def test_temporal_calibration_is_chance(tmp_path):
     import argparse
     import numpy as np
-    from artifacts_scripts.curriculum.gap_recover.core import temporal_holdout as th
+    from artifacts_scripts.gap_recover.core import temporal_holdout as th
     # Large n so the single-draw calibration AUC concentrates near chance.
     _write_synthetic(tmp_path, n_concepts=100, thms_per=8, seed=2)
     d = np.load(tmp_path / "data.npz", allow_pickle=True)

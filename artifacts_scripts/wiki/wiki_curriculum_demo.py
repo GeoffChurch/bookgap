@@ -61,7 +61,7 @@ of raw seeded PR mass ``p`` — where ``g`` is a uniform-teleport (no-seed)
 background PR on the same adjacency. This demotes globally-popular
 bibliographic-infrastructure hubs (DOI/ISBN/PubMed/ArXiv/ISO), which have huge
 ``g``. Reuses the OpenAlex curriculum's scoring (see
-``artifacts_scripts/curriculum/build_curriculum.py``).
+``curriculum.core.rank.compute_relevance`` in the ``curriculum`` engine).
 """
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ import pyarrow.parquet as pq
 import scipy.sparse as sp
 from numpy.typing import NDArray
 
-from artifacts_scripts.curriculum.keyword_extraction import (
+from curriculum.layers._keyword_extraction import (
     BackgroundMode,
     DocWeighting,
     KeywordMethod,
@@ -87,14 +87,12 @@ from artifacts_scripts.curriculum.keyword_extraction import (
     parse_with_phrases,
     tokenize,
 )
-from artifacts_scripts.curriculum.build_curriculum import (
-    _compute_linearization_order_from_adjacency,
-)
-from artifacts_scripts.curriculum.pagerank import (
+from curriculum.core.order import linearization_order_from_adjacency
+from curriculum.core.pagerank import (
     compute_frontier_adjacency,
     compute_pagerank,
 )
-from artifacts_scripts.curriculum.scalable_clustering import bisecting_kmeans_linkage
+from curriculum.core.dendrogram import bisecting_kmeans_linkage
 from bookgap.util import CACHE_DIR
 from bookgap.wikipedia.corpus import WikipediaCorpus
 from bookgap.wikipedia.link_graph import (
@@ -326,7 +324,7 @@ def cluster_embeddings(
     Mirrors the engine's default ``bisecting_kmeans`` dendrogram path plus a
     mass-threshold frontier cut, inlined so we don't need a ``Cloud``.
     """
-    from artifacts_scripts.curriculum.dendrogram_ops import (
+    from curriculum.core.dendrogram import (
         compute_dendrogram_masses,
         find_mass_threshold_for_n_topics,
         get_frontier_nodes,
@@ -654,7 +652,7 @@ def main() -> None:
                          "background PR on the same adjacency. Demotes globally "
                          "popular hubs (DOI/ISBN/PubMed) that have huge g. Reuses "
                          "the OpenAlex curriculum's scoring (see "
-                         "artifacts_scripts/curriculum/build_curriculum.py).")
+                         "curriculum.core.rank.compute_relevance in the curriculum engine).")
     ap.add_argument("--bg-alpha", type=float, default=0.5,
                     help="exponent a in p^a * log(p/g). 0.0 = raw log-lift, "
                          "0.5 = Fightin'-Words variance-norm (default, matches the "
@@ -853,7 +851,7 @@ def main() -> None:
         if order_by == "frontier":
             # in-degree (depended-on) minus out-degree (depends-on); prereqs first.
             frontier_in_out = inflow_fg - outflow_fg
-            order = _compute_linearization_order_from_adjacency(adj_frontier)
+            order = linearization_order_from_adjacency(adj_frontier)
             log.info(
                 "frontier in−out scores (topic: score): "
                 + ", ".join(f"{t}:{frontier_in_out[t]:+.4f}" for t in range(n_topics))

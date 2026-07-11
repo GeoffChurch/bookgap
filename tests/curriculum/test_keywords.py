@@ -2,7 +2,7 @@
 
 import pytest
 
-from artifacts_scripts.curriculum.keyword_extraction import (
+from curriculum.layers._keyword_extraction import (
     BIGRAM_JOIN,
     BackgroundMode,
     DocWeighting,
@@ -270,7 +270,7 @@ class TestComputeLogOddsRatioDocs:
 
     def test_topic_weighting_equal_is_invariant_to_topic_size(self):
         """With topic_weighting='equal', duplicating docs in other topics shouldn't change scores."""
-        from artifacts_scripts.curriculum.keyword_extraction import compute_log_odds_ratio_docs
+        from curriculum.layers._keyword_extraction import compute_log_odds_ratio_docs
 
         base = [
             [["apple", "apple", "apple"]],
@@ -305,7 +305,7 @@ class TestComputeLogOddsRatioDocs:
 
     def test_relevance_weighting_upweights_high_mass_docs(self):
         """With doc_weighting='relevance', high-weight docs contribute more to keywords."""
-        from artifacts_scripts.curriculum.keyword_extraction import compute_log_odds_ratio_docs
+        from curriculum.layers._keyword_extraction import compute_log_odds_ratio_docs
 
         # Topic 0: two docs, one with "alpha" (high weight), one with "beta" (low weight)
         # Topic 1: control topic
@@ -353,7 +353,7 @@ class TestComputeLogOddsRatioDocs:
 
     def test_relevance_weighting_requires_weights(self):
         """RELEVANCE doc_weighting without weights should raise."""
-        from artifacts_scripts.curriculum.keyword_extraction import compute_log_odds_ratio_docs
+        from curriculum.layers._keyword_extraction import compute_log_odds_ratio_docs
 
         topic_docs = [[["word"]]]
         
@@ -448,54 +448,6 @@ class TestIntegration:
         # Check topic 1 (Stats) has relevant keywords
         stats_keywords = {w for w, _ in tfidf_results[1]}
         assert len(stats_keywords & {"bayesian", "estimation", "likelihood"}) >= 1
-
-
-class TestSummarizeTopics:
-    """Tests for summarize_topics function using combined title+abstract texts."""
-
-    def test_summarize_topics_basic(self, tmp_path):
-        """Create minimal curriculum outputs and run summarize_topics."""
-        from artifacts_scripts.curriculum.summarize_topics import summarize_topics
-        import numpy as np
-        import json
-
-        # Create fake curriculum outputs
-        curr_dir = tmp_path / "curr"
-        curr_dir.mkdir()
-
-        # Two frontier topics
-        np.save(curr_dir / "frontier_nodes.npy", np.array([0, 1]))
-        np.save(curr_dir / "node_masses.npy", np.array([1.0, 1.0]))
-        # Dummy linkage (not used in this simple path)
-        np.save(curr_dir / "linked.npy", np.zeros((1, 4)))
-
-        # point_to_cluster: assign first 3 docs to topic 0, next 3 to topic 1
-        np.save(curr_dir / "point_to_cluster.npy", np.array([0, 0, 0, 1, 1, 1]))
-        
-        # PageRank scores for points (required for sampling)
-        np.save(curr_dir / "point_masses.npy", np.array([1.0, 0.8, 0.6, 0.9, 0.7, 0.5]))
-
-        # Minimal metadata
-        with open(curr_dir / "metadata.json", "w") as f:
-            json.dump({"generated": True}, f)
-
-        # Create texts: simple repeating domain words for topics
-        texts = [
-            "Deep learning convolutional neural networks",
-            "Neural network architectures for vision",
-            "Training deep models with backpropagation",
-            "Bayesian inference and posterior distributions",
-            "Maximum likelihood estimation methods",
-            "Hypothesis testing and confidence intervals",
-        ]
-
-        keywords = summarize_topics(curr_dir, texts, samples_per_topic=2, top_k_keywords=3, method=KeywordMethod.TFIDF)
-
-        # Expect two topics
-        assert set(keywords.keys()) == {0, 1}
-        # Each topic should have up to top_k keywords
-        assert all(isinstance(kw, list) for kw in keywords.values())
-        assert all(len(kw) <= 3 for kw in keywords.values())
 
 
 class TestBackgroundModeAndFreqWeighting:

@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
 
-from artifacts_scripts.curriculum.circuitrank import (
+from artifacts_scripts.gap_detection.circuitrank import (
     compute_graph_potential,
     compute_graph_potential_galerkin,
 )
