@@ -228,7 +228,7 @@ def _run_oracle(
     for s in exclude_substrs:
         cmd += ["--exclude-substr", s]
 
-    bookgap_root = Path(__file__).resolve().parents[4]
+    bookgap_root = Path(__file__).resolve().parents[2]
     rc, out, err = _run(cmd, cwd=str(bookgap_root), timeout=300)
     if rc != 0:
         return False, f"coverage_oracle failed (rc={rc}): {err[:500]}", None
@@ -258,7 +258,7 @@ def _run_size_control(
         "--import-name", import_name,
         "--coverage-oracle-json", oracle_out,
     ]
-    bookgap_root = Path(__file__).resolve().parents[4]
+    bookgap_root = Path(__file__).resolve().parents[2]
     rc, out, err = _run(cmd, cwd=str(bookgap_root), timeout=300)
     if rc != 0:
         return False, f"gap_size_control failed (rc={rc}): {err[:500]}", ""
@@ -472,7 +472,7 @@ def _provenance() -> str:
 
 
 def main() -> None:
-    bookgap_root = Path(__file__).resolve().parents[4]
+    bookgap_root = Path(__file__).resolve().parents[2]
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(

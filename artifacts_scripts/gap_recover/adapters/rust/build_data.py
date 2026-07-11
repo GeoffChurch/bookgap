@@ -32,7 +32,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import numpy as np
 import scipy.sparse as sp
 
-ROOT = Path(__file__).resolve().parents[5]  # .../src/bookgap
+ROOT = Path(__file__).resolve().parents[4]  # .../src/bookgap
 sys.path.insert(0, str(ROOT))
 
 from artifacts_scripts.gap_recover.adapters.rust.corpus import (

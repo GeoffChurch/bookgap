@@ -104,6 +104,23 @@ def test_assemble_arrays_save_load_roundtrip(tmp_path):
     np.testing.assert_array_equal(loaded.seed_nodes(), np.array([0, 2], dtype=np.int64))
 
 
+def test_assemble_arrays_coerces_none_titles_and_abstracts_to_empty_string():
+    """A corpus row can carry a genuinely missing title/abstract as None
+    (not ""). assemble_arrays must coerce it to "" -- otherwise
+    save_graph_npz's object-array dtype accepts None as an element, and
+    downstream str()-ing on load renders it as the literal text "None"."""
+    cloud = _make_stub(n=4, dim=3)
+    cloud._titles[1] = None
+    cloud._abstracts[2] = None
+
+    ids, adj, titles, abstracts, emb = assemble_arrays(cloud)
+
+    assert titles == ["Title 0", "", "Title 2", "Title 3"]
+    assert abstracts == ["Abstract 0.", "Abstract 1.", "", "Abstract 3."]
+    assert all(t is not None for t in titles)
+    assert all(a is not None for a in abstracts)
+
+
 def test_assemble_arrays_no_transpose_citation_convention():
     """adj[i, j] from citation_graph already means 'i cites/points to j' —
     assemble_arrays must pass it through unchanged (no transpose)."""

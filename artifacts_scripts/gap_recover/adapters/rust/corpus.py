@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[5]            # .../src/bookgap
+ROOT = Path(__file__).resolve().parents[4]            # .../src/bookgap
 REPO_ROOT = ROOT / "cache" / "code_gap" / "rust" / "repos"
 
 # (name, git_url, n_recent_tags). Ordered small -> large.

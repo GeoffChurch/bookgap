@@ -42,7 +42,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import numpy as np
 import scipy.sparse as sp
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 GRAPH = ROOT / "cache" / "lean" / "decl_graph"
 OUT = Path("/tmp/lean_gap")
 OUT.mkdir(parents=True, exist_ok=True)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 REPO_ROOT = ROOT / "cache" / "code_gap" / "bazel"
 BAZELISK = "/home/gchurchill/go/bin/bazelisk"
 

@@ -75,8 +75,12 @@ def assemble_arrays(
     Raises ``ValueError`` if the accessors disagree on node count.
     """
     ids = list(cloud.work_ids())
-    titles = list(cloud.work_titles())
-    abstracts = list(cloud.work_abstracts())
+    # Some corpus rows carry a genuinely missing title/abstract (None, not
+    # "") -- coerce to "" here, before save_graph_npz's object-array dtype
+    # accepts None as a valid element: downstream str()-ing on load would
+    # otherwise render it as the literal 4-character text "None".
+    titles = [t if t is not None else "" for t in cloud.work_titles()]
+    abstracts = [a if a is not None else "" for a in cloud.work_abstracts()]
     emb = np.ascontiguousarray(cloud.embeddings(), dtype=np.float32)
     adj = cloud.citation_graph(normalize=False).tocsr()
 

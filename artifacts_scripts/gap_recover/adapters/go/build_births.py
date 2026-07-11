@@ -38,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[5]  # .../src/bookgap
+ROOT = Path(__file__).resolve().parents[4]  # .../src/bookgap
 sys.path.insert(0, str(ROOT))
 
 from artifacts_scripts.gap_recover.adapters.python.build_births import (  # noqa: E402
