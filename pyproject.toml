@@ -18,7 +18,6 @@ dependencies = [
     "graphviz", # for adalflow
     "hydra-core",
     "omegaconf",
-    "leidenalg", # unused since the legacy curriculum pipeline's Leiden clustering was deleted (Phase-3 Task 10); the engine's port (curriculum.layers.clustering.cluster_leiden) declares its own leidenalg/python-igraph dep
     "matplotlib",
     "mlflow", # for adalflow
     "numpy",
@@ -29,7 +28,6 @@ dependencies = [
     "plotly",
     "pyalex",
     "pylatexenc",
-    "python-igraph", # unused since the legacy curriculum pipeline's Leiden clustering was deleted (Phase-3 Task 10); see leidenalg above
     "pyvis", # for adalflow
     "seaborn",
     "sentence-transformers",
