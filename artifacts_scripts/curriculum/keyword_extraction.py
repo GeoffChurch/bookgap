@@ -690,7 +690,11 @@ def compute_tfidf_scores(
             tfidf_scores[word] = tf_score * idf.get(word, 1.0)
         
         # Sort by score and take top_k
-        sorted_words = sorted(tfidf_scores.items(), key=lambda x: x[1], reverse=True)
+        # Deterministic tie-break (score desc, then word asc): the scores dict's
+        # insertion order is hash/set-iteration order, which varies per process
+        # (PYTHONHASHSEED), so a stable score-only sort would order exactly-tied
+        # words nondeterministically across runs.
+        sorted_words = sorted(tfidf_scores.items(), key=lambda x: (-x[1], x[0]))
         results.append(sorted_words[:top_k])
     
     return results
@@ -792,7 +796,11 @@ def compute_tfidf_scores_docs(
             tf = float(cnt) / float(total)
             tfidf_scores[word] = tf * idf.get(word, 1.0)
 
-        sorted_words = sorted(tfidf_scores.items(), key=lambda x: x[1], reverse=True)
+        # Deterministic tie-break (score desc, then word asc): the scores dict's
+        # insertion order is hash/set-iteration order, which varies per process
+        # (PYTHONHASHSEED), so a stable score-only sort would order exactly-tied
+        # words nondeterministically across runs.
+        sorted_words = sorted(tfidf_scores.items(), key=lambda x: (-x[1], x[0]))
         results.append(sorted_words[:top_k])
 
     return results
@@ -892,7 +900,8 @@ def compute_log_odds_ratio(
             scores[word] = z_score
         
         # Sort by score and take top_k
-        sorted_words = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        # Deterministic tie-break -- see the tfidf sort sites above for rationale.
+        sorted_words = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
         results.append(sorted_words[:top_k])
     
     return results
@@ -1077,7 +1086,8 @@ def compute_log_odds_ratio_docs(
 
             scores[word] = float(z_score)
 
-        sorted_words = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        # Deterministic tie-break -- see the tfidf sort sites above for rationale.
+        sorted_words = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
         results.append(sorted_words[:top_k])
 
     return results
