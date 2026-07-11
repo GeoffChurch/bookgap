@@ -1078,11 +1078,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anthropic", marker = "extra == 'judge'" },
+    { name = "httpx", marker = "extra == 'judge'" },
     { name = "hydra-core", marker = "extra == 'apps'" },
     { name = "hydra-submitit-launcher", marker = "extra == 'slurm'" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "numpy" },
-    { name = "ollama", marker = "extra == 'judge'" },
     { name = "omegaconf", marker = "extra == 'apps'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "scikit-learn" },
