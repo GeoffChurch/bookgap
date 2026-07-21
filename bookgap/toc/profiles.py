@@ -144,21 +144,26 @@ def assemble(abstract: str, markers_fn: Callable[[str], list[tuple[int, int, int
         first = parts[0][0]
         tree: list[TocNodeRaw] = [
             TocNodeRaw(title=t) for (s, t) in chapters if s < first and t]
-        part_nodes: list[TocNodeRaw] = []
+        # index within `tree` of each part label already emitted, for dedup
+        seen: dict[str, int] = {}
         for i, (ps, pe) in enumerate(parts):
             nxt = parts[i + 1][0] if i + 1 < len(parts) else len(ab)
             kids = tuple(TocNodeRaw(title=t) for (cs, t) in chapters if pe <= cs < nxt and t)
-            part_nodes.append(TocNodeRaw(title=_plabel(pe), kind="part", children=kids))
-        seen: dict[str, TocNodeRaw] = {}
-        order: list[str] = []
-        for n in part_nodes:
-            k = n.title.lower()
-            if k not in seen:
-                order.append(k)
-                seen[k] = n
-            elif len(n.children) > len(seen[k].children):
-                seen[k] = n
-        tree += [seen[k] for k in order]
+            label = _plabel(pe)
+            if not label:
+                # an empty-titled part node must never appear: if it has real
+                # chapter children, promote them to top level; otherwise drop
+                # the part entirely (no title, no children -- nothing to keep).
+                tree.extend(kids)
+                continue
+            k = label.lower()
+            if k in seen:
+                idx = seen[k]
+                if len(kids) > len(tree[idx].children):
+                    tree[idx] = TocNodeRaw(title=label, kind="part", children=kids)
+                continue
+            seen[k] = len(tree)
+            tree.append(TocNodeRaw(title=label, kind="part", children=kids))
     else:
         tree = [TocNodeRaw(title=t) for (s, t) in chapters if t]
 
@@ -182,14 +187,16 @@ def assemble(abstract: str, markers_fn: Callable[[str], list[tuple[int, int, int
 
 
 def chapter_n_profile(abstract: str) -> "ParsedToc | None":
-    return assemble(abstract, markers_chapter_n, "chapter-n")
+    return assemble(abstract, markers_chapter_n, "chapter-n", min_leaves=3)
 
 
 PROFILES["chapter-n"] = chapter_n_profile
 
 
 def arabic_list_profile(abstract: str) -> "ParsedToc | None":
-    return assemble(abstract, markers_arabic, "arabic-list")
+    # numbered lists lack the "Chapter" keyword signal, so -- like roman-list --
+    # they need a longer ordered run than chapter-n before trusting a parse.
+    return assemble(abstract, markers_arabic, "arabic-list", min_leaves=5)
 
 
 PROFILES["arabic-list"] = arabic_list_profile

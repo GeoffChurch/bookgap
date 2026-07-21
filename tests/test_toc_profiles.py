@@ -400,3 +400,39 @@ def test_access_2002_deduped_parts():
     labels = _part_labels(p)
     assert len(labels) == 6  # deduped -- the abstract repeats its own ToC verbatim
     assert len(labels) == len(set(l.lower() for l in labels))  # no duplicate part labels
+
+
+# ---------------------------------------------------------------------------
+# Final-review fixes: empty part-title leak + per-profile min_leaves.
+# ---------------------------------------------------------------------------
+
+def _all_titled(nodes) -> bool:
+    return all(n.title and _all_titled(n.children) for n in nodes)
+
+
+def test_trailing_empty_part_is_dropped_not_leaked():
+    # Real defect: a PART marker with nothing after it (end of abstract) yielded
+    # a TocNodeRaw(title="", kind="part") leaking into the tree. No node --
+    # anywhere in the tree -- may have an empty title, and the real chapters
+    # that precede the empty part must not be lost in the process.
+    ab = "CHAPTER 1 Alpha CHAPTER 2 Beta CHAPTER 3 Gamma PART TWO. PART THREE."
+    p = chapter_n_profile(ab)
+    assert p is not None
+    assert _all_titled(p.nodes)
+    leaves = _leaf_titles(p)
+    assert "Alpha" in leaves and "Beta" in leaves and "Gamma" in leaves
+
+
+def test_arabic_list_requires_at_least_five_leaves():
+    # arabic-list lacks the "Chapter" keyword signal, so it needs a higher bar
+    # than chapter-n: exactly 4 ordered items must be rejected (< 5).
+    ab = "1. Alpha 2. Beta 3. Gamma 4. Delta"
+    assert arabic_list_profile(ab) is None
+
+
+def test_chapter_n_accepts_exactly_three():
+    # chapter-n's bar stays >=3 (the "Chapter" keyword is signal enough).
+    ab = "CHAPTER 1 Alpha CHAPTER 2 Beta CHAPTER 3 Gamma"
+    p = chapter_n_profile(ab)
+    assert p is not None
+    assert _leaf_titles(p) == ["Alpha", "Beta", "Gamma"]
