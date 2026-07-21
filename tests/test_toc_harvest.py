@@ -10,13 +10,14 @@ def _nt(oid, title, prof="arabic-list"):
                       snapshot_date="2025-11-06", parser_profile=prof,
                       nodes=(TocNodeRaw(title="A"), TocNodeRaw(title="B"), TocNodeRaw(title="C")))
 
-def test_write_corpus_writes_per_toc_json_and_manifest(tmp_path):
+def test_write_corpus_writes_jsonl_and_manifest(tmp_path):
     manifest = write_corpus([_nt("W1", "Alpha"), _nt("W2", "Beta", prof="chapter-n")], tmp_path)
-    files = sorted(p.name for p in tmp_path.glob("*.json"))
-    assert files == ["W1.json", "W2.json", "_manifest.json"]
-    w1 = json.loads((tmp_path / "W1.json").read_text())
-    assert w1["schema"] == "openalex-toc/v1" and w1["title"] == "Alpha"
-    assert manifest["total"] == 2
+    lines = (tmp_path / "tocs.jsonl").read_text().splitlines()
+    assert len(lines) == 2
+    recs = [json.loads(l) for l in lines]
+    assert {r["title"] for r in recs} == {"Alpha", "Beta"}
+    assert all(r["schema"] == "openalex-toc/v1" for r in recs)
+    assert json.loads((tmp_path / "manifest.json").read_text())["total"] == 2
     assert manifest["by_profile"] == {"arabic-list": 1, "chapter-n": 1}
 
 def test_argparser_defaults():

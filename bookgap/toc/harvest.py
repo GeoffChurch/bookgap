@@ -18,24 +18,21 @@ from bookgap.toc.records import read_book_records
 _DEFAULT_SNAPSHOT = "2025-11-06"
 
 
-def _oid_tail(openalex_id: str) -> str:
-    return openalex_id.rstrip("/").split("/")[-1]
-
-
 def write_corpus(tocs: Iterable[NeutralToc], out_dir: Path) -> dict[str, Any]:
+    """Write the corpus as one JSONL (one NeutralToc per line) + manifest.json."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     by_profile: Counter[str] = Counter()
     by_topic: Counter[str] = Counter()
     total = 0
-    for nt in tocs:
-        (out_dir / f"{_oid_tail(nt.openalex_id)}.json").write_text(
-            json.dumps(nt.to_dict(), ensure_ascii=False, indent=1))
-        by_profile[nt.parser_profile] += 1
-        by_topic[nt.primary_topic_id or "unknown"] += 1
-        total += 1
+    with (out_dir / "tocs.jsonl").open("w", encoding="utf-8") as fh:
+        for nt in tocs:
+            fh.write(json.dumps(nt.to_dict(), ensure_ascii=False) + "\n")
+            by_profile[nt.parser_profile] += 1
+            by_topic[nt.primary_topic_id or "unknown"] += 1
+            total += 1
     manifest = {"total": total, "by_profile": dict(by_profile), "by_topic": dict(by_topic)}
-    (out_dir / "_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     return manifest
 
 
