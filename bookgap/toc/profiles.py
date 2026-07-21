@@ -69,3 +69,25 @@ def _parsed(profile: str, titles: list[str]) -> "ParsedToc | None":
     if len(nodes) < 3:
         return None
     return ParsedToc(profile=profile, nodes=nodes)
+
+
+_CH = re.compile(r"(?:^|[\s.;:\-—])(?:CHAPTER|Chapter|Ch\.)\s+(\d{1,3})\b[.:\s]*")
+
+
+def chapter_n_profile(abstract: str, *, minimum: int = 3) -> "ParsedToc | None":
+    ab = _norm(abstract)
+    ms = list(_CH.finditer(ab))
+    if len(ms) < minimum:
+        return None
+    nums = [int(m.group(1)) for m in ms]
+    if nums != sorted(nums) or len(set(nums)) != len(nums):
+        return None
+    if nums[0] not in (0, 1):
+        return None
+    titles = _slice_titles(ab, ms)
+    if not _titles_sane(titles):
+        return None
+    return _parsed("chapter-n", titles)
+
+
+PROFILES["chapter-n"] = chapter_n_profile
