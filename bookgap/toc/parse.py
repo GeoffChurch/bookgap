@@ -45,15 +45,19 @@ def _norm_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
 
+def _leaf_count(nodes: tuple[TocNodeRaw, ...]) -> int:
+    return sum(_leaf_count(n.children) if n.children else 1 for n in nodes)
+
+
 def derive_tocs(records: Iterable[BookRecord], snapshot_date: str) -> list[NeutralToc]:
     best_by_key: dict[str, NeutralToc] = {}
     for rec in records:
         best = None
         for profile in PROFILES.values():
             parsed = profile(rec.abstract)
-            if parsed and (best is None or len(parsed.nodes) > len(best.nodes)):
+            if parsed and (best is None or _leaf_count(parsed.nodes) > _leaf_count(best.nodes)):
                 best = parsed
-        if best is None or len(best.nodes) < 3:
+        if best is None or _leaf_count(best.nodes) < 3:
             continue
         nt = NeutralToc(
             openalex_id=rec.openalex_id, title=rec.title,
@@ -63,6 +67,6 @@ def derive_tocs(records: Iterable[BookRecord], snapshot_date: str) -> list[Neutr
         )
         key = _norm_key(rec.title)
         cur = best_by_key.get(key)
-        if cur is None or len(nt.nodes) > len(cur.nodes):
+        if cur is None or _leaf_count(nt.nodes) > _leaf_count(cur.nodes):
             best_by_key[key] = nt
     return list(best_by_key.values())
