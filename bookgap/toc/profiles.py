@@ -91,3 +91,28 @@ def chapter_n_profile(abstract: str, *, minimum: int = 3) -> "ParsedToc | None":
 
 
 PROFILES["chapter-n"] = chapter_n_profile
+
+
+_ARA = re.compile(r"(?<![\d.])(\d{1,3})\.(?!\d)\s+")
+
+
+def arabic_list_profile(abstract: str, *, minimum: int = 5) -> "ParsedToc | None":
+    ab = _norm(abstract)
+    ms = list(_ARA.finditer(ab))
+    if len(ms) < minimum:
+        return None
+    nums = [int(m.group(1)) for m in ms]
+    if nums[0] != 1:
+        return None
+    k = 1
+    while k < len(nums) and nums[k] == nums[k - 1] + 1:
+        k += 1
+    if k < minimum:
+        return None
+    titles = _slice_titles(ab, ms[:k])
+    if not _titles_sane(titles, frac=0.8):
+        return None
+    return _parsed("arabic-list", titles)
+
+
+PROFILES["arabic-list"] = arabic_list_profile

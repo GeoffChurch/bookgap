@@ -1,5 +1,6 @@
 from bookgap.toc.profiles import _clean_title
 from bookgap.toc.profiles import chapter_n_profile, PROFILES
+from bookgap.toc.profiles import arabic_list_profile
 
 
 def test_clean_title_strips_trailing_page_number():
@@ -36,3 +37,28 @@ def test_chapter_n_rejects_out_of_order():
 
 def test_chapter_n_registered():
     assert PROFILES["chapter-n"] is chapter_n_profile
+
+
+_POWER = ("1. Power Electronics 2. Power Diodes 3. Power Transistors "
+          "4. Thyristor Devices 5. Single-Phase Uncontrolled Rectifiers")
+
+def test_arabic_list_extracts_ordered_prefix():
+    p = arabic_list_profile(_POWER)
+    assert p is not None and p.profile == "arabic-list"
+    assert [n.title for n in p.nodes] == [
+        "Power Electronics", "Power Diodes", "Power Transistors",
+        "Thyristor Devices", "Single-Phase Uncontrolled Rectifiers"]
+
+def test_arabic_list_rejects_prose_enumeration_below_five():
+    # A three-item "contributions" enumeration must not parse.
+    assert arabic_list_profile(
+        "We make three contributions: 1. a dataset 2. a model 3. results") is None
+
+def test_arabic_list_ignores_decimal_subsections():
+    # "1.1"/"1.2" are decimals, not top-level items; no ordered 1..5 list here.
+    assert arabic_list_profile("Section 1.1 intro 1.2 setup 1.3 method") is None
+
+def test_arabic_list_rejects_sentence_length_titles():
+    long = " ".join(
+        f"{i}. " + ("word " * 30) for i in range(1, 6))  # 5 items but ~150-char titles
+    assert arabic_list_profile(long) is None
