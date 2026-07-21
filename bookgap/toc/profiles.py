@@ -3,6 +3,12 @@
 Each Profile is a pure str -> ParsedToc | None. A parse is kept only when it
 yields an ordered, sanely-titled chapter sequence -- the structure IS the
 filter, so profiles run blindly on every abstract with no venue gating.
+
+Part-aware: when the abstract contains >=2 keyword "PART"/"SECTION" markers,
+chapters are nested under their enclosing part (restart-tolerant: chapter
+numbering may reset to 1 across a part boundary). Back-matter (appendices,
+glossary, index, ...) is truncated at the abstract level before any marker
+scan, so back-matter words never need to be stripped out of a title.
 """
 from __future__ import annotations
 
@@ -28,13 +34,15 @@ Profile = Callable[[str], "ParsedToc | None"]
 PROFILES: dict[str, Profile] = {}
 
 _HTML = re.compile(r"<[^>]+>")
-# Trailing structural markers that are not part of a chapter title. PART is
-# matched case-insensitively but only when followed by a roman/number token.
-_TRAILER = re.compile(
-    r"\s+(?:PART\s+[IVXLC\d]+|Index|Appendix|Author index|Object index|"
-    r"Bibliography|Summary|Session|부록)\b.*$", re.I)
-_PAGE_TAIL = re.compile(r"(?:\s+|(?<=[a-z]))\d{1,4}\s*$")
+# embedded structural divider leaked into a title (bare-roman-before-ALLCAPS / SECTION / PART):
+_DIV = re.compile(r"\.\s+(?:[IVXLC]+\.\s+[A-Z][A-Z]|SECTION\b|PART\b).*$")
+# structural trailers ONLY -- back-matter words are handled by _truncate_backmatter
+# at the abstract level, so they must NOT be stripped here (that would mangle
+# legitimate titles like "Soil Index Properties" -> "Soil").
+_TRAILER = re.compile(r"\s+(?:PART\s+[IVXLC\d]+|Summary|Session|부록)\b.*$", re.I)
+_CONNECTOR = re.compile(r"\s*--\s*[A-Za-z]{0,8}\.?\s*$")  # trailing "-- ch" / "-- Part"
 _CHAP_TAIL = re.compile(r"\s+Chapter(?:\s+\d+)?\s*$", re.I)
+_PAGE_TAIL = re.compile(r"(?:\s+|(?<=[a-z]))\d{1,4}\s*$")
 
 
 def _norm(s: str | None) -> str:
@@ -44,108 +52,160 @@ def _norm(s: str | None) -> str:
 def _clean_title(raw: str) -> str:
     t = raw.replace("\xa0", " ").replace("–", "-").replace("[[MISSING]]", " ")
     t = _HTML.sub(" ", t)
+    t = _DIV.sub("", t)
     t = _TRAILER.sub("", t)
+    t = _CONNECTOR.sub("", t)
     t = _CHAP_TAIL.sub("", t)
     t = _PAGE_TAIL.sub("", t)
-    return re.sub(r"\s+", " ", t).strip(" .:-,\t")
+    return re.sub(r"\s+", " ", t).strip(" .:-,;\t")
 
 
-def _slice_titles(ab: str, ms: list[re.Match]) -> list[str]:
-    out: list[str] = []
-    for i, m in enumerate(ms):
-        start = m.end()
-        end = ms[i + 1].start() if i + 1 < len(ms) else min(len(ab), start + 120)
-        out.append(_clean_title(ab[start:end]))
-    return out
+_BACK = re.compile(
+    r"(?:^|[.\s;])\s*(?:APPENDIX|APPENDICES|GLOSSARY|REFERENCES|BIBLIOGRAPHY|"
+    r"LIST OF ACRONYMS|Problems\s+Solutions)\b|\.\s*Index\b(?!\s+[A-Z][a-z])", re.I)
 
 
-def _titles_sane(titles: list[str], frac: float = 0.7) -> bool:
-    if not titles:
-        return False
-    ok = sum(1 for t in titles if 2 <= len(t) <= 100)
-    return ok >= len(titles) * frac
+def _truncate_backmatter(ab: str) -> str:
+    for m in _BACK.finditer(ab):
+        if m.start() > 40:
+            return ab[:m.start()]
+    return ab
 
 
-def _parsed(profile: str, titles: list[str]) -> "ParsedToc | None":
-    titles = [t for t in titles if t]
-    if len(titles) < 3:
+_SPELLED = ("ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE|"
+            "THIRTEEN|FOURTEEN")
+_PART = re.compile(r"(?:(?<=[.\s;\-])|^)(?:PART|SECTION|Part|Section)\s+"
+                   r"(?:" + _SPELLED + r"|[IVXLC]+|\d+)\b[.:]?\s*")
+
+
+def _find_parts(ab: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for m in _PART.finditer(ab)]
+
+
+# ----- marker finders (one per profile) -> list[(start, end, number)] -----
+_CH = re.compile(r"(?:^|[\s.;:,\-—])(?:CHAPTER|Chapter|Ch\.)\s+(\d{1,3})\b[.:\s]*", re.I)
+_ARA = re.compile(r"(?<![\d.])(\d{1,3})[.:)](?!\d)\s+")
+_ROM = re.compile(r"(?<![a-zA-Z])(i{1,3}|iv|vi{0,3}|ix|xi{0,3})\.\s+", re.I)
+_ROMORD = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv"]
+
+
+def markers_chapter_n(ab: str) -> list[tuple[int, int, int]]:
+    return [(m.start(), m.end(), int(m.group(1))) for m in _CH.finditer(ab)]
+
+
+def markers_arabic(ab: str) -> list[tuple[int, int, int]]:
+    return [(m.start(), m.end(), int(m.group(1))) for m in _ARA.finditer(ab)]
+
+
+def markers_roman(ab: str) -> list[tuple[int, int, int]]:
+    return [(m.start(), m.end(), _ROMORD.index(m.group(1).lower()) + 1)
+            for m in _ROM.finditer(ab) if m.group(1).lower() in _ROMORD]
+
+
+def assemble(abstract: str, markers_fn: Callable[[str], list[tuple[int, int, int]]],
+             name: str, *, min_leaves: int = 3) -> "ParsedToc | None":
+    ab = _norm(_truncate_backmatter(abstract))
+    parts = _find_parts(ab)
+    in_part = lambda p: any(s <= p < e for s, e in parts)
+    div_between = lambda a, b: any(a < s < b for s, e in parts)
+
+    chap = [(s, e, n) for (s, e, n) in markers_fn(ab) if not in_part(s)]
+
+    # restart-tolerant ordered selection (reset-to-1 allowed only across a keyword part)
+    kept: list[tuple[int, int, int]] = []
+    exp: int | None = None
+    for (s, e, n) in chap:
+        if exp is None:
+            if n in (0, 1):
+                kept.append((s, e, n))
+                exp = n + 1
+        elif n == exp:
+            kept.append((s, e, n))
+            exp += 1
+        elif n == 1 and kept and div_between(kept[-1][0], s):
+            kept.append((s, e, n))
+            exp = 2
+        else:
+            break
+
+    stops = sorted([s for s, _, _ in kept] + [s for s, _ in parts] + [len(ab)])
+
+    def _after(end: int, cap: int) -> str:
+        nxt = min([x for x in stops if x > end], default=min(len(ab), end + cap))
+        return _clean_title(ab[end:min(nxt, end + cap)])
+
+    chapters = [(s, _after(e, 140)) for (s, e, n) in kept]
+
+    def _plabel(pe: int) -> str:
+        nxt = min([x for x in stops if x > pe], default=min(len(ab), pe + 90))
+        return _clean_title(ab[pe:min(nxt, pe + 90)].split(".")[0])  # bound at first period
+
+    if len(parts) >= 2:
+        first = parts[0][0]
+        tree: list[TocNodeRaw] = [
+            TocNodeRaw(title=t) for (s, t) in chapters if s < first and t]
+        # index within `tree` of each part label already emitted, for dedup
+        seen: dict[str, int] = {}
+        for i, (ps, pe) in enumerate(parts):
+            nxt = parts[i + 1][0] if i + 1 < len(parts) else len(ab)
+            kids = tuple(TocNodeRaw(title=t) for (cs, t) in chapters if pe <= cs < nxt and t)
+            label = _plabel(pe)
+            if not label:
+                # an empty-titled part node must never appear: if it has real
+                # chapter children, promote them to top level; otherwise drop
+                # the part entirely (no title, no children -- nothing to keep).
+                tree.extend(kids)
+                continue
+            k = label.lower()
+            if k in seen:
+                idx = seen[k]
+                if len(kids) > len(tree[idx].children):
+                    tree[idx] = TocNodeRaw(title=label, kind="part", children=kids)
+                continue
+            seen[k] = len(tree)
+            tree.append(TocNodeRaw(title=label, kind="part", children=kids))
+    else:
+        tree = [TocNodeRaw(title=t) for (s, t) in chapters if t]
+
+    def _leaves(ns: list[TocNodeRaw]) -> int:
+        return sum(_leaves(list(n.children)) if n.children else 1 for n in ns)
+
+    def _ltitles(ns: list[TocNodeRaw]) -> list[str]:
+        out: list[str] = []
+        for n in ns:
+            out += _ltitles(list(n.children)) if n.children else [n.title]
+        return out
+
+    if _leaves(tree) < min_leaves:
         return None
-    # Real chapter titles start with a capital, digit, or symbol; prose fragments
-    # ("a microbial fuel cell ...") start lowercase. Reject mostly-lowercase parses.
-    title_like = sum(1 for t in titles if not t[0].islower())
-    if title_like < 0.7 * len(titles):
+    lt = _ltitles(tree)
+    if sum(1 for t in lt if t and not t[0].islower()) < 0.7 * len(lt):
         return None
-    return ParsedToc(profile=profile, nodes=tuple(TocNodeRaw(title=t) for t in titles))
+    if sum(1 for t in lt if len(t) >= 2 and any(c.isalpha() for c in t)) < 0.7 * len(lt):
+        return None
+    return ParsedToc(profile=name, nodes=tuple(tree))
 
 
-_CH = re.compile(r"(?:^|[\s.;:,\-—])(?:CHAPTER|Chapter|Ch\.)\s+(\d{1,3})\b[.:\s]*")
-
-
-def chapter_n_profile(abstract: str, *, minimum: int = 3) -> "ParsedToc | None":
-    ab = _norm(abstract)
-    ms = list(_CH.finditer(ab))
-    if len(ms) < minimum:
-        return None
-    nums = [int(m.group(1)) for m in ms]
-    if nums != sorted(nums) or len(set(nums)) != len(nums):
-        return None
-    if nums[0] not in (0, 1):
-        return None
-    titles = _slice_titles(ab, ms)
-    if not _titles_sane(titles):
-        return None
-    return _parsed("chapter-n", titles)
+def chapter_n_profile(abstract: str) -> "ParsedToc | None":
+    return assemble(abstract, markers_chapter_n, "chapter-n", min_leaves=3)
 
 
 PROFILES["chapter-n"] = chapter_n_profile
 
 
-_ARA = re.compile(r"(?<![\d.])(\d{1,3})\.(?!\d)\s+")
-
-
-def arabic_list_profile(abstract: str, *, minimum: int = 5) -> "ParsedToc | None":
-    ab = _norm(abstract)
-    ms = list(_ARA.finditer(ab))
-    if len(ms) < minimum:
-        return None
-    nums = [int(m.group(1)) for m in ms]
-    if nums[0] != 1:
-        return None
-    k = 1
-    while k < len(nums) and nums[k] == nums[k - 1] + 1:
-        k += 1
-    if k < minimum:
-        return None
-    titles = _slice_titles(ab, ms[:k])
-    if not _titles_sane(titles, frac=0.8):
-        return None
-    return _parsed("arabic-list", titles)
+def arabic_list_profile(abstract: str) -> "ParsedToc | None":
+    # numbered lists lack the "Chapter" keyword signal, so -- like roman-list --
+    # they need a longer ordered run than chapter-n before trusting a parse.
+    return assemble(abstract, markers_arabic, "arabic-list", min_leaves=5)
 
 
 PROFILES["arabic-list"] = arabic_list_profile
 
 
-_ROM = re.compile(r"(?<![a-zA-Z])(i{1,3}|iv|vi{0,3}|ix|xi{0,3})\.\s+", re.I)
-_ROMORD = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"]
-
-
-def roman_list_profile(abstract: str, *, minimum: int = 5) -> "ParsedToc | None":
-    ab = _norm(abstract)
-    ms = list(_ROM.finditer(ab))
-    if len(ms) < minimum:
-        return None
-    labs = [m.group(1).lower() for m in ms]
-    if labs[0] != "i":
-        return None
-    k = 1
-    while k < len(labs) and k < len(_ROMORD) and labs[k] == _ROMORD[k]:
-        k += 1
-    if k < minimum:
-        return None
-    titles = _slice_titles(ab, ms[:k])
-    if not _titles_sane(titles, frac=0.8):
-        return None
-    return _parsed("roman-list", titles)
+def roman_list_profile(abstract: str) -> "ParsedToc | None":
+    # roman numerals collide easily with prose ("i.", "v."); require a longer
+    # ordered run than the chapter-n/arabic profiles before trusting a parse.
+    return assemble(abstract, markers_roman, "roman-list", min_leaves=5)
 
 
 PROFILES["roman-list"] = roman_list_profile
