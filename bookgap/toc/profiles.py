@@ -116,3 +116,29 @@ def arabic_list_profile(abstract: str, *, minimum: int = 5) -> "ParsedToc | None
 
 
 PROFILES["arabic-list"] = arabic_list_profile
+
+
+_ROM = re.compile(r"(?<![a-zA-Z])(i{1,3}|iv|vi{0,3}|ix|xi{0,3})\.\s+", re.I)
+_ROMORD = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"]
+
+
+def roman_list_profile(abstract: str, *, minimum: int = 5) -> "ParsedToc | None":
+    ab = _norm(abstract)
+    ms = list(_ROM.finditer(ab))
+    if len(ms) < minimum:
+        return None
+    labs = [m.group(1).lower() for m in ms]
+    if labs[0] != "i":
+        return None
+    k = 1
+    while k < len(labs) and k < len(_ROMORD) and labs[k] == _ROMORD[k]:
+        k += 1
+    if k < minimum:
+        return None
+    titles = _slice_titles(ab, ms[:k])
+    if not _titles_sane(titles, frac=0.8):
+        return None
+    return _parsed("roman-list", titles)
+
+
+PROFILES["roman-list"] = roman_list_profile

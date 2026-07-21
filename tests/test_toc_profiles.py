@@ -1,6 +1,7 @@
 from bookgap.toc.profiles import _clean_title
 from bookgap.toc.profiles import chapter_n_profile, PROFILES
 from bookgap.toc.profiles import arabic_list_profile
+from bookgap.toc.profiles import roman_list_profile
 
 
 def test_clean_title_strips_trailing_page_number():
@@ -62,3 +63,18 @@ def test_arabic_list_rejects_sentence_length_titles():
     long = " ".join(
         f"{i}. " + ("word " * 30) for i in range(1, 6))  # 5 items but ~150-char titles
     assert arabic_list_profile(long) is None
+
+
+_ROUTLEDGE = ("I. Newtonian Mechanics<br/> II. Special Relativity<br/> "
+              "III. General Relativity<br/> IV. Non-Relativistic Quantum Theory<br/> "
+              "V. Quantum Field Theory<br/>")
+
+def test_roman_list_extracts_ordered_and_cleans_html():
+    p = roman_list_profile(_ROUTLEDGE)
+    assert p is not None and p.profile == "roman-list"
+    assert [n.title for n in p.nodes] == [
+        "Newtonian Mechanics", "Special Relativity", "General Relativity",
+        "Non-Relativistic Quantum Theory", "Quantum Field Theory"]
+
+def test_roman_list_rejects_below_five():
+    assert roman_list_profile("I. A II. B III. C IV. D") is None
