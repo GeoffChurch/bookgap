@@ -21,10 +21,11 @@ def test_derive_drops_records_without_a_toc():
     assert derive_tocs([_rec("https://openalex.org/W9", "Prose", "A plain abstract.")], "s") == []
 
 def test_derive_dedups_by_normalized_title_keeping_richest():
-    short = "CHAPTER 1 A CHAPTER 2 B CHAPTER 3 C"           # 3 nodes
+    short = "CHAPTER 1 Alpha CHAPTER 2 Beta CHAPTER 3 Gamma"   # 3 nodes (sane titles)
     rich = _FIVE                                            # 5 nodes, same title (punct/case differ)
     out = derive_tocs([
         _rec("https://openalex.org/W1", "Power: Electronics!", short),
         _rec("https://openalex.org/W2", "power electronics", rich),
     ], "s")
     assert len(out) == 1 and len(out[0].nodes) == 5
+    assert out[0].openalex_id == "https://openalex.org/W2"
