@@ -71,7 +71,7 @@ def _parsed(profile: str, titles: list[str]) -> "ParsedToc | None":
     return ParsedToc(profile=profile, nodes=nodes)
 
 
-_CH = re.compile(r"(?:^|[\s.;:\-—])(?:CHAPTER|Chapter|Ch\.)\s+(\d{1,3})\b[.:\s]*")
+_CH = re.compile(r"(?:^|[\s.;:,\-—])(?:CHAPTER|Chapter|Ch\.)\s+(\d{1,3})\b[.:\s]*")
 
 
 def chapter_n_profile(abstract: str, *, minimum: int = 3) -> "ParsedToc | None":

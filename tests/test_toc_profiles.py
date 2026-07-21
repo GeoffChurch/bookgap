@@ -78,3 +78,12 @@ def test_roman_list_extracts_ordered_and_cleans_html():
 
 def test_roman_list_rejects_below_five():
     assert roman_list_profile("I. A II. B III. C IV. D") is None
+
+
+def test_chapter_n_handles_comma_before_label():
+    # Real Task-8 false-split: no whitespace, a comma directly precedes the label.
+    # Old boundary class excluded ',', so all three labels were missed -> None.
+    ab = "Signal Processing,Chapter 1: Fundamentals,Chapter 2: Systems,Chapter 3: Advanced"
+    p = chapter_n_profile(ab)
+    assert p is not None
+    assert [n.title for n in p.nodes] == ["Fundamentals", "Systems", "Advanced"]
