@@ -87,3 +87,24 @@ def test_chapter_n_handles_comma_before_label():
     p = chapter_n_profile(ab)
     assert p is not None
     assert [n.title for n in p.nodes] == ["Fundamentals", "Systems", "Advanced"]
+
+
+def test_clean_title_strips_trailing_comma():
+    assert _clean_title("Concept of the PC,") == "Concept of the PC"
+
+def test_clean_title_strips_stuck_page_number():
+    assert _clean_title("Evolve or Die11") == "Evolve or Die"      # glued to lowercase
+    assert _clean_title("Systems Integration 27") == "Systems Integration"
+    assert _clean_title("CO2") == "CO2"                            # uppercase-preceded digit KEPT
+
+def test_clean_title_strips_trailing_chapter_header():
+    assert _clean_title("Authority Rules Chapter") == "Authority Rules"
+    assert _clean_title("Misconduct Chapter 3") == "Misconduct"
+    assert _clean_title("A New Chapter in History") == "A New Chapter in History"  # mid-title KEPT
+
+def test_chapter_n_rejects_prose_in_chapter_enumeration():
+    # "In Chapter N, <lowercase prose>" -> fragments start lowercase -> rejected as prose.
+    ab = ("In Chapter 1, a microbial fuel cell was studied. "
+          "In Chapter 2, an autonomous model was built. "
+          "In Chapter 3, studies of dehumidification are presented.")
+    assert chapter_n_profile(ab) is None

@@ -33,7 +33,8 @@ _HTML = re.compile(r"<[^>]+>")
 _TRAILER = re.compile(
     r"\s+(?:PART\s+[IVXLC\d]+|Index|Appendix|Author index|Object index|"
     r"Bibliography|Summary|Session|부록)\b.*$", re.I)
-_PAGE_TAIL = re.compile(r"\s+\d{1,4}\s*$")
+_PAGE_TAIL = re.compile(r"(?:\s+|(?<=[a-z]))\d{1,4}\s*$")
+_CHAP_TAIL = re.compile(r"\s+Chapter(?:\s+\d+)?\s*$", re.I)
 
 
 def _norm(s: str | None) -> str:
@@ -44,8 +45,9 @@ def _clean_title(raw: str) -> str:
     t = raw.replace("\xa0", " ").replace("–", "-").replace("[[MISSING]]", " ")
     t = _HTML.sub(" ", t)
     t = _TRAILER.sub("", t)
+    t = _CHAP_TAIL.sub("", t)
     t = _PAGE_TAIL.sub("", t)
-    return re.sub(r"\s+", " ", t).strip(" .:-\t")
+    return re.sub(r"\s+", " ", t).strip(" .:-,\t")
 
 
 def _slice_titles(ab: str, ms: list[re.Match]) -> list[str]:
@@ -65,10 +67,15 @@ def _titles_sane(titles: list[str], frac: float = 0.7) -> bool:
 
 
 def _parsed(profile: str, titles: list[str]) -> "ParsedToc | None":
-    nodes = tuple(TocNodeRaw(title=t) for t in titles if t)
-    if len(nodes) < 3:
+    titles = [t for t in titles if t]
+    if len(titles) < 3:
         return None
-    return ParsedToc(profile=profile, nodes=nodes)
+    # Real chapter titles start with a capital, digit, or symbol; prose fragments
+    # ("a microbial fuel cell ...") start lowercase. Reject mostly-lowercase parses.
+    title_like = sum(1 for t in titles if not t[0].islower())
+    if title_like < 0.7 * len(titles):
+        return None
+    return ParsedToc(profile=profile, nodes=tuple(TocNodeRaw(title=t) for t in titles))
 
 
 _CH = re.compile(r"(?:^|[\s.;:,\-—])(?:CHAPTER|Chapter|Ch\.)\s+(\d{1,3})\b[.:\s]*")
