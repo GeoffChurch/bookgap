@@ -372,6 +372,26 @@ _ACCESS_2002 = (
     "to Survive Them. Index.")
 
 
+_MULTICULTURAL_TEACHING_DIGITS = "Part 1. 1 Part 2. 5 Part 3. 10"
+
+
+def test_rejects_digit_only_leaf_titles():
+    # Real defect: "Multicultural Teaching" produced 3 part-leaves titled
+    # exactly "1", "5", "10" (page numbers / list markers, no real titles).
+    # No CHAPTER/arabic/roman markers exist, so the PART labels themselves
+    # become the childless leaf titles -- and here those labels are bare digits.
+    assert chapter_n_profile(_MULTICULTURAL_TEACHING_DIGITS) is None
+
+
+def test_accepts_real_word_part_labels_only_childless_leaves():
+    # Sanity: real-word part labels (no digit-only content) still parse fine --
+    # this is the existing _DRIVING_ECONOMY exemplar's shape, re-asserted here
+    # as the positive control for the digit-only guard above.
+    p = chapter_n_profile(_DRIVING_ECONOMY)
+    assert p is not None
+    assert all(n.kind == "part" and n.children == () for n in p.nodes)
+
+
 def test_access_2002_deduped_parts():
     p = chapter_n_profile(_ACCESS_2002)
     assert p is not None and p.profile == "chapter-n"

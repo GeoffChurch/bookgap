@@ -176,6 +176,8 @@ def assemble(abstract: str, markers_fn: Callable[[str], list[tuple[int, int, int
     lt = _ltitles(tree)
     if sum(1 for t in lt if t and not t[0].islower()) < 0.7 * len(lt):
         return None
+    if sum(1 for t in lt if len(t) >= 2 and any(c.isalpha() for c in t)) < 0.7 * len(lt):
+        return None
     return ParsedToc(profile=name, nodes=tuple(tree))
 
 
