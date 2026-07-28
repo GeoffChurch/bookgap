@@ -42,6 +42,7 @@ Per-gap quality measurement and filtering.
 ## Denoiser methods
 
 - [denoiser-bakeoff-expansion](denoiser-bakeoff-expansion.md) — **living doc**: candidate arms (existing + published + CSLS-inspired), $k$-extension plans, results log
+- [rank1-vs-diagonal-regularization](rank1-vs-diagonal-regularization.md) — audit every graph operator's regulariser: dangling nodes/irreducibility call for a rank-1 $\tau \cdot \mathbf{1}r^\top$; only spectral conditioning justifies a diagonal, and `+I` before row-normalisation is degree-dependent laziness that moves the fixed point
 
 ## Document representations
 
