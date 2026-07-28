@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from artifacts_scripts.common import load_results_dataframe
+from artifacts_scripts.common import latex_provenance, load_results_dataframe
 
 # 6 known-failure topics (see §5.1 in the paper).
 FAILURE_IDS = {
@@ -121,7 +121,7 @@ def main() -> None:
     ])
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text("\n".join(lines) + "\n")
+    args.output.write_text("\n".join(lines) + "\n" + latex_provenance(__spec__.name))
     print(f"Wrote {args.output}: {len(successes)} successes + "
           f"{len(failures)} labeled failures"
           + (f"; skipped {len(skipped)} ({', '.join(skipped)}) "

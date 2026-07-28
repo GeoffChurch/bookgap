@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from artifacts_scripts.common import latex_provenance
+
 QuestionType = str
 
 QUESTION_SLUGS = {
@@ -533,7 +535,7 @@ def main() -> None:
 
     means = compute_question_means(survey_questions, survey_responses)
     latex = render_latex_table(selected, means)
-    args.latex_path.write_text(latex, encoding="utf-8")
+    args.latex_path.write_text(latex + latex_provenance(__spec__.name), encoding="utf-8")
 
     print(f"Validated {len(selected)} selected books against {len(survey_questions)} survey questions.")
     print(f"LaTeX table written to {args.latex_path}")

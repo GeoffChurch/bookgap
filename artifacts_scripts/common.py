@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -26,6 +29,52 @@ EMBEDDER_PATH_TO_NAME_MAP = {
     "avsolatorio/GIST-small-Embedding-v0": "GIST_SMALL",
     "google/embeddinggemma-300m": "GEMMA_300M",
 }
+
+
+def _bookgap_revision() -> str:
+    """Short git description of the bookgap checkout, or ``"unknown"``.
+
+    Worth the subprocess: these tables are written into the *paper* repo, which
+    is a separate git repo with a separate history. Without the producing
+    commit recorded in the file, there is nothing on the paper side that says
+    which version of the pipeline a number came from.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--always", "--dirty", "--tags"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return out.stdout.strip() if out.returncode == 0 else "unknown"
+
+
+def latex_provenance(module: str) -> str:
+    """A LaTeX comment footer recording how a generated .tex was produced.
+
+    Generated tables are ``\\input`` into the paper from a different repo, so a
+    reader who finds a suspicious number has no path back to its producer
+    unless the file says so itself. Append the result to any generated .tex::
+
+        path.write_text(tex + latex_provenance(__spec__.name))
+
+    ``module`` is the dotted module path, normally ``__spec__.name`` (correct
+    under ``python -m``). Comments are inert wherever an ``\\input`` is legal,
+    including inside a ``tabular``.
+    """
+    cmd = f"python -m {module} " + " ".join(shlex.quote(a) for a in sys.argv[1:])
+    return (
+        "\n"
+        "% ---------------------------------------------------------------\n"
+        f"% GENERATED FILE -- do not hand-edit; regenerate with:\n"
+        f"%   {cmd.rstrip()}\n"
+        f"% bookgap revision: {_bookgap_revision()}\n"
+        "% (from the paper/ directory, `make artifacts` runs every generator.)\n"
+        "% ---------------------------------------------------------------\n"
+    )
 
 
 def friendly_embedder_name(embedder_model: Optional[str]) -> str:

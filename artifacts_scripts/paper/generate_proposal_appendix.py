@@ -52,6 +52,7 @@ import re
 import unicodedata
 from pathlib import Path
 
+from artifacts_scripts.common import latex_provenance
 from bookgap.llm.prompt_record import (
     ArticleEntry,
     BookCoverage,
@@ -592,7 +593,9 @@ def main() -> None:
         "\\providecommand{\\unkchar}{\\rule[0.1ex]{0.55em}{0.55em}}\n"
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(preamble + "\n" + "\n\n".join(chunks) + "\n")
+    args.output.write_text(
+        preamble + "\n" + "\n\n".join(chunks) + "\n" + latex_provenance(__spec__.name)
+    )
     print(f"Wrote {len(chunks)} topic pages to {args.output}")
 
 

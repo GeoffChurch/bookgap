@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import binomtest
 
+from artifacts_scripts.common import latex_provenance
+
 
 BASELINE_CSV = Path("outputs/random_baseline/results.csv")
 PRODUCTION_CSV = Path(
@@ -200,7 +202,7 @@ def main() -> None:
     )
 
     args.table_path.parent.mkdir(parents=True, exist_ok=True)
-    args.table_path.write_text(tex, encoding="utf-8")
+    args.table_path.write_text(tex + latex_provenance(__spec__.name), encoding="utf-8")
     print(f"\nWrote LaTeX table to {args.table_path}")
 
 
