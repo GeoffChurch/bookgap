@@ -21,6 +21,16 @@ __pycache__/
 /artifacts_scripts/sweeps/*.jsonl
 /artifacts_scripts/historical_gap_analysis/results/
 
+# Exploratory-spike API caches (~140MB). Both spikes hit free, keyless, public
+# endpoints -- NIH RePORTER + iCite for funding_spike, Overpass + Microsoft
+# Global ML Building Footprints for osm_spike -- and each script carries a
+# provenance footer with the exact refetch command. The osm_spike Overpass
+# cache is content-addressed on the full query string, so a refetch repopulates
+# it under identical names.
+/artifacts_scripts/funding_spike/cache/
+/artifacts_scripts/funding_spike/*.log
+/artifacts_scripts/osm_spike/cache/
+
 # The paper lives in its own nested git repo under /paper/. It is
 # intentionally not tracked here; edit and commit it from within the
 # paper repo itself. The explicit ignore line prevents an accidental
