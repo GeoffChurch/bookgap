@@ -260,7 +260,6 @@ def distinctive_terms_for_groups(
         doc_weighting=DocWeighting.EQUAL,
         topic_weighting=TopicWeighting.EQUAL,
         background_mode=BackgroundMode.MARGINAL,
-        weight_by_freq=True,
     )
 
 

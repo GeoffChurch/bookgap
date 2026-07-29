@@ -164,7 +164,6 @@ def compute_gap_keywords(
         top_k=top_k,
         topic_weighting=TopicWeighting.POOLED,
         background_mode=BackgroundMode.MARGINAL,
-        weight_by_freq=True,
     )
     if topic_doc_weights is not None:
         extract_kwargs["doc_weighting"] = DocWeighting.RELEVANCE

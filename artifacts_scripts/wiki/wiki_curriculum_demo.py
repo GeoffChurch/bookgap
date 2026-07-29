@@ -406,7 +406,6 @@ def keywords_for_topics(
         doc_weighting=DocWeighting.EQUAL,
         topic_weighting=TopicWeighting.EQUAL,
         background_mode=BackgroundMode.MARGINAL,
-        weight_by_freq=True,
     )
 
 
