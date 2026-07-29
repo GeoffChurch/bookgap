@@ -80,6 +80,12 @@ markers = [
     "integration: marks tests as integration tests that may incur costs (run with '--integration')",
 ]
 addopts = "-m 'not integration' --ignore=cache"
+# Default collection is the core suite. artifacts_scripts carries its own tests
+# (gap_detection, lexrank_bgnorm); run those by explicit path.
+testpaths = ["tests"]
+# Repo root on sys.path so tests can import the top-level `scripts` package,
+# which is not part of the installed distribution and has no __init__.py.
+pythonpath = ["."]
 
 [tool.uv.sources]
 curriculum = { path = "../curriculum", editable = true }
