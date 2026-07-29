@@ -665,6 +665,17 @@ def tmp_ingest(tmp_path, monkeypatch):
     monkeypatch.setattr(util_mod, "CACHE_DIR", cache)
     monkeypatch.setattr(util_mod, "ARTIFACTS_DIR", artifacts)
 
+    # SCOPES_DIR must be patched separately. util.py binds it once at import
+    # (SCOPES_DIR = ARTIFACTS_DIR / "scopes"), so redirecting ARTIFACTS_DIR
+    # above does not move it -- and openalex_ingest writes the per-scope
+    # artifacts through SCOPES_DIR, not ARTIFACTS_DIR. Without this, ingest
+    # tests wrote a synthetic T99999 scope into the real repo's artifacts/,
+    # which is gitignored and so went unnoticed.
+    scopes = artifacts / "scopes"
+    scopes.mkdir()
+    monkeypatch.setattr(oi_mod, "SCOPES_DIR", scopes)
+    monkeypatch.setattr(util_mod, "SCOPES_DIR", scopes)
+
     return tmp_path
 
 
@@ -799,7 +810,7 @@ def test_run_entrypoint_end_to_end(tmp_ingest, monkeypatch):
     )
 
     # Per-scope artifact files must exist.
-    artifacts_dir = tmp_ingest / "artifacts" / str(scope)
+    artifacts_dir = tmp_ingest / "artifacts" / "scopes" / str(scope)
     assert (artifacts_dir / "invalid_works.txt").exists(), (
         f"invalid_works.txt not found under {artifacts_dir}"
     )
