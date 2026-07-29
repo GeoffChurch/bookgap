@@ -1,5 +1,7 @@
 # Fuzzy / soft topic membership (retire hard assignment) — the right design
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 **Motivation.** The pipeline is *soft on relevance, hard on assignment*: PageRank gives a continuous
 mass per work, but each work is hard-assigned to one topic by **embedding-only** clustering
 (agglomerative/bisecting k-means → dendrogram cut → hard labels; citations don't even enter the

@@ -1,5 +1,7 @@
 # Curriculum ranking: keep PageRank, fix the input (+ separate the ordering role)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Curriculum relevance ranking uses (bidirectional) personalized PageRank. **Keep
 it** — sparse power iteration over 40M nodes in ~100s is unmatched at this scale,
 and "teleport to the gap, flow along citations to prerequisites" is sound. The

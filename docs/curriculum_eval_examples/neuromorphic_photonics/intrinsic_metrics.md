@@ -1,5 +1,7 @@
 # Intrinsic metrics — neuromorphic_trackA_sem (A) vs neuromorphic_trackB (B)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Gap seed: 288 works · corpus background sample: 40000 · higher is better for silhouette / prereq_consist / kw_distinct / kw_gap_pmi; recency = mean pub year (higher = more frontier).
 
 | metric | A (ours) | B (book ToC) |

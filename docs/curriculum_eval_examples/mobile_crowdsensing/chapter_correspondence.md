@@ -1,5 +1,7 @@
 # Chapter correspondence — mcs_trackA_sem (A) vs mcs_trackB (B)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 A: 10 chapters · B: 10 chapters · align-probe: `centroid_cos`
 
 **Hungarian 1-1 alignment** (probe `centroid_cos`):

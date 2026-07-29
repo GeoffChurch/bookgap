@@ -1,5 +1,7 @@
 # Neuromorphic Photonics — pairwise eval (ours vs book ToC)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 **Judge:** gemma4:31b &nbsp;|&nbsp; **repeats:** 3/order &nbsp;|&nbsp; **A:** ours_sem_dk (ours) &nbsp;|&nbsp; **B:** book_toc (book ToC)
 
 **Parse/transport failures:** 0/6 (0%)

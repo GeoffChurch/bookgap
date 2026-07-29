@@ -1,5 +1,7 @@
 # Wire keyword detection into `batch_generator` so every gap carries its keywords
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 ## Idea
 
 Make per-gap keyword extraction a first-class part of the official

@@ -1,5 +1,7 @@
 # End-to-end overview: from a field of knowledge to a book or a proof
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 *For a reader new to this codebase. It explains **what the whole project is doing** and **what we've
 learned**, in plain terms, with pointers to the detailed docs for each piece. It does not assume you
 know the code.*

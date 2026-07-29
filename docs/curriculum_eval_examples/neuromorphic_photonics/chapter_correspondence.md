@@ -1,5 +1,7 @@
 # Chapter correspondence — neuromorphic_trackA_sem (A) vs neuromorphic_trackB (B)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 A: 13 chapters · B: 13 chapters · align-probe: `mmd`
 
 **Hungarian 1-1 alignment** (probe `mmd`):

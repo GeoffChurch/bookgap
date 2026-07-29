@@ -1,5 +1,7 @@
 # Fuzzy soft-membership probe — neuromorphic_trackA_sem
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 One-shot softmax responsibilities over 13 topic centroids; tau=0.003 calibrated to target perplexity 1.5 (mean topics/work). Total mass = 0.7827.
 
 | topic | hard size | soft size (Σ mass·r) | soft ESS (works) |

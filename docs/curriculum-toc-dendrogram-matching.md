@@ -1,5 +1,7 @@
 # Curriculum ToC-matching via dendrogram cuts
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 *Does a field's citation/topic structure predict a human textbook's table of contents — its
 chapter **selection**, its **granularity**, and its **ordering**? And which clustering/cut method
 best recovers it?* This extends the gap-based ToC-reconstruction eval

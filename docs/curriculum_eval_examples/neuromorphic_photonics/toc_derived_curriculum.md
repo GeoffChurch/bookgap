@@ -1,5 +1,7 @@
 # Neuromorphic Photonics — curriculum derived from the book's real ToC
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 *13 chapters, in learning order.*
 
 ## Chapter 1: neuromorphic computing, neuromorphic photonics, artificial intelligence

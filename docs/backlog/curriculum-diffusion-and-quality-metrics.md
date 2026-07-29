@@ -1,5 +1,7 @@
 # Curriculum: smooth diffusion densification + objective quality metrics
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Two coupled work items spun out of the joint-graph v2 result
 (`docs/wikipedia-openalex-joint-curriculum.md`): replace the **hard** 1-hop OA expansion with
 **smooth** graph diffusion (with a principled diffusion-time T), and build **objective proxies**

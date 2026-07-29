@@ -23,8 +23,14 @@ are in [`backlog/curriculum-real-toc-baseline.md`](backlog/curriculum-real-toc-b
 
 ## The pipeline (per book)
 
-All commands run from the repo root with `export PYTHONPATH=/home/gchurchill/src/bookgap` and the
-direct interpreter `/home/gchurchill/src/bookgap/.conda/bin/python` (NOT `conda run`).
+> **⚠ This recipe no longer runs.** Every `artifacts_scripts.curriculum.*` module below was deleted
+> in `0f2d0ad` (*refactor!: delete the legacy curriculum pipeline*), replaced by the sibling
+> `curriculum` repo's generate app (`../curriculum`). Kept as the design record of what the eval
+> did and why each step was needed; port it there rather than resurrecting these modules.
+> Recover any individual producer with `git show 0f2d0ad^:<path>`.
+
+Commands were run from the repo root with `export PYTHONPATH=/home/gchurchill/src/bookgap`. The
+interpreter shown was `.conda/bin/python`; the environment moved to `uv run python` in `6518955`.
 
 1. **Pick a target.** Targets must be (a) clean OA *book* records, (b) with a real own-gap, and
    (c) a recoverable ToC. Canonical/comprehensive textbooks (AIMA, Jurafsky, Koehn) have **empty**

@@ -1,5 +1,7 @@
 # Topic-anchor selection probe — color_image_trackA_sem
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 24 anchors; candidates = top-400 works by mass; redundant pair = cosine > 0.7.
 
 | method | max pair cos | mean top-5 pair cos | # redundant pairs | mass-wtd coverage |

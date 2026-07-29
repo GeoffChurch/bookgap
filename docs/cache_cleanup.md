@@ -1,5 +1,7 @@
 # Cache cleanup
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Audit of caching decorators in `bookgap/` and `artifacts_scripts/`. `MEMORY` is the
 joblib `Memory(CACHE_DIR/"joblib")` singleton in `util.py` — it persists results to
 disk (pickle + I/O), keyed by a hash of the arguments, and **survives across separate

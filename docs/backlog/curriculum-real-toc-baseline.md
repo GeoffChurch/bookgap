@@ -1,5 +1,7 @@
 # Real-book ToC reconstruction eval (book-first, whole-domain, book's-own-gap)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 **The design.** Manually pick real OA books (any topic) that have recoverable ToCs. For
 each book, compute **its own gap** the way the main pipeline already does — treat the book
 as a mere article and find its **nearest non-self neighboring book**, k-ball around it —

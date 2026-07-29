@@ -1,7 +1,16 @@
 # Dendrogram quality for curriculum-as-a-path — *the linkage IS the lever (average-linkage, real-metric-validated); the space/PCA fix over-promised in-space*
 
+> **⚠ Tooling superseded — findings stand, commands do not.** Every
+> `artifacts_scripts.curriculum.*` module named in this doc was deleted in `0f2d0ad`
+> (*refactor!: delete the legacy curriculum pipeline — replaced by the curriculum repo's
+> generate app*), and the interpreter moved from `.conda/bin/python` to `uv run python` in
+> `6518955`. Nothing below is runnable as written; the current home for this pipeline is the
+> sibling `curriculum` repo (`../curriculum`). The measured results remain valid for what
+> they measured.
+
 **Results doc** — validated → SHIPPED 2026-06-15: average-linkage is now the curriculum default
-(`artifacts_scripts/curriculum/config.py`: `linkage_method='average'`, guarded to require the top-k subset).
+(then `artifacts_scripts/curriculum/config.py`: `linkage_method='average'`, guarded to require the
+top-k subset; that module now lives in the `curriculum` repo).
 Motivating question: the curriculum-as-a-path-through-the-dendrogram
 idea is enticing (intro/conclusion as near-top clusters; UOT to match a flat cut to a book's ToC, dropping
 the conclusion many books omit). Is it *salvageable with a better dendrogram*? How do we experiment with and
@@ -199,11 +208,19 @@ the ARI-beats-DP split). So: average-linkage for **content/placement** (the defa
 tree. → `docs/curriculum-close-loop.md` (Exp B′).
 
 ## Provenance
-Regenerate (don't hand-edit the JSON):
-- `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.intrinsic_dendro_sweep`
-- `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.toc_recovery`
-- `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.space_tree_recon_ab`  (Stage 2: real 4-arm recon)
-- `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.hard_book_screen`  (Part B: hard-book screen)
-- `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.hard_book_4arm_proxy`  (Part B: hard-book 4-arm proxy)
-- `.conda/bin/python -m artifacts_scripts.curriculum.dendro_eval.space_tree_verdict`  (consolidated verdict)
-Results: `artifacts_scripts/curriculum/dendro_eval/{intrinsic_dendro_sweep,toc_recovery,space_tree_recon_ab,hard_book_screen,hard_book_4arm_proxy,space_tree_verdict}_results.json` (+ `space_tree_verdict.json`).
+
+**These are not re-runnable.** All six producers were deleted in `0f2d0ad`; recover them with
+`git show 0f2d0ad^:<path>` if you need to read or port one. Recorded as the historical record of
+how the numbers above were produced:
+
+- `artifacts_scripts.curriculum.dendro_eval.intrinsic_dendro_sweep`
+- `artifacts_scripts.curriculum.dendro_eval.toc_recovery`
+- `artifacts_scripts.curriculum.dendro_eval.space_tree_recon_ab`  (Stage 2: real 4-arm recon)
+- `artifacts_scripts.curriculum.dendro_eval.hard_book_screen`  (Part B: hard-book screen)
+- `artifacts_scripts.curriculum.dendro_eval.hard_book_4arm_proxy`  (Part B: hard-book 4-arm proxy)
+- `artifacts_scripts.curriculum.dendro_eval.space_tree_verdict`  (consolidated verdict)
+
+Their `*_results.json` outputs lived under `artifacts_scripts/curriculum/dendro_eval/` and are
+also gone — that tree held only regenerable run artifacts (its own `.gitignore` said so) and was
+removed once the producers went. To reproduce this evaluation, rebuild it against the `curriculum`
+repo's generate app rather than resurrecting these modules.

@@ -1,5 +1,7 @@
 # Curriculum clustering method comparison
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 (Migrated from `artifacts_scripts/curriculum/TODO.md` 2026-04-28.)
 
 This doc records the cross-corpus comparison of clustering methods used by the curriculum pipeline. The full method-implementation history (shipped dates, code paths) is preserved in git log; this doc captures the empirical results that informed the default method choice.

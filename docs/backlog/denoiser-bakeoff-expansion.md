@@ -1,5 +1,7 @@
 # Denoiser bake-off expansion (living doc)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Tracks proposed and tried denoiser arms beyond the current head-to-head
 in Appendix B. Update as arms are queued, run, or refuted. Migrates to
 `docs/denoiser-bakeoff-results.md` (or similar) once the bake-off

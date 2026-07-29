@@ -1,5 +1,7 @@
 # Chapter correspondence — color_image_trackA_sem (A) vs color_image_trackB (B)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 A: 24 chapters · B: 24 chapters · align-probe: `centroid_cos`
 
 **Hungarian 1-1 alignment** (probe `centroid_cos`):

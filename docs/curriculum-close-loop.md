@@ -1,5 +1,7 @@
 # Closing the loop: does gap-targeting + ordering reconstruct a real book's ToC?
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 The end-to-end test of the curriculum pipeline. Stages 1→3 say: detect a gap, select
 articles there, order them into chapters. This asks whether running that loop at a real
 book's *own gap* reproduces the book a human actually wrote — selection (does the

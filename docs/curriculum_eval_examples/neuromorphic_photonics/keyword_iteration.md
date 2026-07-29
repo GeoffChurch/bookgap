@@ -1,5 +1,7 @@
 # Nonlinear keyword↔work iteration — neuromorphic_trackA_sem
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Pool: 5000 works (local) · top_k=25 kw · top_m=120 works · anchor=False
 
 ## seed = chapter 5 (|seed|=27)

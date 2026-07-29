@@ -1,5 +1,7 @@
 # Intrinsic metrics — color_image_trackA_sem (A) vs color_image_trackB (B)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Gap seed: 457 works · corpus background sample: 40000 · higher is better for silhouette / prereq_consist / kw_distinct / kw_gap_pmi; recency = mean pub year (higher = more frontier).
 
 | metric | A (ours) | B (book ToC) |

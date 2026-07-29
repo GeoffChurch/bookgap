@@ -1,5 +1,7 @@
 # Subjective evaluation of the curriculum method on best-proposal gaps
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 **Living / in-progress doc.** Goal: hand-pick a handful of topics whose textbook
 *proposals* are especially strong, recover the exact in-gap articles behind each,
 and generate a **curriculum** for each gap (scoped to the whole Physical Sciences

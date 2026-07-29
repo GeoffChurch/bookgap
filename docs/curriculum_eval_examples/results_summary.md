@@ -1,5 +1,7 @@
 # Curriculum ToC-reconstruction eval — all books
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 Pairwise judge: gemma4:31b (3 repeats/order, de-randomized). **ours** = our gap-seeded curriculum (semantic re-rank + dynamic-k); **book** = the book's real ToC. A cell is a config only when it is preferred in BOTH presentation orders; an order-flip or genuine tie → `tie`.
 
 | Book | interestingness | comprehensiveness | specificity | progressive |

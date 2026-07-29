@@ -1,5 +1,7 @@
 # Good-edge chain construction — push more ToCs into the clean-chain regime
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 The curriculum orders chapters by a **greedy good-edge** topical-adjacency walk
 (`close_loop_metrics._good_edge_order`). Validated 2026-06-16: this recovers the human chapter sequence as an
 **undirected** chain, and a generality anchor (eigen-centrality) then orients it **~89% correctly CONDITIONAL on

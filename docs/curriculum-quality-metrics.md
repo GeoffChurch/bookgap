@@ -1,5 +1,7 @@
 # Intrinsic curriculum-quality metric basket (the "quality dashboard")
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 A reusable, **intrinsic** (no external data) basket of metrics that scores a
 built curriculum so we stop eyeballing topic orderings and clusterings. This is
 the §B-intrinsic deliverable of

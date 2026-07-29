@@ -17,9 +17,16 @@ is an OOD corpus, where it could win.
 
 ## Validated recipe (prototyped 2026-06-05; `fca_lattice_probe.py`)
 
+> **Substrate moved.** `artifacts_scripts/curriculum/fca_lattice_probe.py` was deleted in `0f2d0ad`
+> along with the rest of the legacy curriculum pipeline. Whoever picks this up should port the
+> recipe onto the `curriculum` repo's generate app rather than re-adding the module here; read the
+> original with `git show 0f2d0ad^:artifacts_scripts/curriculum/fca_lattice_probe.py`. The recipe
+> below is unchanged and still describes what to build.
+
 ```bash
 # MDL (Krimp) embedder-free concept selection, with surface canonicalization
-.conda/bin/python -m artifacts_scripts.curriculum.fca_lattice_probe \
+# (as prototyped; the module no longer exists -- see note above)
+uv run python -m artifacts_scripts.curriculum.fca_lattice_probe \
   --concept-gap artifacts/book_gaps/<book>_concept/concept_gap.json --field 17 \
   --context concat --select mdl --canonicalize
 ```

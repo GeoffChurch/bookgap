@@ -1,5 +1,7 @@
 # Color Image Processing — our generated curriculum (from the book's gap)
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 *24 chapters, in learning order.*
 
 ## Chapter 1: series, departments, grad

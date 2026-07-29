@@ -1,5 +1,7 @@
 # Keywords for cluster DEFINITION (bipartite co-clustering) — refuted
 
+> **Note — tooling removed.** The `artifacts_scripts/curriculum/` modules referenced in this doc were deleted in `0f2d0ad`; findings stand, commands do not. See `docs/curriculum-pipeline-removed.md`.
+
 **The idea.** The dendrogram curriculum's one soft spot is occasionally *vague/generic/overlapping*
 chapters. Keywords are exactly what a chapter is "about", so make them **first-class in clustering**,
 not just a post-hoc label: cluster the works so that each chapter is *keyword-coherent by
