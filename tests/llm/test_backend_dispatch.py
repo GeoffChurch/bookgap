@@ -836,11 +836,18 @@ class TestStreamingCoverageProgress:
                     eval_duration=900_000,
                     done_reason="stop",
                 )
-                mock_ollama.chat.side_effect = [
-                    self._fake_chat_response("Good", "Good"),
-                    bad_response,
-                    bad_response,  # retry
-                ]
+                # Gap 1 parses on its first call; every later call returns
+                # unparseable content, so gap 2 exhausts its retries and is
+                # skipped. A callable side_effect rather than a fixed list:
+                # the generator retries max_retries times, and a list sized to
+                # today's budget turns tomorrow's bump into a StopIteration
+                # rather than a meaningful failure.
+                _first = iter([self._fake_chat_response("Good", "Good")])
+
+                def _chat(*args, **kwargs):
+                    return next(_first, bad_response)
+
+                mock_ollama.chat.side_effect = _chat
 
                 _run_ollama_local_path(
                     config=config,

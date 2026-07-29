@@ -1156,7 +1156,9 @@ def test_ollama_generator_accepts_external_promptpair(monkeypatch):
             self.eval_duration = 1
             self.done_reason = "stop"
 
-    def _fake_chat(model, messages, options):
+    # **kwargs so the stub tolerates optional keys the generator adds
+    # conditionally (e.g. `format`, when a response schema is configured).
+    def _fake_chat(model, messages, options, **kwargs):
         captured["messages"] = messages
         return _StubResponse()
 
