@@ -11,9 +11,12 @@ Gates:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import numpy as np
 import pytest
 
+from bookgap.configs.embedder.embedder_config import SentenceTransformerEmbedderConfig
 from bookgap.gap_types import DistsAndIdxs
 from bookgap.llm.gap_algorithms.kball_algorithm import KballAlgorithm, KballGap
 from bookgap.llm.gap_algorithms.voronoi_algorithm import VoronoiAlgorithm
@@ -27,7 +30,23 @@ from bookgap.types import CellType, DeflationStrategy
 # embeddings()/index().
 # ---------------------------------------------------------------------------
 
-_SHARED_PARENT = object()
+@dataclass(frozen=True)
+class _FakeParent:
+    """Stand-in for the Cloud a SubCloud hangs off.
+
+    Only needs to expose `.embedder`, but it must be a real config dataclass:
+    SubCloud.embedder_fingerprint runs it through dataclasses.asdict(), and
+    detect_gaps asserts ambient/landmark/query fingerprints are equal. A bare
+    object() satisfied neither once that assertion landed.
+    """
+
+    embedder: SentenceTransformerEmbedderConfig = field(
+        default_factory=SentenceTransformerEmbedderConfig
+    )
+
+
+# Shared so every fake subcloud reports the same embedder fingerprint.
+_SHARED_PARENT = _FakeParent()
 
 
 class _FakeSubCloud(SubCloud):
