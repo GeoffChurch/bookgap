@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -27,8 +28,42 @@ QUESTION_SLUGS = {
 
 EXPECTED_SUFFIX = "\n\n<br><br><b>Do you personally think this book is...</b>"
 
-# Subcolumn labels used across the three question groups (typeset monospaced).
-SUBCOLUMN_LABELS = (r"\texttt{↑}", r"\texttt{↓}", r"\texttt{ours}")
+# Subcolumn labels used across the three question groups: the more-cited book, the
+# less-cited book, and our generated proposal.
+#
+# Words, not arrows. These were \texttt{↑}/\texttt{↓}, whose literal characters inside
+# \texttt resolve to TS1 glyphs shipping only as 600dpi PK bitmaps -- pdflatex then
+# embeds a Type 3 font, the glyphs print fuzzy, and pdffonts reports `uni no`, meaning
+# they survive neither copy-paste nor a screen reader (ACL asks authors to "prioritise
+# the accessibility of your paper"). Words dodge that entirely and self-describe.
+#
+# Width cost, since it is not obvious: these are 4 monospace characters (26.2pt at
+# 11pt) against 19.1pt of data beneath, so in the per-topic table they take over as the
+# thing setting each column's width, adding ~7.1pt to each of the six non-`ours`
+# columns. That table is consequently set \small; see the comment at its float in
+# main.tex. The compact summary table is unaffected -- `ours` already set that width.
+SUBCOLUMN_LABELS = (r"\texttt{more}", r"\texttt{less}", r"\texttt{ours}")
+
+# Cell order shared by both tables: criterion-major, then book class.
+COLUMN_ORDER: Tuple[Tuple[str, str], ...] = (
+    ("interesting", "high"),
+    ("interesting", "low"),
+    ("interesting", "generated"),
+    ("well_written", "high"),
+    ("well_written", "low"),
+    ("well_written", "generated"),
+    ("publishable", "high"),
+    ("publishable", "low"),
+    ("publishable", "generated"),
+)
+
+CRITERION_HEADERS = ("Interesting?", "Well-written?", "Publishable?")
+
+# Two-sided 95% t critical values, indexed by degrees of freedom.
+T_TABLE = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+    6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+}
 
 QUESTION_PATTERN = re.compile(
     r"Title:\s*(?P<title>.*?)\s*Abstract:\s*(?P<abstract>.*?)\s*Do you personally think this book is\.\.\.\s*-\s*(?P<question>interesting\?|well-written\?|worth publishing\?)",
@@ -364,40 +399,94 @@ def load_llm_results(
     return means
 
 
-def render_latex_table(
+def collect_cell_values(
     selected: List[BookRecord],
     means: Dict[Tuple[str, QuestionType], Optional[float]],
-) -> str:
+) -> Tuple[List[Tuple[str, str, List[Optional[float]]]], List[List[float]]]:
+    """Per-topic mean ratings in COLUMN_ORDER, plus the per-column value lists.
+
+    Both the compact main-text table and the per-topic appendix table are
+    rendered from this single pass, so their numbers cannot drift apart.
+    """
     by_topic: Dict[str, List[BookRecord]] = defaultdict(list)
     topic_names: Dict[str, str] = {}
     for rec in selected:
         by_topic[rec.topic_id].append(rec)
         topic_names[rec.topic_id] = rec.topic_name
 
+    rows: List[Tuple[str, str, List[Optional[float]]]] = []
+    column_sums: List[List[float]] = [[] for _ in COLUMN_ORDER]
+
+    for topic_id in sorted(by_topic.keys()):
+        high, low, generated = choose_by_percentile(by_topic[topic_id])
+        by_class = {"high": high, "low": low, "generated": generated}
+
+        row_values: List[Optional[float]] = []
+        for qtype, cls in COLUMN_ORDER:
+            chosen = by_class[cls]
+            row_values.append(means.get((chosen.title, qtype)) if chosen else None)
+
+        for idx, val in enumerate(row_values):
+            if val is not None:
+                column_sums[idx].append(val)
+        rows.append((topic_id, topic_names[topic_id], row_values))
+
+    return rows, column_sums
+
+
+def mean_and_ci(vals: List[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Mean and 95% CI half-width (t-distribution, n = topics with data)."""
+    if not vals:
+        return (None, None)
+    n = len(vals)
+    mean = sum(vals) / n
+    if n < 2:
+        return (mean, None)
+    variance = sum((v - mean) ** 2 for v in vals) / (n - 1)
+    se = math.sqrt(variance) / math.sqrt(n)
+    return (mean, T_TABLE.get(n - 1, 1.96) * se)
+
+
+def render_summary_table(column_sums: List[List[float]]) -> str:
+    """Compact main-text table: one row per book class, cells are mean ± CI.
+
+    Bolding is dropped here (unlike the per-topic table) since the CIs convey
+    uncertainty better than a max-highlight; see the paired-difference report
+    printed by main().
+    """
+    stats = [mean_and_ci(vals) for vals in column_sums]
+
+    def cell(idx: int) -> str:
+        mean, half = stats[idx]
+        if mean is None:
+            return "--"
+        if half is None:
+            return f"{mean:.2f}"
+        return rf"{mean:.2f} $\pm$ {half:.2f}"
+
+    lines: List[str] = []
+    lines.append(r"\begin{tabular}{lccc}")
+    lines.append(r"\toprule")
+    lines.append(" & " + " & ".join(CRITERION_HEADERS) + r" \\")
+    lines.append(r"\midrule")
+    for offset, label in enumerate(SUBCOLUMN_LABELS):
+        cells = [cell(criterion * 3 + offset) for criterion in range(3)]
+        lines.append(f"{label} & " + " & ".join(cells) + r" \\")
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    return "\n".join(lines)
+
+
+def render_per_topic_table(
+    rows: List[Tuple[str, str, List[Optional[float]]]],
+    column_sums: List[List[float]],
+) -> str:
     lines: List[str] = []
     lines.append(r"\begin{tabular}{l|rrr|rrr|rrr}")
     lines.append(r"\toprule")
     lines.append(r"Topic & \multicolumn{3}{c|}{Interesting?} & \multicolumn{3}{c|}{Well-written?} & \multicolumn{3}{c}{Publishable?} \\")
     lines.append(" & " + " & ".join(SUBCOLUMN_LABELS * 3) + " \\\\")
     lines.append(r"\midrule")
-
-    column_order = [
-        ("interesting", "high"),
-        ("interesting", "low"),
-        ("interesting", "generated"),
-        ("well_written", "high"),
-        ("well_written", "low"),
-        ("well_written", "generated"),
-        ("publishable", "high"),
-        ("publishable", "low"),
-        ("publishable", "generated"),
-    ]
-    column_sums: List[List[float]] = [[] for _ in column_order]
-
-    def value(rec: Optional[BookRecord], qtype: QuestionType) -> Optional[float]:
-        if not rec:
-            return None
-        return means.get((rec.title, qtype))
 
     def format_group(values: List[Optional[float]]) -> List[str]:
         """Format a 3-value group, bolding the maximum present."""
@@ -413,33 +502,15 @@ def render_latex_table(
                 labels.append(f"{v:.2f}")
         return labels
 
-    for topic_id in sorted(by_topic.keys()):
-        records = by_topic[topic_id]
-        high, low, generated = choose_by_percentile(records)
-
-        row_values = [
-            value(high, "interesting"),
-            value(low, "interesting"),
-            value(generated, "interesting"),
-            value(high, "well_written"),
-            value(low, "well_written"),
-            value(generated, "well_written"),
-            value(high, "publishable"),
-            value(low, "publishable"),
-            value(generated, "publishable"),
-        ]
-        for idx, val in enumerate(row_values):
-            if val is not None:
-                column_sums[idx].append(val)
-
+    for topic_id, topic_name, row_values in rows:
         interesting_labels = format_group(row_values[0:3])
         well_written_labels = format_group(row_values[3:6])
         publishable_labels = format_group(row_values[6:9])
 
         # topic_label = latex_escape(topic_id)
         MAX_LENGTH = 33
-        truncated_name = topic_names[topic_id][:MAX_LENGTH]
-        if len(topic_names[topic_id]) > MAX_LENGTH:
+        truncated_name = topic_name[:MAX_LENGTH]
+        if len(topic_name) > MAX_LENGTH:
             truncated_name += "›"
         
         # topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\footnotesize {latex_escape(truncated_name)}}}}}"
@@ -453,40 +524,18 @@ def render_latex_table(
         )
         lines.append(row + "\\")
 
-    def format_avg(vals: List[float]) -> str:
-        if not vals:
-            return "--"
-        return f"{(sum(vals) / len(vals)):.1f}"
-
     # Average row: emitted as two LaTeX rows --- means on one, 95% CI
     # half-widths on the next --- so per-cell width stays narrow and the
     # decimal points align column-wise (both "4.10" and "$\pm$0.20" have
     # the decimal at position 2 from the right under \texttt{r}-columns).
-    # CIs use the t-distribution on n = number of topics with data; bolding
-    # is dropped here since CIs convey uncertainty better than a
-    # max-highlight (see paired-difference report printed in main()).
-    import math
-    T_TABLE = {
-        1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
-        6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
-    }
-    def mean_and_ci_strs(vals: List[float]) -> tuple[str, str]:
-        if not vals:
+    # Half-widths carry no "±" prefix; the row label "CI" plus the caption
+    # together make it clear these are to be read as "mean ± value".
+    def mean_and_ci_strs(vals: List[float]) -> Tuple[str, str]:
+        mean, half = mean_and_ci(vals)
+        if mean is None:
             return ("--", "")
-        n = len(vals)
-        mean = sum(vals) / n
-        mean_str = f"{mean:.2f}"
-        if n < 2:
-            return (mean_str, "")
-        variance = sum((v - mean) ** 2 for v in vals) / (n - 1)
-        sd = math.sqrt(variance)
-        se = sd / math.sqrt(n)
-        t_crit = T_TABLE.get(n - 1, 1.96)
-        half = t_crit * se
-        # Half-width only (no "±" prefix); the row label "CI" plus the
-        # caption together make it clear these are 95% CI half-widths
-        # to be read as "mean ± value".
-        return (mean_str, f"{half:.2f}")
+        return (f"{mean:.2f}", "" if half is None else f"{half:.2f}")
+
     avg_pairs = [mean_and_ci_strs(vals) for vals in column_sums]
     avg_means_row = " & ".join(p[0] for p in avg_pairs)
     avg_cis_row = " & ".join(p[1] for p in avg_pairs)
@@ -517,8 +566,14 @@ def main() -> None:
         "--latex-path",
         type=Path,
         default=Path("paper/selected_books_table.tex"),
-        help="Where to write the generated LaTeX table (default: paper/ so "
-        "main.tex can \\input it directly).",
+        help="Where to write the compact main-text summary table (default: "
+        "paper/ so main.tex can \\input it directly).",
+    )
+    parser.add_argument(
+        "--per-topic-latex-path",
+        type=Path,
+        default=Path("paper/selected_books_per_topic_table.tex"),
+        help="Where to write the full per-topic appendix table.",
     )
     parser.add_argument(
         "--skip-validation",
@@ -534,11 +589,19 @@ def main() -> None:
         validate_alignment(selected, survey_questions)
 
     means = compute_question_means(survey_questions, survey_responses)
-    latex = render_latex_table(selected, means)
-    args.latex_path.write_text(latex + latex_provenance(__spec__.name), encoding="utf-8")
+    rows, column_sums = collect_cell_values(selected, means)
+
+    provenance = latex_provenance(__spec__.name)
+    args.latex_path.write_text(
+        render_summary_table(column_sums) + provenance, encoding="utf-8"
+    )
+    args.per_topic_latex_path.write_text(
+        render_per_topic_table(rows, column_sums) + provenance, encoding="utf-8"
+    )
 
     print(f"Validated {len(selected)} selected books against {len(survey_questions)} survey questions.")
-    print(f"LaTeX table written to {args.latex_path}")
+    print(f"Summary table written to {args.latex_path}")
+    print(f"Per-topic table written to {args.per_topic_latex_path}")
 
     # Paired-difference statistics for §5.6: for each (rater, topic, criterion),
     # compute the differences (ours - high) and (ours - low) and report mean
