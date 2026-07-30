@@ -805,7 +805,17 @@ def write_latex(
     tabular_only: bool = TABULAR_ONLY,
     comment: str | None = None,
     chunk_rows: int | None = CHUNK_ROWS,
+    font_size: str | None = None,
+    tabcolsep_pt: float | None = None,
 ) -> None:
+    """``font_size``: a LaTeX size command without the backslash (e.g. ``"small"``),
+    emitted inside the float so it actually applies.
+
+    It has to be *inside*. Wrapping the ``\\input`` of this file in ``{\\small ...}``
+    from main.tex silently does nothing: a float's body is deferred and typeset by the
+    output routine long after that group has closed and restored ``\\normalsize``. The
+    table comes out full size with no warning of any kind.
+    """
     if output_file.exists() and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
         return
@@ -931,6 +941,10 @@ def write_latex(
                 if escaped_caption:
                     result_lines.append(f"\\caption[]{{{escaped_caption} (continued)}}")
             result_lines.append("\\centering")
+            if font_size:
+                result_lines.append(f"\\{font_size}")
+            if tabcolsep_pt is not None:
+                result_lines.append(f"\\setlength{{\\tabcolsep}}{{{tabcolsep_pt:g}pt}}")
             result_lines.extend(chunk_lines)
             result_lines.append(f"\\end{{{table_env}}}")
             table_parts.append("\n".join(result_lines))
@@ -956,6 +970,10 @@ def write_latex(
             # Use table* instead of table when USE_LONGTABLE is False
             table_env = "table*" if not USE_LONGTABLE else "table"
             result_lines = [f"\\begin{{{table_env}}}", "\\centering"]
+            if font_size:
+                result_lines.append(f"\\{font_size}")
+            if tabcolsep_pt is not None:
+                result_lines.append(f"\\setlength{{\\tabcolsep}}{{{tabcolsep_pt:g}pt}}")
             result_lines.extend(lines)
 
             if escaped_caption:
@@ -2284,6 +2302,18 @@ def main() -> None:
                 table_environment="longtable",
                 tabular_only=TABULAR_ONLY,
                 comment=best_run_id,
+                # Six columns with full topic names measure 524.2pt against a 453.5pt
+                # text block -- ~77pt outside the right margin on each of its two
+                # pages, the worst margin violation in the paper. \small is 9pt under
+                # acl.sty (an 18% reduction, against the 13.5% needed) and ACLPUB
+                # permits a reduced size in tables; what it forbids is shrinking text
+                # to dodge the page limit, and this table is in the appendix.
+                font_size="small",
+                # \small alone still left the \makecell headers ~4pt outside the
+                # margin; trimming the inter-column padding from LaTeX's 6pt
+                # default closes it without shrinking any text further (9pt is
+                # already the floor -- acl.sty makes \footnotesize 9pt too).
+                tabcolsep_pt=4,
             )
 
         # Generate combined best denoiser tables for each (num_articles, num_books) pair
