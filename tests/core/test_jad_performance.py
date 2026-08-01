@@ -2,6 +2,17 @@
 Test JAD denoiser performance on actual data.
 """
 
+
+import pytest
+
+# Marked integration: these use the session-scoped `_ai_cloud` fixture in
+# tests/conftest.py, which pins the cached production AI-subfield corpus. That
+# cache is gitignored and hundreds of GB, so on a fresh clone these cannot run --
+# and on a populated machine they read tens of GB and take minutes. `addopts` in
+# pyproject.toml deselects integration by default, keeping `uv run pytest` fast
+# and honest; run them with `uv run pytest -m integration`.
+pytestmark = pytest.mark.integration
+
 import time
 import numpy as np
 

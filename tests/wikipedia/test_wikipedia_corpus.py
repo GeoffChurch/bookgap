@@ -21,7 +21,12 @@ TEST_STORE = CACHE_DIR / "wiki" / "store" / "wiki_test"
 N_TEST = 500
 
 
-pytestmark = pytest.mark.skipif(not DUMP.exists(), reason="cirrus dump not present")
+# integration: also uses the `_ai_cloud` fixture (cached production corpus,
+# gitignored). Both conditions must hold for these to run.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not DUMP.exists(), reason="cirrus dump not present"),
+]
 
 
 @pytest.fixture(scope="module")
