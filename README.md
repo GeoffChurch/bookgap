@@ -7,17 +7,21 @@ books (OpenAlex) to identify underexplored regions via geometric algorithms
 generates structured textbook proposals with LLMs, and produces plots and
 statistics about the gaps and proposals.
 
+> **Reproducing the paper?** See **[REPRODUCING.md](REPRODUCING.md)**. It covers
+> the (narrow) path through this repo that produces the published results, what
+> it costs to run, and — importantly — the two things that *cannot* be
+> reproduced from this repository. Most of what is here is not the paper.
+
 ## Ecosystem
 
 This repo is one of three related projects:
 
 - **bookgap** (this repo) — gap detection, proposal generation, and the
   post-hoc research scripts under `artifacts_scripts/`.
-- **[curriculum](https://github.com/GeoffChurch/curriculum)** — the standalone
-  curriculum engine and evaluation layer, extracted from this repo on
-  2026-07-10. bookgap consumes it as an editable path dependency at
-  `../curriculum` (see Setup).
-- **[learn-and-teach](https://github.com/GeoffChurch/learn-and-teach)** — the
+- **[curriculum](https://github.com/GeoffChurch/curriculum)** *(private)* — the
+  standalone curriculum engine and evaluation layer, extracted from this repo on
+  2026-07-10. Not required for gap detection or proposal generation; see Setup.
+- **[learn-and-teach](https://github.com/GeoffChurch/learn-and-teach)** *(private)* — the
   judgment-first textbook *generation* successor (prose-orchestrated book
   builds). This repo remains the home of gap detection and the algorithmic
   research corpus.
@@ -29,13 +33,18 @@ is fully specified by `pyproject.toml` + `uv.lock`.
 
 ```bash
 git clone git@github.com:GeoffChurch/bookgap.git
-git clone git@github.com:GeoffChurch/curriculum.git  # required sibling: editable dep at ../curriculum
 cd bookgap
 uv sync --extra dev
 ```
 
-If the sibling curriculum repo's `pyproject.toml` changes, re-run `uv sync`
-here to re-lock.
+**The sibling `curriculum` checkout is no longer needed for gap detection or
+proposal generation** — the one function `bookgap/` used from it is vendored in
+`bookgap/_bisecting_kmeans.py`, with provenance recorded there. Parts of
+`artifacts_scripts/` (the wiki, lexrank and keyword threads) and all of
+`curriculum_lean/` still import it; those are side research threads, not the
+paper's pipeline. `curriculum` is currently a private repository, so if you hit
+an `ImportError` from one of those, that is why. If you do have the sibling
+checkout and its `pyproject.toml` changes, re-run `uv sync` to re-lock.
 
 Set `OPENAI_API_KEY` for proposal generation; local-LLM paths use Ollama.
 
