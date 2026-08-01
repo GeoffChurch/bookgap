@@ -1,9 +1,18 @@
 """Tests for the centralized pyalex client module."""
 
 
-def test_email_configured():
+def test_email_sourced_from_environment():
+    """The polite-pool contact comes from OPENALEX_EMAIL, never a hardcoded literal.
+
+    This used to assert a specific address, which is exactly what made the module
+    author-identifying. Assert the wiring instead: whatever the environment says
+    (including nothing) is what pyalex gets.
+    """
+    import os
+
     from bookgap.pyalex_client import pyalex
-    assert pyalex.config.email == "gchurchill@cs.stonybrook.edu"
+
+    assert pyalex.config.email == os.environ.get("OPENALEX_EMAIL")
 
 
 def test_max_retries_configured():

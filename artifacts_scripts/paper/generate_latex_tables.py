@@ -38,7 +38,6 @@ TABULAR_ONLY = False
 # single table* regardless of length.
 CHUNK_ROWS: int | None = 39
 
-DEFAULT_PYALEX_EMAIL = "gchurchill@cs.stonybrook.edu"
 TOPIC_BATCH_SIZE = 25
 TOPIC_DISPLAY_NAME_CACHE: dict[str, str] = {}
 
@@ -568,9 +567,18 @@ def chunked(iterable: Iterable[str], size: int) -> Iterable[list[str]]:
 
 
 def configure_pyalex() -> None:
+    """Set the OpenAlex polite-pool contact from the environment, if unset.
+
+    No hardcoded fallback: the literal address that used to live here was
+    author-identifying, which matters for anonymous review and for publishing this
+    repo. Unset is legal -- OpenAlex serves the common pool instead.
+    ``OPENALEX_EMAIL`` matches bookgap/pyalex_client.py; ``PYALEX_EMAIL`` is kept
+    as an alias because existing shell profiles set it.
+    """
     if not getattr(pyalex.config, "email", None):
-        email = os.environ.get("PYALEX_EMAIL", DEFAULT_PYALEX_EMAIL)
-        pyalex.config.email = email
+        email = os.environ.get("OPENALEX_EMAIL") or os.environ.get("PYALEX_EMAIL")
+        if email:
+            pyalex.config.email = email
 
 
 def normalize_topic_id(topic_id: object | None) -> str | None:

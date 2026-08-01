@@ -29,7 +29,22 @@ from bookgap.util import CACHE_DIR, LOGGER
 
 dotenv.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-pyalex.config.email = "gchurchill@cs.stonybrook.edu"
+# Contact address for OpenAlex's "polite pool", which gives faster, more reliable
+# service in exchange for being identifiable. Sourced from the environment rather
+# than hardcoded: the literal address was author-identifying, which matters for
+# anonymous peer review and for publishing this repo at all.
+#
+# Unset is legal -- OpenAlex still serves requests, just from the common pool --
+# so warn rather than fail, since most of the codebase never touches the API.
+_OPENALEX_EMAIL = os.environ.get("OPENALEX_EMAIL")
+if _OPENALEX_EMAIL:
+    pyalex.config.email = _OPENALEX_EMAIL
+else:
+    LOGGER.warning(
+        "OPENALEX_EMAIL is not set; OpenAlex requests will use the common pool "
+        "(slower, rate-limited more aggressively). Set it in .env to join the "
+        "polite pool: https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication"
+    )
 if os.environ.get("OPENALEX_API_KEY"):
     pyalex.config.api_key = os.environ["OPENALEX_API_KEY"]
 pyalex.config.max_retries = 5
