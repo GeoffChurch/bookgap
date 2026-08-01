@@ -7,6 +7,14 @@ No real Cloud/cache access here — that's T7's capture-script integration.
 """
 from __future__ import annotations
 
+
+import pytest
+
+# The sibling `curriculum` repo is private and no longer a declared dependency
+# (see pyproject.toml). These tests cover code that still imports it, so they
+# skip rather than error on a clone without `uv pip install -e ../curriculum`.
+pytest.importorskip("curriculum", reason="sibling curriculum checkout not installed")
+
 import numpy as np
 import pytest
 import scipy.sparse as sp

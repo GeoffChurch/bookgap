@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from curriculum.core.dendrogram import bisecting_kmeans_linkage
+from bookgap._bisecting_kmeans import bisecting_kmeans_linkage
 from bookgap.dendrogram import _truncate_bisecting_kmeans_dendrogram
 
 

@@ -13,13 +13,32 @@ Run everything through uv: `uv run python ...` (env defined by `pyproject.toml` 
 
 Required environment variables: `OPENAI_API_KEY`, `OPENALEX_API_KEY` (loaded from `.env`).
 
-bookgap consumes the `curriculum` package as an editable path dependency
-(`[tool.uv.sources]` in `pyproject.toml` points at `../curriculum`), so a
-bookgap clone requires a sibling clone of the `curriculum` repo at that
-relative path (i.e. `bookgap/` and `curriculum/` must share a parent
-directory). Any change to curriculum's `pyproject.toml` requires re-locking
-bookgap (`uv sync`) to pick it up. Note: the `curriculum` repo currently has
-no git remote (decision on where it lives is pending).
+### The `curriculum` sibling is no longer a declared dependency
+
+`curriculum` (<https://github.com/GeoffChurch/curriculum>, **private**) used to be
+an editable path dependency on `../curriculum`. It is now declared nowhere in
+`pyproject.toml`, and `uv sync` works on a clone that has no sibling checkout.
+
+Why it could not simply be made optional, since this is unobvious and was got
+wrong once: `[tool.uv.sources]` is **unconditional**. uv resolves the mapped path
+even when no selected extra requires the package, and `uv lock` resolves *every*
+extra regardless of what is being installed. So any declaration at all — required
+or optional — makes the project uninstallable without the sibling
+(`uv sync` exits 2). Verifying this needs a clone whose parent lacks
+`curriculum/`; testing in a tree where the sibling exists cannot detect it.
+
+`bookgap/` itself no longer needs it: the one function it used,
+`bisecting_kmeans_linkage`, is vendored in `bookgap/_bisecting_kmeans.py` with
+provenance in the module docstring. Verified byte-identical to upstream output.
+
+Still importing it, and therefore needing `uv pip install -e ../curriculum`:
+
+- `artifacts_scripts/` — the wiki, lexrank and keyword threads (24 symbols)
+- `curriculum_lean/` — the whole package (12 symbols)
+- four test modules, which `pytest.importorskip("curriculum")` skips when absent.
+  One of those, `tests/artifacts_scripts/test_book_existence_filter.py`, needs it
+  only *transitively* via `artifacts_scripts.keyword_helpers` and never mentions
+  curriculum — worth remembering when adding tests.
 
 ## Common Commands
 

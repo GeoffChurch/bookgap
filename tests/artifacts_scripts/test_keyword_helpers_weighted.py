@@ -1,4 +1,12 @@
 """Test the weighted-doc-relevance path through compute_gap_keywords."""
+
+import pytest
+
+# Reaches the private sibling `curriculum` via artifacts_scripts.keyword_helpers,
+# which imports curriculum.layers._keyword_extraction. Transitive: neither this
+# file nor the module under test mentions curriculum. See pyproject.toml.
+pytest.importorskip("curriculum", reason="sibling curriculum checkout not installed")
+
 import pytest
 
 

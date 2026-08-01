@@ -46,12 +46,14 @@ dependencies = [
     "coroica",
     "pymanopt",
     "pyriemann",
+    # Needed by bookgap/_bisecting_kmeans.py (vendored) and ~40 other modules;
+    # was previously satisfied only transitively.
+    "scikit-learn",
     # For scope manager CLI/TUI
     "textual",
     "psutil",
     "typer",
     "tqdm",
-    "curriculum",
     # Lazily imported by artifacts_scripts/hdbscan_gap_probe.py:536; the old
     # .conda env had it installed ad hoc but undeclared.
     "fast_hdbscan",
@@ -61,6 +63,14 @@ dependencies = [
 scope-manager = "scope_manager:main"
 
 [project.optional-dependencies]
+# NOTE: the sibling `curriculum` repo is deliberately NOT declared here. It is private
+# and consumed as a path dependency, and `[tool.uv.sources]` is unconditional -- uv
+# resolves the path even when no selected extra needs it, so declaring it at all makes
+# this project uninstallable for anyone without the sibling checkout (`uv sync` exits 2).
+# Marking it an optional extra does not help: `uv lock` resolves every extra.
+# bookgap/ no longer needs it (see bookgap/_bisecting_kmeans.py). The side threads in
+# artifacts_scripts/ and curriculum_lean/ still import it; install it yourself with
+# `uv pip install -e ../curriculum` if you need those.
 dev = [
     "mypy>=1.8.0",
     # Pinned to the .conda baseline: pytest 9 removes the deprecated
@@ -86,6 +96,3 @@ testpaths = ["tests"]
 # Repo root on sys.path so tests can import the top-level `scripts` package,
 # which is not part of the installed distribution and has no __init__.py.
 pythonpath = ["."]
-
-[tool.uv.sources]
-curriculum = { path = "../curriculum", editable = true }

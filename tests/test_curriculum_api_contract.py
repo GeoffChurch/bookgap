@@ -21,6 +21,14 @@ Everything is import- and introspection-only: no I/O, no network, sub-second.
 """
 from __future__ import annotations
 
+
+import pytest
+
+# The sibling `curriculum` repo is private and no longer a declared dependency
+# (see pyproject.toml). These tests cover code that still imports it, so they
+# skip rather than error on a clone without `uv pip install -e ../curriculum`.
+pytest.importorskip("curriculum", reason="sibling curriculum checkout not installed")
+
 import ast
 import importlib
 import importlib.util

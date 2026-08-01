@@ -4,6 +4,14 @@ Covers the pure-logic pieces (tokenization, Jaccard overlap, the
 book-existence signal classification). Full-pipeline correctness is
 validated empirically against T10181.
 """
+
+import pytest
+
+# Imports artifacts_scripts.keyword_helpers, which imports the private sibling
+# `curriculum` (see pyproject.toml). Transitive, so easy to miss: this test does
+# not mention curriculum anywhere.
+pytest.importorskip("curriculum", reason="sibling curriculum checkout not installed")
+
 import json
 
 import pytest

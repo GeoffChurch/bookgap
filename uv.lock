@@ -387,7 +387,6 @@ dependencies = [
     { name = "boto3" },
     { name = "cdopt" },
     { name = "coroica" },
-    { name = "curriculum" },
     { name = "faiss-cpu" },
     { name = "fast-hdbscan" },
     { name = "graphviz" },
@@ -411,6 +410,7 @@ dependencies = [
     { name = "pyriemann" },
     { name = "pysimdjson" },
     { name = "pyvis" },
+    { name = "scikit-learn" },
     { name = "seaborn" },
     { name = "sentence-transformers" },
     { name = "textual" },
@@ -437,7 +437,6 @@ requires-dist = [
     { name = "boto3" },
     { name = "cdopt" },
     { name = "coroica" },
-    { name = "curriculum", editable = "../curriculum" },
     { name = "faiss-cpu" },
     { name = "fast-hdbscan" },
     { name = "graphviz" },
@@ -464,6 +463,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.2" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "pyvis" },
+    { name = "scikit-learn" },
     { name = "seaborn" },
     { name = "sentence-transformers" },
     { name = "textual" },
@@ -1060,35 +1060,6 @@ nvrtc = [
 nvtx = [
     { name = "nvidia-nvtx", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
-
-[[package]]
-name = "curriculum"
-version = "0.1.0"
-source = { editable = "../curriculum" }
-dependencies = [
-    { name = "numpy" },
-    { name = "scikit-learn" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", marker = "extra == 'judge'" },
-    { name = "httpx", marker = "extra == 'judge'" },
-    { name = "hydra-core", marker = "extra == 'apps'" },
-    { name = "hydra-submitit-launcher", marker = "extra == 'slurm'" },
-    { name = "leidenalg", marker = "extra == 'leiden'" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
-    { name = "numpy" },
-    { name = "omegaconf", marker = "extra == 'apps'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "python-igraph", marker = "extra == 'leiden'" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-    { name = "sentence-transformers", marker = "extra == 'embed'" },
-]
-provides-extras = ["apps", "slurm", "judge", "embed", "render", "leiden", "dev"]
 
 [[package]]
 name = "cycler"

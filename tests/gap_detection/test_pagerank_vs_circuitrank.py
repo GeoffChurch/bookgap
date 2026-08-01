@@ -24,6 +24,14 @@ The equivalence holds because:
     - Both respects the citation graph structure (P^T vs directed flow)
 """
 
+
+import pytest
+
+# The sibling `curriculum` repo is private and no longer a declared dependency
+# (see pyproject.toml). These tests cover code that still imports it, so they
+# skip rather than error on a clone without `uv pip install -e ../curriculum`.
+pytest.importorskip("curriculum", reason="sibling curriculum checkout not installed")
+
 import numpy as np
 import scipy.sparse as sp
 import pytest
