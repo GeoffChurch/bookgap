@@ -1,3 +1,21 @@
+"""Joint-diagonalisation algorithms copied from two third-party projects.
+
+THIRD-PARTY CODE — see bookgap/rsdc/THIRD_PARTY_NOTICES.md for the full licence
+texts, which both upstreams require be retained on redistribution.
+
+  ffdiag, ffdiag_update
+      from archimonde1308/pybss -- BSD-3-Clause,
+      Copyright (c) 2013, Kevin S. Brown, University of Connecticut.
+      BSD-3 clause 1: "Redistributions of source code must retain the above
+      copyright notice, this list of conditions and the following disclaimer."
+
+  qndiag, transform_set, loss, gradient, _linesearch
+      from pierreablin/qndiag -- MIT, Copyright (c) 2018 Pierre Ablin.
+
+Neither notice was present when this code was vendored; both were restored
+2026-08-01. Do not strip them again -- retaining them is the condition on which
+redistribution is permitted.
+"""
 from __future__ import print_function
 
 from time import time
