@@ -40,7 +40,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Trees whose curriculum usage we hold to the contract.
-SOURCE_TREES = ("bookgap", "artifacts_scripts", "curriculum_lean", "scripts")
+SOURCE_TREES = ("bookgap", "artifacts_scripts", "scripts")
 
 
 def _is_curriculum(module: str | None) -> bool:

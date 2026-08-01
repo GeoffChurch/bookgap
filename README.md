@@ -41,8 +41,7 @@ uv sync --extra dev
 proposal generation** — the one function `bookgap/` used from it is vendored in
 `bookgap/_bisecting_kmeans.py`, with provenance recorded there. Parts of
 `artifacts_scripts/` (the wiki, lexrank and keyword threads) and all of
-`curriculum_lean/` still import it; those are side research threads, not the
-paper's pipeline. `curriculum` is currently a private repository, so if you hit
+still import it; those are side research threads, not the paper's pipeline. `curriculum` is currently a private repository, so if you hit
 an `ImportError` from one of those, that is why. If you do have the sibling
 checkout and its `pyproject.toml` changes, re-run `uv sync` to re-lock.
 
@@ -129,8 +128,6 @@ See `TESTING.md`. Note: pytest's `addopts` ignore the (huge, gitignored)
   `artifacts/` (gap-detection evaluation harness, denoiser studies, paper
   assets, the legacy curriculum pipeline slated for replacement by the
   curriculum repo's generate app).
-- `curriculum_lean/` — Lean/mathlib4 proof-decomposition experiments built on
-  the extracted curriculum engine.
 
 ### Conventions
 

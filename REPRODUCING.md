@@ -24,8 +24,7 @@ The published results come from a narrow path through the codebase:
          ollama_local.py                the paper used gemma4:31b via Ollama
 
 Most of the repository is *not* this. `artifacts_scripts/` holds around a dozen
-independent research threads, and `curriculum_lean/` is an unrelated
-theorem-proving study. Neither is needed to reproduce the paper. See
+independent research threads, none of which is needed to reproduce the paper. See
 `docs/backlog/repo-architecture.md` for the full map.
 
 ## Prerequisites

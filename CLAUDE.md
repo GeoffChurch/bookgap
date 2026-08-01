@@ -34,7 +34,6 @@ provenance in the module docstring. Verified byte-identical to upstream output.
 Still importing it, and therefore needing `uv pip install -e ../curriculum`:
 
 - `artifacts_scripts/` — the wiki, lexrank and keyword threads (24 symbols)
-- `curriculum_lean/` — the whole package (12 symbols)
 - four test modules, which `pytest.importorskip("curriculum")` skips when absent.
   One of those, `tests/artifacts_scripts/test_book_existence_filter.py`, needs it
   only *transitively* via `artifacts_scripts.keyword_helpers` and never mentions
