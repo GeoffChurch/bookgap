@@ -26,7 +26,7 @@ call sites (artifacts_scripts, curriculum_lean, tests) and does not cover this.
 Licence
 -------
 Same-author code, and ``curriculum`` carries no LICENSE file at time of copying.
-Both repos need one; see docs/backlog/open-source-release.md.
+Both repos need one.
 """
 from __future__ import annotations
 

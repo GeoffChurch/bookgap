@@ -5,7 +5,7 @@ ahead of the open-source release. Every claim below was measured against the tre
 `52adab1`; the measuring commands are recorded so they can be re-run after each phase.
 
 Scope: structure, layering, dead code, dependency hygiene. **Not** covered here: secrets,
-PII, licensing — those are `docs/backlog/open-source-release.md`.
+PII, licensing — those are tracked separately.
 
 ---
 

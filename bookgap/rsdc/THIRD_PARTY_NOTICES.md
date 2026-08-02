@@ -15,8 +15,7 @@ Provenance is recorded in each function's docstring:
 [haoze12345/rsdc](https://github.com/haoze12345/rsdc), which carries **no licence
 at all** — all rights reserved — so there is no notice to restore and no
 permission to redistribute. The academic citation (He & Kressner,
-arXiv:2402.16557) credits the authors but grants nothing. See
-`docs/backlog/open-source-release.md`.
+arXiv:2402.16557) credits the authors but grants nothing.
 
 ---
 
