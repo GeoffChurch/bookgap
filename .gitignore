@@ -48,3 +48,17 @@ artifacts_scripts/survey/Survey_+Textbook+Proposal+Evaluation_*.csv
 # 2026-08-01 because it embedded institutional branding; regenerate it rather
 # than committing it.
 artifacts_scripts/survey/survey.qsf
+
+# Reconstructed publisher abstracts. OpenAlex ships abstracts as an inverted
+# index rather than plain text precisely so it is not redistributing the
+# abstract as a text; reconstructing one and committing it undoes that. Their
+# CC0 grant covers the OpenAlex database, not third-party abstract copyright.
+# 24 abstracts, 1416-2878 chars each.
+#
+# Kept locally so generate_survey.py still runs; regenerate from scratch with
+#   uv run python artifacts_scripts/survey/select_survey_books.py
+# Not even an abstract-free metadata variant is published: it would name specific
+# real books as the "less-cited" arm, with percentiles, which is uncharitable to
+# those authors for no reproducibility gain the paper does not already give.
+artifacts_scripts/survey/selected_books.csv
+artifacts_scripts/survey/survey.txt
