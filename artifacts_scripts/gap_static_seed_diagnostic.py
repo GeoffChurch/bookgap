@@ -1,11 +1,9 @@
 """Static-seed cohesion diagnostic.
 
 Resolves five algorithmic decisions for a proposed static-seed gap-
-detection variant before committing to a full implementation. See
-``docs/superpowers/specs/2026-05-12-static-seed-cohesion-diagnostic-design.md``
-for context.
+detection variant before committing to a full implementation.
 
-Pipeline diagnosed (per spec):
+Pipeline diagnosed:
 
   per-seed (k*, weight vector) -> Jaccard confluence merge ->
   joint normalize -> rank by effective_size + coverage readout.

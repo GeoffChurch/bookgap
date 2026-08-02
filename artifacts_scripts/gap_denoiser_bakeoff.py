@@ -2,7 +2,6 @@
 
 Phase 0: citation-graph-construction shootout (self_loops x row_normalize),
 judged on LIP. Phase 1: six-arm denoiser comparison on the frozen graph.
-See docs/superpowers/specs/2026-05-15-denoiser-bakeoff-llr-design.md.
 """
 from __future__ import annotations
 

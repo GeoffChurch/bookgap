@@ -11,7 +11,7 @@ filters, deduplicates, and writes the final per-scope Parquet. Spill files
 survive crashes, so a resumed run skips already-completed shards but still
 includes their data via the pre-existing spill files.
 
-run() is the canonical entrypoint. See docs/superpowers/specs/2026-04-14-snapshot-ingest-design.md.
+run() is the canonical entrypoint.
 """
 from __future__ import annotations
 

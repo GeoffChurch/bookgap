@@ -1,8 +1,7 @@
 """K-ball seed + LLR-vs-k refinement (Phase 3).
 
 Takes K-ball CSV output and re-sizes each gap by LLR-vs-k argmax over
-the corpus null. See spec:
-``docs/superpowers/specs/2026-05-12-kball-llr-refinement-design.md``.
+the corpus null.
 
 Pipeline:
   K-ball CSV -> per-gap LLR sweep -> optional one re-centering -> dedup

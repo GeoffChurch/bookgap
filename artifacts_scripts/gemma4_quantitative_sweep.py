@@ -11,8 +11,6 @@ subsequent 5 Gemma cells reuse the cache. Total ETA: ~10-14 hr.
 Programmatic driver (not Hydra CLI) because `SentenceTransformerEmbedderConfig`
 is frozen — required for Cloud's hash key — so Hydra CLI cannot override
 `cloud.embedder.model_name`. Programmatic construction sidesteps this.
-
-Plan: docs/superpowers/plans/2026-05-21-paper-gemma4-quantitative-revision.md
 """
 from __future__ import annotations
 

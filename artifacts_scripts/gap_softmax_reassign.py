@@ -5,8 +5,6 @@ enriched soft-EM CSV (the per-seed pairwise-posterior basin set) and
 recomputes membership using a global softmax over kNN basin centroids,
 with optional ∅ background (variant B) and optional iteration to
 convergence. Emits per-config artifacts to --output-dir.
-
-Spec: docs/superpowers/specs/2026-05-08-multicluster-softmax-phase1-design.md
 """
 from __future__ import annotations
 

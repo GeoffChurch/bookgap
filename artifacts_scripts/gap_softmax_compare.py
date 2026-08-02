@@ -3,8 +3,6 @@
 Reads original soft-EM enriched CSV + new (variant, P, iter, rule)
 basin CSVs from gap_softmax_reassign.py, emits Jaccard / eff_rank /
 coverage-label / leaderboard diff and a markdown report.
-
-Spec: docs/superpowers/specs/2026-05-08-multicluster-softmax-phase1-design.md
 """
 from __future__ import annotations
 

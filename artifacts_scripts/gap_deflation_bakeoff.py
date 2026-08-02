@@ -1,6 +1,5 @@
 """Gap-deflation bake-off: swappable deflation strategies on the
-byte-stable K-ball harness. See
-docs/superpowers/specs/2026-05-17-gap-deflation-bakeoff-design.md.
+byte-stable K-ball harness.
 """
 from __future__ import annotations
 
@@ -500,7 +499,20 @@ def _fl_bookdemand(
 
 
 # --- fl_bookdemand_eb: empirical-Bayes shrinkage demand ---------------------
-# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
+#
+# Why there is no explicit shrinkage parameter: with equal weights, the ratio of
+# background demand mass to book demand mass is just M / n_books, which already
+# has the desired monotonicity. Book-rich (n_books >> M), books dominate and this
+# behaves like fl_bookdemand; book-sparse (n_books << M), background dominates and
+# it behaves like submodular_fl over a manifold coreset, so it cannot collapse.
+# The shrinkage strength M/(M+n_books) falls out of the customer mixture instead
+# of being imposed by a tuned lambda.
+#
+# Why M = clip(A // k_book, 64, 4000): A // k_book tiles the manifold at roughly
+# book-neighborhood granularity, so a background customer means "a book-sized
+# region that happens to have no book". The clip only bounds k-means cost and
+# memory. M depends on corpus size alone -- no outcome tuning.
+#
 # Module-global trace/diag stores (last call wins). # not thread-safe
 _FL_GAINS_EB: list[float] = []
 _FL_DIAG_EB: dict = {"n_books": 0, "M": 0, "ratio_bg_book": 0.0,
@@ -761,8 +773,7 @@ def _fl_bookdemand_eb(
 
 
 # --- fl_bookdemand_resid: intrinsic residual demand (no `s`, nothing fitted)
-# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
-#       (Addendum 2, 2026-05-18). Same greedy-FL machinery as
+# Same greedy-FL machinery as
 #       _fl_bookdemand_eb, but the background coreset is built ONLY over
 #       book-orphan articles, so the operating point is set intrinsically
 #       by orphan mass — no s/M-vs-n_books knob, nothing calibrated.
@@ -1050,8 +1061,7 @@ def _fl_bookdemand_resid(
     return gaps
 
 
-# --- best-of-both reframes (Addendum 3, 2026-05-18) -------------------------
-# Spec: docs/superpowers/specs/2026-05-18-fl-bookdemand-eb-shrinkage-design.md
+# --- best-of-both reframes --------------------------------------------------
 # A mixed book/manifold demand objective dilutes — no proportion
 # (constant or intrinsic) is best at both regimes (resid proved this).
 # Escape the box: stop mixing. Arm A unions the two PURE signals; arm B
@@ -1332,7 +1342,6 @@ def _global_to_article_local(member_lists, article_global_idx):
 
 # ---------------------------------------------------------------------------
 # Ranking-stage book-aware selection — the BINDING stage.
-# Spec: docs/superpowers/specs/2026-05-18-ranking-stage-book-aware-design.md
 #
 # The deflation stage only changes which gaps SURVIVE; the regime-blind
 # `effective_size` ranking in run_arm decided the held-out recall metric

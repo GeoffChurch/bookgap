@@ -6,8 +6,6 @@ basin set. Output is a minimal threshold-free 12-column summary CSV
 plus a sidecar .npz containing the sparse softmax membership matrix.
 No per-basin article lists in the CSV (load the npz, threshold M_new
 yourself).
-
-Spec: docs/superpowers/specs/2026-05-09-multicluster-softmax-phase3-design.md
 """
 from __future__ import annotations
 
