@@ -29,7 +29,7 @@ are in [`backlog/curriculum-real-toc-baseline.md`](backlog/curriculum-real-toc-b
 > did and why each step was needed; port it there rather than resurrecting these modules.
 > Recover any individual producer with `git show 0f2d0ad^:<path>`.
 
-Commands were run from the repo root with `export PYTHONPATH=/home/gchurchill/src/bookgap`. The
+Commands were run from the repo root with `export PYTHONPATH=$(pwd)`. The
 interpreter shown was `.conda/bin/python`; the environment moved to `uv run python` in `6518955`.
 
 1. **Pick a target.** Targets must be (a) clean OA *book* records, (b) with a real own-gap, and

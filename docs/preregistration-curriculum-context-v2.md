@@ -130,7 +130,7 @@ here stating what changed and why, before the changed rows are generated.
   (complete-blocks n=65, McNemar p=.031); 1 tokens=0 row in 325 post-restart (base rate).
 - **Execution-relocation amendment (2026-06-13 ~00:15; ADDITIVE, instrument-only — no change to
   arms/metrics/n/decode/seeds, run_id stays `confirm_v3_goedel32b`)**: to resume the paused sweep
-  off the local GPU, proof GENERATION was to be distributed to the Stony Brook cluster (goedel-
+  off the local GPU, proof GENERATION was to be distributed to the institutional cluster (goedel-
   prover-v2:32b under per-job `ollama serve`, 6 balanced target shards) with VERIFICATION + the C1
   audit staying on-prem on the canonical Lean+Mathlib toolchain (`curriculum_lean.verify_deferred`,
   `~/src/mathlib4_v4.20.0` + `~/.elan/bin/lake`). Generation is single-shot (`--max-retries 0`,

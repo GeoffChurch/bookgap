@@ -141,7 +141,7 @@ strictly serial. CPU work (analysis, subagents) may run in parallel with any GPU
   chose to leave them uncommitted. OpenAlex: polite pool + page caching, always.
 - Books: observation is hands-off (no content rescues — the runs are measurements). Harness
   intervention only on wedge/crash.
-- Memory dir (`~/.claude/projects/-home-gchurchill-src-bookgen/memory/`) has the deep context:
+- Memory dir (the Claude Code project memory dir) has the deep context:
   active-run-queue.md points here; gate-arms-race.md, datascience-textbook-run.md,
   orchestrator-context-overflow.md are the relevant war stories.
 

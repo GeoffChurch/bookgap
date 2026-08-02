@@ -207,7 +207,7 @@ clusters; you can't bootstrap your way around it.**
 
 ## Files
 
-- `/home/gchurchill/src/bookgap/artifacts_scripts/gap_soft_em_fullmix.py`
+- `artifacts_scripts/gap_soft_em_fullmix.py`
   remains in tree as the implementation reference (it works
   mechanically, just produces degenerate output). Could be removed if
   cluttering, or kept as a "this is what you'd build if pursuing the

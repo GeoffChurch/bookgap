@@ -952,7 +952,7 @@ discovery maps need the full statistic, not raw r_F.*
 
 ## Curriculum Showdown (Phase 1b — cluster web-off ToC generation)
 
-- **Owner enabled the Stony Brook AI SLURM cluster (host `ai`, quadro 48 GB GPUs) to run gemma
+- **Owner enabled the institutional AI SLURM cluster (host `ai`, quadro 48 GB GPUs) to run gemma
   showdown work in PARALLEL with the local box** (2026-06-12). Infra banked in memory
   `ai-cluster-gemma.md`: rootless ollama + gemma4:31b-it-qat staged to shared NFS; each job runs
   `ollama serve` warm on a quadro node. Courtesy cap (owner): quadro1/quadro2 only, ≤2 jobs/node,
