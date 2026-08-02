@@ -40,12 +40,26 @@ uv sync --extra dev
 **The sibling `curriculum` checkout is no longer needed for gap detection or
 proposal generation** — the one function `bookgap/` used from it is vendored in
 `bookgap/_bisecting_kmeans.py`, with provenance recorded there. Parts of
-`artifacts_scripts/` (the wiki, lexrank and keyword threads) and all of
-still import it; those are side research threads, not the paper's pipeline. `curriculum` is currently a private repository, so if you hit
-an `ImportError` from one of those, that is why. If you do have the sibling
+`artifacts_scripts/` (the wiki, lexrank and keyword threads) and four test modules
+still import it; those are side research threads, not the paper's pipeline.
+`curriculum` is currently a private repository, so if you hit an `ImportError`
+from one of those, that is why (the tests skip themselves instead). If you do have the sibling
 checkout and its `pyproject.toml` changes, re-run `uv sync` to re-lock.
 
-Set `OPENAI_API_KEY` for proposal generation; local-LLM paths use Ollama.
+Environment variables, all read from `.env`:
+
+| Variable | Needed for |
+|---|---|
+| `OPENAI_API_KEY` | proposal generation via the OpenAI Batch backend; the local-LLM paths use Ollama instead |
+| `OPENALEX_API_KEY` | OpenAlex requests with a per-key budget |
+| `OPENALEX_EMAIL` | OpenAlex's [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication) — faster and more reliable in exchange for being identifiable. Optional; unset just means the common pool |
+| `CONTACT_EMAIL` | the contact in the User-Agent sent to Wikipedia, whose [policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) asks for one. Only the `artifacts_scripts/` Wikipedia threads use it |
+| `QUALTRICS_BRAND_ID`, `QUALTRICS_OWNER_ID` | the Qualtrics tenant and account that a generated `.qsf` imports into. Only `artifacts_scripts/survey/generate_survey.py` uses them; unset produces a `.qsf` that imports nowhere |
+| `MATHLIB4_REPO`, `BAZELISK` | a mathlib4 checkout and the `bazelisk` binary, for the code-gap adapters under `artifacts_scripts/gap_recover/adapters/`. `BAZELISK` falls back to `PATH` |
+
+None of these have defaults baked into the source. That is deliberate: a hardcoded
+contact address identifies whoever wrote it, which is a problem for anonymous
+review and for publishing the repo.
 
 ## Usage
 

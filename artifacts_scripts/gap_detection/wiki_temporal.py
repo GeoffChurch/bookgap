@@ -36,10 +36,15 @@ WIKI_PARQUET = REPO / "cache/wiki/store/wiki_400k/articles.parquet"
 CREATION_CACHE = REPO / "cache/wiki/creation_dates"
 OUT_DIR = REPO / "artifacts/gap_detection_eval"
 
+# Wikipedia's User-Agent policy asks for a way to contact whoever is running the
+# bot, so this carries a contact when one is configured rather than dropping the
+# idea. Read from the environment: a literal address identified the author.
+# https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy
+_CONTACT = os.environ.get("CONTACT_EMAIL", "")
 USER_AGENT = (
     "bookgap-gap-detection-research/0.1 "
-    "(https://github.com/gchurchill; geoffrey.a.churchill@gmail.com) "
-    "python-requests temporal-holdout creation-date calibration"
+    f"(temporal-holdout creation-date calibration{f'; {_CONTACT}' if _CONTACT else ''}) "
+    "python-requests"
 )
 API_URL = "https://en.wikipedia.org/w/api.php"
 MAX_CONCURRENCY = 16

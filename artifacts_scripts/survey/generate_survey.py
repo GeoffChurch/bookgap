@@ -1,15 +1,28 @@
 import csv
 import json
 import logging
+import os
 import random
 import string
 from pathlib import Path
 from typing import Any, Dict, List, Literal
 
+import dotenv
+
 from bookgap.util import setup_logging
 
 
 LOGGER = logging.getLogger(__name__)
+
+# Qualtrics tenant identifiers, read from the environment rather than written as
+# literals: the brand ID names the institution and the owner ID names the account
+# that owns the survey. Both are genuinely required for the generated .qsf to
+# import into the right Qualtrics organization, so they are configuration to be
+# supplied, not something that can simply be dropped. Unset produces a .qsf that
+# imports nowhere -- which is the honest outcome for anyone who is not us.
+dotenv.load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+QUALTRICS_BRAND_ID = os.environ.get("QUALTRICS_BRAND_ID", "")
+QUALTRICS_OWNER_ID = os.environ.get("QUALTRICS_OWNER_ID", "")
 
 SURVEY_QUESTIONS = [
     "interesting?",
@@ -612,8 +625,8 @@ def build_qsf(books: List[Dict[str, str]]) -> Dict[str, Any]:
             "SurveyID": survey_id,
             "SurveyName": "Survey: Textbook Proposal Evaluation",
             "SurveyDescription": SURVEY_DESCRIPTION,
-            "SurveyOwnerID": "UR_REDACTED",
-            "SurveyBrandID": "REDACTED",
+            "SurveyOwnerID": QUALTRICS_OWNER_ID,
+            "SurveyBrandID": QUALTRICS_BRAND_ID,
             "DivisionID": None,
             "SurveyLanguage": "EN",
             "SurveyActiveResponseSet": "RS_4Jc8vaZfTFlNYEe",
@@ -621,7 +634,7 @@ def build_qsf(books: List[Dict[str, str]]) -> Dict[str, Any]:
             "SurveyStartDate": "0000-00-00 00:00:00",
             "SurveyExpirationDate": "0000-00-00 00:00:00",
             "SurveyCreationDate": "2025-12-03 21:37:48",
-            "CreatorID": "UR_REDACTED",
+            "CreatorID": QUALTRICS_OWNER_ID,
             "LastModified": "2025-12-03 21:41:44",
             "LastAccessed": "0000-00-00 00:00:00",
             "LastActivated": "0000-00-00 00:00:00",
@@ -721,7 +734,7 @@ def build_qsf(books: List[Dict[str, str]]) -> Dict[str, Any]:
                     "PreviousButton": "Back",
                     "NextButton": "Next",
                     "SurveyTitle": "Survey: Textbook Proposal Evaluation",
-                    "SkinLibrary": "REDACTED",
+                    "SkinLibrary": QUALTRICS_BRAND_ID,
                     "SkinType": "component",
                     "Skin": {
                         "brandingId": None,

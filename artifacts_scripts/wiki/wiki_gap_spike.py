@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -102,9 +103,13 @@ from curriculum.layers._keyword_extraction import (
 
 API_CACHE_DIR = Path("cache/wiki/api_cache")
 OA_SLICE_NPZ = Path("cache/wiki/oa_nlp_slice_spike.npz")  # our own tidy cache
+# Contact from the environment, not a literal -- the hardcoded address identified
+# the author. Wikipedia's User-Agent policy asks for a contact, so include one
+# when it is configured and omit it cleanly when it is not.
+_CONTACT = os.environ.get("CONTACT_EMAIL", "")
 USER_AGENT = (
-    "bookgap-research-spike/1.0 (geoffrey.a.churchill@gmail.com; "
-    "read-only Wikipedia inventory check)"
+    "bookgap-research-spike/1.0 "
+    f"(read-only Wikipedia inventory check{f'; {_CONTACT}' if _CONTACT else ''})"
 )
 
 

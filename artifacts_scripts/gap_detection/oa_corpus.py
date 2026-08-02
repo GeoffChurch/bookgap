@@ -8,7 +8,7 @@ unchanged.
 Universe (LOCKED): OpenAlex `primary_topic.id:T10181` (NLP Techniques).
 
 Acquisition: cursor paging on the OpenAlex polite pool — every request carries
-`mailto=geoffrey.a.churchill@gmail.com` and a descriptive User-Agent, exponential
+`mailto=$OPENALEX_EMAIL` and a descriptive User-Agent, exponential
 backoff on 429/5xx, and EVERY page cached to `cache/oa/nlp_t10181/` so reruns are
 fully offline. Daily cap 100K calls; this needs ~1,250.
 
@@ -48,11 +48,16 @@ OUT_DIR = REPO / "artifacts/gap_detection_eval"
 CACHE_DIR = OUT_DIR / "cache"
 
 API_URL = "https://api.openalex.org/works"
-MAILTO = "geoffrey.a.churchill@gmail.com"
+# Polite-pool contact, read from the environment rather than written as a literal:
+# the hardcoded address identified the author, which is a problem for anonymous
+# review and for publishing this repo at all. Same reasoning, and same variable,
+# as bookgap/pyalex_client.py. Unset is legal -- OpenAlex serves the request from
+# the common pool instead -- so the contact simply drops out of the User-Agent.
+MAILTO = os.environ.get("OPENALEX_EMAIL", "")
+_CONTACT = f"; mailto:{MAILTO}" if MAILTO else ""
 USER_AGENT = (
-    "bookgap-gap-detection-research/0.1 "
-    f"(https://github.com/gchurchill; mailto:{MAILTO}) "
-    "oa-nlp-temporal-holdout cursor-paging"
+    f"bookgap-gap-detection-research/0.1 (oa-nlp-temporal-holdout{_CONTACT}) "
+    "cursor-paging"
 )
 UNIVERSE_TOPIC = "T10181"
 FALLBACK_TOPICS = ("T10181", "T10028", "T10201")  # NLP + Topic Modeling + Speech

@@ -1,9 +1,13 @@
 """Reconstruct fully-qualified decl names present at a git tag by tracking the
 namespace stack while scanning Mathlib/*.lean. BYTE-correct blob splitting."""
-import subprocess, re, sys, time
+import os, subprocess, re, sys, time
 import numpy as np
 
-REPO = "/home/gchurchill/src/mathlib4_v4.20.0"
+# A mathlib4 checkout, external to this repo and version-specific -- the analysis
+# was run against v4.20.0, and tag names below assume that vintage. There is no
+# default worth guessing, so it is named explicitly and validated in collect_tag
+# rather than at import time (build_births.py imports this module).
+REPO = os.environ.get("MATHLIB4_REPO", "")
 
 DECL_KW = ("theorem","lemma","def","abbrev","structure","class","inductive",
            "instance","opaque","axiom")
@@ -15,6 +19,12 @@ END_RE = re.compile(r"^end\s*$")
 SEC_RE = re.compile(r"^section(?:\s+(\S+))?\s*$")
 
 def collect_tag(tag):
+    if not REPO:
+        raise SystemExit(
+            "MATHLIB4_REPO is not set. Point it at a mathlib4 checkout, e.g.\n"
+            "  MATHLIB4_REPO=~/src/mathlib4_v4.20.0 python -m "
+            "artifacts_scripts.gap_recover.adapters.lean.fqn_reconstruct"
+        )
     files = [f for f in subprocess.run(
         ["git","-C",REPO,"ls-tree","-r","--name-only",tag,"Mathlib/"],
         capture_output=True, text=True).stdout.splitlines() if f.endswith(".lean")]

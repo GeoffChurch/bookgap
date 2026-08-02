@@ -49,7 +49,7 @@ LATEX -> TEXT RULE (documented contract, tested), applied per unit:
 bg = an EXTERNAL OpenAlex slice (the ds2 build is anchorless — no reference
 corpus exists). Topic set is PRE-COMMITTED on meta.count probes recorded in the
 worklog before any scoring. Polite pool: every request carries
-mailto=geoffrey.a.churchill@gmail.com + a descriptive User-Agent, exponential
+mailto=$OPENALEX_EMAIL + a descriptive User-Agent, exponential
 backoff on 429/5xx, every page cached under cache/oa/t3_ds_book/ so reruns are
 offline.
 
@@ -94,8 +94,8 @@ CACHE_DIR = OUT_DIR / "cache"
 API_BASE = "https://api.openalex.org"
 USER_AGENT = (
     "bookgap-gap-detection-research/0.1 "
-    f"(https://github.com/gchurchill; mailto:{MAILTO}) "
-    "t3-book-audit field-slice cursor-paging"
+    f"(t3-book-audit field-slice{f'; mailto:{MAILTO}' if MAILTO else ''}) "
+    "cursor-paging"
 )
 T3_SELECT_FIELDS = (
     "id,display_name,publication_year,abstract_inverted_index,"
