@@ -174,6 +174,9 @@ _STACK_GAP_CM = 0.15          # horizontal gap between pre and post stacks
 # (closest at c=c_max, farthest at c=0). _BOOK_BASE_SIZE_PT is the
 # closest book's font size; _BOOK_HAZE_ALPHA controls how much the
 # farthest book fades.
+# Base font for scatter markers: comfortably available in CM, so no
+# substitution; per-marker size comes from scale= instead.
+_MARKER_BASE_PT = 8.0
 _BOOK_D_MIN = 1.0
 _BOOK_D_MAX = 2.5  # size ratio is _BOOK_D_MAX / _BOOK_D_MIN
 _BOOK_BASE_SIZE_PT = 12.0  # 1.5× larger than the original 4pt baseline
@@ -315,8 +318,16 @@ def _render_projection_scatter_tikz(
                     d = _BOOK_D_MAX
                 opacity = math.exp(-_BOOK_HAZE_ALPHA * (d - _BOOK_D_MIN))
                 size_pt = _BOOK_BASE_SIZE_PT * _BOOK_D_MIN / d
+                # Size via a TikZ transform, not \fontsize. Requesting a font
+                # smaller than the family provides makes TeX silently substitute
+                # the nearest available size -- Computer Modern bottoms out around
+                # 5pt, so every marker below that rendered identically and the
+                # size-encodes-coverage channel was clipped flat at the low end
+                # (396 substitution warnings, smallest request 2.4pt). scale= is a
+                # geometric transform, so it is continuous all the way down.
                 font_spec = (
-                    f"font=\\fontsize{{{size_pt:.2f}pt}}{{0pt}}\\selectfont"
+                    f"font=\\fontsize{{{_MARKER_BASE_PT:g}pt}}{{0pt}}\\selectfont, "
+                    f"scale={size_pt / _MARKER_BASE_PT:.3f}"
                 )
             elif book_marker_style == "linear":
                 opacity = (
