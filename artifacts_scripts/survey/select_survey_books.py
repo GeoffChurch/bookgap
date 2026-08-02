@@ -23,8 +23,12 @@ register_configs()
 
 LOGGER = logging.getLogger(__name__)
 
-# GAPS_CSV_PATH = Path("/home/gchurchill/src/bookgap/outputs/2025-11-09/09-48-25/gaps_analysis_results.csv") # w/ ToCs
-GAPS_CSV_PATH = Path("/home/gchurchill/src/bookgap/outputs/2025-12-04/22-56-46/gaps_analysis_results.csv") # w/o ToCs
+# These name specific Hydra run directories under the repo's own outputs/, so they
+# are anchored to the repo root rather than to one machine's home directory.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# GAPS_CSV_PATH = REPO_ROOT / "outputs/2025-11-09/09-48-25/gaps_analysis_results.csv" # w/ ToCs
+GAPS_CSV_PATH = REPO_ROOT / "outputs/2025-12-04/22-56-46/gaps_analysis_results.csv" # w/o ToCs
 
 NUM_TOPICS = 8
 

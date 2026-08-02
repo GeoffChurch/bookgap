@@ -18,7 +18,9 @@ export PATH="$HOME/.elan/bin:$PATH"
 # belt-and-suspenders for any child processes.
 export PYTHONUNBUFFERED=1
 
-REPO=/home/gchurchill/src/bookgap
+# Derive the repo root from this script's own location (artifacts_scripts/lean/)
+# rather than hardcoding it, so the script runs from any checkout.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MIRROR="$REPO/cache/lean/trace.log"
 mkdir -p "$(dirname "$MIRROR")"
 
