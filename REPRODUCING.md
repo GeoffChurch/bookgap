@@ -102,16 +102,15 @@ Consequently `artifacts_scripts/survey/verify_survey_alignment.py` cannot run
 against a clone, and the two human-evaluation tables cannot be regenerated.
 The reported numbers stand on the paper alone.
 
-What *is* included, so the methodology can be inspected and the stimulus set
-audited:
+What *is* included, so the methodology can be inspected and re-run end to end:
 
 - `select_survey_books.py` — how the three arms were chosen: for each topic, a
   more-cited book, a less-cited book, and one generated proposal, ranked by a
   Gaussian-kernel-weighted temporal citation percentile with bootstrap CIs.
-- `selected_books.csv` — the resulting stimulus set: every book and proposal
-  shown to participants, with titles, abstracts and citation percentiles. No
-  participant data.
-- `generate_survey.py` and `survey.qsf` — the Qualtrics instrument as deployed.
+  Running it generates `selected_books.csv`.
+- `generate_survey.py` — builds the Qualtrics instrument from that CSV. It needs
+  `QUALTRICS_BRAND_ID` and `QUALTRICS_OWNER_ID` for the generated `.qsf` to
+  import into your own Qualtrics organization.
 - `verify_survey_alignment.py` — the analysis, runnable if you conduct your own
   survey in the same format.
 
@@ -125,8 +124,7 @@ topic assignments shift. Expect small numeric differences, not identical tables.
 
 ## Known gaps in this document
 
-This section is honest bookkeeping rather than a disclaimer; each item is
-tracked in `docs/backlog/`.
+This section is honest bookkeeping rather than a disclaimer.
 
 - The exact ingest invocation used for the paper's snapshot is not recorded
   here, only the scope. Recovering it from the `cache/.jobs/` manifests is a
