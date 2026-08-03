@@ -15,7 +15,7 @@ Required environment variables: `OPENAI_API_KEY`, `OPENALEX_API_KEY` (loaded fro
 
 ### The `curriculum` sibling is no longer a declared dependency
 
-`curriculum` (<https://github.com/GeoffChurch/curriculum>, **private**) used to be
+`curriculum` (a **private** sibling repo) used to be
 an editable path dependency on `../curriculum`. It is now declared nowhere in
 `pyproject.toml`, and `uv sync` works on a clone that has no sibling checkout.
 

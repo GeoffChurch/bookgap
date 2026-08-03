@@ -18,13 +18,12 @@ This repo is one of three related projects:
 
 - **bookgap** (this repo) — gap detection, proposal generation, and the
   post-hoc research scripts under `artifacts_scripts/`.
-- **[curriculum](https://github.com/GeoffChurch/curriculum)** *(private)* — the
-  standalone curriculum engine and evaluation layer, extracted from this repo on
-  2026-07-10. Not required for gap detection or proposal generation; see Setup.
-- **[learn-and-teach](https://github.com/GeoffChurch/learn-and-teach)** *(private)* — the
-  judgment-first textbook *generation* successor (prose-orchestrated book
-  builds). This repo remains the home of gap detection and the algorithmic
-  research corpus.
+- **curriculum** *(private)* — the standalone curriculum engine and evaluation
+  layer, extracted from this repo on 2026-07-10. Not required for gap detection
+  or proposal generation; see Setup.
+- **learn-and-teach** *(private)* — the judgment-first textbook *generation*
+  successor (prose-orchestrated book builds). This repo remains the home of gap
+  detection and the algorithmic research corpus.
 
 ## Setup
 
@@ -32,7 +31,6 @@ Requires Python ≥ 3.11 and [uv](https://docs.astral.sh/uv/). The environment
 is fully specified by `pyproject.toml` + `uv.lock`.
 
 ```bash
-git clone git@github.com:GeoffChurch/bookgap.git
 cd bookgap
 uv sync --extra dev
 ```

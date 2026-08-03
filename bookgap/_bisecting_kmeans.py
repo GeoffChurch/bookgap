@@ -3,7 +3,7 @@
 Provenance
 ----------
 Copied verbatim (modulo the logger import) from ``curriculum/core/dendrogram.py``
-at commit dee42ec, <https://github.com/GeoffChurch/curriculum>.
+at commit dee42ec of the private sibling ``curriculum`` repo.
 
 Why vendored rather than imported
 ---------------------------------
