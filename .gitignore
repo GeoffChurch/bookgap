@@ -62,3 +62,7 @@ artifacts_scripts/survey/survey.qsf
 # those authors for no reproducibility gain the paper does not already give.
 artifacts_scripts/survey/selected_books.csv
 artifacts_scripts/survey/survey.txt
+
+# Emacs lock files. Four were committed by accident and purged from history
+# 2026-08-02; they encode user@host.pid and are never wanted in a repo.
+.#*
