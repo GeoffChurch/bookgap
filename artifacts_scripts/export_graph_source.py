@@ -38,7 +38,7 @@ from omegaconf import OmegaConf
 
 from bookgap.cloud import Cloud, ensure_cloud_data
 from bookgap.configs.config_store import register_configs
-from curriculum.sources.graph_npz import save_graph_npz
+from artifacts.sources.graph_npz import save_graph_npz
 
 
 def compose_cloud_cfg(overrides: Sequence[str], *, config_name: str = "standard") -> Any:

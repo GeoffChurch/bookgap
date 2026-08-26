@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-# The sibling `curriculum` repo is private and no longer a declared dependency
-# (see pyproject.toml). These tests cover code that still imports it, so they
-# skip rather than error on a clone without `uv pip install -e ../curriculum`.
-pytest.importorskip("curriculum", reason="sibling curriculum checkout not installed")
+# The npz writer is a CONTRACT shared with the engine, and it now lives in bookgen's
+# `artifacts` package (curriculum/ dissolved into engine/ + arena/). Not a declared
+# dependency here, so these tests skip rather than error on a clone without it.
+pytest.importorskip("artifacts", reason="bookgen `artifacts` package not importable")
 
 import numpy as np
 import pytest
@@ -21,7 +21,7 @@ import scipy.sparse as sp
 from omegaconf import OmegaConf
 
 from artifacts_scripts.export_graph_source import assemble_arrays, build_meta
-from curriculum.sources.graph_npz import load_graph_npz, save_graph_npz
+from artifacts.sources.graph_npz import load_graph_npz, save_graph_npz
 
 
 class _StubCloud:
