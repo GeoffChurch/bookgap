@@ -72,7 +72,8 @@ def latex_provenance(module: str) -> str:
         f"% GENERATED FILE -- do not hand-edit; regenerate with:\n"
         f"%   {cmd.rstrip()}\n"
         f"% bookgap revision: {_bookgap_revision()}\n"
-        "% (from the paper/ directory, `make artifacts` runs every generator.)\n"
+        "% (run from the bookgap root; paper/'s `make artifacts` reruns the generators\n"
+        "% it lists, and any other needs the command above.)\n"
         "% ---------------------------------------------------------------\n"
     )
 

@@ -14,7 +14,7 @@ import seaborn as sns
 from typing import cast
 
 from bookgap.util import setup_logging, LOGGER, create_unicode_safe_filename, ARTIFACTS_DIR
-from artifacts_scripts.common import friendly_embedder_name, friendly_denoiser_name
+from artifacts_scripts.common import friendly_embedder_name, friendly_denoiser_name, latex_provenance
 
 # =============================================================================
 # Configuration
@@ -272,7 +272,7 @@ def plot_results(
         latex_code = generate_latex_plot(group_df, series_config, config_desc_latex)
         latex_path = output_dir / f"gap_evolution_{safe_name}.tex"
         with open(latex_path, "w") as f:
-            f.write(latex_code)
+            f.write(latex_code + latex_provenance(__spec__.name))
         LOGGER.info(f"Saved LaTeX plot to {latex_path}")
 
     # --- New Plotting Logic: Compare configurations for each metric ---

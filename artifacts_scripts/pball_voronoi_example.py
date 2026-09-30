@@ -6,6 +6,8 @@ from matplotlib.patches import Circle
 import sys
 from pathlib import Path
 
+from artifacts_scripts.common import latex_provenance
+
 # --- Parameters ---
 NUM_ARTICLES = 200
 NUM_BOOKS = 20
@@ -360,7 +362,7 @@ if __name__ == "__main__":
     try:
         # Write the content to a .tex file
         with open(tex_output_path_input, "w") as f:
-            f.write(latex_output_input)
+            f.write(latex_output_input + latex_provenance(__spec__.name))
         
         print(f"Successfully generated '{tex_output_path_input}'")
     
