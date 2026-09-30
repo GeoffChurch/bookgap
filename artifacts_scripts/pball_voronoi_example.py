@@ -358,7 +358,9 @@ if __name__ == "__main__":
     print("Generating input-able LaTeX figure...")
     latex_output_input = generate_latex_figure(article_dots, book_dots, query_dot, radius, vor, standalone=False)
     
-    tex_output_path_input = output_dir / "voronoi_figure_input.tex"
+    # The paper \input{}s this file, so it is written straight into paper/ -- anchored
+    # to this module rather than the cwd, as generate_survey.py does.
+    tex_output_path_input = Path(__file__).resolve().parents[1] / "paper" / "artifacts" / "voronoi_figure_input.tex"
     try:
         # Write the content to a .tex file
         with open(tex_output_path_input, "w") as f:
