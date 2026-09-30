@@ -89,7 +89,6 @@ def generate_latex_plot(
         latex_lines.append(r"    title={" + safe_config_desc + "},")
         
     latex_lines.extend([
-        r"    legend style={nodes={scale=0.8, transform shape}},",
         r"]"
     ])
 
