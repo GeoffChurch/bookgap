@@ -799,9 +799,10 @@ def main():
         json.dump(qsf_payload, f, indent=2)
 
     # Generate the editable-core LaTeX appendix (three subsections only —
-    # section header / intro / \begingroup wrapper live in main.tex).
+    # section header / intro / \begingroup wrapper live in the paper's
+    # sections/appendices/survey.tex).
     appendix_tex = format_latex_appendix()
-    appendix_out = Path(__file__).resolve().parent.parent.parent / "paper" / "survey_appendix.tex"
+    appendix_out = Path(__file__).resolve().parent.parent.parent / "paper" / "artifacts" / "survey_appendix.tex"
     appendix_out.write_text(appendix_tex + latex_provenance(__spec__.name), encoding="utf-8")
 
     LOGGER.info(f"Survey written to {output_file}")

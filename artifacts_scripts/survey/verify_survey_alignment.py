@@ -565,14 +565,14 @@ def main() -> None:
     parser.add_argument(
         "--latex-path",
         type=Path,
-        default=Path("paper/selected_books_table.tex"),
+        default=Path("paper/artifacts/selected_books_table.tex"),
         help="Where to write the compact main-text summary table (default: "
-        "paper/ so main.tex can \\input it directly).",
+        "paper/artifacts/, where the paper \\inputs it from).",
     )
     parser.add_argument(
         "--per-topic-latex-path",
         type=Path,
-        default=Path("paper/selected_books_per_topic_table.tex"),
+        default=Path("paper/artifacts/selected_books_per_topic_table.tex"),
         help="Where to write the full per-topic appendix table.",
     )
     parser.add_argument(

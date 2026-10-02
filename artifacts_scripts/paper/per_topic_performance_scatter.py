@@ -14,7 +14,7 @@ Usage::
 
     uv run python -m artifacts_scripts.paper.per_topic_performance_scatter \\
         --run-dir outputs/gemma4_sweep/2026-05-22_11-11-43_gist_a10_b5_dropk10 \\
-        --output  paper/per_topic_performance.tex
+        --output  paper/artifacts/unused/per_topic_performance.tex
 """
 from __future__ import annotations
 

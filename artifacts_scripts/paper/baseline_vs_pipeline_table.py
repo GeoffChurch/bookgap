@@ -5,7 +5,7 @@ missing from either side is logged and skipped), computes summary
 statistics (mean + median of target gap coverage and proposal gap
 percentile, both ×100), runs a two-sided sign test (binomial, p=0.5)
 on the per-topic percentile differences, and writes a LaTeX tabular
-block to ``paper/baseline_vs_pipeline_table.tex``.
+block to ``paper/artifacts/baseline_vs_pipeline_table.tex``.
 
 Usage::
 
@@ -29,7 +29,7 @@ PRODUCTION_CSV = Path(
     "gaps_analysis_results.csv"
 )
 PAPER_DIR = Path("paper")
-TABLE_PATH = PAPER_DIR / "baseline_vs_pipeline_table.tex"
+TABLE_PATH = PAPER_DIR / "artifacts" / "baseline_vs_pipeline_table.tex"
 
 PCT_COL = "proposal_gap_size_percentile"
 COV_COL = "gap_coverage_fraction"

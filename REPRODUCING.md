@@ -80,10 +80,10 @@ generator modules:
 
 | paper artifact | generator |
 | --- | --- |
-| `baseline_vs_pipeline_table.tex` | `artifacts_scripts.paper.baseline_vs_pipeline_table` |
-| `per_topic_performance.tex` | `artifacts_scripts.paper.per_topic_performance_scatter` |
-| `proposal_appendix.tex` | `artifacts_scripts.paper.generate_proposal_appendix` |
-| `selected_books_table.tex` | `artifacts_scripts.survey.verify_survey_alignment` |
+| `artifacts/baseline_vs_pipeline_table.tex` | `artifacts_scripts.paper.baseline_vs_pipeline_table` |
+| `artifacts/unused/per_topic_performance.tex` | `artifacts_scripts.paper.per_topic_performance_scatter` |
+| `artifacts/proposal_appendix.tex` | `artifacts_scripts.paper.generate_proposal_appendix` |
+| `artifacts/selected_books_table.tex` | `artifacts_scripts.survey.verify_survey_alignment` |
 
 From the paper repo, `make artifacts` runs them.
 
