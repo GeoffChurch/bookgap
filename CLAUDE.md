@@ -141,7 +141,7 @@ can be deleted.
 - **`Cloud`** (`cloud.py`): The central data object. A frozen dataclass holding a `FilterPair`, index, deduplicator, denoiser config, and embedder config. Provides cached access to works, embeddings, and citation graphs. Column-selective reads from per-scope Parquet files avoid loading the full corpus into memory.
 - **`SubCloud`** (`subcloud.py`): A lightweight filtered view over a parent `Cloud` (e.g., just books or just articles for a given topic). Does not copy data; indexes into the parent.
 - **Per-scope Parquet** (`openalex_ingest.py`): Each scope's works stored as a Parquet file under `cache/works_parquet/`. `corpus_dataset()` returns a lazy `pyarrow.dataset.Dataset` spanning all scopes with column-selective reads.
-- **Embeddings store** (`cloud.py`): Dense embeddings stored in a separate Parquet file under `cache/embeddings_parquet/`, keyed by corpus fingerprint + embedder config. Decoupled from works so switching embedders doesn't require re-fetching.
+- **Embeddings store** (`cloud.py`): Dense embeddings stored as an uncompressed float32 `.npy` array under `cache/embeddings_npy/`, keyed by corpus fingerprint + embedder config, and read through a memory map so a subset read costs only the rows it touches. Decoupled from works so switching embedders doesn't require re-fetching.
 - **Per-(topic, gap) JSON artifacts** (`bookgap/llm/prompt_record.py`): each
   proposal-generation run writes `contexts/gap_{gap_idx}_topic_{topic_id}.json`
   (backend-agnostic gap analysis: all articles ranked by centrality, furthest

@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 
 from bookgap.cloud import (
     Cloud,
-    cloud_embeddings_parquet_positions,
+    cloud_embeddings_store_positions,
     denoise,
     read_embeddings_rows,
 )
@@ -54,36 +54,21 @@ class SubCloud:
         return [parent_work_abstracts[i] for i in retained_idxs]
 
     def embeddings(self) -> NDArray[np.float32]:
-        # Read ONLY this subcloud's rows from the embeddings parquet rather
+        # Read ONLY this subcloud's rows from the embeddings store rather
         # than materialising the entire parent cloud (58+ GiB at domain
         # scope) just to fancy-index a tiny subset out of it.
         #
-        # The parent maps its own row i to parquet row parent_positions[i]
+        # The parent maps its own row i to store row parent_positions[i]
         # (post-dedup, post-filter; ascending). get_subcloud_retained_idxs
-        # indexes into the parent's retained set, so this subcloud's parquet
+        # indexes into the parent's retained set, so this subcloud's store
         # positions are parent_positions[retained_idxs]. The parent's
         # denoising is applied row-wise (see cloud.denoise: a per-row affine
         # projection + optional per-row normalize), so reading the raw rows
         # and denoising them reproduces parent.embeddings()[retained_idxs]
         # byte-for-byte.
-        emb_path, parent_positions = cloud_embeddings_parquet_positions(self.parent)
+        emb_path, parent_positions = cloud_embeddings_store_positions(self.parent)
         retained_idxs = get_subcloud_retained_idxs(self)
-        sub_positions = parent_positions[retained_idxs]
-
-        # read_embeddings_rows requires ascending positions. parent_positions
-        # is ascending and retained_idxs is ascending, so sub_positions is
-        # normally already ascending and no permutation is needed. Handle the
-        # general case anyway: sort, read, then invert to restore row order.
-        n = sub_positions.shape[0]
-        if n > 1 and not np.all(sub_positions[:-1] <= sub_positions[1:]):
-            order = np.argsort(sub_positions, kind="stable")
-            raw_sorted = read_embeddings_rows(emb_path, sub_positions[order])
-            inverse = np.empty(n, dtype=np.int64)
-            inverse[order] = np.arange(n, dtype=np.int64)
-            raw = raw_sorted[inverse]
-        else:
-            raw = read_embeddings_rows(emb_path, sub_positions)
-
+        raw = read_embeddings_rows(emb_path, parent_positions[retained_idxs])
         return denoise(self.parent, raw)
 
     def index(self):

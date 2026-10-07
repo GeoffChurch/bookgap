@@ -1,6 +1,6 @@
 """HNSW build + k=2 NN benchmark for SqDistDeduplicator on the full corpus.
 
-Loads N sample embeddings from the just-written corpus parquet, sweeps
+Loads N sample embeddings from the corpus embeddings store, sweeps
 (M, efC, efS) configs, and reports build + query wall time plus recall
 vs FAISS IndexFlatL2 ground truth. Times are then linearly projected to
 the full 42 M corpus to estimate dedup wall time at each setting.
@@ -18,22 +18,15 @@ from pathlib import Path
 
 import numpy as np
 import faiss
-import pyarrow.parquet as pq
+
+from bookgap.cloud import read_embeddings_rows, read_embeddings_store
 
 
-def load_sample(parquet_path: Path, n: int, seed: int = 0) -> np.ndarray:
-    # Read only the row IDs we need; the embedding column is a
-    # fixed_size_list<float>[384], so a single take() yields a 2D
-    # numpy view after flatten + reshape.
-    table = pq.read_table(parquet_path, columns=["embeddings"])
-    col = table.column("embeddings")
-    total = len(col)
+def load_sample(store_path: Path, n: int, seed: int = 0) -> np.ndarray:
+    total = read_embeddings_store(store_path).shape[0]
     rng = np.random.default_rng(seed)
     idx = np.sort(rng.choice(total, size=min(n, total), replace=False))
-    sliced = col.take(idx)
-    flat = sliced.combine_chunks().flatten().to_numpy(zero_copy_only=False)
-    arr = np.asarray(flat, dtype=np.float32).reshape(len(idx), -1)
-    return arr
+    return read_embeddings_rows(store_path, idx)
 
 
 def bench_one(
@@ -85,8 +78,8 @@ def bench_one(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parquet", type=Path,
-                    default=Path("cache/embeddings_parquet/2f77728932c4b159/6bcf5b5e02946b7e/embeddings.parquet"))
+    ap.add_argument("--store", type=Path,
+                    default=Path("cache/embeddings_npy/2f77728932c4b159/6bcf5b5e02946b7e/embeddings.npy"))
     ap.add_argument("--sample", type=int, default=200_000,
                     help="number of embeddings to use for indexing (and queries)")
     ap.add_argument("--query-sample", type=int, default=5_000,
@@ -97,9 +90,9 @@ def main():
                     help="SqDistDeduplicator threshold")
     args = ap.parse_args()
 
-    print(f"Loading {args.sample:,} sample embeddings from {args.parquet} ...")
+    print(f"Loading {args.sample:,} sample embeddings from {args.store} ...")
     t0 = time.perf_counter()
-    embeddings = load_sample(args.parquet, args.sample)
+    embeddings = load_sample(args.store, args.sample)
     print(f"  loaded in {time.perf_counter() - t0:.1f}s, shape={embeddings.shape}, dtype={embeddings.dtype}")
 
     rng = np.random.default_rng(1)

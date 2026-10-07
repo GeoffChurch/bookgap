@@ -329,7 +329,7 @@ class TestIndexChainConsistency:
         rng = np.random.default_rng(7)
         embeddings = rng.normal(size=(n, 8)).astype(np.float32)
 
-        emb_path = multi_scope_corpus["tmp_path"] / "chain_emb" / "embeddings.parquet"
+        emb_path = multi_scope_corpus["tmp_path"] / "chain_emb" / "embeddings.npy"
         write_embeddings_store(emb_path, embeddings)
         loaded = read_embeddings_store(emb_path)
 
@@ -345,9 +345,9 @@ class TestIndexChainConsistency:
 
 class TestEmbeddingsStoreRoundtrip:
     def test_write_read_preserves_shape_and_values(self, multi_scope_corpus):
-        """Embeddings written to Parquet should round-trip exactly."""
+        """Embeddings written to the store should round-trip exactly."""
         rng = np.random.default_rng(42)
-        path = multi_scope_corpus["tmp_path"] / "emb" / "embeddings.parquet"
+        path = multi_scope_corpus["tmp_path"] / "emb" / "embeddings.npy"
         embeddings = rng.normal(size=(23, 16)).astype(np.float32)
 
         write_embeddings_store(path, embeddings)
@@ -360,7 +360,7 @@ class TestEmbeddingsStoreRoundtrip:
     def test_subset_indexing(self, multi_scope_corpus):
         """Indexing into loaded embeddings by retained_positions should work correctly."""
         rng = np.random.default_rng(42)
-        path = multi_scope_corpus["tmp_path"] / "emb2" / "embeddings.parquet"
+        path = multi_scope_corpus["tmp_path"] / "emb2" / "embeddings.npy"
         embeddings = rng.normal(size=(23, 16)).astype(np.float32)
 
         write_embeddings_store(path, embeddings)
@@ -375,7 +375,7 @@ class TestEmbeddingsStoreRoundtrip:
     def test_large_dimensionality(self, multi_scope_corpus):
         """Embeddings with large embedding dimensions should round-trip correctly."""
         rng = np.random.default_rng(99)
-        path = multi_scope_corpus["tmp_path"] / "emb_large" / "embeddings.parquet"
+        path = multi_scope_corpus["tmp_path"] / "emb_large" / "embeddings.npy"
         embeddings = rng.normal(size=(10, 384)).astype(np.float32)
 
         write_embeddings_store(path, embeddings)
@@ -387,7 +387,7 @@ class TestEmbeddingsStoreRoundtrip:
     def test_single_row(self, multi_scope_corpus):
         """A single-row embeddings store should round-trip correctly."""
         rng = np.random.default_rng(1)
-        path = multi_scope_corpus["tmp_path"] / "emb_single" / "embeddings.parquet"
+        path = multi_scope_corpus["tmp_path"] / "emb_single" / "embeddings.npy"
         embeddings = rng.normal(size=(1, 16)).astype(np.float32)
 
         write_embeddings_store(path, embeddings)

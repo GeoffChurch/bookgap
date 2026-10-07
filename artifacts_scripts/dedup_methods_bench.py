@@ -22,27 +22,26 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import pyarrow.parquet as pq
 import faiss
 
+from bookgap.cloud import read_embeddings_rows, read_embeddings_store
 
-def load_sample(parquet_path: Path, n: int, seed: int = 0) -> np.ndarray:
-    """Random-row sample from the full-corpus embeddings parquet.
 
-    Slow (~3 min) because it's a random-access take() over a 64 GB file.
-    Prefer :func:`load_scope_sample` when approximate coverage is OK —
-    it's orders-of-magnitude faster and gives denser duplicate clusters
-    (same-scope works are more often near-duplicates).
+def load_sample(store_path: Path, n: int, seed: int = 0) -> np.ndarray:
+    """Random-row sample from the full-corpus embeddings store.
+
+    Random rows from a 64 GB memory-mapped store are scattered page reads, so
+    the sample is cached under /tmp for repeat runs. Prefer
+    :func:`load_scope_sample` when approximate coverage is OK -- it gives
+    denser duplicate clusters (same-scope works are more often near-duplicates).
     """
     cache = Path(f"/tmp/dedup_bench_sample_{n}_{seed}.npy")
     if cache.exists():
         return np.load(cache)
-    table = pq.read_table(parquet_path, columns=["embeddings"])
-    col = table.column("embeddings")
+    total = read_embeddings_store(store_path).shape[0]
     rng = np.random.default_rng(seed)
-    idx = np.sort(rng.choice(len(col), size=min(n, len(col)), replace=False))
-    flat = col.take(idx).combine_chunks().flatten().to_numpy(zero_copy_only=False)
-    arr = np.asarray(flat, dtype=np.float32).reshape(len(idx), -1)
+    idx = np.sort(rng.choice(total, size=min(n, total), replace=False))
+    arr = read_embeddings_rows(store_path, idx)
     np.save(cache, arr)
     return arr
 
@@ -76,10 +75,10 @@ def load_scope_sample(
     scopes and no large ones. Sampling is without replacement so
     duplicate target sizes still pull distinct scopes.
 
-    Why this is faster than the parquet random-row path: each scope
-    already lives as a handful of sequential ``batch_*_embeddings.npy``
-    files. Loading them is a sequential file scan vs. the full-parquet
-    random take() that dominates ``load_sample``.
+    Why this is faster than the random-row path: each scope already lives
+    as a handful of sequential ``batch_*_embeddings.npy`` files. Loading
+    them is a sequential file scan vs. the scattered page reads that
+    dominate ``load_sample``.
 
     Why this is statistically useful: same-scope works are more often
     near-duplicates than cross-scope works, so scope-based sampling
@@ -374,8 +373,8 @@ def m_sorted_projection(embeddings: np.ndarray, epsilon: float, n_projs=8, windo
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parquet", type=Path,
-                    default=Path("cache/embeddings_parquet/2f77728932c4b159/6bcf5b5e02946b7e/embeddings.parquet"))
+    ap.add_argument("--store", type=Path,
+                    default=Path("cache/embeddings_npy/2f77728932c4b159/6bcf5b5e02946b7e/embeddings.npy"))
     ap.add_argument("--sample", type=int, default=200_000,
                     help="Target sample size for random-row mode (ignored with --scope-sample).")
     ap.add_argument("--scope-sample", action="store_true",
@@ -433,7 +432,7 @@ def main():
             )
             globally_excluded_scopes.update(picked_dirs)
         else:
-            emb = load_sample(args.parquet, args.sample, seed=seed)
+            emb = load_sample(args.store, args.sample, seed=seed)
         print(f"  loaded in {fmt_s(time.perf_counter() - t0)}, shape={emb.shape}")
 
         run_bench_seed(args, emb, seed, seed_i, method_pair_sets, method_times)

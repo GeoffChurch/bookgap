@@ -21,26 +21,22 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pyarrow.parquet as pq
 
 from bookgap.index import HNSW, build_index, range_search_with_
+from bookgap.cloud import read_embeddings_rows, read_embeddings_store
 
 
-def load_sample(parquet_path: Path, n: int, seed: int = 0) -> np.ndarray:
-    table = pq.read_table(parquet_path, columns=["embeddings"])
-    col = table.column("embeddings")
-    total = len(col)
+def load_sample(store_path: Path, n: int, seed: int = 0) -> np.ndarray:
+    total = read_embeddings_store(store_path).shape[0]
     rng = np.random.default_rng(seed)
     idx = np.sort(rng.choice(total, size=min(n, total), replace=False))
-    sliced = col.take(idx)
-    flat = sliced.combine_chunks().flatten().to_numpy(zero_copy_only=False)
-    return np.asarray(flat, dtype=np.float32).reshape(len(idx), -1)
+    return read_embeddings_rows(store_path, idx)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parquet", type=Path,
-                    default=Path("cache/embeddings_parquet/2f77728932c4b159/6bcf5b5e02946b7e/embeddings.parquet"))
+    ap.add_argument("--store", type=Path,
+                    default=Path("cache/embeddings_npy/2f77728932c4b159/6bcf5b5e02946b7e/embeddings.npy"))
     ap.add_argument("--sample", type=int, default=2_000_000,
                     help="number of embeddings to index (larger = more representative HNSW graph depth)")
     ap.add_argument("--queries", type=int, default=200_000,
@@ -58,7 +54,7 @@ def main():
 
     print(f"Loading {args.sample:,} sample embeddings ...")
     t0 = time.perf_counter()
-    embeddings = load_sample(args.parquet, args.sample)
+    embeddings = load_sample(args.store, args.sample)
     print(f"  loaded in {time.perf_counter() - t0:.1f}s, shape={embeddings.shape}")
 
     print(f"Building HNSW(M={args.hnsw_m}, efC={args.hnsw_efc}, efS={args.hnsw_efs}) on {len(embeddings):,} points ...")
@@ -113,7 +109,7 @@ def main():
     print(f"  - sample build at N={args.sample:,} took {fmt_s_outer(build_s)} at (M={args.hnsw_m}, efC={args.hnsw_efc})")
     full_build_est = build_s * (args.full_n / args.sample) * log_ratio
     print(f"  - projected build at N={args.full_n:,}: {fmt_s_outer(full_build_est)} "
-          f"(embeddings_parquet already written; this only rebuilds the HNSW index in-process)")
+          f"(embeddings store already written; this only rebuilds the HNSW index in-process)")
 
 
 def fmt_s_outer(s):

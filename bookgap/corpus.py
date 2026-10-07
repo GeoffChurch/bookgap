@@ -15,7 +15,7 @@ def embedder_fingerprint(embedder_cfg: Any) -> str:
     """Stable 16-hex-char sha256 of an embedder config.
 
     Identical to the embedder_fp computation in
-    bookgap.cloud._embeddings_store_path (cloud.py:65-67) so the embeddings
+    bookgap.cloud._embeddings_store_path so the embeddings
     store path is byte-for-byte unchanged when that callsite reuses this.
     """
     return hashlib.sha256(

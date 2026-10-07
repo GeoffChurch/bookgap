@@ -34,7 +34,6 @@ from bookgap.deduplicators import Deduplicator
 import scipy.linalg
 from sklearn.preprocessing import normalize as sk_normalize
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from bookgap.dendrogram import DendrogramResult, get_cloud_dendrogram
 
@@ -62,124 +61,49 @@ def _log_rss(tag: str) -> None:
 
 
 def _embeddings_store_path(corpus_fingerprint: str, embedder_cfg: Any) -> Path:
-    """Path for the embeddings Parquet file."""
+    """Path for the embeddings store: an uncompressed float32 ``.npy`` array
+    whose row ``i`` is corpus row position ``i``."""
     embedder_fp = embedder_fingerprint(embedder_cfg)
-    return CACHE_DIR / "embeddings_parquet" / corpus_fingerprint / embedder_fp / "embeddings.parquet"
+    return CACHE_DIR / "embeddings_npy" / corpus_fingerprint / embedder_fp / "embeddings.npy"
 
 
 def write_embeddings_store(path: Path, embeddings: NDArray[np.float32]) -> None:
-    """Write embeddings to a Parquet file with zstd compression."""
-    n = embeddings.shape[0]
-    d = embeddings.shape[1] if embeddings.ndim == 2 else 0
+    """Write embeddings as an uncompressed float32 ``.npy`` array.
 
-    if n > 0:
-        flat = pa.array(embeddings.reshape(-1).astype(np.float32), type=pa.float32())
-        emb_col = pa.FixedSizeListArray.from_arrays(flat, list_size=d)
-    else:
-        # Empty: create a typed but zero-length column
-        emb_type = pa.list_(pa.float32(), d) if d > 0 else pa.list_(pa.float32())
-        emb_col = pa.array([], type=emb_type)
-
-    table = pa.table({
-        "row_id": pa.array(range(n), type=pa.int64()),
-        "embeddings": emb_col,
-    })
-    metadata = {b"bookgap:embedding_dim": str(d).encode()}
-    table = table.replace_schema_metadata(metadata)
-
+    Uncompressed so readers can memory-map it: a subset read then touches only
+    the pages holding its rows, instead of decompressing the whole file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".parquet.tmp")
-    pq.write_table(table, tmp, compression="zstd")
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        np.save(f, np.ascontiguousarray(embeddings, dtype=np.float32))
     os.replace(tmp, path)
 
 
 def read_embeddings_store(path: Path) -> NDArray[np.float32]:
-    """Read ALL embeddings from a Parquet file.
+    """Every row of the store, as a read-only memory map.
 
-    Memory-heavy: holds the arrow table plus a numpy copy at peak. Used by
-    the dedup input path where we genuinely need every row. Callers that
-    only need a subset should use :func:`read_embeddings_rows` instead;
-    at 42M × 384 × 4B = 64 GB this function plus a fancy-index copy is
-    how we reliably OOM a 250 GB box.
+    Nothing is read until rows are touched, and touched rows live in the page
+    cache rather than the heap, so even the 64 GB domain-scale store can be
+    scanned end to end without a heap copy.
     """
-    table = pq.read_table(path)
-    metadata = table.schema.metadata or {}
-    d = int(metadata.get(b"bookgap:embedding_dim", b"0").decode())
-    n = len(table)
-    if n == 0:
-        return np.empty((0, d), dtype=np.float32)
-    arr = table.column("embeddings").combine_chunks().values
-    return np.asarray(arr.to_numpy(zero_copy_only=False), dtype=np.float32).reshape(n, d)
+    return np.load(path, mmap_mode="r")
 
 
 def read_embeddings_rows(
     path: Path,
     retained_positions: Optional[NDArray[np.uint64]] = None,
 ) -> NDArray[np.float32]:
-    """Read a subset of embeddings rows from Parquet, streaming row-group by
-    row-group.
+    """The rows at *retained_positions* (every row if None), copied into memory
+    in the order given.
 
-    Pre-allocates the output at ``(len(retained_positions), d)`` and fills
-    it in row-group-sized chunks; peak transient memory beyond the output
-    is one row group's worth of arrow buffers (~1 GB at 1 M rows × 384 × 4 B
-    for our shape), not a full copy of the corpus.
-
-    Designed for the post-dedup read path, where ``retained_positions``
-    typically keeps ~97 % of rows. It replaces the old ``read_embeddings_store
-    (...)[retained_positions]`` pattern that simultaneously holds the full
-    64 GB source array AND a 62 GB filtered copy during fancy indexing —
-    the exact shape we OOM-killed on (see cache/.jobs/curriculum_qc_1776788277
-    journal / kernel oom-kill record).
-
-    ``retained_positions`` must be in ascending order (the typical output
-    of the dedup step). If None, returns every row.
+    Reads through a memory map, so the cost scales with the rows requested,
+    not with the size of the store.
     """
-    pf = pq.ParquetFile(path)
-    metadata = pf.schema_arrow.metadata or {}
-    d = int(metadata.get(b"bookgap:embedding_dim", b"0").decode())
-    n_total = pf.metadata.num_rows
-
+    store = read_embeddings_store(path)
     if retained_positions is None:
-        retained_positions = np.arange(n_total, dtype=np.uint64)
-    n_out = int(len(retained_positions))
-    if n_out == 0:
-        return np.empty((0, d), dtype=np.float32)
-    if n_out > 1 and not np.all(retained_positions[:-1] <= retained_positions[1:]):
-        raise ValueError(
-            "read_embeddings_rows requires retained_positions to be ascending; "
-            "caller should sort (and remember an inverse permutation) before calling."
-        )
-
-    out = np.empty((n_out, d), dtype=np.float32)
-    row_offset = 0
-    pos_cursor = 0
-    for rg_idx in range(pf.num_row_groups):
-        rg_num_rows = pf.metadata.row_group(rg_idx).num_rows
-        rg_end = row_offset + rg_num_rows
-        # Advance the cursor past any retained positions that lie entirely
-        # before this row group (shouldn't happen with sorted input, but
-        # defensive).
-        while pos_cursor < n_out and retained_positions[pos_cursor] < row_offset:
-            pos_cursor += 1
-        # Find the first retained position that lies in a later row group.
-        next_cursor = pos_cursor
-        while next_cursor < n_out and retained_positions[next_cursor] < rg_end:
-            next_cursor += 1
-        if next_cursor > pos_cursor:
-            rg_table = pf.read_row_group(rg_idx, columns=["embeddings"])
-            col = rg_table.column("embeddings").combine_chunks()
-            rg_arr = np.asarray(
-                col.values.to_numpy(zero_copy_only=False), dtype=np.float32
-            ).reshape(rg_num_rows, d)
-            local_idx = (retained_positions[pos_cursor:next_cursor] - row_offset).astype(np.int64)
-            out[pos_cursor:next_cursor] = rg_arr[local_idx]
-            # Explicit drop so the arrow buffer can be reclaimed before the
-            # next iteration allocates a new one.
-            del rg_table, col, rg_arr
-            pos_cursor = next_cursor
-        row_offset = rg_end
-
-    return out
+        return np.array(store)
+    return np.asarray(store[np.asarray(retained_positions, dtype=np.intp)])
 
 
 @dataclass(frozen=True)
@@ -339,12 +263,10 @@ def ensure_cloud_data(cloud: Cloud) -> tuple[str, NDArray[np.uint64], NDArray[np
         _compute_and_store_embeddings(cloud, corpus, sorted_idxs, emb_path)
 
     # 3. Semantic dedup (operates on the full sorted subset embeddings).
-    # This is the one place that genuinely needs every row in memory; the
-    # dedup algorithm compares each point against every other. Once it
-    # returns, we hold a small index array and must drop the 64 GB
-    # ``raw_embeddings`` promptly so downstream code (which loads its own
-    # filtered view via read_embeddings_rows) doesn't race with this
-    # footprint and trip a global OOM.
+    # This is the one place that genuinely needs every row: the dedup
+    # algorithm compares each point against every other. ``raw_embeddings``
+    # is a memory map, so those rows sit in the page cache, not the heap;
+    # it is still dropped promptly once dedup returns a small index array.
     _log_rss("before-read-embeddings-for-dedup")
     raw_embeddings = read_embeddings_store(emb_path)
     _log_rss("after-read-embeddings-for-dedup")
@@ -943,24 +865,23 @@ def get_cloud_index(cloud: Cloud) -> faiss.Index:
 def get_cloud_embeddings(cloud: Cloud):
     corpus_fp, sorted_idxs, retained_positions = ensure_cloud_data(cloud)
     emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
-    # Streamed row-group read: allocates exactly one N_retained × D
-    # output array (~62 GB on the domain=3 corpus) rather than the prior
-    # full-64GB load + fancy-index copy pattern.
+    # Allocates exactly one N_retained × D output array (~62 GB on the
+    # domain=3 corpus); the store itself is only memory-mapped.
     _log_rss("before-streamed-embeddings-read")
     retained_embeddings = read_embeddings_rows(emb_path, retained_positions)
     _log_rss("after-streamed-embeddings-read")
     return denoise(cloud, retained_embeddings)
 
 
-def cloud_embeddings_parquet_positions(cloud: Cloud) -> tuple[Path, NDArray[np.uint64]]:
+def cloud_embeddings_store_positions(cloud: Cloud) -> tuple[Path, NDArray[np.uint64]]:
     """Return ``(emb_path, retained_positions)`` for *cloud*.
 
     *retained_positions* are ascending row positions into the embeddings
-    Parquet file at *emb_path* (post-dedup, post-filter). Row ``i`` of
-    ``cloud.embeddings()`` corresponds to parquet row
-    ``retained_positions[i]`` (the parent's denoising is applied row-wise
-    afterwards). Exposed so a :class:`~bookgap.subcloud.SubCloud` can read
-    only its own rows without ever materialising the full parent array.
+    store at *emb_path* (post-dedup, post-filter). Row ``i`` of
+    ``cloud.embeddings()`` corresponds to store row ``retained_positions[i]``
+    (the parent's denoising is applied row-wise afterwards). Exposed so a
+    :class:`~bookgap.subcloud.SubCloud` can read only its own rows without
+    ever materialising the full parent array.
     """
     corpus_fp, _sorted_idxs, retained_positions = ensure_cloud_data(cloud)
     emb_path = _embeddings_store_path(corpus_fp, cloud.embedder)
