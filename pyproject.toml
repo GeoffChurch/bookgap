@@ -57,6 +57,9 @@ dependencies = [
     # Lazily imported by artifacts_scripts/hdbscan_gap_probe.py:536; the old
     # .conda env had it installed ad hoc but undeclared.
     "fast_hdbscan",
+    # Used directly by bookgap/llm/generators/ollama_local.py: the ollama client
+    # cannot send a chat request's `truncate`.
+    "httpx",
 ]
 
 [project.scripts]

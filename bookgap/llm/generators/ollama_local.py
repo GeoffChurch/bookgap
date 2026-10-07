@@ -13,8 +13,8 @@ Deviations from the OpenAI batch path:
 - One-at-a-time synchronous calls (no batch); suitable for offline eval
   runs but not for the production pipeline.
 - Optional structured-output enforcement: when ``use_structured_output``
-  is True (the default), the :class:`Proposal` JSON schema is passed to
-  ``ollama.chat``'s ``format`` parameter so the model is constrained to
+  is True (the default), the :class:`Proposal` JSON schema is passed as
+  the chat request's ``format`` so the model is constrained to
   a single ``{title, abstract}`` object — making JSON-array outputs and
   free-form prose impossible. The orchestrator-rendered user prompt
   also carries a JSON-output instruction (see ``prompt_render``) so
@@ -22,6 +22,14 @@ Deviations from the OpenAI batch path:
 - Ollama models that produce a ``thinking`` block (e.g. gemma4) have
   their thoughts captured separately for transparency but only the
   final ``content`` is parsed as the proposal.
+- A prompt never reaches the model truncated. Every request sets
+  ``truncate: false``, so Ollama refuses a prompt longer than ``num_ctx``
+  instead of silently dropping its start, and a reply whose prompt plus
+  output overflowed ``num_ctx`` (Ollama then shifts the context, dropping
+  the start of the prompt mid-generation) is refused here. Both raise
+  :class:`ContextOverflowError` and stop the run: the cause is the
+  configured window, which a retry cannot change, and a proposal written
+  without the whole prompt is not a proposal for that prompt.
 
 Use case: the K-ball-vs-HDBSCAN comparison experiment that needs many
 proposals generated cheaply, or any other offline eval where keeping
@@ -30,10 +38,12 @@ generations local matters more than throughput.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 import ollama
 
 from ..protocols import (
@@ -41,6 +51,28 @@ from ..protocols import (
     Proposal,
     ProposalContext,
 )
+
+
+class ContextOverflowError(RuntimeError):
+    """A chat request did not fit in Ollama's context window (``num_ctx``)."""
+
+
+def _ollama_url(path: str) -> str:
+    # The variable and default the ollama client itself uses.
+    host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+    return f"{host if '://' in host else 'http://' + host}{path}"
+
+
+def _chat(body: dict[str, Any]) -> ollama.ChatResponse:
+    """POST /api/chat. Not ``ollama.chat``: the client cannot send ``truncate``."""
+    response = httpx.post(_ollama_url("/api/chat"), json=body, timeout=None)
+    if response.status_code == 400 and "exceed_context_size_error" in response.text:
+        raise ContextOverflowError(
+            f"Ollama refused a prompt longer than num_ctx={body['options']['num_ctx']}; "
+            f"raise llm.ollama_num_ctx. Server said: {response.text}"
+        )
+    response.raise_for_status()
+    return ollama.ChatResponse.model_validate(response.json())
 
 
 @dataclass(frozen=True)
@@ -97,7 +129,7 @@ class OllamaProposalGenerator:
         the orchestrator using the shared ``render_prompts`` function.
 
         On strict-parse failure (anything other than a single JSON
-        object, optionally fenced), we re-call ``ollama.chat`` up to
+        object, optionally fenced), we re-send the chat request up to
         ``max_retries`` more times — non-zero temperature gives the
         model another draw at a clean response. If all attempts fail
         strict parsing, we leave ``proposal=None`` (the offline recovery
@@ -135,7 +167,7 @@ class OllamaProposalGenerator:
         )
 
     def _chat_once(self, prompts: PromptPair):
-        kwargs: dict[str, Any] = {
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": prompts.system_prompt},
@@ -146,15 +178,27 @@ class OllamaProposalGenerator:
                 "num_ctx": self.num_ctx,
                 "num_predict": self.num_predict,
             },
+            "stream": False,
+            "truncate": False,
         }
         if self._response_format is not None:
-            kwargs["format"] = self._response_format
-        return ollama.chat(**kwargs)
+            body["format"] = self._response_format
+        response = _chat(body)
+        used = response.prompt_eval_count + response.eval_count
+        if used > self.num_ctx:
+            raise ContextOverflowError(
+                f"prompt ({response.prompt_eval_count} tokens) plus output "
+                f"({response.eval_count}) overflowed num_ctx={self.num_ctx}, so Ollama "
+                "shifted the context and dropped the start of the prompt; raise "
+                "llm.ollama_num_ctx or lower llm.ollama_num_predict"
+            )
+        return response
 
     def _build_metadata(self, response) -> dict[str, Any]:
         return {
             "model": self.model,
             "implementation": "ollama_local",
+            "num_ctx": self.num_ctx,
             "eval_count": response.eval_count,
             "prompt_eval_count": response.prompt_eval_count,
             "total_duration_ns": response.total_duration,

@@ -431,8 +431,8 @@ class TestOllamaDispatch:
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
 
-        with patch("bookgap.llm.generators.ollama_local.ollama") as mock_ollama:
-            mock_ollama.chat.side_effect = [
+        with patch("bookgap.llm.generators.ollama_local._chat") as mock_chat:
+            mock_chat.side_effect = [
                 self._fake_chat_response("T1", "A1"),
                 self._fake_chat_response("T2", "A2"),
             ]
@@ -476,7 +476,7 @@ class TestOllamaDispatch:
 
 class TestOllamaResumability:
     """Verify pre-existing on-disk records skip the corresponding
-    `ollama.chat` calls so a SIGKILL'd run can resume."""
+    chat calls so a SIGKILL'd run can resume."""
 
     @patch("bookgap.llm.generators.workflow_functions.instantiate")
     @patch("bookgap.llm.generators.workflow_functions.Embedder")
@@ -503,7 +503,7 @@ class TestOllamaResumability:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             # Pre-populate ollama_results.jsonl with the first context's
-            # record so the resume path should only call ollama.chat once
+            # record so the resume path should only make one chat call
             # (for the second context).
             existing_cid = build_gap_proposal_id(gap_idx=0, topic_id="topic-a")
             results_path = output_dir / "ollama_results.jsonl"
@@ -519,8 +519,8 @@ class TestOllamaResumability:
             )
 
             state = RunStateManager(output_dir)
-            with patch("bookgap.llm.generators.ollama_local.ollama") as mock_ollama:
-                mock_ollama.chat.return_value = SimpleNamespace(
+            with patch("bookgap.llm.generators.ollama_local._chat") as mock_chat:
+                mock_chat.return_value = SimpleNamespace(
                     message=SimpleNamespace(
                         content=json.dumps({"title": "T2", "abstract": "A2"}),
                         thinking=None,
@@ -542,8 +542,8 @@ class TestOllamaResumability:
                     context_paths=[],
                 )
 
-                # Only one ollama.chat call: the not-yet-completed context.
-                assert mock_ollama.chat.call_count == 1
+                # Only one chat call: the not-yet-completed context.
+                assert mock_chat.call_count == 1
 
             # Final results file has both records (existing + new).
             lines = [
@@ -624,7 +624,7 @@ class TestStreamingCoverageProgress:
         mock_embedder_cls,
         mock_instantiate,
     ) -> None:
-        """Each ollama.chat call yields a row in coverage_progress.csv
+        """Each chat call yields a row in coverage_progress.csv
         before the next call begins. After all calls, the CSV holds N
         data rows + 1 header row."""
         mock_embed_post.return_value = np.zeros((2, 3), dtype=np.float32)
@@ -639,7 +639,7 @@ class TestStreamingCoverageProgress:
 
         config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
 
-        # Capture CSV state between each ollama.chat call so we can prove
+        # Capture CSV state between each chat call so we can prove
         # rows arrive incrementally, not in one post-loop dump.
         csv_snapshots: list[str] = []
 
@@ -649,7 +649,7 @@ class TestStreamingCoverageProgress:
 
             def capture_after_chat(*args, **kwargs):
                 # The streaming row for THIS proposal is written AFTER
-                # ollama.chat returns and before the next chat starts.
+                # the chat call returns and before the next chat starts.
                 # We capture the file state at the moment chat returns;
                 # the streaming write happens immediately after.
                 resp = self._fake_chat_response(
@@ -666,9 +666,9 @@ class TestStreamingCoverageProgress:
 
             state = RunStateManager(output_dir)
             with patch(
-                "bookgap.llm.generators.ollama_local.ollama"
-            ) as mock_ollama:
-                mock_ollama.chat.side_effect = capture_after_chat
+                "bookgap.llm.generators.ollama_local._chat"
+            ) as mock_chat:
+                mock_chat.side_effect = capture_after_chat
 
                 _run_ollama_local_path(
                     config=config,
@@ -756,9 +756,9 @@ class TestStreamingCoverageProgress:
 
             state = RunStateManager(output_dir)
             with patch(
-                "bookgap.llm.generators.ollama_local.ollama"
-            ) as mock_ollama:
-                mock_ollama.chat.return_value = self._fake_chat_response(
+                "bookgap.llm.generators.ollama_local._chat"
+            ) as mock_chat:
+                mock_chat.return_value = self._fake_chat_response(
                     "T2", "A2",
                 )
 
@@ -774,7 +774,7 @@ class TestStreamingCoverageProgress:
 
                 # The new ollama call was only made for the un-completed
                 # context (topic-b).
-                assert mock_ollama.chat.call_count == 1
+                assert mock_chat.call_count == 1
 
             csv_path = output_dir / "coverage_progress.csv"
             assert csv_path.exists()
@@ -821,8 +821,8 @@ class TestStreamingCoverageProgress:
             output_dir = Path(tmp)
             state = RunStateManager(output_dir)
             with patch(
-                "bookgap.llm.generators.ollama_local.ollama"
-            ) as mock_ollama:
+                "bookgap.llm.generators.ollama_local._chat"
+            ) as mock_chat:
                 # First call returns valid JSON; second call returns
                 # nonsense that the strict + retry parser cannot parse.
                 bad_response = SimpleNamespace(
@@ -847,7 +847,7 @@ class TestStreamingCoverageProgress:
                 def _chat(*args, **kwargs):
                     return next(_first, bad_response)
 
-                mock_ollama.chat.side_effect = _chat
+                mock_chat.side_effect = _chat
 
                 _run_ollama_local_path(
                     config=config,

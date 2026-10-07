@@ -1156,14 +1156,12 @@ def test_ollama_generator_accepts_external_promptpair(monkeypatch):
             self.eval_duration = 1
             self.done_reason = "stop"
 
-    # **kwargs so the stub tolerates optional keys the generator adds
-    # conditionally (e.g. `format`, when a response schema is configured).
-    def _fake_chat(model, messages, options, **kwargs):
-        captured["messages"] = messages
+    def _fake_chat(body):
+        captured["messages"] = body["messages"]
         return _StubResponse()
 
     monkeypatch.setattr(
-        "bookgap.llm.generators.ollama_local.ollama.chat", _fake_chat,
+        "bookgap.llm.generators.ollama_local._chat", _fake_chat,
     )
 
     g = OllamaProposalGenerator(

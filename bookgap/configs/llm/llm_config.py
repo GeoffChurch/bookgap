@@ -37,5 +37,9 @@ class LLMConfig:
     use_structured_output: bool = True  # Use JSON schema for structured responses (default: True)
 
     # Ollama-only knobs (ignored when backend == OPENAI_BATCH).
-    ollama_num_ctx: int = 8192       # Context window passed to Ollama
+    # Context window passed to Ollama. 16384 holds the longest prompts seen so far
+    # (~9.5K tokens, 10 articles + 5 books) plus a typical proposal; a prompt or
+    # prompt + output that does not fit raises ContextOverflowError rather than
+    # being truncated (see bookgap.llm.generators.ollama_local).
+    ollama_num_ctx: int = 16384
     ollama_num_predict: int = 8192   # Max generated tokens for Ollama
