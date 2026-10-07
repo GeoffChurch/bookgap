@@ -1033,6 +1033,11 @@ def _centered_singular_values(X: NDArray) -> NDArray:
 
 def denoise(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
     """Apply projective denoising with full orchestration."""
+    if len(embeddings) == 0:
+        # An empty subset (e.g. a topic left with no books after dedup) has no
+        # spectrum to log, and the diagnostic below would eigensolve a NaN Gram.
+        return get_cloud_projection(cloud).apply(embeddings)
+
     # Baseline singular values (top-10) for diagnostic logging. Uses the
     # Gram-matrix trick so memory is O(d²) not O(nd) in scratch.
     s_orig = _centered_singular_values(embeddings)

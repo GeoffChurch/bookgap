@@ -163,3 +163,24 @@ def test_subcloud_embeddings_empty_subset(tmp_path, monkeypatch):
 
     assert new.shape == old.shape
     assert np.array_equal(new, old)
+
+
+def test_real_denoise_of_an_empty_subset(monkeypatch):
+    """The real cloud.denoise (not a stub) on a subset with no rows.
+
+    A topic can be left with no books after dedup (T13567 in the AI subfield).
+    SubCloud.embeddings() then denoises a (0, d) array, whose diagnostic
+    spectrum is a NaN Gram matrix; the result must be the empty projection.
+    """
+    import bookgap.cloud as cloud_mod
+
+    d, k = 8, 6
+    rng = np.random.default_rng(11)
+    proj = ProjectiveDenoiserProjection(
+        projection_matrix=rng.standard_normal((d, k)).astype(np.float32),
+        fit_mean=rng.standard_normal(d).astype(np.float32),
+    )
+    monkeypatch.setattr(cloud_mod, "get_cloud_projection", lambda cloud: proj)
+    out = cloud_mod.denoise(object(), np.empty((0, d), dtype=np.float32))
+    assert out.shape == (0, k)
+    assert out.dtype == np.float32
