@@ -1704,7 +1704,11 @@ def generate_combined_best_denoiser_table(
 
     # Process each embedder's data
     embedder_summaries: dict[str, pd.DataFrame] = {}
-    
+    # A k column reports which drop_k won a denoiser's best-of selection. When every
+    # denoiser has a single run there was no selection, and the columns would only
+    # repeat each run's configured k, so they are left out.
+    selected_k = False
+
     for embedder_name, df in embedder_dfs.items():
         if df.empty:
             continue
@@ -1720,7 +1724,8 @@ def generate_combined_best_denoiser_table(
         
         for denoiser_name, group in df.groupby("denoiser", dropna=False):
             denoiser_str = friendly_denoiser_name(str(denoiser_name) if denoiser_name is not None else None, latex=True)
-            
+            selected_k |= len(group) > 1
+
             # Find row with best gap coverage
             coverage_numeric = pd.to_numeric(group["gap_coverage_fraction_mean"], errors="coerce")
             if coverage_numeric.notna().any():
@@ -1822,13 +1827,13 @@ def generate_combined_best_denoiser_table(
     embedder_names = list(embedder_summaries.keys())
     ordered_embedders = ordered_embedder_columns(embedder_names)
     
-    # Tabular spec: l | (rr)* | (rr)* for each embedder in each metric group
-    spec_parts = ["l"]
-    for _ in range(len(ordered_embedders)):
-        spec_parts.append("|rr")
-    for _ in range(len(ordered_embedders)):
-        spec_parts.append("|rr")
-    tabular_spec = "".join(spec_parts)
+    # Tabular spec: l | (rr)* | (rr)* for each embedder in each metric group when
+    # the k columns are shown, else l | r* | r*
+    if selected_k:
+        tabular_spec = "l" + "|rr" * len(ordered_embedders) * 2
+    else:
+        tabular_spec = "l" + ("|" + "r" * len(ordered_embedders)) * 2
+    cols_per_embedder = 2 if selected_k else 1
     
     lines_tex: list[str] = []
     if not tabular_only:
@@ -1845,28 +1850,32 @@ def generate_combined_best_denoiser_table(
     # Header Row 1: Metric group labels
     header1_parts = [""]
     # Gap coverage group
-    header1_parts.append(f"\\multicolumn{{{len(ordered_embedders) * 2}}}{{c|}}{{{gap_coverage_label}}}")
+    header1_parts.append(f"\\multicolumn{{{len(ordered_embedders) * cols_per_embedder}}}{{c|}}{{{gap_coverage_label}}}")
     # Proposal gap percentile group
-    header1_parts.append(f"\\multicolumn{{{len(ordered_embedders) * 2}}}{{c}}{{{proposal_gap_label}}}")
+    header1_parts.append(f"\\multicolumn{{{len(ordered_embedders) * cols_per_embedder}}}{{c}}{{{proposal_gap_label}}}")
     lines_tex.append(" & ".join(header1_parts) + r" \\")
-    
-    # Header Row 2: Embedder labels within each metric group
-    header2_parts = [""]
-    # Coverage embedders - always add divider to maintain separation from percentile group
-    for i, embedder in enumerate(ordered_embedders):
-        header2_parts.append(f"\\multicolumn{{2}}{{c|}}{{{escape_latex(embedder)}}}")
-    # Percentile embedders
-    for i, embedder in enumerate(ordered_embedders):
-        divider = "|" if i < len(ordered_embedders) - 1 else ""
-        header2_parts.append(f"\\multicolumn{{2}}{{c{divider}}}{{{escape_latex(embedder)}}}")
-    lines_tex.append(" & ".join(header2_parts) + r" \\")
-    
-    # Header Row 3: k and % labels
-    header3_parts = ["Denoiser"]
-    for _ in range(len(ordered_embedders) * 2):  # Coverage and percentile
-        header3_parts.extend([r"$k$", r"\%"])
-    header3_line = " & ".join(header3_parts) + r" \\"
-    lines_tex.append(header3_line)
+
+    if selected_k:
+        # Header Row 2: Embedder labels within each metric group
+        header2_parts = [""]
+        # Coverage embedders - always add divider to maintain separation from percentile group
+        for i, embedder in enumerate(ordered_embedders):
+            header2_parts.append(f"\\multicolumn{{2}}{{c|}}{{{escape_latex(embedder)}}}")
+        # Percentile embedders
+        for i, embedder in enumerate(ordered_embedders):
+            divider = "|" if i < len(ordered_embedders) - 1 else ""
+            header2_parts.append(f"\\multicolumn{{2}}{{c{divider}}}{{{escape_latex(embedder)}}}")
+        lines_tex.append(" & ".join(header2_parts) + r" \\")
+
+        # Header Row 3: k and % labels
+        header3_parts = ["Denoiser"]
+        for _ in range(len(ordered_embedders) * 2):  # Coverage and percentile
+            header3_parts.extend([r"$k$", r"\%"])
+        lines_tex.append(" & ".join(header3_parts) + r" \\")
+    else:
+        # Header Row 2: Embedder labels within each metric group, one column each
+        embedder_labels = [escape_latex(embedder) for embedder in ordered_embedders]
+        lines_tex.append(" & ".join(["Denoiser", *embedder_labels, *embedder_labels]) + r" \\")
     lines_tex.append(r"\midrule")
     
     # Data rows
@@ -1883,8 +1892,9 @@ def generate_combined_best_denoiser_table(
             if (idx, coverage_col) in coverage_best_cells and coverage_val:
                 coverage_val = f"\\textbf{{{coverage_val}}}"
             
-            k_val = format_integer_value(row.get(k_col))
-            row_parts.extend([k_val, coverage_val])
+            if selected_k:
+                row_parts.append(format_integer_value(row.get(k_col)))
+            row_parts.append(coverage_val)
         
         # Percentile values
         for embedder in ordered_embedders:
@@ -1895,8 +1905,9 @@ def generate_combined_best_denoiser_table(
             if (idx, percentile_col) in percentile_best_cells and percentile_val:
                 percentile_val = f"\\textbf{{{percentile_val}}}"
             
-            k_val = format_integer_value(row.get(k_col))
-            row_parts.extend([k_val, percentile_val])
+            if selected_k:
+                row_parts.append(format_integer_value(row.get(k_col)))
+            row_parts.append(percentile_val)
         
         lines_tex.append(" & ".join(row_parts) + r" \\")
     

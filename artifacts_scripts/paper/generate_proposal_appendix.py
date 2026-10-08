@@ -49,7 +49,27 @@ from bookgap.llm.prompt_record import (
     record_filename,
 )
 
+# Typographic punctuation that pdflatex sets fine. Written as commands rather than
+# the ---, `` and '' ligatures, so a neighbouring hyphen or quote cannot fuse with
+# one into a different mark.
+_PUNCTUATION_LATEX = {
+    "‐": "-",                        # hyphen
+    "–": r"\textendash{}",
+    "—": r"\textemdash{}",
+    "‘": r"\textquoteleft{}",
+    "’": r"\textquoteright{}",
+    "“": r"\textquotedblleft{}",
+    "”": r"\textquotedblright{}",
+    "«": r"\guillemotleft{}",
+    "»": r"\guillemotright{}",
+    "¡": r"\textexclamdown{}",
+    "¿": r"\textquestiondown{}",
+    "®": r"\textregistered{}",
+    "°": r"\textdegree{}",
+}
+
 _LATEX_ESCAPES = {
+    **_PUNCTUATION_LATEX,
     "\\": r"\textbackslash{}",
     "&": r"\&",
     "%": r"\%",
@@ -65,6 +85,10 @@ _LATEX_ESCAPES = {
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t\n\r\f\v]+")
 
+# The prompt lists are long bold titles, many in languages TeX's English patterns
+# cannot hyphenate, in a narrow column: justified, their lines stretch to underfull.
+_TITLE_LIST_BEGIN = "\\begin{enumerate}\\setlength\\itemsep{0.25em}\\raggedright"
+
 # ASCII bell as an internal sentinel for "unsupported character" — survives
 # NFKC normalization, the whitespace collapser, and latex_escape unchanged.
 # At LaTeX-render time it becomes the `\unkchar` macro defined at the top
@@ -75,13 +99,14 @@ _UNK_LATEX = r"\unkchar{}"
 def _safe_for_pdflatex(ch: str) -> str:
     """Map characters pdflatex can't render to an unsupported-glyph sentinel.
 
-    Keep ASCII printable, plus accented Latin letters (Latin-1 letters
-    0xC0-0xFF, Latin Extended-A 0x100-0x17F). Replace everything else
-    (Greek, CJK, Cyrillic, Arabic, math-symbol blocks, fullwidth chars,
-    Latin-1 symbols like guillemets and degree-sign) with the sentinel,
-    which renders as a visible `\\unkchar` tofu block.
+    Keep ASCII printable, accented Latin letters (Latin-1 letters
+    0xC0-0xFF, Latin Extended-A 0x100-0x17F), and the punctuation in
+    `_PUNCTUATION_LATEX`, which `latex_escape` turns into commands. Replace
+    everything else (Greek, CJK, Cyrillic, Arabic, math-symbol blocks,
+    fullwidth chars, the other Latin-1 symbols) with the sentinel, which
+    renders as a visible `\\unkchar` tofu block.
     """
-    if ch == _UNK_SENTINEL:
+    if ch == _UNK_SENTINEL or ch in _PUNCTUATION_LATEX:
         return ch
     cp = ord(ch)
     if cp < 0x20:
@@ -447,7 +472,7 @@ def emit_topic_page(
     out.append(tex(prop_abstract))
 
     out.append(f"\\paragraph{{{_gray('Prompt articles')}}}")
-    out.append("\\begin{enumerate}\\setlength\\itemsep{0.25em}")
+    out.append(_TITLE_LIST_BEGIN)
     for a in articles:
         link = _openalex_href(a.openalex_id)
         id_prefix = f"{link} " if link else ""
@@ -463,7 +488,7 @@ def emit_topic_page(
     if not prompt_books:
         out.append("\\textit{No books were in the prompt.}")
     else:
-        out.append("\\begin{enumerate}\\setlength\\itemsep{0.25em}")
+        out.append(_TITLE_LIST_BEGIN)
         for b in prompt_books:
             link = _openalex_href(b.openalex_id)
             id_prefix = f"{link} " if link else ""

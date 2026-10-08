@@ -5,7 +5,10 @@ import math
 
 from scipy import stats
 
+import pandas as pd
+
 from artifacts_scripts.paper.denoiser_difference_cis import paired_difference
+from artifacts_scripts.paper.generate_latex_tables import generate_combined_best_denoiser_table
 from artifacts_scripts.paper.radius_sweep_table import Row, render
 
 
@@ -38,3 +41,38 @@ def test_radius_table_orders_by_p_and_bolds_every_best_value():
     assert body[0] == r"$1/2$ & 80.6 & \textbf{100.0} & 65.5 & 97.7 & 80 \\"
     assert body[1] == r"$9/16$ & \textbf{81.4} & \textbf{100.0} & \textbf{68.1} & \textbf{97.8} & 120 \\"
     assert "textbf" not in body[2]
+
+
+def _denoiser_runs(rows):
+    return pd.DataFrame(rows, columns=["denoiser", "drop_k", "gap_coverage_fraction_mean",
+                                       "proposal_gap_size_percentile_mean"])
+
+
+def _combined_table(tmp_path, gist_rows, gemma_rows) -> str:
+    out = tmp_path / "combined.tex"
+    generate_combined_best_denoiser_table(
+        {"GIST": _denoiser_runs(gist_rows), "Gemma": _denoiser_runs(gemma_rows)}, out, tabular_only=True)
+    return out.read_text()
+
+
+def test_denoiser_table_omits_k_when_each_denoiser_has_one_run(tmp_path):
+    text = _combined_table(
+        tmp_path,
+        [("NONE", 0, 0.80, 0.70), ("LPP", 10, 0.86, 0.75)],
+        [("NONE", 0, 0.84, 0.28), ("LPP", 394, 0.83, 0.88)],
+    )
+    assert r"\begin{tabular}{l|rr|rr}" in text
+    assert "Denoiser & GIST & Gemma & GIST & Gemma" in text
+    assert "$k$" not in text
+    assert r"LPP & \textbf{86.00} & 83.00 & \textbf{75.00} & \textbf{88.00} \\" in text
+
+
+def test_denoiser_table_reports_the_winning_k_when_a_denoiser_has_several_runs(tmp_path):
+    text = _combined_table(
+        tmp_path,
+        [("NONE", 0, 0.80, 0.70), ("LPP", 10, 0.86, 0.75), ("LPP", 20, 0.84, 0.79)],
+        [("NONE", 0, 0.84, 0.28), ("LPP", 394, 0.83, 0.88)],
+    )
+    assert r"\begin{tabular}{l|rr|rr|rr|rr}" in text
+    # GIST's LPP coverage came from k=10 and its percentile from k=20
+    assert r"LPP & 10 & \textbf{86.00} & 394 & 83.00 & 20 & \textbf{79.00} & 394 & \textbf{88.00} \\" in text
