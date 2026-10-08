@@ -1,4 +1,5 @@
-"""Appendix F's text escaping: what pdflatex can set is set, the rest is a visible box."""
+"""Appendix F's text escaping: what pdflatex can set is set, a script it cannot is
+named, and anything else is a visible box."""
 from __future__ import annotations
 
 from artifacts_scripts.paper.generate_proposal_appendix import tex
@@ -12,5 +13,17 @@ def test_typographic_punctuation_becomes_latex_commands():
     )
 
 
-def test_scripts_pdflatex_cannot_set_are_boxed_one_per_character():
-    assert tex("Обзор x") == r"\unkchar{}" * 5 + " x"
+def test_a_title_wholly_in_another_script_becomes_one_label():
+    # T14064's prompt titles are Arabic: the spaces between words stay inside the run
+    assert tex("تحليل العلاقة") == "[Arabic script]"
+
+
+def test_a_script_run_ends_at_latin_text_and_keeps_what_separates_them():
+    assert tex("Обзор методов: XYZ-2000") == (
+        "[Cyrillic script]: XYZ-2000")
+    assert tex("ქართული Русский") == (
+        "[Georgian script] [Cyrillic script]")
+
+
+def test_a_latin_letter_outside_t1_stays_a_box():
+    assert tex("Azərbaycan") == r"Az\unkchar{}rbaycan"

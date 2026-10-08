@@ -118,13 +118,57 @@ def _safe_for_pdflatex(ch: str) -> str:
     return _UNK_SENTINEL
 
 
+def _unsettable_script(ch: str) -> str | None:
+    """The script of a letter or mark pdflatex cannot set, named by the first word of
+    its Unicode name ("ARABIC LETTER ALEF" -> "ARABIC"); None for anything else. A
+    Latin letter outside T1 (a schwa) is not a script of its own, and stays a box."""
+    if _safe_for_pdflatex(ch) != _UNK_SENTINEL or unicodedata.category(ch)[0] not in "LM":
+        return None
+    script = unicodedata.name(ch, "").split(" ", 1)[0]
+    return None if script in ("", "LATIN", "MODIFIER", "COMBINING") else script
+
+
+def _script_label(script: str) -> str:
+    return f"[{script if script == 'CJK' else script.capitalize()} script]"
+
+
+def _name_scripts(s: str) -> str:
+    """Replace each run of a script pdflatex cannot set with its name, "[Arabic
+    script]": the reader learns what the text was, where a box per character says
+    nothing. A run absorbs the spaces, digits and punctuation between two of its
+    letters, so a title wholly in one script becomes a single label."""
+    out: list[str] = []
+    run: str | None = None   # the script of the run in progress
+    gap = ""                 # what followed the run's last letter, held until it continues or ends
+    for ch in s:
+        script = _unsettable_script(ch)
+        if run is not None:
+            if script == run:
+                gap = ""
+                continue
+            if script is None and unicodedata.category(ch)[0] not in "LM":
+                gap += ch
+                continue
+            out += [_script_label(run), gap]
+            run, gap = None, ""
+        if script is None:
+            out.append(ch)
+        else:
+            run = script
+    if run is not None:
+        out += [_script_label(run), gap]
+    return "".join(out)
+
+
 def clean_text(text: str) -> str:
-    """Strip HTML/MathML tags, decode entities, normalize, collapse whitespace."""
+    """Strip HTML/MathML tags, decode entities, normalize, name the scripts
+    pdflatex cannot set, collapse whitespace."""
     if not text:
         return ""
     s = _HTML_TAG_RE.sub(" ", text)
     s = html.unescape(s)
     s = unicodedata.normalize("NFKC", s)
+    s = _name_scripts(s)
     s = "".join(_safe_for_pdflatex(c) for c in s)
     s = _WS_RE.sub(" ", s).strip()
     return s
