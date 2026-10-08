@@ -83,7 +83,7 @@ def main() -> int:
     ap.add_argument("--gap-idx", type=int, default=0)
     ap.add_argument("--ollama-model", default="gemma4:31b")
     ap.add_argument("--temperature", type=float, default=0.2)
-    ap.add_argument("--num-ctx", type=int, default=16384)
+    ap.add_argument("--num-ctx", type=int, default=65536)
     ap.add_argument("--num-predict", type=int, default=8192)
     args = ap.parse_args()
 

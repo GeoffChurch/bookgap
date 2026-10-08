@@ -98,9 +98,12 @@ def _git(*args: str) -> str:
 
 
 def _completed(cell: Cell) -> Path | None:
+    # run_state reaches COMPLETED when generation ends, before the post-generation
+    # scoring writes gaps_analysis_results.csv; a run is done only once that exists.
     for run_dir in sorted(OUTPUT_ROOT.glob(f"*_{cell.slug}")):
         state = run_dir / "run_state.json"
-        if state.exists() and json.loads(state.read_text())["step"] == "COMPLETED":
+        if (state.exists() and json.loads(state.read_text())["step"] == "COMPLETED"
+                and (run_dir / "gaps_analysis_results.csv").exists()):
             return run_dir
     return None
 
