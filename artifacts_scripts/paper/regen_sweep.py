@@ -53,7 +53,10 @@ from artifacts_scripts.gemma4_quantitative_sweep import TOPIC_SUBSET_RANDOM_20, 
 from bookgap.llm.generators.run_state import RunStateManager
 from bookgap.llm.generators.workflow_functions import run_batch_workflow
 
+# The radius sweep is its own experiment, so its runs are kept apart: everything under
+# runs/ feeds Tables I and II, and the summary those tables are built from reads all of it.
 OUTPUT_ROOT = Path("outputs/regen_2026-10/runs")
+RADIUS_ROOT = Path("outputs/regen_2026-10/radius_runs")
 
 EMBEDDERS = {
     "gist": ("avsolatorio/GIST-small-Embedding-v0", 10),
@@ -78,6 +81,10 @@ class Cell:
         return 0 if self.denoiser == "NONE" else EMBEDDERS[self.embedder][1]
 
     @property
+    def root(self) -> Path:
+        return OUTPUT_ROOT if self.radius_fraction == 0.75 else RADIUS_ROOT
+
+    @property
     def slug(self) -> str:
         topics = "t77" if self.all_topics else "t20"
         return (f"{self.embedder}_a{self.articles}_b{self.books}_dropk{self.drop_k}_"
@@ -100,7 +107,7 @@ def _git(*args: str) -> str:
 def _completed(cell: Cell) -> Path | None:
     # run_state reaches COMPLETED when generation ends, before the post-generation
     # scoring writes gaps_analysis_results.csv; a run is done only once that exists.
-    for run_dir in sorted(OUTPUT_ROOT.glob(f"*_{cell.slug}")):
+    for run_dir in sorted(cell.root.glob(f"*_{cell.slug}")):
         state = run_dir / "run_state.json"
         if (state.exists() and json.loads(state.read_text())["step"] == "COMPLETED"
                 and (run_dir / "gaps_analysis_results.csv").exists()):
@@ -117,7 +124,7 @@ def run(cell: Cell) -> None:
     config = dataclasses.replace(config, gap=dataclasses.replace(config.gap, radius_fraction=cell.radius_fraction))
 
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    out = OUTPUT_ROOT / f"{stamp}_{cell.slug}"
+    out = cell.root / f"{stamp}_{cell.slug}"
     (out / ".hydra").mkdir(parents=True)
     structured = OmegaConf.structured(config)
     OmegaConf.save(structured, out / "experiment_config.yaml")
