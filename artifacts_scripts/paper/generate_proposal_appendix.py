@@ -17,8 +17,10 @@ the gap-analysis pipeline.
 Usage::
 
     uv run python -m artifacts_scripts.paper.generate_proposal_appendix \\
-        --run-dir outputs/gemma4_sweep/2026-05-22_11-11-43_gist_a10_b5_dropk10 \\
-        --output  paper/artifacts/proposal_appendix.tex
+        --run-dir RUN_DIR --output paper/artifacts/proposal_appendix.tex \\
+        --topic-ids T10181 T10215 ...
+
+(paper/'s `make artifacts` passes the run and the topics the paper shows.)
 """
 from __future__ import annotations
 
@@ -29,23 +31,6 @@ from typing import Literal
 BookMarkerStyle = Literal["physics", "linear"]
 _DEFAULT_BOOK_MARKER_STYLE: BookMarkerStyle = "physics"
 
-# Default curated appendix: the six topics named as failures in §5.1
-# (\Cref{sec:overall_performance}) and T10181 (Natural Language Processing
-# Techniques) as a representative successful case. T10126 and T12026
-# (parse-recovered via lenient parsing — see
-# artifacts_scripts/lenient_recover_failed_proposals.py) are commented out
-# for the current paper revision; uncomment to include them in the appendix.
-DEFAULT_TOPIC_IDS = (
-    # "T10126",
-    "T10181",
-    "T10215",
-    "T10639",
-    # "T12026",
-    "T12157",
-    "T13623",
-    "T13674",
-    "T14381",
-)
 import csv
 import html
 import re
@@ -509,11 +494,10 @@ def main() -> None:
     ap.add_argument(
         "--topic-ids",
         nargs="+",
-        default=list(DEFAULT_TOPIC_IDS),
-        help="Topic IDs to emit pages for, in --sort order. Defaults to the "
-        "curated nine that highlight the §5.1 failure cases, the two "
-        "label-noise / parse-recovered topics, and one representative "
-        "success (T10181).",
+        required=True,
+        help="Topic IDs to emit pages for, in --sort order. Which topics the "
+        "appendix shows is the paper's choice, so the paper's Makefile names "
+        "them.",
     )
     ap.add_argument(
         "--book-marker-style",
@@ -542,14 +526,13 @@ def main() -> None:
     with csv_path.open() as f:
         rows = list(csv.DictReader(f))
 
-    if args.topic_ids:
-        wanted = set(args.topic_ids)
-        rows = [r for r in rows if r["topic_id"] in wanted]
-        missing = wanted - {r["topic_id"] for r in rows}
-        if missing:
-            raise SystemExit(
-                f"--topic-ids included unknown id(s): {sorted(missing)}"
-            )
+    wanted = set(args.topic_ids)
+    rows = [r for r in rows if r["topic_id"] in wanted]
+    missing = wanted - {r["topic_id"] for r in rows}
+    if missing:
+        raise SystemExit(
+            f"--topic-ids included unknown id(s): {sorted(missing)}"
+        )
 
     if args.sort == "name":
         rows.sort(key=lambda r: r["topic_name"].lower())
