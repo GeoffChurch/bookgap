@@ -97,6 +97,8 @@ Performance, indexing, refactoring.
 - [columnar-mask-non-empty-parent-filter](infrastructure/columnar-mask-non-empty-parent-filter.md) — extend `Filter.compute_columnar_mask` to handle non-None `subfield`/`topic`/`work_types`; today `TemporalFilter` falls back to dict iteration whenever any parent field is set
 - [columnar-subclouds-for-topic](infrastructure/columnar-subclouds-for-topic.md) — wire columnar mask into `get_subclouds_for_topic` (154 SubClouds/run on AI subfield, currently dict-iteration). Blocked on `columnar-mask-non-empty-parent-filter`. Largest concrete win in production gap-detection runs.
 - [filter-composition-zero-cost](infrastructure/filter-composition-zero-cost.md) — refactor `bookgap.filters` into composable atoms + `AndFilter`/`OrFilter` operators. Architecture already supports it; pays off once we have ≥3 cloud-aware filters. Prereq: promote year-extraction to a cached `Cloud.work_publication_years()`.
+- [ollama-overflow-guard-counts-thinking](infrastructure/ollama-overflow-guard-counts-thinking.md) — the generator's context-overflow check adds prompt and answer tokens but not gemma4's thinking (~700 tokens a proposal), so it under-counts; no paper run came within 4% of its window
+- [gap-plots-computed-then-discarded](infrastructure/gap-plots-computed-then-discarded.md) — each gap's plot is built, then fails on `HydraConfig.get()` outside batch_generator (~2 min per 77-topic cell); also ignores `output_dir` and groups proposals across topics
 
 ## Release engineering
 
