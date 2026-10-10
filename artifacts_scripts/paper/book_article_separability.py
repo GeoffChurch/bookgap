@@ -2,21 +2,35 @@
 
 The paper's embedder comparison argues that Gemma encodes more of the difference
 between books and articles than GIST does, and that LPP removes more of it from
-Gemma. This measures that directly: the cross-validated balanced accuracy and AUC
-of a logistic regression telling books from articles, on each run's raw
-embeddings and on the same embeddings after the run's denoiser.
+Gemma. This measures that directly.
 
-The works are the same for every run: those that survive every run's semantic
-deduplication. Within each topic, every such book is paired with an equal number
-of that topic's articles drawn at random, so a classifier cannot separate the
-classes by topic mix. Raw spaces differ in dimension (384 for GIST, 768 for
-Gemma), which gives the classifier more to work with in the larger one; the
-denoised spaces share a dimension, so their rows compare like for like.
+For each run and each space (the run's raw embeddings, and the same embeddings
+after its denoiser), ONE logistic regression is fit to tell books from articles,
+under k-fold cross-validation over a single pooled sample. Its held-out
+predictions are scored two ways:
+
+- pooled: balanced accuracy and AUC over each held-out fold, averaged over folds.
+  Topics weigh by their book counts, and one decision threshold serves them all.
+- per topic: balanced accuracy and AUC within each topic, from the same held-out
+  predictions, averaged over topics with equal weight. Only topics with at least
+  ``--min-topic-pairs`` book/article pairs count, since a topic with a handful of
+  books gives a near-arbitrary score.
+
+The sample is the same for every run: the works that survive every run's
+semantic deduplication, with every book in a topic paired with an equal number
+of that topic's articles drawn at random, so a work's topic says nothing about
+its class. Because the works are shared, topics also compare run against run:
+the report counts the topics in which each later run is more separable than the
+first.
+
+Raw spaces differ in dimension (384 for GIST, 768 for Gemma), which gives the
+classifier more to work with in the larger one; the denoised spaces share a
+dimension, so their rows compare like for like.
 
 Usage (from the bookgap root)::
 
     uv run python -m artifacts_scripts.paper.book_article_separability \\
-        --seed 0 --folds 5 --inverse-regularization 1.0 \\
+        --seed 0 --folds 5 --inverse-regularization 1.0 --min-topic-pairs 10 \\
         --output paper/artifacts/book_article_separability.md RUN_DIR [RUN_DIR ...]
 """
 from __future__ import annotations
@@ -34,7 +48,8 @@ from numpy.typing import NDArray
 from omegaconf import OmegaConf
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 
 from artifacts_scripts.common import friendly_embedder_name, markdown_provenance
 from bookgap.cloud import (
@@ -60,6 +75,15 @@ class Retained:
 
 
 @dataclass(frozen=True)
+class Heldout:
+    """One classifier's cross-validated results: per-fold scores, and every work's held-out prediction."""
+    fold_balanced_accuracy: NDArray
+    fold_auc: NDArray
+    probability: NDArray   # P(book), from the fold that held the work out
+    predicted: NDArray     # the classifier's label at its own threshold
+
+
+@dataclass(frozen=True)
 class Score:
     embedder: str
     space: str
@@ -68,6 +92,15 @@ class Score:
     balanced_accuracy: float
     balanced_accuracy_sd: float
     auc: float
+    topic_scores: dict[str, tuple[float, float]]   # topic -> (balanced accuracy, AUC)
+
+    @property
+    def topic_balanced_accuracy(self) -> float:
+        return float(np.mean([b for b, _ in self.topic_scores.values()]))
+
+    @property
+    def topic_auc(self) -> float:
+        return float(np.mean([a for _, a in self.topic_scores.values()]))
 
 
 def retained_works(run_dir: Path) -> Retained:
@@ -90,30 +123,55 @@ def topic_matched_sample(types: NDArray, topics: NDArray, *, rng: np.random.Gene
     return np.sort(np.array(picked, dtype=np.int64))
 
 
-def separability(X: NDArray, y: NDArray, *, folds: int, seed: int, inverse_regularization: float) -> tuple[float, float, float]:
+def cross_validated(X: NDArray, y: NDArray, *, folds: int, seed: int, inverse_regularization: float) -> Heldout:
+    fold_bacc, fold_auc = [], []
+    probability, predicted = np.empty(len(y)), np.empty(len(y), dtype=int)
     with warnings.catch_warnings():
         warnings.simplefilter("error", ConvergenceWarning)
-        cv = cross_validate(
-            LogisticRegression(C=inverse_regularization, max_iter=MAX_ITER), X, y,
-            cv=StratifiedKFold(folds, shuffle=True, random_state=seed),
-            scoring=["balanced_accuracy", "roc_auc"],
-        )
-    return cv["test_balanced_accuracy"].mean(), cv["test_balanced_accuracy"].std(), cv["test_roc_auc"].mean()
+        for train, test in StratifiedKFold(folds, shuffle=True, random_state=seed).split(X, y):
+            model = LogisticRegression(C=inverse_regularization, max_iter=MAX_ITER).fit(X[train], y[train])
+            probability[test] = model.predict_proba(X[test])[:, 1]
+            predicted[test] = model.predict(X[test])
+            fold_bacc.append(balanced_accuracy_score(y[test], predicted[test]))
+            fold_auc.append(roc_auc_score(y[test], probability[test]))
+    return Heldout(np.array(fold_bacc), np.array(fold_auc), probability, predicted)
 
 
-def render(scores: list[Score], *, folds: int) -> str:
+def per_topic_scores(y: NDArray, heldout: Heldout, topics: NDArray, *, min_pairs: int) -> dict[str, tuple[float, float]]:
+    """Balanced accuracy and AUC within each topic with at least ``min_pairs`` book/article pairs."""
+    out = {}
+    for topic in sorted(set(topics)):
+        mine = topics == topic
+        if y[mine].sum() >= min_pairs:
+            out[topic] = (balanced_accuracy_score(y[mine], heldout.predicted[mine]),
+                          roc_auc_score(y[mine], heldout.probability[mine]))
+    return out
+
+
+def render(scores: list[Score], *, folds: int, min_pairs: int) -> str:
     lines = [
         "# Book/article separability by embedder",
         "",
-        f"Logistic regression telling books from articles, {folds}-fold cross-validated, on the works every run "
-        "retained after deduplication, with each topic's books paired with as many of its articles. "
-        "Balanced accuracy is the mean over folds, with the standard deviation across folds.",
+        f"One logistic regression per embedder and space, telling books from articles under {folds}-fold "
+        "cross-validation on a single pooled sample: the works every run retained after deduplication, with each "
+        "topic's books paired with as many of its articles. Pooled scores are over each held-out fold, averaged "
+        "over folds (balanced accuracy with its standard deviation across folds); per-topic scores are the same "
+        f"held-out predictions scored within each topic with at least {min_pairs} pairs, averaged over topics.",
         "",
-        "| embedder | space | dim | n | balanced accuracy | AUC |",
-        "|---|---|---:|---:|---|---:|",
+        "| embedder | space | dim | n | pooled balanced accuracy | pooled AUC | topics | per-topic balanced accuracy | per-topic AUC |",
+        "|---|---|---:|---:|---|---:|---:|---:|---:|",
     ]
-    lines += [f"| {s.embedder} | {s.space} | {s.dim} | {s.n} | {s.balanced_accuracy:.3f} ± {s.balanced_accuracy_sd:.3f} | {s.auc:.3f} |"
-              for s in scores]
+    lines += [f"| {s.embedder} | {s.space} | {s.dim} | {s.n} | {s.balanced_accuracy:.3f} ± {s.balanced_accuracy_sd:.3f} | "
+              f"{s.auc:.3f} | {len(s.topic_scores)} | {s.topic_balanced_accuracy:.3f} | {s.topic_auc:.3f} |" for s in scores]
+    first = scores[0].embedder
+    pairs = [(a, b) for a in scores if a.embedder == first for b in scores
+             if b.embedder != first and (a.space == "raw") == (b.space == "raw")]
+    if pairs:
+        lines += ["", f"Per topic, against {first} (topics scored in both):", ""]
+        for a, b in pairs:
+            shared = sorted(set(a.topic_scores) & set(b.topic_scores))
+            higher = sum(b.topic_scores[t][1] > a.topic_scores[t][1] for t in shared)
+            lines.append(f"- {b.embedder} {b.space} has the higher AUC than {first} {a.space} in {higher} of {len(shared)} topics.")
     return "\n".join(lines) + "\n\n"
 
 
@@ -123,6 +181,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--folds", type=int, required=True)
     ap.add_argument("--inverse-regularization", type=float, required=True, help="logistic regression's C")
+    ap.add_argument("--min-topic-pairs", type=int, required=True, help="smallest topic the per-topic scores include")
     ap.add_argument("run_dirs", type=Path, nargs="+")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -144,12 +203,16 @@ def main() -> int:
         denoised = np.asarray(get_cloud_projection(run.cloud).apply(raw), dtype=np.float32)
         name = friendly_embedder_name(run.cloud.embedder.model_name)
         for space, X in (("raw", raw), (str(run.cloud.denoiser), denoised)):
-            acc, sd, auc = separability(X, y, folds=args.folds, seed=args.seed,
-                                        inverse_regularization=args.inverse_regularization)
-            scores.append(Score(name, space, X.shape[1], len(y), acc, sd, auc))
-            logging.info("%s %s: balanced accuracy %.3f, AUC %.3f", name, space, acc, auc)
+            heldout = cross_validated(X, y, folds=args.folds, seed=args.seed,
+                                      inverse_regularization=args.inverse_regularization)
+            score = Score(name, space, X.shape[1], len(y), heldout.fold_balanced_accuracy.mean(),
+                          heldout.fold_balanced_accuracy.std(), heldout.fold_auc.mean(),
+                          per_topic_scores(y, heldout, topics[pick], min_pairs=args.min_topic_pairs))
+            scores.append(score)
+            logging.info("%s %s: pooled balanced accuracy %.3f, per-topic %.3f", name, space,
+                         score.balanced_accuracy, score.topic_balanced_accuracy)
 
-    text = render(scores, folds=args.folds) + markdown_provenance(__spec__.name)
+    text = render(scores, folds=args.folds, min_pairs=args.min_topic_pairs) + markdown_provenance(__spec__.name)
     args.output.write_text(text, encoding="utf-8")
     print(text)
     return 0

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from artifacts_scripts.paper.book_article_separability import topic_matched_sample
+from artifacts_scripts.paper.book_article_separability import Heldout, per_topic_scores, topic_matched_sample
 from artifacts_scripts.paper.denoiser_difference_cis import paired_difference
 from artifacts_scripts.paper.generate_latex_tables import generate_combined_best_denoiser_table
 from artifacts_scripts.paper.radius_sweep_table import Row, render
@@ -88,3 +88,13 @@ def test_topic_matched_sample_pairs_each_topics_books_with_as_many_articles():
         assert (types[mine] == "book").sum() == (types[mine] == "article").sum()
     assert (types[pick][topics[pick] == "T2"] == "book").sum() == 1  # T2 has one article for its two books
     assert not (topics[pick] == "T3").any()  # T3 has no articles
+
+
+def test_per_topic_scores_skip_small_topics_and_score_within_each():
+    y = np.array([1, 1, 0, 0, 1, 0])
+    topics = np.array(["T1", "T1", "T1", "T1", "T2", "T2"], dtype=object)
+    # T1 ranks its books first (AUC 1) but thresholds one book wrong; T2 has only one pair
+    heldout = Heldout(np.array([]), np.array([]), np.array([0.9, 0.4, 0.3, 0.1, 0.2, 0.8]), np.array([1, 0, 0, 0, 0, 1]))
+    scores = per_topic_scores(y, heldout, topics, min_pairs=2)
+    assert set(scores) == {"T1"}
+    assert scores["T1"] == (0.75, 1.0)
