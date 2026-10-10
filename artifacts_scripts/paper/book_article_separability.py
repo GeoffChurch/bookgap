@@ -157,6 +157,11 @@ def _spread(values: list[float]) -> str:
     return f"{np.mean(values):.3f} ± {sd:.3f}"
 
 
+def _range(values: list[int]) -> str:
+    """A count over the seeds: one number when they agree, else its range."""
+    return str(min(values)) if min(values) == max(values) else f"{min(values)}–{max(values)}"
+
+
 def render(by_seed: list[list[Score]], *, seeds: list[int], folds: int, min_pairs: int) -> str:
     """One row per embedder and space: each score's mean ± standard deviation over the
     seeds, every seed drawing its own articles and folds."""
@@ -175,10 +180,10 @@ def render(by_seed: list[list[Score]], *, seeds: list[int], folds: int, min_pair
     ]
     for j, s in enumerate(by_seed[0]):
         rows = [scores[j] for scores in by_seed]
-        topics = sorted({len(r.topic_scores) for r in rows})
+        topics = [len(r.topic_scores) for r in rows]
         lines.append(
             f"| {s.embedder} | {s.space} | {s.dim} | {s.n} | {_spread([r.balanced_accuracy for r in rows])} | "
-            f"{_spread([r.auc for r in rows])} | {'–'.join(map(str, topics))} | "
+            f"{_spread([r.auc for r in rows])} | {_range(topics)} | "
             f"{_spread([r.topic_balanced_accuracy for r in rows])} | {_spread([r.topic_auc for r in rows])} |")
     first = by_seed[0][0].embedder
     pairs = [(i, j) for i, a in enumerate(by_seed[0]) if a.embedder == first
@@ -191,10 +196,10 @@ def render(by_seed: list[list[Score]], *, seeds: list[int], folds: int, min_pair
                 a, b = scores[i], scores[j]
                 shared = sorted(set(a.topic_scores) & set(b.topic_scores))
                 counts.append((sum(b.topic_scores[t][1] > a.topic_scores[t][1] for t in shared), len(shared)))
-            higher = sorted({h for h, _ in counts})
-            of = sorted({n for _, n in counts})
+            higher = [h for h, _ in counts]
             lines.append(f"- {by_seed[0][j].embedder} {by_seed[0][j].space} has the higher AUC than {first} "
-                         f"{by_seed[0][i].space} in {'–'.join(map(str, higher))} of {'–'.join(map(str, of))} topics.")
+                         f"{by_seed[0][i].space} in {_range(higher)} (mean {np.mean(higher):.1f}) of "
+                         f"{_range([n for _, n in counts])} topics.")
     return "\n".join(lines) + "\n\n"
 
 
