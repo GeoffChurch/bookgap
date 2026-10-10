@@ -42,6 +42,7 @@ Per-gap quality measurement and filtering.
 ## Denoiser methods
 
 - [denoiser-bakeoff-expansion](denoiser-bakeoff-expansion.md) — **living doc**: candidate arms (existing + published + CSLS-inspired), $k$-extension plans, results log
+- [fusion-objectives-tuning-under-trace-normalization](fusion-objectives-tuning-under-trace-normalization.md) — the paper's cut claim that tuned fusion objectives tend towards LPP likely came from untrace-normalized sweeps, where tr(S_L) dominated any weighting; re-tune CCLIP's α and JAD's weights with `normalize_traces=True`, on held-out topics
 - [rank1-vs-diagonal-regularization](rank1-vs-diagonal-regularization.md) — audit every graph operator's regulariser: dangling nodes/irreducibility call for a rank-1 $\tau \cdot \mathbf{1}r^\top$; only spectral conditioning justifies a diagonal, and `+I` before row-normalisation is degree-dependent laziness that moves the fixed point
 
 ## Document representations
