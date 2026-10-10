@@ -250,7 +250,9 @@ def generate_latex_figure(articles, books, query, radius, vor, standalone=True):
     # Query
     latex_lines.append(rf"  \tikz[baseline=-0.5ex] \fill[{QUERY_COLOR_TEX}] (0,0) circle ({QUERY_SIZE_TEX}pt); & Query \\")
     # Book
-    latex_lines.append(rf"  \tikz[baseline=-0.5ex] \node[{BOOK_COLOR_TEX}, inner sep=0pt, scale=1] {{×}}; & Book \\")
+    # $\times$, not a literal U+00D7: pdfLaTeX maps the literal through inputenc, but
+    # LuaLaTeX sets it in the T1-encoded text font, which has no glyph there.
+    latex_lines.append(rf"  \tikz[baseline=-0.5ex] \node[{BOOK_COLOR_TEX}, inner sep=0pt, scale=1] {{$\times$}}; & Book \\")
     # Article
     latex_lines.append(rf"  \tikz[baseline=-0.5ex] \fill[{ARTICLE_COLOR_TEX}] (0,0) circle ({ARTICLE_SIZE_TEX}pt); & Article \\")
     # Voronoi Line
