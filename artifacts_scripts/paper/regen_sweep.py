@@ -59,6 +59,7 @@ import yaml
 from omegaconf import OmegaConf
 
 from artifacts_scripts.gemma4_quantitative_sweep import TOPIC_SUBSET_RANDOM_20, _build_config
+from bookgap import jobs
 from bookgap.configs.config import ExperimentConfig
 from bookgap.llm.generators.run_state import RunState, RunStateManager, RunStep
 from bookgap.llm.generators.workflow_functions import run_batch_workflow
@@ -194,15 +195,22 @@ def main() -> int:
     log = logging.getLogger(__name__)
     todo = cells(args.embedder, topics=args.topics)
     digests = {m.model: m.digest for m in ollama.list().models}
-    for i, cell in enumerate(todo, start=1):
-        config = config_for(cell)
-        config_yaml = OmegaConf.to_yaml(OmegaConf.structured(config))
-        out = run_dir(cell, config_yaml, digests[config.llm.ollama_model])
-        status = "done" if is_scored(out) else "partial" if out.exists() else "new"
-        log.info("cell %d/%d %s: %s %s", i, len(todo), cell.slug, status, out)
-        if status == "done" or args.dry_run:
-            continue
-        run(cell, config, config_yaml, digests[config.llm.ollama_model])
+    # Under `bookgap.jobs run` this process is the wrapper's child: without its own
+    # handlers a stop would kill it mid-proposal instead of between proposals.
+    with jobs.stop_signals():
+        try:
+            for i, cell in enumerate(todo, start=1):
+                config = config_for(cell)
+                config_yaml = OmegaConf.to_yaml(OmegaConf.structured(config))
+                out = run_dir(cell, config_yaml, digests[config.llm.ollama_model])
+                status = "done" if is_scored(out) else "partial" if out.exists() else "new"
+                log.info("cell %d/%d %s: %s %s", i, len(todo), cell.slug, status, out)
+                if status == "done" or args.dry_run:
+                    continue
+                run(cell, config, config_yaml, digests[config.llm.ollama_model])
+        except KeyboardInterrupt as stop:
+            log.info("stopped (%s); rerun the same command to resume", stop)
+            return 130
     return 0
 
 

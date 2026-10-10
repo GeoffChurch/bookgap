@@ -296,8 +296,8 @@ def stop_requested() -> bool:
 
     Sources include SIGTERM/SIGINT signal delivery and the
     ``worker_lifecycle`` watchdog (disk-usage / RSS thresholds). Only
-    meaningful inside a :func:`worker_lifecycle` context; returns
-    ``False`` outside one. Long inner loops (e.g., per-scope embedding,
+    meaningful inside a :func:`worker_lifecycle` or :func:`stop_signals`
+    context; returns ``False`` outside one. Long inner loops (e.g., per-scope embedding,
     per-shard ingest, chunked corpus reads) should poll this between
     iterations and exit cleanly when it flips, so on-disk state stays
     consistent and the lifecycle records the cause.
@@ -334,6 +334,37 @@ def _make_stop_handler(job_id: str) -> Callable[[int, Any], None]:
         except Exception:
             pass
     return _handler
+
+
+@contextmanager
+def stop_signals() -> Iterator[None]:
+    """Turn SIGTERM/SIGINT into :func:`stop_requested` in a process that runs
+    *under* a job rather than as its lifecycle.
+
+    ``bookgap.jobs run -- <command>`` runs the command as a child of the
+    :func:`worker_lifecycle` wrapper, and ``systemctl stop`` signals the whole
+    cgroup, so the child gets the SIGTERM too. Without handlers of its own it
+    dies wherever it is; inside this context it sets the flag instead, and its
+    inner loops stop at their next safe boundary. A second signal raises
+    ``KeyboardInterrupt`` at once, for when a boundary is too far off. The
+    wrapper still owns the manifest; this touches none.
+    """
+    global _STOP_REQUESTED, _STOP_REASON
+    _STOP_REQUESTED = False
+    _STOP_REASON = None
+
+    def _handler(signum: int, frame: Any) -> None:
+        if _STOP_REQUESTED:
+            raise KeyboardInterrupt(f"second stop signal {signum}")
+        _request_stop(f"stop requested via signal {signum}")
+
+    old_term = signal.signal(signal.SIGTERM, _handler)
+    old_int = signal.signal(signal.SIGINT, _handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, old_term)
+        signal.signal(signal.SIGINT, old_int)
 
 
 def _start_watchdog(
@@ -527,6 +558,7 @@ __all__ = [
     # Worker-side
     "stop_reason",
     "stop_requested",
+    "stop_signals",
     "worker_lifecycle",
 ]
 
