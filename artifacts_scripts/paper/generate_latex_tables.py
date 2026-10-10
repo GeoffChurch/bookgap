@@ -558,7 +558,9 @@ def truncate_text(text: str, max_length: int) -> str:
         return ""
     if len(text) <= max_length:
         return text
-    ellipsis = "…"
+    # ASCII, not "…": these cells are \texttt, and LuaLaTeX hands a raw U+2026 to the
+    # T1 Courier font, which has no glyph there.
+    ellipsis = "..."
     return text[: max_length - len(ellipsis)] + ellipsis
 
 

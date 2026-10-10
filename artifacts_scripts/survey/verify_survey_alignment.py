@@ -509,12 +509,14 @@ def render_per_topic_table(
 
         # topic_label = latex_escape(topic_id)
         MAX_LENGTH = 33
-        truncated_name = topic_name[:MAX_LENGTH]
+        # The truncation mark is a LaTeX command after escaping, not a raw "›": LuaLaTeX
+        # hands U+203A to the T1 Courier font by code point, where it has no glyph.
+        truncated_name = latex_escape(topic_name[:MAX_LENGTH])
         if len(topic_name) > MAX_LENGTH:
-            truncated_name += "›"
-        
-        # topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\footnotesize {latex_escape(truncated_name)}}}}}"
-        topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\scriptsize {latex_escape(truncated_name)}}}}}"
+            truncated_name += r"\guilsinglright{}"
+
+        # topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\footnotesize {truncated_name}}}}}"
+        topic_label = rf"\href{{https://openalex.org/topics/{topic_id}}}{{\texttt{{\scriptsize {truncated_name}}}}}"
         row = " ".join(
             [
                 f"{topic_label} & {interesting_labels[0]} & {interesting_labels[1]} & {interesting_labels[2]} "

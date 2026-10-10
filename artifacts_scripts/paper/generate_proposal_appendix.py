@@ -120,64 +120,146 @@ def _safe_for_pdflatex(ch: str) -> str:
 
 def _unsettable_script(ch: str) -> str | None:
     """The script of a letter or mark pdflatex cannot set, named by the first word of
-    its Unicode name ("ARABIC LETTER ALEF" -> "ARABIC"); None for anything else. A
-    Latin letter outside T1 (a schwa) is not a script of its own, and stays a box."""
+    its Unicode name ("ARABIC LETTER ALEF" -> "ARABIC"); None for anything else,
+    including the letters pdflatex sets. A Latin letter outside T1 (a schwa) is
+    "LATIN", a script of one letter."""
     if _safe_for_pdflatex(ch) != _UNK_SENTINEL or unicodedata.category(ch)[0] not in "LM":
         return None
     script = unicodedata.name(ch, "").split(" ", 1)[0]
-    return None if script in ("", "LATIN", "MODIFIER", "COMBINING") else script
+    return None if script in ("", "MODIFIER", "COMBINING") else script
 
 
-def _script_label(script: str) -> str:
-    return f"[{script if script == 'CJK' else script.capitalize()} script]"
+# Scripts DejaVu Sans covers, with their OpenType script tags and, for those written
+# right to left, the LuaTeX direction. Under LuaLaTeX a run of one of these is set in
+# DejaVu Sans; under pdfLaTeX, and for every other script, it is named instead.
+_SETTABLE_SCRIPTS = {
+    "ARABIC": ("arab", r"\textdir TRT"),
+    "ARMENIAN": ("armn", ""),
+    "CYRILLIC": ("cyrl", ""),
+    "GEORGIAN": ("geor", ""),
+    "GREEK": ("grek", ""),
+    "HEBREW": ("hebr", r"\textdir TRT"),
+    "LATIN": ("latn", ""),
+}
+
+# A run of an unsettable script travels through escaping between these sentinels,
+# OPEN script SEP text CLOSE, so latex_escape escapes its text but not its markup.
+_RUN_OPEN, _RUN_SEP, _RUN_CLOSE = "\x01", "\x02", "\x03"
+_RUN_RE = re.compile(f"{_RUN_OPEN}([A-Z]+){_RUN_SEP}(.*?){_RUN_CLOSE}", re.DOTALL)
 
 
-def _name_scripts(s: str) -> str:
-    """Replace each run of a script pdflatex cannot set with its name, "[Arabic
-    script]": the reader learns what the text was, where a box per character says
-    nothing. A run absorbs the spaces, digits and punctuation between two of its
-    letters, so a title wholly in one script becomes a single label."""
+def _script_name(script: str) -> str:
+    return script if script == "CJK" else script.capitalize()
+
+
+def _fallback(script: str) -> str:
+    """What pdfLaTeX prints for a run: its script's name, or a box for a stray Latin letter."""
+    return _UNK_LATEX if script == "LATIN" else f"[{_script_name(script)} script]"
+
+
+def _mark_scripts(s: str) -> str:
+    """Bracket each run of a script pdflatex cannot set between the run sentinels.
+    A run absorbs the spaces, digits and punctuation between two of its letters, so
+    a title wholly in one script is a single run."""
     out: list[str] = []
     run: str | None = None   # the script of the run in progress
+    text = ""                # the run so far
     gap = ""                 # what followed the run's last letter, held until it continues or ends
     for ch in s:
         script = _unsettable_script(ch)
         if run is not None:
             if script == run:
-                gap = ""
+                text, gap = text + gap + ch, ""
                 continue
             if script is None and unicodedata.category(ch)[0] not in "LM":
                 gap += ch
                 continue
-            out += [_script_label(run), gap]
-            run, gap = None, ""
+            out += [_RUN_OPEN, run, _RUN_SEP, text, _RUN_CLOSE, gap]
+            run, text, gap = None, "", ""
         if script is None:
             out.append(ch)
         else:
-            run = script
+            run, text = script, ch
     if run is not None:
-        out += [_script_label(run), gap]
+        out += [_RUN_OPEN, run, _RUN_SEP, text, _RUN_CLOSE, gap]
     return "".join(out)
 
 
 def clean_text(text: str) -> str:
-    """Strip HTML/MathML tags, decode entities, normalize, name the scripts
-    pdflatex cannot set, collapse whitespace."""
+    """Strip HTML/MathML tags, decode entities, normalize, mark the runs of scripts
+    pdflatex cannot set, box any other character it cannot set, collapse whitespace."""
     if not text:
         return ""
     s = _HTML_TAG_RE.sub(" ", text)
     s = html.unescape(s)
     s = unicodedata.normalize("NFKC", s)
-    s = _name_scripts(s)
-    s = "".join(_safe_for_pdflatex(c) for c in s)
-    s = _WS_RE.sub(" ", s).strip()
-    return s
+    s = _mark_scripts(s)
+    pieces, last = [], 0
+    for m in _RUN_RE.finditer(s):
+        pieces.append("".join(_safe_for_pdflatex(c) for c in s[last:m.start()]))
+        pieces.append(m.group(0))
+        last = m.end()
+    pieces.append("".join(_safe_for_pdflatex(c) for c in s[last:]))
+    return _WS_RE.sub(" ", "".join(pieces)).strip()
+
+
+def _emit_run(m: re.Match[str]) -> str:
+    script, text = m.group(1), m.group(2)
+    if script in _SETTABLE_SCRIPTS:
+        return rf"\scripttext{{{_script_name(script)}}}{{{_fallback(script)}}}{{{text}}}"
+    return _fallback(script)
+
+
+# Accents by their combining mark, and the letters with no decomposition. Every
+# non-ASCII letter goes out as one of these LaTeX commands, never raw: pdfLaTeX's
+# input layer would map a raw letter for us, but LuaLaTeX hands it to the T1 font by
+# code point, where a letter outside Latin-1 is missing (č, ř, ı) and some inside it
+# land on the wrong glyph (× is Œ, ß is SS).
+_ACCENTS = {
+    "\u0300": "`", "\u0301": "'", "\u0302": "^", "\u0303": "~", "\u0304": "=",
+    "\u0306": "u", "\u0307": ".", "\u0308": '"', "\u030A": "r", "\u030B": "H",
+    "\u030C": "v", "\u0323": "d", "\u0327": "c", "\u0328": "k", "\u0331": "b",
+}
+_LETTERS = {
+    "ß": r"\ss{}", "æ": r"\ae{}", "Æ": r"\AE{}", "œ": r"\oe{}", "Œ": r"\OE{}",
+    "ø": r"\o{}", "Ø": r"\O{}", "ł": r"\l{}", "Ł": r"\L{}", "ı": r"\i{}",
+    "đ": r"\dj{}", "Đ": r"\DJ{}", "ð": r"\dh{}", "Ð": r"\DH{}", "þ": r"\th{}",
+    "Þ": r"\TH{}", "ŋ": r"\ng{}", "Ŋ": r"\NG{}", "×": r"\texttimes{}", "÷": r"\textdiv{}",
+}
+
+
+def _licr(ch: str) -> str | None:
+    """A non-ASCII Latin letter as a LaTeX command, or None when there is none."""
+    if ch in _LETTERS:
+        return _LETTERS[ch]
+    base, *marks = unicodedata.normalize("NFD", ch)
+    if not marks or not base.isascii() or any(m not in _ACCENTS for m in marks):
+        return None
+    out = r"\i{}" if base == "i" and marks[0] in ("\u0301", "\u0300", "\u0302", "\u0308") else base
+    for m in marks:
+        accent = _ACCENTS[m]
+        out = f"\\{accent}{{{out}}}"
+    return out
 
 
 def latex_escape(text: str) -> str:
+    """Escape TeX's specials, and write non-ASCII letters as LaTeX commands, except
+    inside a script run, whose letters DejaVu Sans sets as they are."""
     if not text:
         return ""
-    return "".join(_LATEX_ESCAPES.get(ch, ch) for ch in text)
+    out, in_run = [], False
+    for ch in text:
+        if ch == _RUN_OPEN:
+            in_run = True
+        elif ch == _RUN_CLOSE:
+            in_run = False
+        if ch in _LATEX_ESCAPES:
+            out.append(_LATEX_ESCAPES[ch])
+        elif ord(ch) >= 0x80 and not in_run:
+            out.append(_licr(ch) or _UNK_SENTINEL)
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def tex(text: str, max_chars: int | None = None) -> str:
@@ -186,8 +268,44 @@ def tex(text: str, max_chars: int | None = None) -> str:
         cut = s.rfind(" ", 0, max_chars)
         if cut < max_chars // 2:  # no good boundary — hard cut
             cut = max_chars
-        s = s[:cut].rstrip(" ,.;:") + "..."
-    return latex_escape(s).replace(_UNK_SENTINEL, _UNK_LATEX)
+        s = s[:cut]
+        # A cut inside a run closes it; a cut inside its markup drops the run.
+        opened = s.rfind(_RUN_OPEN)
+        if opened > s.rfind(_RUN_CLOSE):
+            s = s + _RUN_CLOSE if s.find(_RUN_SEP, opened) >= 0 else s[:opened]
+        s = s.rstrip(" ,.;:") + "..."
+    return _RUN_RE.sub(_emit_run, latex_escape(s)).replace(_UNK_SENTINEL, _UNK_LATEX)
+
+
+def scripts_used(tex_chunks: list[str]) -> list[str]:
+    """The settable scripts the generated text sets, so its header declares only those."""
+    used = set(re.findall(r"\\scripttext\{([A-Za-z]+)\}", "\n".join(tex_chunks)))
+    return [k for k in _SETTABLE_SCRIPTS if _script_name(k) in used]
+
+
+def script_preamble(scripts: list[str]) -> str:
+    """Defines \\scripttext{Script}{fallback}{text}: under LuaLaTeX the text, in DejaVu
+    Sans with the script's OpenType shaping and direction; under pdfLaTeX, which has
+    no font for it, the fallback."""
+    lines = [
+        "\\ifdefined\\directlua",
+        "  \\providecommand{\\scripttext}[3]{{\\fontencoding{TU}\\fontfamily{appendixscript#1}\\selectfont"
+        "\\csname appendixscriptdir#1\\endcsname#3}}",
+        "  \\providecommand{\\appendixdeclarescript}[3]{%",
+        "    \\DeclareFontFamily{TU}{appendixscript#1}{}%",
+        '    \\DeclareFontShape{TU}{appendixscript#1}{m}{n}{<->"[DejaVuSans.ttf]:mode=harf;script=#2"}{}%',
+        '    \\DeclareFontShape{TU}{appendixscript#1}{b}{n}{<->"[DejaVuSans-Bold.ttf]:mode=harf;script=#2"}{}%',
+        "    \\DeclareFontShape{TU}{appendixscript#1}{bx}{n}{<->ssub * appendixscript#1/b/n}{}%",
+        "    \\expandafter\\def\\csname appendixscriptdir#1\\endcsname{#3}}",
+        "\\else",
+        "  \\providecommand{\\scripttext}[3]{#2}",
+        "  \\providecommand{\\appendixdeclarescript}[3]{}",
+        "\\fi",
+    ]
+    for k in scripts:
+        tag, direction = _SETTABLE_SCRIPTS[k]
+        lines.append(f"\\appendixdeclarescript{{{_script_name(k)}}}{{{tag}}}{{{direction}}}")
+    return "\n".join(lines) + "\n"
 
 
 _PROMPT_TITLE_MAX = 75
@@ -654,6 +772,7 @@ def main() -> None:
         "% Auto-generated by artifacts_scripts/generate_proposal_appendix.py "
         "-- do not edit by hand.\n"
         "\\providecommand{\\unkchar}{\\rule[0.1ex]{0.55em}{0.55em}}\n"
+        + script_preamble(scripts_used(chunks))
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

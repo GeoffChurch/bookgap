@@ -256,7 +256,7 @@ def generate_latex_figure(articles, books, query, radius, vor, standalone=True):
     # Article
     latex_lines.append(rf"  \tikz[baseline=-0.5ex] \fill[{ARTICLE_COLOR_TEX}] (0,0) circle ({ARTICLE_SIZE_TEX}pt); & Article \\")
     # Voronoi Line
-    latex_lines.append(r"  \tikz[baseline=-0.5ex] \draw[gray, thin, opacity=0.8] (0,0) -- (0.5,0); & Voronoi Cell \\")
+    latex_lines.append(r"  \tikz[baseline=-0.5ex] \draw[gray, thin, opacity=0.8] (0,0) -- (0.5,0); & Cell boundary \\")
     # 1-ball
     latex_lines.append(rf"  \tikz[baseline=-0.5ex] \draw[{QUERY_COLOR_TEX}, thick, dashed] (0,0) circle ({QUERY_SIZE_TEX}pt); & Query 1-ball \\")
     
