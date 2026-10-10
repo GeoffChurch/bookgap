@@ -1032,37 +1032,40 @@ def _centered_singular_values(X: NDArray) -> NDArray:
 
 
 def denoise(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
-    """Apply projective denoising with full orchestration."""
-    if len(embeddings) == 0:
-        # An empty subset (e.g. a topic left with no books after dedup) has no
-        # spectrum to log, and the diagnostic below would eigensolve a NaN Gram.
-        return get_cloud_projection(cloud).apply(embeddings)
-
+    """The cloud's own embeddings, denoised as ``denoise_rows`` does, logging what
+    the projection keeps of them. Only the whole cloud has a spectrum worth
+    logging: a subset's describes the subset, and a single row's is empty."""
     # Baseline singular values (top-10) for diagnostic logging. Uses the
     # Gram-matrix trick so memory is O(d²) not O(nd) in scratch.
     s_orig = _centered_singular_values(embeddings)
     LOGGER.info(f"Top 10 original singular values: {' '.join(f'{s:.3f}' for s in s_orig[:10])}")
 
-    # Dimensionality reduction/cleaning
-
-    projection = get_cloud_projection(cloud)
-
     LOGGER.info(f"Cloud {cloud.name()} -- Running {cloud.denoiser} with drop_k={cloud.drop_k} (n_components={embeddings.shape[1] - cloud.drop_k}) on {len(embeddings)} embeddings of shape {embeddings.shape}")
 
-    denoised_embeddings: NDArray[T] = projection.apply(embeddings)
+    projected: NDArray[T] = get_cloud_projection(cloud).apply(embeddings)
 
     # What the projection keeps, measured before renormalizing: the projection is
     # orthonormal, so this is at most 100%. Measured after, it is not a fraction at
     # all, since renormalizing scales each vector back up by 1/||projection|| (it
     # read ~250% for GIST, whose dropped directions carry much of every vector's
     # length). The mean norm kept is what that scaling undoes.
-    variance_retained = np.sum(_centered_singular_values(denoised_embeddings) ** 2) / np.sum(s_orig ** 2)
-    norm_retained = float(np.mean(np.linalg.norm(denoised_embeddings, axis=1) / np.linalg.norm(embeddings, axis=1)))
+    variance_retained = np.sum(_centered_singular_values(projected) ** 2) / np.sum(s_orig ** 2)
+    norm_retained = float(np.mean(np.linalg.norm(projected, axis=1) / np.linalg.norm(embeddings, axis=1)))
     LOGGER.info(f"Cloud {cloud.name()} -- Projection keeps {variance_retained:.2%} of centered variance, "
                 f"{norm_retained:.2%} of the mean embedding norm")
 
-    if cloud.normalize_embeddings:
-        norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
-        denoised_embeddings = denoised_embeddings / norms
+    return _renormalized(cloud, projected)
 
-    return denoised_embeddings
+
+def denoise_rows(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
+    """Rows of the cloud's embedding store, denoised exactly as the cloud's own
+    are: its projection, then renormalizing if the cloud does. Both are row-wise,
+    so a subset (a topic's books, which may be one or none) denoises to the same
+    rows the whole cloud does."""
+    return _renormalized(cloud, get_cloud_projection(cloud).apply(embeddings))
+
+
+def _renormalized(cloud: Cloud, projected: NDArray[T]) -> NDArray[T]:
+    if not cloud.normalize_embeddings:
+        return projected
+    return projected / np.linalg.norm(projected, axis=1, keepdims=True)

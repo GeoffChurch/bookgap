@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 from bookgap.cloud import (
     Cloud,
     cloud_embeddings_store_positions,
-    denoise,
+    denoise_rows,
     read_embeddings_rows,
 )
 from bookgap.index import build_index
@@ -62,14 +62,14 @@ class SubCloud:
         # (post-dedup, post-filter; ascending). get_subcloud_retained_idxs
         # indexes into the parent's retained set, so this subcloud's store
         # positions are parent_positions[retained_idxs]. The parent's
-        # denoising is applied row-wise (see cloud.denoise: a per-row affine
+        # denoising is applied row-wise (see cloud.denoise_rows: a per-row affine
         # projection + optional per-row normalize), so reading the raw rows
         # and denoising them reproduces parent.embeddings()[retained_idxs]
         # byte-for-byte.
         emb_path, parent_positions = cloud_embeddings_store_positions(self.parent)
         retained_idxs = get_subcloud_retained_idxs(self)
         raw = read_embeddings_rows(emb_path, parent_positions[retained_idxs])
-        return denoise(self.parent, raw)
+        return denoise_rows(self.parent, raw)
 
     def index(self):
         return build_index(self.parent.index_info, self.embeddings())

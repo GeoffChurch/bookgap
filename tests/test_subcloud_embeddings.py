@@ -11,7 +11,7 @@ They drive the REAL ``SubCloud.embeddings()`` code (composition of parent store
 positions with the subcloud's retained indices, and the row-wise denoise)
 against a synthetic store; only the three module-level collaborators it looks
 up (``cloud_embeddings_store_positions``, ``get_subcloud_retained_idxs``,
-``denoise``) are stubbed, so its own logic runs unmodified.
+``denoise_rows``) are stubbed, so its own logic runs unmodified.
 """
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def _install(monkeypatch, emb_path, parent_positions, sub_idxs, denoise_fn):
         "get_subcloud_retained_idxs",
         lambda sc: np.asarray(sub_idxs, dtype=np.uint64),
     )
-    monkeypatch.setattr(subcloud_mod, "denoise", denoise_fn)
+    monkeypatch.setattr(subcloud_mod, "denoise_rows", denoise_fn)
 
 
 def _full_parent_reference(emb_path, parent_positions, sub_idxs, denoise_fn, parent):
@@ -165,22 +165,52 @@ def test_subcloud_embeddings_empty_subset(tmp_path, monkeypatch):
     assert np.array_equal(new, old)
 
 
-def test_real_denoise_of_an_empty_subset(monkeypatch):
-    """The real cloud.denoise (not a stub) on a subset with no rows.
+@dataclass(frozen=True)
+class _DenoisingCloud:
+    """What cloud.denoise and cloud.denoise_rows read off a Cloud, besides its
+    projection (which get_cloud_projection supplies)."""
 
-    A topic can be left with no books after dedup (T13567 in the AI subfield).
-    SubCloud.embeddings() then denoises a (0, d) array, whose diagnostic
-    spectrum is a NaN Gram matrix; the result must be the empty projection.
-    """
+    normalize_embeddings: bool
+    denoiser: str = "LPP"
+    drop_k: int = 2
+
+    def name(self) -> str:
+        return "test"
+
+
+def _real_projection(monkeypatch, d, k):
     import bookgap.cloud as cloud_mod
 
-    d, k = 8, 6
     rng = np.random.default_rng(11)
     proj = ProjectiveDenoiserProjection(
         projection_matrix=rng.standard_normal((d, k)).astype(np.float32),
         fit_mean=rng.standard_normal(d).astype(np.float32),
     )
     monkeypatch.setattr(cloud_mod, "get_cloud_projection", lambda cloud: proj)
-    out = cloud_mod.denoise(object(), np.empty((0, d), dtype=np.float32))
-    assert out.shape == (0, k)
+    return cloud_mod
+
+
+@pytest.mark.parametrize("n", [0, 1])
+def test_real_denoise_rows_of_a_tiny_subset(monkeypatch, n):
+    """The real cloud.denoise_rows (not a stub) on a topic's books when it has
+    none (T13567 in the AI subfield, after dedup) or only one: the rows are
+    projected and renormalized, with no spectrum to compute and nothing NaN."""
+    d, k = 8, 6
+    cloud_mod = _real_projection(monkeypatch, d, k)
+    rows = np.random.default_rng(12).standard_normal((n, d)).astype(np.float32)
+    with np.errstate(all="raise"):
+        out = cloud_mod.denoise_rows(_DenoisingCloud(normalize_embeddings=True), rows)
+    assert out.shape == (n, k)
     assert out.dtype == np.float32
+    assert np.allclose(np.linalg.norm(out, axis=1), 1.0)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_the_cloud_denoises_its_rows_as_a_subset_does(monkeypatch, normalize):
+    """SubCloud.embeddings() relies on this: the cloud-level denoise, which also
+    logs the spectrum, gives byte-for-byte the rows denoise_rows gives."""
+    d, k = 8, 6
+    cloud_mod = _real_projection(monkeypatch, d, k)
+    rows = np.random.default_rng(13).standard_normal((50, d)).astype(np.float32)
+    cloud = _DenoisingCloud(normalize_embeddings=normalize, drop_k=d - k)
+    assert np.array_equal(cloud_mod.denoise(cloud, rows), cloud_mod.denoise_rows(cloud, rows))
