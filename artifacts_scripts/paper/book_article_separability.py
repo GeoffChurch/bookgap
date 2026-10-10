@@ -16,6 +16,10 @@ predictions are scored two ways:
   ``--min-topic-pairs`` book/article pairs count, since a topic with a handful of
   books gives a near-arbitrary score.
 
+Every score is repeated for each of ``--seeds``, each seed drawing its own
+articles and folds, and reported as the mean and standard deviation over them, so
+no number rests on one draw of articles.
+
 The sample is the same for every run: the works that survive every run's
 semantic deduplication, with every book in a topic paired with an equal number
 of that topic's articles drawn at random, so a work's topic says nothing about
@@ -30,7 +34,7 @@ dimension, so their rows compare like for like.
 Usage (from the bookgap root)::
 
     uv run python -m artifacts_scripts.paper.book_article_separability \\
-        --seed 0 --folds 5 --inverse-regularization 1.0 --min-topic-pairs 10 \\
+        --seeds 0 1 2 3 4 5 6 7 8 9 --folds 5 --inverse-regularization 1.0 --min-topic-pairs 10 \\
         --output paper/artifacts/book_article_separability.md RUN_DIR [RUN_DIR ...]
 """
 from __future__ import annotations
@@ -148,37 +152,56 @@ def per_topic_scores(y: NDArray, heldout: Heldout, topics: NDArray, *, min_pairs
     return out
 
 
-def render(scores: list[Score], *, folds: int, min_pairs: int) -> str:
+def _spread(values: list[float]) -> str:
+    sd = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+    return f"{np.mean(values):.3f} ± {sd:.3f}"
+
+
+def render(by_seed: list[list[Score]], *, seeds: list[int], folds: int, min_pairs: int) -> str:
+    """One row per embedder and space: each score's mean ± standard deviation over the
+    seeds, every seed drawing its own articles and folds."""
     lines = [
         "# Book/article separability by embedder",
         "",
         f"One logistic regression per embedder and space, telling books from articles under {folds}-fold "
         "cross-validation on a single pooled sample: the works every run retained after deduplication, with each "
         "topic's books paired with as many of its articles. Pooled scores are over each held-out fold, averaged "
-        "over folds (balanced accuracy with its standard deviation across folds); per-topic scores are the same "
-        f"held-out predictions scored within each topic with at least {min_pairs} pairs, averaged over topics.",
+        f"over folds; per-topic scores are the same held-out predictions scored within each topic with at least "
+        f"{min_pairs} pairs, averaged over topics. Each score is the mean ± standard deviation over {len(seeds)} "
+        f"seeds ({', '.join(map(str, seeds))}), each drawing its own articles and folds.",
         "",
         "| embedder | space | dim | n | pooled balanced accuracy | pooled AUC | topics | per-topic balanced accuracy | per-topic AUC |",
-        "|---|---|---:|---:|---|---:|---:|---:|---:|",
+        "|---|---|---:|---:|---|---|---:|---|---|",
     ]
-    lines += [f"| {s.embedder} | {s.space} | {s.dim} | {s.n} | {s.balanced_accuracy:.3f} ± {s.balanced_accuracy_sd:.3f} | "
-              f"{s.auc:.3f} | {len(s.topic_scores)} | {s.topic_balanced_accuracy:.3f} | {s.topic_auc:.3f} |" for s in scores]
-    first = scores[0].embedder
-    pairs = [(a, b) for a in scores if a.embedder == first for b in scores
-             if b.embedder != first and (a.space == "raw") == (b.space == "raw")]
+    for j, s in enumerate(by_seed[0]):
+        rows = [scores[j] for scores in by_seed]
+        topics = sorted({len(r.topic_scores) for r in rows})
+        lines.append(
+            f"| {s.embedder} | {s.space} | {s.dim} | {s.n} | {_spread([r.balanced_accuracy for r in rows])} | "
+            f"{_spread([r.auc for r in rows])} | {'–'.join(map(str, topics))} | "
+            f"{_spread([r.topic_balanced_accuracy for r in rows])} | {_spread([r.topic_auc for r in rows])} |")
+    first = by_seed[0][0].embedder
+    pairs = [(i, j) for i, a in enumerate(by_seed[0]) if a.embedder == first
+             for j, b in enumerate(by_seed[0]) if b.embedder != first and (a.space == "raw") == (b.space == "raw")]
     if pairs:
-        lines += ["", f"Per topic, against {first} (topics scored in both):", ""]
-        for a, b in pairs:
-            shared = sorted(set(a.topic_scores) & set(b.topic_scores))
-            higher = sum(b.topic_scores[t][1] > a.topic_scores[t][1] for t in shared)
-            lines.append(f"- {b.embedder} {b.space} has the higher AUC than {first} {a.space} in {higher} of {len(shared)} topics.")
+        lines += ["", f"Per topic, against {first} (topics scored in both), over the seeds:", ""]
+        for i, j in pairs:
+            counts = []
+            for scores in by_seed:
+                a, b = scores[i], scores[j]
+                shared = sorted(set(a.topic_scores) & set(b.topic_scores))
+                counts.append((sum(b.topic_scores[t][1] > a.topic_scores[t][1] for t in shared), len(shared)))
+            higher = sorted({h for h, _ in counts})
+            of = sorted({n for _, n in counts})
+            lines.append(f"- {by_seed[0][j].embedder} {by_seed[0][j].space} has the higher AUC than {first} "
+                         f"{by_seed[0][i].space} in {'–'.join(map(str, higher))} of {'–'.join(map(str, of))} topics.")
     return "\n".join(lines) + "\n\n"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--output", type=Path, required=True)
-    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--seeds", type=int, nargs="+", required=True, help="one sample of articles and folds per seed")
     ap.add_argument("--folds", type=int, required=True)
     ap.add_argument("--inverse-regularization", type=float, required=True, help="logistic regression's C")
     ap.add_argument("--min-topic-pairs", type=int, required=True, help="smallest topic the per-topic scores include")
@@ -193,26 +216,29 @@ def main() -> int:
     meta = {i: (t, p) for i, t, p in zip(*(table.column(c).to_pylist() for c in ("id", "type", "primary_topic_id")))}
     types = np.array([meta[i][0] for i in shared], dtype=object)
     topics = np.array([meta[i][1] for i in shared], dtype=object)
-    pick = topic_matched_sample(types, topics, rng=np.random.default_rng(args.seed))
-    y = (types[pick] == "book").astype(int)
 
-    scores: list[Score] = []
-    for run in runs:
-        rows = np.array([run.position[shared[i]] for i in pick], dtype=np.int64)
-        raw = np.asarray(read_embeddings_rows(run.store, rows), dtype=np.float32)
-        denoised = np.asarray(get_cloud_projection(run.cloud).apply(raw), dtype=np.float32)
-        name = friendly_embedder_name(run.cloud.embedder.model_name)
-        for space, X in (("raw", raw), (str(run.cloud.denoiser), denoised)):
-            heldout = cross_validated(X, y, folds=args.folds, seed=args.seed,
-                                      inverse_regularization=args.inverse_regularization)
-            score = Score(name, space, X.shape[1], len(y), heldout.fold_balanced_accuracy.mean(),
-                          heldout.fold_balanced_accuracy.std(), heldout.fold_auc.mean(),
-                          per_topic_scores(y, heldout, topics[pick], min_pairs=args.min_topic_pairs))
-            scores.append(score)
-            logging.info("%s %s: pooled balanced accuracy %.3f, per-topic %.3f", name, space,
-                         score.balanced_accuracy, score.topic_balanced_accuracy)
+    by_seed: list[list[Score]] = []
+    for seed in args.seeds:
+        pick = topic_matched_sample(types, topics, rng=np.random.default_rng(seed))
+        y = (types[pick] == "book").astype(int)
+        scores: list[Score] = []
+        for run in runs:
+            rows = np.array([run.position[shared[i]] for i in pick], dtype=np.int64)
+            raw = np.asarray(read_embeddings_rows(run.store, rows), dtype=np.float32)
+            denoised = np.asarray(get_cloud_projection(run.cloud).apply(raw), dtype=np.float32)
+            name = friendly_embedder_name(run.cloud.embedder.model_name)
+            for space, X in (("raw", raw), (str(run.cloud.denoiser), denoised)):
+                heldout = cross_validated(X, y, folds=args.folds, seed=seed,
+                                          inverse_regularization=args.inverse_regularization)
+                score = Score(name, space, X.shape[1], len(y), heldout.fold_balanced_accuracy.mean(),
+                              heldout.fold_balanced_accuracy.std(), heldout.fold_auc.mean(),
+                              per_topic_scores(y, heldout, topics[pick], min_pairs=args.min_topic_pairs))
+                scores.append(score)
+                logging.info("seed %d, %s %s: pooled balanced accuracy %.3f, per-topic AUC %.3f", seed, name, space,
+                             score.balanced_accuracy, score.topic_auc)
+        by_seed.append(scores)
 
-    text = render(scores, folds=args.folds, min_pairs=args.min_topic_pairs) + markdown_provenance(__spec__.name)
+    text = render(by_seed, seeds=args.seeds, folds=args.folds, min_pairs=args.min_topic_pairs) + markdown_provenance(__spec__.name)
     args.output.write_text(text, encoding="utf-8")
     print(text)
     return 0
