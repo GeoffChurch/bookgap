@@ -380,7 +380,7 @@ def do_avgref_analysis(index_clouds: Sequence[Cloud], query_cloud: Cloud) -> Non
         'drop_k',
         'denoiser',
     ]
-    csv_path = Path("artifacts") / "avgref_rank_stats" / "avgref_rank_stats.csv"
+    csv_path = ARTIFACTS_DIR / "avgref_rank_stats" / "avgref_rank_stats.csv"
     try:
         df = pd.read_csv(csv_path)
     except FileNotFoundError:
@@ -851,7 +851,7 @@ def get_points_by_coverage_ball(cloud: Cloud, index_work_type: str, query_work_t
     # # ax1 = ax.twinx()
 
 def export_avgref_stats_to_latex():
-    directory = Path("artifacts") / "avgref_rank_stats"
+    directory = ARTIFACTS_DIR / "avgref_rank_stats"
     directory.mkdir(parents=True, exist_ok=True)
     csv_path = directory / "avgref_rank_stats.csv"
     if not csv_path.exists():
@@ -901,7 +901,7 @@ def export_avgref_stats_to_latex():
     # for topic in df["topic"].unique():
     #     LOGGER.info(f"Exporting avgref stats to LaTeX for topic {topic}")
     #     topic_df = df[df["topic"] == topic].drop(columns=["topic"])
-    #     tex_path = Path("artifacts") / f"avgref_rank_stats_{topic}.tex"
+    #     tex_path = ARTIFACTS_DIR / f"avgref_rank_stats_{topic}.tex"
     #     topic_df.to_latex(tex_path, index=False, float_format="%.1f", escape=False)
     #     LOGGER.info(f"Exported avgref stats to LaTeX for topic {topic}: {tex_path}")
 

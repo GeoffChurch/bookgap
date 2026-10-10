@@ -48,13 +48,19 @@ LOGGER = logging.getLogger("bookgap")
 
 TIMER = Timer(print=LOGGER.info)
 
-ARTIFACTS_DIR = Path("artifacts")
+# The repo's own state lives at the repo root whatever the working directory: a
+# cache or artifact tree under some other directory is never what is meant, and
+# importing bookgap from elsewhere (e.g. the paper's checkout) used to create one
+# there. Paths a user types on a command line stay relative to where they type them.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+ARTIFACTS_DIR = REPO_ROOT / "artifacts"
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 SCOPES_DIR = ARTIFACTS_DIR / "scopes"
 SCOPES_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_DIR = Path("cache")
+CACHE_DIR = REPO_ROOT / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MEMORY = joblib.Memory(CACHE_DIR / "joblib", verbose=0)
 

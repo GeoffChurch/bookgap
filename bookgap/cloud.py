@@ -1051,17 +1051,18 @@ def denoise(cloud: Cloud, embeddings: NDArray[T]) -> NDArray[T]:
 
     denoised_embeddings: NDArray[T] = projection.apply(embeddings)
 
+    # What the projection keeps, measured before renormalizing: the projection is
+    # orthonormal, so this is at most 100%. Measured after, it is not a fraction at
+    # all, since renormalizing scales each vector back up by 1/||projection|| (it
+    # read ~250% for GIST, whose dropped directions carry much of every vector's
+    # length). The mean norm kept is what that scaling undoes.
+    variance_retained = np.sum(_centered_singular_values(denoised_embeddings) ** 2) / np.sum(s_orig ** 2)
+    norm_retained = float(np.mean(np.linalg.norm(denoised_embeddings, axis=1) / np.linalg.norm(embeddings, axis=1)))
+    LOGGER.info(f"Cloud {cloud.name()} -- Projection keeps {variance_retained:.2%} of centered variance, "
+                f"{norm_retained:.2%} of the mean embedding norm")
+
     if cloud.normalize_embeddings:
         norms = np.linalg.norm(denoised_embeddings, axis=1, keepdims=True)
         denoised_embeddings = denoised_embeddings / norms
 
-    s_post: NDArray = _centered_singular_values(denoised_embeddings)
-
-    # Calculate variance decay
-    total_variance_orig = np.sum(s_orig**2)
-    total_variance_post = np.sum(s_post**2)
-    variance_retained = total_variance_post / total_variance_orig
-    
-    LOGGER.info(f"Cloud {cloud.name()} -- Variance retained after denoising: {variance_retained:.2%}")
-        
     return denoised_embeddings
