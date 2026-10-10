@@ -1,12 +1,13 @@
-"""The paper's radius-sweep table and denoiser-difference intervals, on toy inputs."""
+"""The paper's generated tables and reports, on toy inputs."""
 from __future__ import annotations
 
 import math
 
+import numpy as np
+import pandas as pd
 from scipy import stats
 
-import pandas as pd
-
+from artifacts_scripts.paper.book_article_separability import topic_matched_sample
 from artifacts_scripts.paper.denoiser_difference_cis import paired_difference
 from artifacts_scripts.paper.generate_latex_tables import generate_combined_best_denoiser_table
 from artifacts_scripts.paper.radius_sweep_table import Row, render
@@ -76,3 +77,14 @@ def test_denoiser_table_reports_the_winning_k_when_a_denoiser_has_several_runs(t
     assert r"\begin{tabular}{l|rr|rr|rr|rr}" in text
     # GIST's LPP coverage came from k=10 and its percentile from k=20
     assert r"LPP & 10 & \textbf{86.00} & 394 & 83.00 & 20 & \textbf{79.00} & 394 & \textbf{88.00} \\" in text
+
+
+def test_topic_matched_sample_pairs_each_topics_books_with_as_many_articles():
+    types = np.array(["book", "article", "article", "article", "book", "book", "article", "book"], dtype=object)
+    topics = np.array(["T1", "T1", "T1", "T1", "T2", "T2", "T2", "T3"], dtype=object)
+    pick = topic_matched_sample(types, topics, rng=np.random.default_rng(0))
+    for topic in ("T1", "T2", "T3"):
+        mine = pick[topics[pick] == topic]
+        assert (types[mine] == "book").sum() == (types[mine] == "article").sum()
+    assert (types[pick][topics[pick] == "T2"] == "book").sum() == 1  # T2 has one article for its two books
+    assert not (topics[pick] == "T3").any()  # T3 has no articles
