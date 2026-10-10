@@ -26,6 +26,7 @@ from openai import OpenAI
 import numpy as np
 from numpy.typing import NDArray
 
+from bookgap import jobs
 from bookgap.configs.config import ExperimentConfig
 from bookgap.cloud import Cloud, Embedder
 from bookgap.configs.gap.gap_config import CellType
@@ -1065,6 +1066,8 @@ def run_batch_workflow(
         config=config,
         output_dir=output_dir,
     )
+    if state_manager is not None:
+        state_manager.mark_scored()
 
     return results
 
@@ -1137,10 +1140,10 @@ def _run_openai_batch_path(
         drop_k=drop_k_value,
     )
 
-    reuse_existing_results_flag = state_manager.state.step == RunStep.COMPLETED
+    reuse_existing_results_flag = state_manager.state.step >= RunStep.COMPLETED
 
     # Step 4: Submit batch job (if needed)
-    if state_manager.state.step in {RunStep.SUBMITTED, RunStep.COMPLETED}:
+    if state_manager.state.step >= RunStep.SUBMITTED:
         batch_job_id = state_manager.require_batch_job_id()
         LOGGER.info("Using recorded batch job id: %s", batch_job_id)
     else:
@@ -1293,6 +1296,13 @@ def _run_ollama_local_path(
                 )
                 if custom_id in already_done:
                     continue
+                # Between proposals is the safe place to stop: every finished one
+                # is already flushed to ollama_results.jsonl, so a rerun in the
+                # same directory resumes from the next.
+                if jobs.stop_requested():
+                    raise KeyboardInterrupt(
+                        "Graceful stop requested between proposals; ollama_results.jsonl is consistent."
+                    )
 
                 LOGGER.info(
                     "[ollama %d/%d] generating proposal for %s",

@@ -126,7 +126,7 @@ def main() -> int:
         if state is None:
             missing.append(output_dir)
             continue
-        if state.step == RunStep.COMPLETED:
+        if state.step == RunStep.SCORED:
             continue
         candidates.append((len(candidates) + 1, output_dir, state))
 

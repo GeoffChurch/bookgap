@@ -369,7 +369,8 @@ class TestOpenAIDispatch:
         # The OpenAI batch lifecycle was invoked.
         mock_submit.assert_called_once()
         mock_monitor.assert_called_once()
-        assert state.state.step == RunStep.COMPLETED
+        # Generation and the downstream artifacts both done: the run is finished.
+        assert state.state.step == RunStep.SCORED
         # And the result has the proposal that monitor returned.
         assert [p.custom_id for p in result.proposals] == [proposal.custom_id]
 
@@ -468,10 +469,63 @@ class TestOllamaDispatch:
             assert proposal.embedding.shape == (3,)
             assert proposal.embedding.dtype == np.float32
 
-        # The Ollama-backed run still reaches the COMPLETED step.
-        assert state.state.step == RunStep.COMPLETED
+        # The Ollama-backed run reaches SCORED once its downstream artifacts are written.
+        assert state.state.step == RunStep.SCORED
         # The recorded batch_job_id is the synthetic ollama:<model> tag.
         assert state.state.batch_job_id == "ollama:test:1b"
+
+    @patch("bookgap.llm.generators.workflow_functions.instantiate")
+    @patch("bookgap.llm.generators.workflow_functions.Embedder")
+    @patch("bookgap.llm.generators.workflow_functions.generate_all_contexts")
+    @patch("bookgap.llm.generators.workflow_functions.generate_gap_plots_for_results")
+    @patch("bookgap.llm.generators.workflow_functions.generate_gaps_analysis_csv")
+    @patch("bookgap.llm.generators.workflow_functions._compute_proposal_embeddings")
+    @patch("bookgap.llm.generators.workflow_functions.build_contexts_for_gaps")
+    @patch("bookgap.llm.generators.workflow_functions.compute_gaps_for_config")
+    def test_a_stop_between_proposals_resumes_in_the_same_directory(
+        self,
+        mock_compute_gaps,
+        mock_build_contexts,
+        mock_embed,
+        mock_csv,
+        mock_plots,
+        mock_gen_contexts,
+        mock_embedder_cls,
+        mock_instantiate,
+    ) -> None:
+        gap1, ctx1 = _make_gap("topic-a", 0)
+        gap2, ctx2 = _make_gap("topic-b", 1)
+        mock_compute_gaps.return_value = [gap1, gap2]
+        mock_build_contexts.return_value = [ctx1, ctx2]
+        mock_gen_contexts.return_value = []
+        mock_plots.return_value = []
+        mock_csv.return_value = Path("results.csv")
+        mock_embed.return_value = np.zeros((2, 3), dtype=np.float32)
+        TestStreamingCoverageProgress._patch_hot_embedder(mock_embedder_cls)
+        mock_instantiate.return_value = TestStreamingCoverageProgress._identity_cloud_mock()
+        config = _make_mock_config(backend=LLMBackend.OLLAMA_LOCAL)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            results_path = output_dir / "ollama_results.jsonl"
+            # A stop arrives after the first proposal: the run halts before the second.
+            with patch("bookgap.llm.generators.ollama_local._chat") as mock_chat, \
+                    patch("bookgap.llm.generators.workflow_functions.jobs.stop_requested",
+                          side_effect=[False, True]):
+                mock_chat.side_effect = [self._fake_chat_response("T1", "A1")]
+                with pytest.raises(KeyboardInterrupt):
+                    run_batch_workflow(config, output_dir, RunStateManager(output_dir))
+            assert len(results_path.read_text(encoding="utf-8").splitlines()) == 1
+
+            # Rerun in the same directory: only the second proposal is generated.
+            with patch("bookgap.llm.generators.ollama_local._chat") as mock_chat:
+                mock_chat.side_effect = [self._fake_chat_response("T2", "A2")]
+                state = RunStateManager(output_dir)
+                result = run_batch_workflow(config, output_dir, state)
+                assert mock_chat.call_count == 1
+            assert len(results_path.read_text(encoding="utf-8").splitlines()) == 2
+            assert len(result.proposals) == 2
+            assert state.state.step == RunStep.SCORED
 
 
 class TestOllamaResumability:

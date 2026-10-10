@@ -17,7 +17,8 @@ class RunStep(IntEnum):
     GAPS_READY = 1
     READY_TO_SUBMIT = 2
     SUBMITTED = 3
-    COMPLETED = 4
+    COMPLETED = 4   # every proposal generated (or the batch's results downloaded)
+    SCORED = 5      # and every downstream artifact written, gaps_analysis_results.csv last: the run is done
 
     def __str__(self) -> str:  # pragma: no cover - convenience
         return self.name
@@ -129,6 +130,10 @@ class RunStateManager:
         self.state.step = RunStep.COMPLETED
         self.state.batch_job_id = batch_job_id
         self.state.details["proposal_count"] = proposal_count
+        self._persist()
+
+    def mark_scored(self) -> None:
+        self.state.step = RunStep.SCORED
         self._persist()
 
     def mark_ready_for_resubmission(self, *, status: str) -> None:
