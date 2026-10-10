@@ -6,7 +6,7 @@ import json
 from omegaconf import OmegaConf
 
 from artifacts_scripts.paper.regen_sweep import (
-    RADIUS_ROOT, TOPIC_SET_ROOTS, cells, config_for, is_scored, run_dir, run_identity,
+    RADIUS_ROOT, TOPIC_SET_ROOTS, cells, config_for, gap_sets, is_scored, run_dir, run_identity,
 )
 from bookgap.llm.generators.run_state import RunStep
 
@@ -52,3 +52,16 @@ def test_a_cell_is_done_only_once_scored(tmp_path):
     assert not is_scored(out)
     (out / "run_state.json").write_text(json.dumps({"step": RunStep.SCORED.name}))
     assert is_scored(out)
+
+
+def test_gaps_are_computed_once_per_set_the_cells_share():
+    plan = cells("gist", topics="all")
+    sets = gap_sets(plan)
+    # The six ablation cells share LPP's gaps; each other denoiser and radius has its own.
+    assert len(sets) == 10 and len(gap_sets(cells("gemma", topics="all"))) == 7
+    assert [c.slug for c in sets][:2] == ["gist_a10_b5_dropk10_lpp_t77_r0.75", "gist_a10_b5_dropk0_none_t77_r0.75"]
+    # Cells in a set agree on everything compute_gaps_for_config reads.
+    lpp = [config_for(c) for c in plan if c.denoiser == "LPP" and c.radius_fraction == 0.75]
+    assert len(lpp) == 6
+    for config in lpp[1:]:
+        assert (config.cloud, config.gap, config.batch.num_gaps) == (lpp[0].cloud, lpp[0].gap, lpp[0].batch.num_gaps)

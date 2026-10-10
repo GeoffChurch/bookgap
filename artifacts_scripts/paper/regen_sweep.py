@@ -32,12 +32,20 @@ records the cell, the model's digest, and one entry per session that worked on
 it: the command, the bookgap commit and whether the tree was dirty, every
 installed package's version, the context window, and when it started.
 
+Finding a cell's gaps is CPU work, about a minute a topic, during which the GPU
+would sit idle; it is cached per topic and shared by every cell with the same
+embedder, denoiser and radius. ``--gaps-only WORKERS`` computes the gaps of every
+unfinished cell, that many at a time, and generates nothing: run beside a chain,
+it has the gaps cached before the chain reaches them.
+
 Usage (from the bookgap root; one chain at a time, since chains sharing the GPU
 slow each other)::
 
     uv run python -m bookgap.jobs run --prefix regen_gist -- \\
         uv run python -m artifacts_scripts.paper.regen_sweep --embedder gist --topics random20
     uv run python -m artifacts_scripts.paper.regen_sweep --embedder gemma --topics all --dry-run
+    uv run python -m bookgap.jobs run --prefix regen_gaps -- \\
+        uv run python -m artifacts_scripts.paper.regen_sweep --embedder gist --topics all --gaps-only 6
 """
 from __future__ import annotations
 
@@ -48,9 +56,11 @@ import hashlib
 import importlib.metadata as md
 import json
 import logging
+import multiprocessing
 import subprocess
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +71,7 @@ from omegaconf import OmegaConf
 from artifacts_scripts.gemma4_quantitative_sweep import TOPIC_SUBSET_RANDOM_20, _build_config
 from bookgap import jobs
 from bookgap.configs.config import ExperimentConfig
+from bookgap.gaps import compute_gaps_for_config
 from bookgap.llm.generators.run_state import RunState, RunStateManager, RunStep
 from bookgap.llm.generators.workflow_functions import run_batch_workflow
 
@@ -77,6 +88,7 @@ ABLATION = ((10, 5), (0, 1), (1, 1), (0, 5), (5, 0), (5, 5))
 DENOISERS = ("NONE", "CCP", "CCLIP", "LIP", "ANTI_LDA", "JAD_EQUAL")
 RADII = (0.5, 0.5625, 1.0)
 DEFAULT_RADIUS = 0.75
+LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
 
 
 @dataclass(frozen=True)
@@ -120,6 +132,10 @@ def config_for(cell: Cell) -> ExperimentConfig:
     return dataclasses.replace(config, gap=dataclasses.replace(config.gap, radius_fraction=cell.radius_fraction))
 
 
+def config_yaml_of(config: ExperimentConfig) -> str:
+    return OmegaConf.to_yaml(OmegaConf.structured(config))
+
+
 def run_identity(config_yaml: str, model_digest: str) -> str:
     """A short hash of everything that decides a run's results: its resolved
     configuration and the Ollama model's weights, by digest.
@@ -144,6 +160,46 @@ def is_scored(out: Path) -> bool:
     # Read the state file directly: constructing a RunStateManager creates one.
     state = out / "run_state.json"
     return state.exists() and RunState.from_dict(json.loads(state.read_text())).step == RunStep.SCORED
+
+
+def _gaps_of(cell: Cell) -> tuple[str, float]:
+    t0 = time.time()
+    compute_gaps_for_config(config_for(cell))
+    return cell.slug, (time.time() - t0) / 60
+
+
+def _log_to_stderr() -> None:
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, force=True)
+
+
+def gap_sets(todo: list[Cell]) -> list[Cell]:
+    """The first cell of ``todo`` with each distinct set of gaps, in order.
+
+    A cell's gaps depend on its cloud and gap settings, not on how many articles
+    and books its prompts show, so the ablation's cells share one set.
+    """
+    first: dict[tuple, Cell] = {}
+    for cell in todo:
+        first.setdefault((cell.embedder, cell.denoiser, cell.all_topics, cell.radius_fraction), cell)
+    return list(first.values())
+
+
+def compute_gaps(todo: list[Cell], *, workers: int) -> None:
+    """Cache the gaps of every cell in ``todo``, ``workers`` sets at a time, in the
+    order a chain reaches them.
+
+    Each worker builds its cell's configuration exactly as ``run`` does and asks
+    for its gaps as ``run_batch_workflow`` does, so the chain reads what is cached
+    here as its own.
+    """
+    distinct = gap_sets(todo)
+    log = logging.getLogger(__name__)
+    log.info("computing %d sets of gaps, %d at a time", len(distinct), workers)
+    # Spawned rather than forked: the parent has imported torch and an HTTP client.
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_log_to_stderr) as pool:
+        for slug, minutes in pool.map(_gaps_of, distinct):
+            log.info("gaps cached for %s in %.1f min", slug, minutes)
 
 
 def _git(*args: str) -> str:
@@ -188,26 +244,37 @@ def main() -> int:
     ap.add_argument("--embedder", choices=sorted(EMBEDDERS), required=True)
     ap.add_argument("--topics", choices=sorted(TOPIC_SET_ROOTS), required=True,
                     help="the topics the table cells cover: the fixed random 20, or all 77")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="list each cell's run directory and whether it is done, and run nothing")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true",
+                      help="list each cell's run directory and whether it is done, and run nothing")
+    mode.add_argument("--gaps-only", type=int, metavar="WORKERS",
+                      help="compute the gaps of every unfinished cell, WORKERS cells at a time, and "
+                           "generate nothing (CPU only; run it beside a chain)")
     args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", force=True)
+    _log_to_stderr()
     log = logging.getLogger(__name__)
-    todo = cells(args.embedder, topics=args.topics)
+    all_cells = cells(args.embedder, topics=args.topics)
     digests = {m.model: m.digest for m in ollama.list().models}
+    todo = []
+    for i, cell in enumerate(all_cells, start=1):
+        config = config_for(cell)
+        out = run_dir(cell, config_yaml_of(config), digests[config.llm.ollama_model])
+        status = "done" if is_scored(out) else "partial" if out.exists() else "new"
+        log.info("cell %d/%d %s: %s %s", i, len(all_cells), cell.slug, status, out)
+        if status != "done":
+            todo.append(cell)
+    if args.dry_run:
+        return 0
+    if args.gaps_only:
+        compute_gaps(todo, workers=args.gaps_only)
+        return 0
     # Under `bookgap.jobs run` this process is the wrapper's child: without its own
     # handlers a stop would kill it mid-proposal instead of between proposals.
     with jobs.stop_signals():
         try:
-            for i, cell in enumerate(todo, start=1):
+            for cell in todo:
                 config = config_for(cell)
-                config_yaml = OmegaConf.to_yaml(OmegaConf.structured(config))
-                out = run_dir(cell, config_yaml, digests[config.llm.ollama_model])
-                status = "done" if is_scored(out) else "partial" if out.exists() else "new"
-                log.info("cell %d/%d %s: %s %s", i, len(todo), cell.slug, status, out)
-                if status == "done" or args.dry_run:
-                    continue
-                run(cell, config, config_yaml, digests[config.llm.ollama_model])
+                run(cell, config, config_yaml_of(config), digests[config.llm.ollama_model])
         except KeyboardInterrupt as stop:
             log.info("stopped (%s); rerun the same command to resume", stop)
             return 130
