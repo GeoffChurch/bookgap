@@ -269,11 +269,13 @@ def tex(text: str, max_chars: int | None = None) -> str:
         if cut < max_chars // 2:  # no good boundary — hard cut
             cut = max_chars
         s = s[:cut]
-        # A cut inside a run closes it; a cut inside its markup drops the run.
+        # A cut inside a run ends it with the ellipsis inside, so a right-to-left
+        # script puts it at its own end, the left; a cut inside its markup drops it.
         opened = s.rfind(_RUN_OPEN)
-        if opened > s.rfind(_RUN_CLOSE):
-            s = s + _RUN_CLOSE if s.find(_RUN_SEP, opened) >= 0 else s[:opened]
-        s = s.rstrip(" ,.;:") + "..."
+        if opened > s.rfind(_RUN_CLOSE) and s.find(_RUN_SEP, opened) >= 0:
+            s = s.rstrip(" ,.;:") + "..." + _RUN_CLOSE
+        else:
+            s = (s[:opened] if opened > s.rfind(_RUN_CLOSE) else s).rstrip(" ,.;:") + "..."
     return _RUN_RE.sub(_emit_run, latex_escape(s)).replace(_UNK_SENTINEL, _UNK_LATEX)
 
 

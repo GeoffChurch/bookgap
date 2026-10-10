@@ -39,9 +39,9 @@ def test_latex_specials_inside_a_run_are_escaped():
     assert tex("Тест & тест") == r"\scripttext{Cyrillic}{[Cyrillic script]}{Тест \& тест}"
 
 
-def test_truncation_inside_a_run_closes_it():
+def test_truncation_inside_a_run_ends_the_run_with_the_ellipsis():
     out = tex("Обзор " * 30, max_chars=40)
-    assert out.startswith(r"\scripttext{Cyrillic}{[Cyrillic script]}{Обзор") and out.endswith("}...")
+    assert out.startswith(r"\scripttext{Cyrillic}{[Cyrillic script]}{Обзор") and out.endswith("Обзор...}")
 
 
 def test_the_header_declares_only_the_scripts_used():
