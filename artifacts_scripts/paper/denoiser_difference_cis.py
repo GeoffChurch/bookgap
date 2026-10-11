@@ -2,10 +2,11 @@
 
 For every two runs that share an embedder, the per-topic difference in each
 metric (target gap coverage percentage, proposal gap percentile) over the topics
-both runs scored within the fixed random-20 subset: n, the mean difference, and
-a two-sided 95% t-interval, mean +/- t(0.975, n-1) * sd / sqrt(n). Paired,
-because both runs score the same topics and topics vary far more than
-denoisers do; t rather than 1.96, because n is 20.
+both runs scored, within the fixed random 20 (``--topics random20``) or among all
+77 (``--topics all``): n, the mean difference, and a two-sided 95% t-interval,
+mean +/- t(0.975, n-1) * sd / sqrt(n). Paired, because both runs score the same
+topics and topics vary far more than denoisers do; t rather than 1.96, because n
+is as small as 20.
 
 Reproduces the means the paper quoted from the May 2026 runs (+5.9 GIST LPP vs
 NONE, +42.7 Gemma LPP vs NONE, +8.4 Gemma CCLIP(alpha=1) vs LPP, paired over the
@@ -18,7 +19,7 @@ may share an (embedder, denoiser) pair; anything else is refused.
 
 Usage (from the bookgap root)::
 
-    uv run python -m artifacts_scripts.paper.denoiser_difference_cis \\
+    uv run python -m artifacts_scripts.paper.denoiser_difference_cis --topics all \\
         --output outputs/regen_2026-10/denoiser_difference_cis.md RUN_DIR [RUN_DIR ...]
 """
 from __future__ import annotations
@@ -42,6 +43,18 @@ METRICS = {"gap_coverage_fraction": "target gap coverage %", "proposal_gap_size_
 # NONE (no denoising) then LPP (the paper's denoiser) lead, and each difference is the
 # later denoiser minus the earlier: LPP - NONE, then every other denoiser minus NONE and LPP.
 LEADING = ("NONE", "LPP")
+
+
+@dataclass(frozen=True)
+class TopicSet:
+    description: str
+    keep: frozenset[str] | None   # the topics compared over; None keeps every topic a run scored
+
+
+TOPIC_SETS = {
+    "random20": TopicSet("in the fixed random-20 subset", frozenset(TOPIC_SUBSET_RANDOM_20)),
+    "all": TopicSet("among all topics", None),
+}
 
 
 @dataclass(frozen=True)
@@ -69,10 +82,11 @@ def paired_difference(a: dict[str, float], b: dict[str, float]) -> Difference:
     return Difference(n, statistics.mean(d), stats.t.ppf(0.975, n - 1) * statistics.stdev(d) / math.sqrt(n))
 
 
-def read_run(run_dir: Path) -> tuple[tuple, Run]:
+def read_run(run_dir: Path, topics: TopicSet) -> tuple[tuple, Run]:
     cfg = OmegaConf.load(run_dir / "experiment_config.yaml")
     results = pd.read_csv(run_dir / "gaps_analysis_results.csv")
-    results = results[results["topic_id"].isin(TOPIC_SUBSET_RANDOM_20)]
+    if topics.keep is not None:
+        results = results[results["topic_id"].isin(topics.keep)]
     scores = {m: {t: 100 * v for t, v in zip(results["topic_id"], results[m]) if not math.isnan(v)} for m in METRICS}
     shared = (cfg.llm.num_articles, cfg.llm.num_books, float(cfg.gap.radius_fraction))
     return shared, Run(cfg.cloud.embedder.model_name, cfg.cloud.denoiser, scores)
@@ -103,10 +117,13 @@ def report(runs: list[Run]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--topics", choices=sorted(TOPIC_SETS), required=True,
+                    help="compare over the fixed random 20 topics, or every topic the runs scored")
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("run_dirs", type=Path, nargs="+")
     args = ap.parse_args()
-    read = [read_run(d) for d in args.run_dirs]
+    topics = TOPIC_SETS[args.topics]
+    read = [read_run(d, topics) for d in args.run_dirs]
     shared = {s for s, _ in read}
     if len(shared) != 1:
         print(f"error: the runs differ in prompt articles, books or radius fraction: {sorted(shared)}", file=sys.stderr)
@@ -116,7 +133,7 @@ def main() -> int:
         print(f"error: more than one run for an (embedder, denoiser): {sorted(k for k in keys if keys.count(k) > 1)}", file=sys.stderr)
         return 2
     text = ("# Paired denoiser differences\n\n"
-            "Later denoiser minus earlier, per topic, over the topics both runs scored in the fixed random-20 subset; "
+            f"Later denoiser minus earlier, per topic, over the topics both runs scored {topics.description}; "
             "95% t-intervals.\n\n" + report([r for _, r in read]) + markdown_provenance(__spec__.name))
     args.output.write_text(text, encoding="utf-8")
     print(text)
