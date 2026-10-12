@@ -34,9 +34,9 @@ USE_LONGTABLE = False
 # When True, non-longtable outputs omit the outer table/table* wrapper (and caption/label).
 TABULAR_ONLY = False
 
-# When USE_LONGTABLE is False and TABULAR_ONLY is False, break the table into
-# multiple table* floats of at most this many rows each.  Set to None to emit a
-# single table* regardless of length.
+# When USE_LONGTABLE is False and TABULAR_ONLY is False, break a longer table
+# into parts of at most this many rows, each in its own file (see write_latex).
+# Set to None to emit a single table* regardless of length.
 CHUNK_ROWS: int | None = 39
 
 TOPIC_BATCH_SIZE = 25
@@ -159,6 +159,11 @@ def load_summary_frames(run_summary_file: Path) -> dict[int, pd.DataFrame]:
         )
 
     return dict(sorted(summary_frames.items()))
+
+
+def part_path(output_file: Path, part: int) -> Path:
+    """Where write_latex writes part ``part`` (from 1) of a table split across pages."""
+    return output_file.with_name(f"{output_file.stem}_{part}{output_file.suffix}")
 
 
 def _write_tex(path: Path, tex: str) -> None:
@@ -831,7 +836,7 @@ def write_latex(
     output routine long after that group has closed and restored ``\\normalsize``. The
     table comes out full size with no warning of any kind.
     """
-    if output_file.exists() and not overwrite:
+    if (output_file.exists() or part_path(output_file, 1).exists()) and not overwrite:
         LOGGER.info("Skipping existing file %s", output_file)
         return
 
@@ -919,11 +924,16 @@ def write_latex(
 
     # Default: wrap in standard table environment
     if chunk_rows is not None and not tabular_only and len(safe_df) > chunk_rows:
-        # Split into multiple table* floats so each fits on a page.
-        table_env = "table*" if not USE_LONGTABLE else "table"
-        table_parts: list[str] = []
-
-        for chunk_start in range(0, len(safe_df), chunk_rows):
+        # Too long for a page: split into parts, each written to its own file
+        # (per_topic.tex becomes per_topic_1.tex, per_topic_2.tex, ...) holding the
+        # body of a table rather than a float. The caller sets each part, in a
+        # table* or across the top of a page with \twocolumn[...]: an appendix that
+        # is nothing but this table needs the latter to share a page with its
+        # heading, which a float never can. Hence \captionof for the first part.
+        # Every later part is a continuation (\ContinuedFloat), which must be set
+        # in a float, and keeps \caption: caption.sty's \captionof (the ACL build's)
+        # starts a new number, undoing the \ContinuedFloat.
+        for part, chunk_start in enumerate(range(0, len(safe_df), chunk_rows), start=1):
             chunk_end = min(chunk_start + chunk_rows, len(safe_df))
             chunk_df = safe_df.iloc[chunk_start:chunk_end]
 
@@ -943,12 +953,10 @@ def write_latex(
                 chunk_breaks = list(group_breaks)[chunk_start:chunk_end]
                 chunk_latex = _apply_group_hlines(chunk_latex, chunk_breaks)
 
-            chunk_lines = chunk_latex.splitlines()
-
-            result_lines = [f"\\begin{{{table_env}}}[t]"]
-            if chunk_start == 0:
+            result_lines = []
+            if part == 1:
                 if escaped_caption:
-                    result_lines.append(f"\\caption{{{escaped_caption}}}")
+                    result_lines.append(f"\\captionof{{table}}{{{escaped_caption}}}")
                 if label:
                     result_lines.append(f"\\label{{{label}}}")
             else:
@@ -960,11 +968,14 @@ def write_latex(
                 result_lines.append(f"\\{font_size}")
             if tabcolsep_pt is not None:
                 result_lines.append(f"\\setlength{{\\tabcolsep}}{{{tabcolsep_pt:g}pt}}")
-            result_lines.extend(chunk_lines)
-            result_lines.append(f"\\end{{{table_env}}}")
-            table_parts.append("\n".join(result_lines))
-
-        latex = "\n\n".join(table_parts)
+            result_lines.extend(chunk_latex.splitlines())
+            latex = "\n".join(result_lines)
+            if comment:
+                latex = f"% {comment}\n" + latex
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            _write_tex(part_path(output_file, part), latex)
+            LOGGER.info("Wrote %s", part_path(output_file, part))
+        return
     else:
         latex = safe_df.to_latex(
             index=False,
