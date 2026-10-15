@@ -5,7 +5,8 @@ Table II (GIST and Gemma, target gap coverage and proposal gap percentile), one 
 per denoiser, a dot at its mean per-topic difference from the reference and a bar
 for the paired 95% t-interval, with zero (the reference itself) marked. A dot is
 filled black where its interval excludes zero and hollow grey where it does not, so
-what is significant reads without a legend, in print, and without colour.
+what is significant reads in print and without colour; a legend under the panels
+says which is which.
 
 Paired rather than per-denoiser intervals because the topics vary far more than the
 denoisers do: a mean's own interval would be wide enough to hide every difference
@@ -33,6 +34,10 @@ from artifacts_scripts.paper.regen_sweep import DENOISERS, EMBEDDERS
 PANELS = (("gist", "gap_coverage_fraction"), ("gemma", "gap_coverage_fraction"),
           ("gist", "proposal_gap_size_percentile"), ("gemma", "proposal_gap_size_percentile"))
 PANEL_METRIC = {"gap_coverage_fraction": "coverage", "proposal_gap_size_percentile": "percentile"}
+# A dot, its bar and its legend image: filled black where the interval excludes zero.
+SIGNIFICANT = "black, mark=*, only marks, mark size=1.8pt"
+NOT_SIGNIFICANT = "gray, mark=o, mark options={fill=white}, only marks, mark size=1.8pt"
+LEGEND = "denoiser-differences-legend"
 
 
 def rows(runs: list[Run], reference: str) -> list[str]:
@@ -75,27 +80,38 @@ def render(runs: list[Run], reference: str) -> str:
         r"    clip=false,",
         r"]",
     ]
-    for embedder, metric in PANELS:
+    for panel, (embedder, metric) in enumerate(PANELS):
         diffs = differences(runs, reference, embedder, metric, denoisers)
         title = f"{friendly_embedder_name(EMBEDDERS[embedder][0])} {PANEL_METRIC[metric]}"
+        # The legend is built in the first panel from images of its own, not from the
+        # plotted points, so it holds both entries whichever panel has which kind.
+        legend = (f", legend to name={LEGEND}, legend columns=2, legend style={{draw=none,"
+                  r" /tikz/every odd column/.append style={column sep=2pt},"
+                  r" /tikz/every even column/.append style={column sep=12pt}}" if panel == 0 else "")
         lines += [
-            f"\\nextgroupplot[title={{{title}}}]",
+            f"\\nextgroupplot[title={{{title}}}{legend}]",
             f"\\draw[gray!60] (axis cs:0,0.4) -- (axis cs:0,{n + 0.6:g});",
         ]
+        if panel == 0:
+            lines += [
+                f"\\addlegendimage{{{SIGNIFICANT}}}",
+                r"\addlegendentry{95\% CI excludes 0}",
+                f"\\addlegendimage{{{NOT_SIGNIFICANT}}}",
+                r"\addlegendentry{95\% CI includes 0}",
+            ]
         significant = [(y, d) for y, d in enumerate(diffs, 1) if d.excludes_zero]
         not_significant = [(y, d) for y, d in enumerate(diffs, 1) if not d.excludes_zero]
         if not_significant:
-            lines.append(r"\addplot[gray, mark=o, mark options={fill=white}, only marks, mark size=1.8pt,"
-                         r" error bars/.cd, x dir=both, x explicit] coordinates {"
+            lines.append(f"\\addplot[{NOT_SIGNIFICANT}, error bars/.cd, x dir=both, x explicit] coordinates {{"
                          + _coords(not_significant) + "};")
         if significant:
-            lines.append(r"\addplot[black, mark=*, only marks, mark size=1.8pt,"
-                         r" error bars/.cd, x dir=both, x explicit] coordinates {"
+            lines.append(f"\\addplot[{SIGNIFICANT}, error bars/.cd, x dir=both, x explicit] coordinates {{"
                          + _coords(significant) + "};")
     lines += [
         r"\end{groupplot}",
-        r"\path (group c1r1.south west) -- (group c4r1.south east) node[midway, below=14pt, font=\footnotesize]",
+        r"\path (group c1r1.south west) -- (group c4r1.south east) node[midway, below=14pt] (xlabel)",
         f"    {{Difference from {friendly_denoiser_name(reference)} (points), with paired 95\\% CI}};",
+        f"\\node[anchor=north, inner sep=0pt] at (xlabel.south) {{\\pgfplotslegendfromname{{{LEGEND}}}}};",
         r"\end{tikzpicture}",
     ]
     return "\n".join(lines) + "\n"
