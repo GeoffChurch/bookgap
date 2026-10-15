@@ -95,9 +95,9 @@ def render(runs: list[Run], reference: str) -> str:
         if panel == 0:
             lines += [
                 f"\\addlegendimage{{{SIGNIFICANT}}}",
-                r"\addlegendentry{95\% CI excludes 0}",
+                r"\addlegendentry{CI excludes 0}",
                 f"\\addlegendimage{{{NOT_SIGNIFICANT}}}",
-                r"\addlegendentry{95\% CI includes 0}",
+                r"\addlegendentry{CI includes 0}",
             ]
         significant = [(y, d) for y, d in enumerate(diffs, 1) if d.excludes_zero]
         not_significant = [(y, d) for y, d in enumerate(diffs, 1) if not d.excludes_zero]
@@ -110,7 +110,7 @@ def render(runs: list[Run], reference: str) -> str:
     lines += [
         r"\end{groupplot}",
         r"\path (group c1r1.south west) -- (group c4r1.south east) node[midway, below=14pt] (xlabel)",
-        f"    {{Difference from {friendly_denoiser_name(reference)} (points), with paired 95\\% CI}};",
+        f"    {{Difference from {friendly_denoiser_name(reference)}, with paired 95\\% CI}};",
         f"\\node[anchor=north, inner sep=0pt] at (xlabel.south) {{\\pgfplotslegendfromname{{{LEGEND}}}}};",
         r"\end{tikzpicture}",
     ]
