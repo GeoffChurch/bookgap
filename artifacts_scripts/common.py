@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 import shlex
@@ -31,25 +32,78 @@ EMBEDDER_PATH_TO_NAME_MAP = {
 }
 
 
-def _bookgap_revision() -> str:
-    """Short git description of the bookgap checkout, or ``"unknown"``.
+PROVENANCE_EXCLUDE = ".provenance-exclude"
 
-    Worth the subprocess: these tables are written into the *paper* repo, which
-    is a separate git repo with a separate history. Without the producing
-    commit recorded in the file, there is nothing on the paper side that says
-    which version of the pipeline a number came from.
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=10)
+
+
+def _status_paths(root: Path) -> list[str]:
+    """Every path `git status` reports: tracked and changed, or untracked and not ignored."""
+    out = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+    entries, paths = out.split("\0"), []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        if entry:
+            paths.append(entry[3:])
+            if entry[0] in "RC":  # a rename or copy is followed by its source path
+                i += 1
+        i += 1
+    return paths
+
+
+def _excluded(path: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(path, p) or path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/")
+               for p in patterns)
+
+
+def bookgap_revision(root: Path) -> str:
+    """The commit a generated file came from, as `git describe` names it, and whether
+    the checkout at ``root`` differed from it.
+
+    Every difference counts: a modified tracked file, and an untracked file git does
+    not ignore (a new module a generator imports changes its output as surely as an
+    edit does). A checkout with any is "<commit>-dirty (<paths>)", which the paper's
+    pre-commit hook refuses, since no commit can regenerate what it made.
+
+    The one override is PROVENANCE_EXCLUDE at the repository root: paths, globs or
+    directories, one per line ('#' comments), whose differences do not count. It
+    must be untracked and not ignored, so `git status` always shows it and it cannot
+    become a standing exemption; it is itself a difference unless it lists itself.
+    What it excludes is still named in the stamp, after the commit.
     """
     try:
-        out = subprocess.run(
-            ["git", "describe", "--always", "--dirty", "--tags"],
-            cwd=Path(__file__).resolve().parent.parent,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        described = _git(root, "describe", "--always", "--tags")
     except (OSError, subprocess.SubprocessError):
         return "unknown"
-    return out.stdout.strip() if out.returncode == 0 else "unknown"
+    if described.returncode != 0:
+        return "unknown"
+    patterns: list[str] = []
+    exclude = root / PROVENANCE_EXCLUDE
+    if exclude.exists():
+        if _git(root, "ls-files", "--error-unmatch", PROVENANCE_EXCLUDE).returncode == 0:
+            raise RuntimeError(f"{exclude} is committed; it must stay untracked, an override `git status` shows")
+        if _git(root, "check-ignore", "-q", PROVENANCE_EXCLUDE).returncode == 0:
+            raise RuntimeError(f"{exclude} is gitignored; it must stay visible in `git status`")
+        patterns = [line.split("#", 1)[0].strip() for line in exclude.read_text().splitlines()]
+        patterns = [p for p in patterns if p]
+    changed = _status_paths(root)
+    dirty = [p for p in changed if not _excluded(p, patterns)]
+    excused = [p for p in changed if _excluded(p, patterns)]
+    stamp = described.stdout.strip() + (f"-dirty ({', '.join(dirty)})" if dirty else "")
+    if excused:
+        stamp += f"; uncommitted but excluded by {PROVENANCE_EXCLUDE}: {', '.join(excused)}"
+    return stamp
+
+
+def _bookgap_revision() -> str:
+    """bookgap_revision of this checkout. Worth the subprocesses: these tables are
+    written into the *paper* repo, a separate git repo with a separate history, and
+    without the producing commit recorded in the file nothing on the paper side says
+    which version of the pipeline a number came from."""
+    return bookgap_revision(Path(__file__).resolve().parent.parent)
 
 
 def latex_provenance(module: str) -> str:

@@ -1,0 +1,75 @@
+"""The bookgap revision a generated file is stamped with: what counts as dirty."""
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from artifacts_scripts.common import PROVENANCE_EXCLUDE, bookgap_revision
+
+
+def _git(root, *args):
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                   cwd=root, check=True, capture_output=True)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "code.py").write_text("x = 1\n")
+    (tmp_path / "README.md").write_text("readme\n")
+    (tmp_path / ".gitignore").write_text("cache/\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "init")
+    return tmp_path
+
+
+def _head(root):
+    return subprocess.run(["git", "describe", "--always", "--tags"], cwd=root,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_a_clean_checkout_is_its_commit(repo):
+    (repo / "cache").mkdir()
+    (repo / "cache" / "x").write_text("ignored\n")   # ignored files are not differences
+    assert bookgap_revision(repo) == _head(repo)
+
+
+def test_every_difference_counts_and_is_named(repo):
+    (repo / "README.md").write_text("edited\n")       # documentation too
+    (repo / "helper.py").write_text("y = 2\n")        # and an untracked file
+    assert bookgap_revision(repo) == f"{_head(repo)}-dirty (README.md, helper.py)"
+
+
+def test_the_exclude_file_counts_unless_it_lists_itself(repo):
+    (repo / "README.md").write_text("edited\n")
+    (repo / PROVENANCE_EXCLUDE).write_text("README.md\n")
+    assert bookgap_revision(repo) == (f"{_head(repo)}-dirty ({PROVENANCE_EXCLUDE}); uncommitted but "
+                                      f"excluded by {PROVENANCE_EXCLUDE}: README.md")
+    (repo / PROVENANCE_EXCLUDE).write_text(f"{PROVENANCE_EXCLUDE}  # this file\nREADME.md\n")
+    assert bookgap_revision(repo) == (f"{_head(repo)}; uncommitted but excluded by "
+                                      f"{PROVENANCE_EXCLUDE}: README.md, {PROVENANCE_EXCLUDE}")  # in git status order
+
+
+def test_exclusions_take_globs_and_directories(repo):
+    (repo / "docs").mkdir()
+    (repo / "docs" / "a.md").write_text("a\n")
+    (repo / "notes.md").write_text("n\n")
+    (repo / "code.py").write_text("x = 2\n")
+    (repo / PROVENANCE_EXCLUDE).write_text(f"{PROVENANCE_EXCLUDE}\ndocs/\n*.md\n")
+    assert bookgap_revision(repo).startswith(f"{_head(repo)}-dirty (code.py);")
+
+
+def test_the_exclude_file_must_stay_visible(repo):
+    (repo / PROVENANCE_EXCLUDE).write_text(f"{PROVENANCE_EXCLUDE}\n")
+    _git(repo, "add", PROVENANCE_EXCLUDE)
+    with pytest.raises(RuntimeError, match="committed"):
+        bookgap_revision(repo)
+    _git(repo, "rm", "-q", "--cached", PROVENANCE_EXCLUDE)
+    (repo / ".gitignore").write_text(f"cache/\n{PROVENANCE_EXCLUDE}\n")
+    with pytest.raises(RuntimeError, match="gitignored"):
+        bookgap_revision(repo)
+
+
+def test_outside_a_repository_is_unknown(tmp_path):
+    assert bookgap_revision(tmp_path) == "unknown"
