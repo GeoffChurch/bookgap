@@ -98,3 +98,29 @@ def test_per_topic_scores_skip_small_topics_and_score_within_each():
     scores = per_topic_scores(y, heldout, topics, min_pairs=2)
     assert set(scores) == {"T1"}
     assert scores["T1"] == (0.75, 1.0)
+
+
+def test_denoiser_difference_plot_rows_and_significance():
+    from artifacts_scripts.paper import denoiser_difference_plot as plot
+    from artifacts_scripts.paper.denoiser_difference_cis import Run
+    from artifacts_scripts.paper.regen_sweep import EMBEDDERS
+
+    topics = [f"T{i}" for i in range(10)]
+    noise = [0.5, -0.5, 1.0, -1.0, 0.2, -0.2, 0.7, -0.7, 0.1, -0.1]
+
+    def run(embedder, denoiser, shift, noise):
+        scores = {t: 50.0 + 10 * i + shift + noise[i] for i, t in enumerate(topics)}
+        return Run(EMBEDDERS[embedder][0], denoiser, {m: dict(scores) for m in plot.PANEL_METRIC})
+
+    runs = [run(e, d, s, n) for e in EMBEDDERS
+            for d, s, n in (("LPP", 0.0, noise), ("NONE", -20.0, noise), ("JAD_EQUAL", 0.0, noise[::-1]))]
+    # Every denoiser but the reference, in the sweep's (Table II's) order.
+    assert plot.rows(runs, "LPP") == ["NONE", "JAD_EQUAL"]
+    tex = plot.render(runs, "LPP")
+    assert tex.count(r"\nextgroupplot") == 4
+    # NONE is 20 below LPP on every topic, so its interval excludes zero (filled, black);
+    # JAD's differences are pure noise around zero (hollow, grey).
+    filled = [l for l in tex.splitlines() if l.startswith(r"\addplot[black")]
+    hollow = [l for l in tex.splitlines() if l.startswith(r"\addplot[gray")]
+    assert len(filled) == len(hollow) == 4
+    assert all("(-20.00,1)" in l for l in filled) and all(",2) +-" in l for l in hollow)
