@@ -84,7 +84,11 @@ with initialize(config_path=None, version_base=None):
     cfg = compose(config_name="standard", overrides=["batch.num_gaps=5"])
 ```
 
-The OpenAlex scope/topic manager ships as a console script:
+The paper's runs do not go through this entry point: `artifacts_scripts/paper/regen_sweep.py`
+builds each of its 27 configurations in code. See [REPRODUCING.md](REPRODUCING.md).
+
+The OpenAlex scope/topic manager ships as a console script. Its `snapshot` action
+ingests from OpenAlex's public S3 snapshot and needs no API key:
 
 ```bash
 uv run scope-manager --help
@@ -95,19 +99,30 @@ manifests under `cache/.jobs/`) — conventions in `CLAUDE.md`.
 
 ## Generated files
 
-Outputs land in a structured directory under `artifacts/`:
+Each run writes one directory: Hydra's `outputs/<date>/<time>/` under
+`batch_generator.py`, or a named directory under `regen_sweep.py`.
 
 ```
-artifacts/
-└── subfield=1702, work_types=[book,article]/
-    ├── gaps_analysis_results.csv           # main results with gap statistics
-    ├── openai_structured_proposals/        # LLM-generated proposals (gap_N_proposal.json)
-    ├── plots/                              # PCA plots per gap, gap-size histograms/QQ plots
-    └── contexts/                           # context data per gap (gap_N_context.json)
+<run directory>/
+├── experiment_config.yaml        # the resolved configuration
+├── provenance.json               # regen_sweep.py only: command, commit, package versions, model digest
+├── run_state.json                # resume state
+├── prompts/gap_<g>_topic_<T>.json   # exactly what the model was given
+│                                    # (bookgap.llm.prompt_render.render_prompts rebuilds the text)
+├── contexts/gap_<g>_topic_<T>.json  # the gap: its articles by centrality, the books covering it
+├── ollama_results.jsonl          # one proposal per line (the Ollama backend)
+├── coverage_progress.csv
+└── gaps_analysis_results.csv     # per-topic scores: target gap coverage, proposal gap percentile, ...
 ```
 
-Every generated artifact embeds the exact command that produced it (see the
-provenance convention in `CLAUDE.md`).
+Every generated artifact embeds the exact command that produced it and the
+bookgap revision it was produced from (see the provenance convention in
+`CLAUDE.md`). The revision names every uncommitted change in the checkout: a
+modified file, or an untracked one git does not ignore. A change that cannot
+affect any output (documentation under review, say) can be excused by listing it
+in `.provenance-exclude` at the root, which must stay untracked and list itself;
+the stamp still names what it excused. The paper's pre-commit hook refuses an
+artifact whose stamp names an uncommitted change or an unpushed commit.
 
 ## Development
 
@@ -123,25 +138,30 @@ See `TESTING.md`. Note: pytest's `addopts` ignore the (huge, gitignored)
 
 ### Architecture
 
-- `bookgap/cloud.py` — the central `Cloud` frozen dataclass: works,
-  embeddings, and citation graph, Parquet-backed. The denoiser's projection
+- `bookgap/cloud.py` — the central `Cloud` frozen dataclass: works (per-scope
+  Parquet under `cache/works_parquet/`), embeddings (one memory-mapped float32
+  `.npy` per corpus and embedder, under `cache/embeddings_npy/`), and the citation
+  graph. The denoiser's projection
   matrix is cached once and reapplied to proposal embeddings
   (`Cloud.denoiser_projection()`), keeping proposals in the same vector space
   as the cloud analysis.
 - `bookgap/llm/gap_algorithms/` — K-ball and Voronoi gap detection.
-- `bookgap/llm/generators/` — the OpenAI Batch API proposal workflow
-  (`workflow_functions.py`); `bookgap/llm/protocols.py` holds the static
+- `bookgap/llm/generators/` — the proposal workflow (`workflow_functions.py`)
+  over two backends: Ollama (`ollama_local.py`, local, which the paper used; it
+  refuses prompts longer than the context window rather than truncating them) and
+  the OpenAI Batch API (`openai_batch.py`); `bookgap/llm/protocols.py` holds the static
   Pydantic models (`Chapter`, `Proposal`, `ParsedProposal`).
-- `bookgap/denoisers.py`, `bookgap/embedder.py` — embedding and denoising
-  (PCA, Anti-LDA, RNOJD).
+- `bookgap/denoisers.py`, `bookgap/embedder.py` — embedding and denoising:
+  LPP (the paper's default) and the alternatives the paper's Appendix B compares
+  (Anti-LDA, CCLIP, JAD via RNOJD, among others).
 - `bookgap/configs/` — Hydra structured configs (`ExperimentConfig` +
   component groups, presets in `config_store.py`).
 - `artifacts_scripts/` — post-hoc research/eval/sweep scripts that produce
-  `artifacts/` (gap-detection evaluation harness, denoiser studies, paper
-  assets, the legacy curriculum pipeline slated for replacement by the
-  curriculum repo's generate app).
+  `artifacts/` (gap-detection evaluation harness, denoiser studies, and, under
+  `artifacts_scripts/paper/`, the generators of the paper's tables).
 
 ### Conventions
 
-Idea-state discipline (`docs/backlog/`, `docs/dead_ends/`, each with an
-index), artifact provenance, and job management are documented in `CLAUDE.md`.
+Idea-state discipline (`docs/backlog/` and `docs/dead_ends/`, each with an
+index; this branch carries only `docs/dead_ends/`, and the backlog lives on
+`main`), artifact provenance, and job management are documented in `CLAUDE.md`.
