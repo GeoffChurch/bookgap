@@ -67,6 +67,5 @@ artifacts_scripts/survey/survey.txt
 # 2026-08-02; they encode user@host.pid and are never wanted in a repo.
 .#*
 
-# Editor config. Purged from history 2026-08-02; it is per-developer state,
-# and settings.json still referenced a conda env manager this project left for uv.
+# Editor settings (VS Code), per machine rather than per project.
 .vscode/
