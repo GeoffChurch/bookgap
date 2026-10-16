@@ -1,12 +1,12 @@
-"""Each denoiser's paired difference from a reference denoiser, as a figure (Appendix B).
+"""Each denoiser's mean difference from a reference denoiser, as a figure (Appendix B).
 
 The intervals `denoiser_difference_cis` tabulates, drawn: one panel per column of
 Table II (GIST and Gemma, target gap coverage and proposal gap percentile), one row
 per denoiser, a dot at its mean per-topic difference from the reference and a bar
-for the paired 95% t-interval, with zero (the reference itself) marked. A dot is
-filled black where its interval excludes zero and hollow grey where it does not, so
-what is significant reads in print and without colour; a legend under the panels
-says which is which.
+for the 95% t-interval paired by topic, with zero (the reference itself) marked. A
+dot is filled black where its interval excludes zero and hollow grey where it does
+not, so what is significant reads in print and without colour; a legend under the
+panels says which is which.
 
 Paired rather than per-denoiser intervals because the topics vary far more than the
 denoisers do: a mean's own interval would be wide enough to hide every difference
@@ -110,7 +110,7 @@ def render(runs: list[Run], reference: str) -> str:
     lines += [
         r"\end{groupplot}",
         r"\path (group c1r1.south west) -- (group c4r1.south east) node[midway, below=14pt] (xlabel)",
-        f"    {{Difference from {friendly_denoiser_name(reference)}, with paired 95\\% CI}};",
+        f"    {{Difference from {friendly_denoiser_name(reference)}, with topic-paired 95\\% CI}};",
         f"\\node[anchor=north, inner sep=0pt] at (xlabel.south) {{\\pgfplotslegendfromname{{{LEGEND}}}}};",
         r"\end{tikzpicture}",
     ]
