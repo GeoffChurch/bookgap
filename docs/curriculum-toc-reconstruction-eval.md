@@ -99,7 +99,8 @@ python -m artifacts_scripts.curriculum.export_curriculum_markdown \
     --out-dir docs/curriculum_eval_examples/mobile_crowdsensing
 ```
 Writes `ours_curriculum.md` (Track A), `original_book.md` (title + OpenAlex abstract + ToC *with
-chapter descriptions*), `toc_derived_curriculum.md` (Track B), and — with `--eval-json` — the
+chapter descriptions*; not kept in this repository, as it reproduces a real book's text),
+`toc_derived_curriculum.md` (Track B), and — with `--eval-json` — the
 pairwise verdict as `eval_results.md`. Tracks A/B are read from their run-dirs via the same
 `load_book_outline` the judge uses, so the markdown is exactly what was evaluated; keyword phrases
 are backticked so phrase-mined terms (`neural_networks`) read as units. Every file ends with a

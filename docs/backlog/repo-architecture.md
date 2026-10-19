@@ -419,9 +419,6 @@ itself needs roughly: `hydra-core`, `omegaconf`, `numpy`, `scipy`, `scikit-learn
   and TESTING.md (and is stale, §4). Move it to `[tool.mypy]`.
 - `.vscode/launch.json` and `.vscode/settings.json` are tracked and contain personal
   debug configurations for named sweep presets. Untrack.
-- `artifacts/book_gaps/koehn_toc.json` is the single tracked file under an otherwise
-  gitignored `artifacts/` tree — either it is a fixture (move to `tests/fixtures/`) or it is
-  an accident.
 - `README.md` currently advertises `curriculum_lean/` and "the legacy curriculum pipeline
   slated for replacement" in its Architecture section. After §2 it should describe: the
   pipeline, the four reproducibility generators, and where the research lives. That paragraph
