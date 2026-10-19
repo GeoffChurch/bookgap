@@ -17,7 +17,7 @@ No denoiser is significantly better than LPP there, but nor does locality win th
 - Sweep CCLIP's α over a fine grid (0, 0.1, …, 1) with `normalize_traces=True`, on both embedders, at the paper's locked k (10 for GIST, 394 for Gemma) and default 10 articles + 5 books.
 - Do the same for JAD's weights (`JADDenoiser(wt, wl, w_conflate, normalize_traces=True)`), on a small simplex grid.
 - Choose α on one set of topics and score it on another (not `TOPIC_SUBSET_RANDOM_20` alone), so "where the tuner lands" is not fitted to the scoring topics.
-- Report the paired intervals against LPP with `artifacts_scripts/paper/denoiser_difference_cis.py` (on the anonymous-submission branch, not yet on main).
+- Report the paired intervals against LPP with `artifacts_scripts/paper/denoiser_difference_cis.py`.
 
 Cost: each cell is about 20–30 GPU-minutes on 20 topics (from the October runs), so an 11-point α grid is about 4–6 GPU-hours per embedder.
 

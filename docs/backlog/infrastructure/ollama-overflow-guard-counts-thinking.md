@@ -1,6 +1,6 @@
 # The Ollama overflow guard leaves out the thinking tokens
 
-On the anonymous-submission branch, `OllamaProposalGenerator._chat_once` (`bookgap/llm/generators/ollama_local.py`) raises `ContextOverflowError` when `prompt_eval_count + eval_count` exceeds `num_ctx`, since a reply that runs past the window makes Ollama shift the context and drop the start of the prompt.
+`OllamaProposalGenerator._chat_once` (`bookgap/llm/generators/ollama_local.py`) raises `ContextOverflowError` when `prompt_eval_count + eval_count` exceeds `num_ctx`, since a reply that runs past the window makes Ollama shift the context and drop the start of the prompt.
 With gemma4's thinking and a `format` schema, `eval_count` and `eval_duration` cover only the answer: a typical proposal reports 151 tokens in 1.8 s, while its `thinking` field holds about 2,700 characters (some 700 tokens) and the request takes 13 s.
 So the guard under-counts by the thinking, and REPRODUCING.md's "fails any reply that runs past the window" is stronger than what is checked.
 
