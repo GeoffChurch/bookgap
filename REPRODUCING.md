@@ -159,6 +159,7 @@ reading the runs named by the Makefile's `REGEN` and `RUN_DIR`:
 | Table IV, `baseline_vs_pipeline_table.tex` | `artifacts_scripts.paper.baseline_vs_pipeline_table` |
 | Table V, `radius_sweep_table.tex` | `artifacts_scripts.paper.radius_sweep_table` |
 | Appendix B's intervals, `denoiser_difference_cis.md` | `artifacts_scripts.paper.denoiser_difference_cis` |
+| Appendix B's Fig. 4, `denoiser_differences.tex` | `artifacts_scripts.paper.denoiser_difference_plot` |
 | the embedder comparison's separability, `book_article_separability.md` | `artifacts_scripts.paper.book_article_separability` |
 | Appendix F, `proposal_appendix.tex` | `artifacts_scripts.paper.generate_proposal_appendix` |
 | the survey tables, `selected_books*_table.tex` | `artifacts_scripts.survey.verify_survey_alignment` (needs the survey data; see below) |
