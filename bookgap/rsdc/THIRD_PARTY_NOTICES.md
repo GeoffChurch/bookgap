@@ -11,11 +11,12 @@ Provenance is recorded in each function's docstring:
 | `qndiag`, `transform_set`, `loss`, `gradient`, `_linesearch` | [pierreablin/qndiag](https://github.com/pierreablin/qndiag) | MIT |
 | `ffdiag`, `ffdiag_update` | [archimonde1308/pybss](https://github.com/archimonde1308/pybss) | BSD-3-Clause |
 
-**`rnojd.py` is a separate and unresolved problem.** It derives from
+**`rnojd.py` is not distributed.** It derives from
 [haoze12345/rsdc](https://github.com/haoze12345/rsdc), which carries **no licence
 at all** — all rights reserved — so there is no notice to restore and no
 permission to redistribute. The academic citation (He & Kressner,
-arXiv:2402.16557) credits the authors but grants nothing.
+arXiv:2402.16557) credits the authors but grants nothing. It has been removed
+from this repository and its history; `README.md` says how to fetch it.
 
 ---
 

@@ -9,13 +9,8 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import LinearOperator, eigsh
 from sklearn.decomposition import PCA
 from numpy.linalg import pinv, LinAlgError, lstsq
-from bookgap.rsdc import rnojd, manopt_rnojd
 from bookgap.util import TIMER, LOGGER
 from abc import ABC, abstractmethod
-
-# Import RNOJD from the submodule
-import sys
-from pathlib import Path
 
 
 def subset_range(n: int, subset_size: int, smallest: bool) -> tuple[int, int]:
@@ -1169,6 +1164,19 @@ class JADDenoiser:
         LOGGER.info(f"JAD: {num_subsets} subsets, weights - wt={self.wt}, wl={self.wl}, w_conflate={self.w_conflate}")
         LOGGER.info(f"JAD: trials={self.trials}, use_positive_definite={self.use_positive_definite}")
         
+        # Imported here, not at module level: rnojd.py is unlicensed third-party code
+        # that is not distributed, so only JAD may need it (bookgap/rsdc/README.md).
+        try:
+            from bookgap.rsdc.rnojd import manopt_rnojd
+        except ModuleNotFoundError as e:
+            if e.name != "bookgap.rsdc.rnojd":
+                raise
+            raise ModuleNotFoundError(
+                "The JAD denoiser needs bookgap/rsdc/rnojd.py, which is not distributed "
+                "because its upstream carries no licence. See bookgap/rsdc/README.md "
+                "for how to obtain it."
+            ) from e
+
         # Apply the chosen SDC solver
         try:
             # Use Manopt+RNOJD for superior optimization performance

@@ -1,33 +1,17 @@
 """
-Randomized Simultaneous Diagonalization by Congruence (RSDC) algorithms.
+Joint diagonalization algorithms.
 
-This package implements the RSDC algorithm from:
-He, H., & Kressner, D. (2025). A randomized algorithm for simultaneously 
-diagonalizing symmetric matrices by congruence. arXiv:2402.16557.
+`other_jd_algorithms` (qndiag, ffdiag) is third-party code under MIT and BSD-3
+licences; see THIRD_PARTY_NOTICES.md. `rnojd`, the RSDC algorithm of He & Kressner
+(arXiv:2402.16557) that the JAD denoiser uses, is not distributed: its upstream
+carries no licence. See README.md for how to obtain it. Import it as
+`bookgap.rsdc.rnojd` where needed, never from here, so that this package imports
+without it.
 """
-
-from .rnojd import (
-    rnojd,
-    ffdiag_rnojd,
-    manopt_rnojd,
-    cdopt_rnojd,
-    offdiag,
-    offdiag_frobenius_square,
-    random_combination,
-    runif_in_simplex
-)
 
 from .other_jd_algorithms import ffdiag, qndiag
 
 __all__ = [
-    'rnojd',
-    'ffdiag_rnojd', 
-    'manopt_rnojd',
-    'cdopt_rnojd',
-    'offdiag',
-    'offdiag_frobenius_square',
-    'random_combination',
-    'runif_in_simplex',
     'ffdiag',
     'qndiag'
 ]

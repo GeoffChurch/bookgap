@@ -2,6 +2,11 @@
 Quick test of the updated JAD denoiser with normalized entropy conflation measure.
 """
 
+import pytest
+
+# JADDenoiser needs rnojd.py, which is not distributed (see bookgap/rsdc/README.md).
+pytest.importorskip("bookgap.rsdc.rnojd")
+
 import numpy as np
 import sys
 from pathlib import Path

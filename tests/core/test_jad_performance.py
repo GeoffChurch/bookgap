@@ -24,16 +24,9 @@ from bookgap.cloud_denoiser import CloudDenoiserContext
 from bookgap.denoisers import JADDenoiser
 from bookgap.util import Filter, WorkType, LOGGER
 
-# Try importing RNOJD functions for detailed benchmarking
-try:
-    from bookgap.rsdc import rnojd, offdiag_frobenius_square, manopt_rnojd, cdopt_rnojd, ffdiag_rnojd
-    DETAILED_BENCHMARKING = True
-    LOGGER.info("Full RNOJD benchmarking available")
-except ImportError as e:
-    DETAILED_BENCHMARKING = False
-    LOGGER.warning(f"Could not import RNOJD functions: {e}")
-    # Define dummy functions to avoid unbound variable errors
-    rnojd = offdiag_frobenius_square = manopt_rnojd = cdopt_rnojd = ffdiag_rnojd = None
+# rnojd.py is not distributed (see bookgap/rsdc/README.md); without it, skip.
+pytest.importorskip("bookgap.rsdc.rnojd")
+from bookgap.rsdc.rnojd import rnojd, offdiag_frobenius_square, manopt_rnojd, cdopt_rnojd, ffdiag_rnojd
 
 def time_function(func, *args, **kwargs):
     """Time a function call and return (result, elapsed_time)"""
@@ -138,84 +131,74 @@ def _test_jad_performance_full(max_works, deduplicator, index_type, hnsw_m, hnsw
         projector, elapsed = time_function(jad.projector, context, n_components)
         LOGGER.info(f"JAD projector computation took {elapsed:.3f} seconds")
         
-        if DETAILED_BENCHMARKING and rnojd is not None:
-            LOGGER.info("\n--- Detailed RNOJD Benchmarking ---")
+        LOGGER.info("\n--- Detailed RNOJD Benchmarking ---")
+        
+        # Manually compute scatter matrices for detailed testing
+        S_T = context.S_T()
+        S_L = context.S_L()
+        
+        # Get subset scatter matrices using the context's S_subset method
+        subset_scatter_matrices = []
+        for i in range(context.num_subsets()):
+            subset_scatter_matrices.append(context.S_subset(i))
+        
+        # Create weighted combination using new interface
+        matrices_list = [
+            weights["wt"] * S_T,
+            weights["wl"] * S_L
+        ]
+        
+        # Add weighted subset matrices
+        for S_subset in subset_scatter_matrices:
+            matrices_list.append(weights["w_conflate"] * S_subset)
+        
+        C = np.stack(matrices_list)
+        
+        LOGGER.info(f"Scatter matrix shapes: {C.shape} (includes {context.num_subsets()} subset matrices)")
+        
+        # Test different numbers of trials for basic RNOJD
+        for trials in [1, 3, 5, 10, 20]:
+            LOGGER.info(f"\nTesting RNOJD with {trials} trials:")
             
-            # Manually compute scatter matrices for detailed testing
-            S_T = context.S_T()
-            S_L = context.S_L()
+            X, elapsed = time_function(rnojd, C, trials=trials, pd=True)
+            off_diag = offdiag_frobenius_square(X.T @ C @ X)
+            LOGGER.info(f"  Basic RNOJD: {elapsed:.3f}s, off-diagonal²: {off_diag:.6f}")
             
-            # Get subset scatter matrices using the context's S_subset method
-            subset_scatter_matrices = []
-            for i in range(context.num_subsets()):
-                subset_scatter_matrices.append(context.S_subset(i))
+            # Test with pd=False
+            X_nopd, elapsed_nopd = time_function(rnojd, C, trials=trials, pd=False)
+            off_diag_nopd = offdiag_frobenius_square(X_nopd.T @ C @ X_nopd)
+            LOGGER.info(f"  RNOJD (pd=False): {elapsed_nopd:.3f}s, off-diagonal²: {off_diag_nopd:.6f}")
+        
+        # Test advanced optimizers if available
+        try:
+            LOGGER.info(f"\nTesting advanced optimizers:")
             
-            # Create weighted combination using new interface
-            matrices_list = [
-                weights["wt"] * S_T,
-                weights["wl"] * S_L
-            ]
+            # FFDiag with RNOJD initialization
+            result_ff, elapsed_ff = time_function(ffdiag_rnojd, C, max_iter=10, trials=3, pd=True)
+            # Handle case where function returns tuple (X, additional_info) or just X
+            X_ff = result_ff[0] if isinstance(result_ff, tuple) else result_ff
+            off_diag_ff = offdiag_frobenius_square(X_ff.T @ C @ X_ff)
+            LOGGER.info(f"  FFDiag+RNOJD: {elapsed_ff:.3f}s, off-diagonal²: {off_diag_ff:.6f}")
             
-            # Add weighted subset matrices
-            for S_subset in subset_scatter_matrices:
-                matrices_list.append(weights["w_conflate"] * S_subset)
+            # Manopt with RNOJD initialization
+            result_man, elapsed_man = time_function(manopt_rnojd, C, trials=3, max_iter=50, trivial_init=False, pd=True)
+            # Handle case where function returns tuple (X, additional_info) or just X
+            X_man = result_man[0] if isinstance(result_man, tuple) else result_man
+            off_diag_man = offdiag_frobenius_square(X_man.T @ C @ X_man)
+            LOGGER.info(f"  Manopt+RNOJD: {elapsed_man:.3f}s, off-diagonal²: {off_diag_man:.6f}")
             
-            C = np.stack(matrices_list)
+            # CDOpt with RNOJD initialization  
+            if ENABLE_CDOPT:
+                result_cd, elapsed_cd = time_function(cdopt_rnojd, C, trials=3, opt_method='L-BFGS-B')
+                # Handle case where function returns tuple (X, additional_info) or just X
+                X_cd = result_cd[0] if isinstance(result_cd, tuple) else result_cd
+                off_diag_cd = offdiag_frobenius_square(X_cd.T @ C @ X_cd)
+                LOGGER.info(f"  CDOpt+RNOJD: {elapsed_cd:.3f}s, off-diagonal²: {off_diag_cd:.6f}")
+            else:
+                LOGGER.warning(f"  CDOpt+RNOJD: Disabled (set ENABLE_CDOPT=True to enable)")
             
-            LOGGER.info(f"Scatter matrix shapes: {C.shape} (includes {context.num_subsets()} subset matrices)")
-            
-            # Test different numbers of trials for basic RNOJD
-            for trials in [1, 3, 5, 10, 20]:
-                LOGGER.info(f"\nTesting RNOJD with {trials} trials:")
-                
-                if rnojd is not None and offdiag_frobenius_square is not None:
-                    X, elapsed = time_function(rnojd, C, trials=trials, pd=True)
-                    off_diag = offdiag_frobenius_square(X.T @ C @ X)
-                    LOGGER.info(f"  Basic RNOJD: {elapsed:.3f}s, off-diagonal²: {off_diag:.6f}")
-                    
-                    # Test with pd=False
-                    X_nopd, elapsed_nopd = time_function(rnojd, C, trials=trials, pd=False)
-                    off_diag_nopd = offdiag_frobenius_square(X_nopd.T @ C @ X_nopd)
-                    LOGGER.info(f"  RNOJD (pd=False): {elapsed_nopd:.3f}s, off-diagonal²: {off_diag_nopd:.6f}")
-                else:
-                    LOGGER.warning(f"  RNOJD functions not available")
-            
-            # Test advanced optimizers if available
-            try:
-                LOGGER.info(f"\nTesting advanced optimizers:")
-                
-                # FFDiag with RNOJD initialization
-                if ffdiag_rnojd is not None and offdiag_frobenius_square is not None:
-                    result_ff, elapsed_ff = time_function(ffdiag_rnojd, C, max_iter=10, trials=3, pd=True)
-                    # Handle case where function returns tuple (X, additional_info) or just X
-                    X_ff = result_ff[0] if isinstance(result_ff, tuple) else result_ff
-                    off_diag_ff = offdiag_frobenius_square(X_ff.T @ C @ X_ff)
-                    LOGGER.info(f"  FFDiag+RNOJD: {elapsed_ff:.3f}s, off-diagonal²: {off_diag_ff:.6f}")
-                
-                # Manopt with RNOJD initialization
-                if manopt_rnojd is not None and offdiag_frobenius_square is not None:
-                    result_man, elapsed_man = time_function(manopt_rnojd, C, trials=3, max_iter=50, trivial_init=False, pd=True)
-                    # Handle case where function returns tuple (X, additional_info) or just X
-                    X_man = result_man[0] if isinstance(result_man, tuple) else result_man
-                    off_diag_man = offdiag_frobenius_square(X_man.T @ C @ X_man)
-                    LOGGER.info(f"  Manopt+RNOJD: {elapsed_man:.3f}s, off-diagonal²: {off_diag_man:.6f}")
-                
-                # CDOpt with RNOJD initialization  
-                if ENABLE_CDOPT and cdopt_rnojd is not None and offdiag_frobenius_square is not None:
-                    result_cd, elapsed_cd = time_function(cdopt_rnojd, C, trials=3, opt_method='L-BFGS-B')
-                    # Handle case where function returns tuple (X, additional_info) or just X
-                    X_cd = result_cd[0] if isinstance(result_cd, tuple) else result_cd
-                    off_diag_cd = offdiag_frobenius_square(X_cd.T @ C @ X_cd)
-                    LOGGER.info(f"  CDOpt+RNOJD: {elapsed_cd:.3f}s, off-diagonal²: {off_diag_cd:.6f}")
-                elif not ENABLE_CDOPT:
-                    LOGGER.warning(f"  CDOpt+RNOJD: Disabled (set ENABLE_CDOPT=True to enable)")
-                else:
-                    LOGGER.warning(f"  CDOpt+RNOJD: Not available")
-                
-            except Exception as e:
-                LOGGER.warning(f"  Advanced optimizers failed: {e}")
-        else:
-            LOGGER.warning("\n--- Detailed RNOJD Benchmarking not available ---")
+        except Exception as e:
+            LOGGER.warning(f"  Advanced optimizers failed: {e}")
         
         # Test projection quality
         if projector[0] is not None:

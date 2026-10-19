@@ -2,6 +2,11 @@
 Test script demonstrating the generalized JADDenoiser with multiple subsets.
 """
 
+import pytest
+
+# JADDenoiser needs rnojd.py, which is not distributed (see bookgap/rsdc/README.md).
+pytest.importorskip("bookgap.rsdc.rnojd")
+
 import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray

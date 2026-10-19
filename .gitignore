@@ -69,3 +69,7 @@ artifacts_scripts/survey/survey.txt
 
 # Editor settings (VS Code), per machine rather than per project.
 .vscode/
+
+# Unlicensed third-party code, fetched by hand and never committed
+# (bookgap/rsdc/README.md says how).
+bookgap/rsdc/rnojd.py

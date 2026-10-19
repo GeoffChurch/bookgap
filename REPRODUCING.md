@@ -112,6 +112,11 @@ fixed random 20 topics (`TOPIC_SUBSET_RANDOM_20`) instead, into `runs/`, as an
 earlier version of the paper did; GIST's default cell, the headline run, is on
 all 77 topics either way.
 
+The JAD cells need `bookgap/rsdc/rnojd.py`, which is not distributed: its
+upstream carries no licence. `bookgap/rsdc/README.md` gives a one-line fetch that
+reproduces the paper's copy exactly. Fetch it before starting a chain: without
+it, a chain stops at its JAD cell, which for GIST comes before the radius sweep.
+
 Finding a cell's gaps is CPU work, about a minute a topic, during which the GPU
 would sit idle. Gaps are cached per topic and shared by every cell with the same
 embedder, denoiser and radius, so they can be computed on the CPU before or
